@@ -324,13 +324,14 @@ pub fn register(r: &mut Registry) {
         .signal_observer()
         .states(|p, s| {
             let back = if p.is("power", "on") { "observer_back_on" } else { "observer_back" };
+            let front = if p.is("power", "on") { "observer_front_on" } else { "observer_front" };
             let whole = [0.0, 0.0, 16.0, 16.0];
             let faces = [
                 ("observer_side", whole),
                 ("observer_side", whole),
                 ("observer_top", whole),
                 ("observer_top", [0.0, 16.0, 16.0, 0.0]),
-                ("observer_front", whole),
+                (front, whole),
                 (back, whole),
             ];
             s.frame(p.frame_front())
