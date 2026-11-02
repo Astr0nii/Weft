@@ -773,6 +773,11 @@ impl Client {
         crate::content::in_main_hand(content(), &self.inventory, self.selected as u32)
     }
 
+    /// What the main hand shows: from the eyes the old stack, until the hand has gone down with it.
+    pub fn shown_held(&self) -> ItemStack {
+        if self.view == 0 { self.hand_stack } else { self.held() }
+    }
+
     pub fn off_held(&self) -> ItemStack {
         crate::content::in_off_hand(content(), &self.inventory)
     }
@@ -2095,7 +2100,7 @@ impl Client {
             health: self.health,
             hurt: self.hurt_flash,
             worn,
-            held: if self.view == 0 { self.hand_stack.item } else { self.held().item },
+            held: self.shown_held().item,
             off_held: self.off_held().item,
             using: self
                 .using

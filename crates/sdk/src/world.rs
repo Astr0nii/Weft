@@ -257,6 +257,20 @@ pub fn name_of(kind: u32, id: u32) -> &'static str {
     unsafe { (host().name_of)(kind, id).as_str() }
 }
 
+/// What to save instead of a dimension's id: ids are numbers in the order mods registered them, and
+/// shift when a mod comes or goes. This goes by its name.
+pub fn dimension_key(id: u32) -> u64 {
+    abi::fnv(name_of(abi::entry_kind::DIMENSION, id).as_bytes())
+}
+
+/// The dimension a saved `dimension_key` means now, if it is still there.
+pub fn dimension_of_key(key: u64) -> Option<u32> {
+    (0..)
+        .map_while(|id| Some((id, name_of(abi::entry_kind::DIMENSION, id))).filter(|n| !n.1.is_empty()))
+        .find(|n| abi::fnv(n.1.as_bytes()) == key)
+        .map(|n| n.0)
+}
+
 pub fn block_name(state: u32) -> &'static str {
     name_of(abi::entry_kind::BLOCK, state)
 }

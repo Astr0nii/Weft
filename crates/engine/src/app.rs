@@ -2209,7 +2209,7 @@ fn record_passes(r: &mut Running, info: &weft_render::FrameInfo, scale: f32) {
     r.list.clear();
     if let Some(g) = &mut r.game {
         let worn = g.client.worn();
-        let held = [g.client.held(), g.client.off_held()];
+        let held = [g.client.shown_held(), g.client.off_held()];
         g.client
             .entity_render
             .preload(&mut *r.gpu, &r.assets, &g.client.entities, &worn, held);

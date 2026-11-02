@@ -1082,6 +1082,7 @@ unsafe extern "C" fn stack_get(data: u32, comp: u32, len: *mut usize) -> *const 
 
 unsafe extern "C" fn stack_with(data: u32, comp: u32, value: abi::Slice<u8>, remove: u32) -> u32 {
     if try_content().is_none_or(|c| comp >= c.components.count()) {
+        misuse("stack_with", || "a component nobody declared: r.stack_component(&COMP, 0) makes it one".to_string());
         return data;
     }
     let bytes = unsafe { value.as_slice() };

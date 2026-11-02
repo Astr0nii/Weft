@@ -625,6 +625,10 @@ pub async fn persistence(t: T) -> R {
     t.check_eq(t.op("secret me 0").await?, "1234".into(), "server keeps the secret");
     t.frames(5).await?;
     t.check_eq(crate::server::SECRET.stack_only(&t.c().inventory_slot(0)), None, "client never sees the secret");
+    // What a mod makes with a handle, data and all: the client has it, and damage is its own.
+    static STICK: Item = Item::named("base:stick");
+    let made = STICK.stack(3).with_damage(5);
+    t.check_eq((made.item, made.count, made.damage(), made.without(&DAMAGE).data), (STICK.id(), 3, 5, 0), "a stack made from a handle");
     t.check_eq(value(&t.op("attr me core:movement_speed").await?), 1.0, "speed without modifiers");
     t.op("attr_mod me core:movement_speed testkit:haste 1 0.5 40")
         .await?;

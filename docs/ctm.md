@@ -38,6 +38,8 @@ A mod can only add `.ctm` files for its own textures.\
 A resource pack can add them for any mod's texture, since packs keeps files in a folder per namespace:\
 `glass.ctm` for the base game's glass is `<pack>/base/textures/block/glass.ctm`, and its tiles go into `<pack>/base/textures/block/glass/`.
 
+A pack that replaces a texture and has no `.ctm` for it turns the mod's rules for it off: they were made for the mod's picture, so you get your picture as it is. A `.ctm` in a pack without the picture applies to the picture below it, and between packs the rules only count if they are in the same pack as the picture or above it.
+
 The file uses `key = value` lines.\
 Comments are whole lines starting with `#`. A `#` after a value is a part of that value, so don't do it.
 

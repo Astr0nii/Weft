@@ -5,13 +5,18 @@
 use rustc_hash::FxHashMap;
 
 pub const CELL: u32 = 16;
+/// Rows a glyph may have over its cell: the marks on capitals, as vanilla's accented font has them.
+/// Text lays out by the cell, so a line's height doesn't change with them.
+pub const ABOVE: u32 = 4;
+const ROWS: usize = (CELL + ABOVE) as usize;
 const ATLAS_COLS: u32 = 64;
 /// Cells are spaced with an empty pixel all around: with fractional text scales a quad's edge can
 /// sample just outside its glyph, which must hit blank space and not the neighboring glyph.
 const STRIDE: u32 = CELL + 2;
+const STRIDE_Y: u32 = ROWS as u32 + 2;
 
 fn cell_origin(cell: u32) -> (u32, u32) {
-    ((cell % ATLAS_COLS) * STRIDE + 1, (cell / ATLAS_COLS) * STRIDE + 1)
+    ((cell % ATLAS_COLS) * STRIDE + 1, (cell / ATLAS_COLS) * STRIDE_Y + 1)
 }
 
 #[derive(Clone, Copy)]
@@ -46,7 +51,7 @@ impl Font {
     /// image) drawn over it. Atlas pixels become `pixel` font pixels so both fill the 16 pixel cell.
     pub fn new(hex: &str, bitmap: Option<(&str, &crate::assets::Image)>) -> Font {
         // (char, bitmap rows of up to 16 pixels, first inked column and advance; `None` = from ink)
-        let mut bitmaps: Vec<(char, [u16; 16], Option<(u8, u8)>)> = Vec::new();
+        let mut bitmaps: Vec<(char, [u16; ROWS], Option<(u8, u8)>)> = Vec::new();
         for line in hex.lines() {
             if line.starts_with('#') {
                 continue;
@@ -64,8 +69,8 @@ impl Font {
             if bytes.len() != 16 * bpr {
                 continue;
             }
-            let mut rows = [0u16; 16];
-            for (y, row) in rows.iter_mut().enumerate() {
+            let mut rows = [0u16; ROWS];
+            for (y, row) in rows[ABOVE as usize..].iter_mut().enumerate() {
                 *row = if bpr == 1 { (bytes[y] as u16) << 8 } else { (bytes[y * 2] as u16) << 8 | bytes[y * 2 + 1] as u16 };
             }
             let metrics = (ch == ' ')
@@ -78,6 +83,8 @@ impl Font {
         let mut line_height = 16.0;
         if let Some((desc, img)) = bitmap {
             let mut cell = (8u32, 8u32);
+            // How many of a cell's rows are over the letters.
+            let mut above = 0u32;
             let mut grid: Vec<Vec<char>> = Vec::new();
             for line in desc.lines() {
                 let Some((k, v)) = line.split_once(" = ") else { continue };
@@ -91,16 +98,18 @@ impl Font {
                             cell = (w, h);
                         }
                     }
+                    "above" => above = v.trim().parse().unwrap_or(0),
                     "row" => grid.push(v.chars().collect()),
                     _ => {}
                 }
             }
-            let scale = (CELL / cell.1.max(1)).max(1);
+            let high = cell.1.saturating_sub(above).max(1);
+            let scale = (CELL / high).max(1);
             if cell.0 * scale <= CELL {
                 pixel = scale as f32;
-                line_height = ((cell.1 + 1) * scale) as f32;
+                line_height = ((high + 1) * scale) as f32;
                 let mut by_char: FxHashMap<char, usize> = bitmaps.iter().enumerate().map(|(i, b)| (b.0, i)).collect();
-                let mut put = |ch: char, rows: [u16; 16], metrics: Option<(u8, u8)>| match by_char.get(&ch) {
+                let mut put = |ch: char, rows: [u16; ROWS], metrics: Option<(u8, u8)>| match by_char.get(&ch) {
                     Some(&i) => bitmaps[i] = (ch, rows, metrics),
                     None => {
                         by_char.insert(ch, bitmaps.len());
@@ -108,10 +117,10 @@ impl Font {
                     }
                 };
                 // Vanilla-like spacing: a space is four atlas pixels, glyphs keep one between them.
-                put(' ', [0; 16], Some((0, (4 * scale) as u8)));
+                put(' ', [0; ROWS], Some((0, (4 * scale) as u8)));
                 for (gy, row) in grid.iter().enumerate() {
                     for (gx, &ch) in row.iter().enumerate() {
-                        let mut rows = [0u16; 16];
+                        let mut rows = [0u16; ROWS];
                         let (mut min_x, mut max_x) = (u32::MAX, 0);
                         for y in 0..cell.1 {
                             for x in 0..cell.0 {
@@ -123,7 +132,11 @@ impl Font {
                                 max_x = max_x.max(x);
                                 for sy in 0..scale {
                                     for sx in 0..scale {
-                                        rows[(y * scale + sy) as usize] |= 0x8000 >> (x * scale + sx);
+                                        // A row counted from the top of the letters, some above them.
+                                        let row = (y as i32 - above as i32) * scale as i32 + sy as i32 + ABOVE as i32;
+                                        if let Some(r) = usize::try_from(row).ok().and_then(|r| rows.get_mut(r)) {
+                                            *r |= 0x8000 >> (x * scale + sx);
+                                        }
                                     }
                                 }
                             }
@@ -138,7 +151,7 @@ impl Font {
 
         let rows = (bitmaps.len() as u32 + 1).div_ceil(ATLAS_COLS);
         let atlas_width = ATLAS_COLS * STRIDE;
-        let atlas_height = rows * STRIDE;
+        let atlas_height = rows * STRIDE_Y;
         let mut atlas = vec![0u8; (atlas_width * atlas_height) as usize];
         let mut glyphs = FxHashMap::default();
         for (n, (ch, bits, metrics)) in bitmaps.iter().enumerate() {
@@ -159,6 +172,7 @@ impl Font {
         }
         // Cell 0 stays empty and is used for a visible box when a glyph is missing.
         let (ox, oy) = cell_origin(0);
+        let oy = oy + ABOVE;
         for i in 0..CELL {
             for j in [2, CELL - 3] {
                 atlas[((oy + j) * atlas_width + ox + i.clamp(2, CELL - 3)) as usize] = 255;
@@ -183,6 +197,6 @@ impl Font {
         let (cx, cy) = cell_origin(g.cell);
         let x0 = (cx + g.left as u32) as f32 / self.atlas_width as f32;
         let x1 = (cx + g.left as u32 + g.advance as u32 - 1) as f32 / self.atlas_width as f32;
-        [x0, cy as f32 / self.atlas_height as f32, x1, (cy + CELL) as f32 / self.atlas_height as f32]
+        [x0, cy as f32 / self.atlas_height as f32, x1, (cy + ROWS as u32) as f32 / self.atlas_height as f32]
     }
 }

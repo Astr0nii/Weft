@@ -200,6 +200,7 @@ Per-entity components like a state of a machine, hunger or anything else that ch
 `.set(&C, v)` is different: one value of the kind itself (like a mob's attack damage), while `.attach` gives every entity its own value that changes.\
 Flags from `component_flags` are `SAVE`, `SYNC_OWNER`, `SYNC_WATCHERS`, `SYNC_MENU`, `KEEP` (kept when a player respawns; everything else starts over from its default).\
 You can change them through `w.component_mut(id, &COMP)` and the engine will figure out what to send.\
+A `SAVE` component is saved as its bytes, so don't keep ids in one: ids of dimensions, items, blocks and the like are numbers that shift when a mod comes or goes, and yours would then point at something else. For a dimension save `dimension_key(id)` and read it back with `dimension_of_key(key)`.\
 What the engine itself shows of an entity travels the same way, so a client can read it with `view.component_of(id, &C)`: `core:health` (`[f32; 2]`, health and, for players, max health) `core:burning` (`u8`) and `core:held` (`u32`, a player's item in hand, 0 for none). They are the engine's copies: writing them changes nothing.
 
 ### Sharing types with other mods
@@ -264,6 +265,29 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 - `wearable(&HEAD, inflate, texture)` for armor and anything else worn in an equipment slot
 - `two_handed()`, `one_handed_action(action)`, `use_priority(n)`: [what it does in the hands](models.md#items-in-the-hand)
 - `on_use`: what using it does. Before it runs anyone can say no to `question::USE_ITEM`, and after it the `ITEM_USED` event tells every mod (testmod heals with base's food through it). `base_api::eat` is the base game's eating: `.set(&FOOD, ..).use_time(1.6).on_use(base_api::eat)`
+
+#### Stacks with their own data
+A stack is an item, a count, and whatever values of components it carries of its own, like the damage a tool took. You never touch `data` yourself, it's only a handle to those values:
+```rust
+value! { pub struct Quality { pub grade: u32, pub maker: u32 } }
+static QUALITY: Component<Quality> = Component::named("quality");
+
+// While registering, once:
+r.stack_component(&QUALITY, 0);
+
+// Making one, a custom workbench's output for example:
+let out = PICKAXE.stack(1)
+    .with(&QUALITY, Quality { grade: 3, maker: 7 })
+    .with_damage(10);
+inventory.set(slot, out);
+
+// Reading it:
+QUALITY.on_stack(&stack);   // its own value, else what the item has
+QUALITY.stack_only(&stack); // only its own
+stack.damage();
+let plain = stack.without(&QUALITY);
+```
+Stacks with different data don't merge. `r.stack_component` says a component exists for stacks, its flags are `abi::stack_flags`: `SERVER_ONLY` (clients get the stack without it), `NO_SAVE`, or 0 for neither. `.with` on a component nobody declared does nothing and says so in the log. Ids in a value shift when a mod comes or goes, the same as in a `SAVE` component (see [components](#components-and-tags-as-inter-mod-communication)).
 
 ### Entities
 `r.entity(&ENTITY)` and then:

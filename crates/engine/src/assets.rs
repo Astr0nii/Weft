@@ -67,6 +67,29 @@ impl Assets {
         std::fs::read(self.path(name, kind, ext)?).ok()
     }
 
+    /// `<name>.<ext>` if what it says is about the picture `<name>.<of>` in effect: from the pack or
+    /// mod that has that picture, or from one above it. A mod's rules were made for the mod's
+    /// picture, and a pack that replaces it without bringing rules of its own has none.
+    pub fn sidecar(&self, name: &str, kind: &str, of: &str, ext: &str) -> Option<PathBuf> {
+        let (ns, rel) = name.split_once(':').unwrap_or(("core", name));
+        let (file, picture) = (format!("{kind}/{rel}.{ext}"), format!("{kind}/{rel}.{of}"));
+        for root in self
+            .packs
+            .iter()
+            .map(|p| p.join(ns))
+            .chain(self.mods.get(ns).cloned())
+        {
+            let candidate = root.join(&file);
+            if self.files.contains(&candidate) {
+                return Some(candidate);
+            }
+            if self.files.contains(&root.join(&picture)) {
+                return None;
+            }
+        }
+        None
+    }
+
     /// `<name><suffix>.<ext>` from the same pack or mod as `<name>.<ext>` itself: a mask drawn
     /// for one texture must not land on a pack's different picture of it.
     pub fn beside(&self, name: &str, kind: &str, ext: &str, suffix: &str) -> Option<PathBuf> {
@@ -537,6 +560,52 @@ fn downsample(src: &[u8], size: u32) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn rules_go_with_their_picture() {
+        let root = std::env::temp_dir().join(format!("weft_sidecar_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let put = |p: &str| {
+            let p = root.join(p);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b"x").unwrap();
+        };
+        put("mod/textures/both.png");
+        put("mod/textures/both.ctm");
+        put("mod/textures/replaced.png");
+        put("mod/textures/replaced.ctm");
+        put("mod/textures/own_rules.png");
+        put("mod/textures/own_rules.ctm");
+        put("mod/textures/rules_only.png");
+        put("mod/textures/low.png");
+        put("top/m/textures/replaced.png");
+        put("top/m/textures/own_rules.png");
+        put("top/m/textures/own_rules.ctm");
+        put("top/m/textures/rules_only.ctm");
+        put("top/m/textures/low.png");
+        put("low/m/textures/low.ctm");
+        let a = Assets::new([("m".to_string(), root.join("mod"))], vec![root.join("top"), root.join("low")]);
+        let found = |n: &str| {
+            a.sidecar(&format!("m:{n}"), "textures", "png", "ctm")
+                .map(|p| {
+                    p.strip_prefix(&root)
+                        .unwrap()
+                        .components()
+                        .next()
+                        .unwrap()
+                        .as_os_str()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+        };
+        assert_eq!(found("both").as_deref(), Some("mod"), "nothing replaced");
+        assert_eq!(found("replaced"), None, "a pack's picture without rules has none");
+        assert_eq!(found("own_rules").as_deref(), Some("top"), "its own rules");
+        assert_eq!(found("rules_only").as_deref(), Some("top"), "rules over the mod's picture");
+        assert_eq!(found("low"), None, "rules under a pack's picture aren't for it");
+        assert_eq!(found("none"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
     use super::*;
 
     #[test]

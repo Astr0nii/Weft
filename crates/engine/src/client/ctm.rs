@@ -1,7 +1,8 @@
 //! Connected and varied block textures. A `<texture>.ctm` file next to a block texture (in a mod
 //! or a resource pack) holds rules for every cube face showing that texture, on any block and any
-//! face (a log side is just its side texture); methods and keys follow
-//! OptiFine/MCPatcher CTM so existing packs port with little more than renaming files:
+//! face (a log side is just its side texture); a pack that replaces the picture without a file of
+//! its own leaves it with none. Methods and keys follow OptiFine/MCPatcher CTM so existing packs
+//! port with little more than renaming files:
 //!
 //! ```text
 //! method = compact       # ctm (47 tiles), compact (5), horizontal, vertical, h+v, v+h (4/4/7/7),
@@ -302,7 +303,8 @@ pub fn load(assets: &Assets, c: &Content, looks: &Looks, mut names: Names) -> (C
             overlays.push((tex, names.id(&over) + 1));
         }
         let Some(src) = assets
-            .read(&name, "textures", "ctm")
+            .sidecar(&name, "textures", "png", "ctm")
+            .and_then(|p| std::fs::read(p).ok())
             .map(|b| String::from_utf8_lossy(&b).into_owned())
         else {
             continue;

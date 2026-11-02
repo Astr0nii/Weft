@@ -592,7 +592,8 @@ impl Registry {
         LootModBuilder { reg: self, table: table.table_name().to_string() }
     }
 
-    /// Flags of a stack component (`abi::stack_flags`): kept on the server, not saved.
+    /// Declares a component stacks carry a value of (`stack.with(&COMP, v)`), with its flags
+    /// (`abi::stack_flags`: kept on the server, not saved), 0 for neither.
     pub fn stack_component<T: Value>(&mut self, c: &crate::Component<T>, flags: u32) {
         unsafe { (host().reg_stack_component)(self.raw, Str::new(c.name()), Str::new(&T::schema()), flags) }
     }

@@ -109,6 +109,13 @@ impl<K: kind::Kind> Handle<K> {
     }
 }
 
+impl Item {
+    /// `count` of this item, plain; `.with(&COMP, v)` and `.with_damage(n)` give it data.
+    pub fn stack(&self, count: u32) -> abi::ItemStack {
+        abi::ItemStack::new(self.id(), count)
+    }
+}
+
 impl<K: kind::HasId> Handle<K> {
     /// For blocks, the first state. `u32::MAX` if unknown.
     #[inline]

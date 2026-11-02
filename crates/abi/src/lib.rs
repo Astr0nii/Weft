@@ -15,7 +15,7 @@ pub const ABI_VERSION: u64 = fnv(include_str!("lib.rs").as_bytes());
 /// Symbol every mod library exports: `extern "C" fn() -> *const ModDecl`.
 pub const ENTRY_SYMBOL: &[u8] = b"weft_mod\0";
 
-const fn fnv(bytes: &[u8]) -> u64 {
+pub const fn fnv(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut i = 0;
     while i < bytes.len() {
@@ -939,6 +939,7 @@ pub struct ItemUseArgs {
 
 // ---------------------------------------------------------------- items, entities, menus
 
+/// In a mod: `ITEM.stack(count)`, and `.with(&COMP, v)` for data, never these fields by hand.
 /// `data` is 0 for a plain stack, otherwise a handle to its stack components (damage taken,
 /// charge, contents ...). Handles are interned: two stacks with equal data have equal handles,
 /// so stacks merge exactly when `item` and `data` match. Read and change data through the host.

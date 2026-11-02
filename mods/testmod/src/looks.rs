@@ -179,6 +179,9 @@ pub fn register(r: &mut Registry) {
     r.item(&GREATSWORD)
         .max_stack(1)
         .two_handed()
+        .no_creative_break()
+        .attack_damage(16f32)
+        .attack_speed(0.7)
         .on_use(|_| true);
     // A metre of katana in the hand, on the ground and in a slot; much less of one once damaged.
     r.set_model(&GREATSWORD, "katana");
@@ -193,7 +196,7 @@ pub fn register(r: &mut Registry) {
     static FOX_TAIL: Item = Item::named("fox_tail");
     r.item(&FOX_TAIL)
         .max_stack(1)
-        .wearable_model(&EquipmentSlot::named("base:chest"), "fox_tail", "body");
+        .wearable_model(&EquipmentSlot::named("base:legs"), "fox_tail", "body");
     r.bone_motion("fox_tail", "tail2", BoneMotion::SPRINGY);
     r.bone_motion("fox_tail", "tail3", BoneMotion::SPRINGY);
     // Both hands, or one if the other is busy.
