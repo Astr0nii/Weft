@@ -350,8 +350,8 @@ pub fn register(r: &mut Registry) {
                 .states(|p, s| {
                     // Vanilla's: a furnace's sides, or all its top with the front up or down.
                     let d = p.facing();
-                    let side = if d.horizontal() { "furnace_side" } else { "furnace_top" };
-                    let front = if d.horizontal() { "dispenser_front" } else { "dispenser_front_vertical" };
+                    let side = "furnace_top";
+                    let front = "dispenser_front";
                     s.front_faces(d, side, "furnace_top", front)
                 })
                 // With each new pulse, out of the front.
