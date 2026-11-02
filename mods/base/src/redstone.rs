@@ -196,7 +196,7 @@ pub fn register(r: &mut Registry) {
         .not_solid()
         .hardness(0.5)
         .sound_group("stone")
-        .texture("button")
+        .texture("stone")
         .tab(&crate::tabs::REDSTONE);
 
     for (piston, head, sticky, name) in
