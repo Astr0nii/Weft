@@ -647,9 +647,9 @@ impl UiRenderer {
                         // Whole physical pixels: centered text starts mid-pixel, and nearest sampling
                         // at texel borders would drop or double glyph columns.
                         self.quads.push(Quad {
-                            p0: [(x + gx * px + off).round(), (y + gy * px + off).round()],
+                            p0: [(x + gx * px + off).round(), (y + (gy - super::font::ABOVE as f32) * px + off).round()],
                             u: [w, 0.0],
-                            v: [0.0, 16.0 * px],
+                            v: [0.0, (super::font::CELL + super::font::ABOVE) as f32 * px],
                             uv,
                             color: c,
                             tex: self.font_idx,
