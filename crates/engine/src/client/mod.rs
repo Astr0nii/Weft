@@ -338,6 +338,8 @@ pub struct Client {
     pub view: u8,
     /// F1: no hand and no block outline.
     pub hide_gui: bool,
+    /// Show your own body in first person instead of just the hand.
+    pub first_person_model: bool,
     /// Arm swing progress 0..1 while swinging.
     hand_swing: Option<f32>,
     /// The stack the hand shows: a new one only comes up after the old one went down.
@@ -647,6 +649,7 @@ impl Client {
             controls: controls::Controls::default(),
             view: 0,
             hide_gui: false,
+            first_person_model: false,
             hand_swing: None,
             hand_stack: ItemStack::default(),
             hand_height: 1.0,
@@ -2192,17 +2195,29 @@ impl Client {
             &overlays,
         );
         self.render.draw_translucent(&mut late);
-        let me = (self.view != 0 && !self.dead && self.mode != GameMode::Spectator).then(|| self.self_entity());
-        let hand = (self.view == 0 && !self.dead && self.player.lying.is_none() && self.mode != GameMode::Spectator && !self.hide_gui)
-            .then(|| entity_render::Hand {
-                stack: self.hand_stack,
-                swing: self.hand_swing,
-                lowered: 1.0 - self.hand_height,
-                lag: (self.player.pitch - self.hand_view.0, angle_diff(self.player.yaw, self.hand_view.1)),
-                using: self.using,
-                anim: self.self_anim.clone(),
-                age: self.start.elapsed().as_secs_f32(),
-            });
+        let alive = !self.dead && self.mode != GameMode::Spectator;
+        let first_person = self.view == 0;
+        let show_body = alive && first_person && self.first_person_model && !self.hide_gui;
+        let show_hand = alive && first_person && !self.first_person_model && !self.hide_gui && self.player.lying.is_none();
+        let show_third = alive && !first_person;
+        let me = (show_body || show_third).then(|| {
+            let mut m = self.self_entity();
+            if show_body {
+                // A little behind the eye, so the camera is not inside the torso
+                let b = self.self_body;
+                m.pos += DVec3::new(b.sin() as f64, 0.0, b.cos() as f64) * 0.2;
+            }
+            m
+        });
+        let hand = show_hand.then(|| entity_render::Hand {
+            stack: self.hand_stack,
+            swing: self.hand_swing,
+            lowered: 1.0 - self.hand_height,
+            lag: (self.player.pitch - self.hand_view.0, angle_diff(self.player.yaw, self.hand_view.1)),
+            using: self.using,
+            anim: self.self_anim.clone(),
+            age: self.start.elapsed().as_secs_f32(),
+        });
         let world = &self.world;
         let light = |p: IVec3| world.light(p);
         let mut hand_late = std::mem::take(&mut self.hand_late);
@@ -2228,6 +2243,7 @@ impl Client {
             &cam,
             &self.entities,
             me.as_ref(),
+            show_body,
             hand,
             textures,
             &light,

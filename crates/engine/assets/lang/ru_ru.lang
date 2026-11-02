@@ -29,6 +29,7 @@ settings.toggle_sprint = Бег по нажатию: {0}
 settings.on = Вкл
 settings.off = Выкл
 settings.language.current = Текущий язык: {0}
+settings.first_person_model = Тело от первого лица: {0}
 controls.title = Управление
 controls.press = Нажмите клавишу для действия {color:key}{0}{/}...
 controls.conflict = {color:warning}Конфликт с: {0}{/}

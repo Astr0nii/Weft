@@ -55,6 +55,7 @@ settings.sensitivity = Mouse sensitivity: {0}%
 settings.on = On
 settings.off = Off
 settings.language.current = Current language: {0}
+settings.first_person_model = First Person Model: {0}
 controls.title = Controls
 controls.press = Press a key for {color:key}{0}{/}...
 controls.conflict = {color:warning}Conflicts with: {0}{/}
