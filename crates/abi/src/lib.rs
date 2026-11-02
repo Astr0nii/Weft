@@ -939,6 +939,7 @@ pub struct ItemUseArgs {
 
 // ---------------------------------------------------------------- items, entities, menus
 
+/// In a mod: `ITEM.stack(count)`, and `.with(&COMP, v)` for data, never these fields by hand.
 /// `data` is 0 for a plain stack, otherwise a handle to its stack components (damage taken,
 /// charge, contents ...). Handles are interned: two stacks with equal data have equal handles,
 /// so stacks merge exactly when `item` and `data` match. Read and change data through the host.

@@ -219,6 +219,12 @@ fn client(_r: &mut Registry) {
     //     c.turn_bone(e.id(), "tail1", [0.0, (e.age() * 6.0).sin() * 20.0, 0.0]);
     // });
     //
+    // A stack with data of its own, what a custom workbench might make:
+    // static GRADE: Component<u32> = Component::named("grade");
+    // static CHISEL: Item = Item::named("chisel");
+    // r.stack_component(&GRADE, 0);
+    // fn made(grade: u32) -> ItemStack { CHISEL.stack(1).with(&GRADE, grade).with_damage(5) }
+    //
     // Sparks around a mob while it lives, the engine's steps and idle noises kept:
     // static WISP: Entity = Entity::named("wisp");
     // static SPARK: Particle = Particle::named("spark");
