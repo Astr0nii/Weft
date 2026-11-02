@@ -309,7 +309,21 @@ pub fn register(r: &mut Registry) {
         .signal_sink()
         .prop("power", ["off", "on"])
         .prop("lit", ["false", "true"])
-        .states(|p, s| if p.is("lit", "true") { s.texture("golden_lamp_lit").light(15) } else { s.texture("golden_lamp") })
+        .states(|p, s| {
+            let power = p.is("lit", "true");
+            let (side, top) = if power {
+                ("golden_lamp_lit", "golden_lamp_top_lit")
+            } else {
+                ("golden_lamp", "golden_lamp_top")
+            };
+            let whole = [0.0, 0.0, 16.0, 16.0];
+            let faces = [(side, whole), (side, whole), (side, whole), (side, whole), (top, whole), (top, whole)];
+            s.frame(p.frame_front())
+                .model_box_faces([0.0, 0.0, 0.0], [16.0, 16.0, 16.0], faces)
+                .turned([1, 3, 2, 0, 0, 0])
+                .opacity(15)
+                .light(if power { 15 } else { 0 })
+        })
         .on_signal(|e| {
             if e.rising() {
                 let (w, p) = (e.world(), e.pos());
