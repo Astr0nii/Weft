@@ -22,7 +22,7 @@ pub static DISPENSER_MENU: Menu = Menu::named("dispenser");
 pub static SLIME_BLOCK: Block = Block::named("slime_block");
 pub static ANCHOR: Block = Block::named("anchor");
 pub static FLOATER: Block = Block::named("floater");
-pub static COPPER_LAMP: Block = Block::named("copper_lamp");
+pub static GOLDEN_LAMP: Block = Block::named("golden_lamp");
 
 const BUTTON_TICKS: u32 = 20;
 
@@ -196,7 +196,7 @@ pub fn register(r: &mut Registry) {
         .not_solid()
         .hardness(0.5)
         .sound_group("stone")
-        .texture("button")
+        .texture("stone")
         .tab(&crate::tabs::REDSTONE);
 
     for (piston, head, sticky, name) in
@@ -282,8 +282,13 @@ pub fn register(r: &mut Registry) {
                 2 => "floater_side_stuck",
                 _ => "floater_side",
             };
+            let back = match p.int("power") {
+                1 => "floater_back_going",
+                2 => "floater_back_going",
+                _ => "floater_back",
+            };
             let whole = [0.0, 0.0, 16.0, 16.0];
-            let faces = [(side, whole), (side, whole), (side, whole), (side, whole), ("floater_front", whole), ("floater_back", whole)];
+            let faces = [(side, whole), (side, whole), (side, whole), (side, whole), ("floater_front", whole), (back, whole)];
             s.frame(p.frame_front())
                 .model_box_faces([0.0, 0.0, 0.0], [16.0, 16.0, 16.0], faces)
                 .turned([1, 3, 2, 0, 0, 0])
@@ -300,11 +305,25 @@ pub fn register(r: &mut Registry) {
         .tab(&crate::tabs::REDSTONE);
 
     // Vanilla's copper bulb: each new pulse flips it, and a comparator reads which way it is.
-    r.block(&COPPER_LAMP)
+    r.block(&GOLDEN_LAMP)
         .signal_sink()
         .prop("power", ["off", "on"])
         .prop("lit", ["false", "true"])
-        .states(|p, s| if p.is("lit", "true") { s.texture("copper_lamp_lit").light(15) } else { s.texture("copper_lamp") })
+        .states(|p, s| {
+            let power = p.is("lit", "true");
+            let (side, top) = if power {
+                ("golden_lamp_lit", "golden_lamp_top_lit")
+            } else {
+                ("golden_lamp", "golden_lamp_top")
+            };
+            let whole = [0.0, 0.0, 16.0, 16.0];
+            let faces = [(side, whole), (side, whole), (side, whole), (side, whole), (top, whole), (top, whole)];
+            s.frame(p.frame_front())
+                .model_box_faces([0.0, 0.0, 0.0], [16.0, 16.0, 16.0], faces)
+                .turned([1, 3, 2, 0, 0, 0])
+                .opacity(15)
+                .light(if power { 15 } else { 0 })
+        })
         .on_signal(|e| {
             if e.rising() {
                 let (w, p) = (e.world(), e.pos());
@@ -324,13 +343,14 @@ pub fn register(r: &mut Registry) {
         .signal_observer()
         .states(|p, s| {
             let back = if p.is("power", "on") { "observer_back_on" } else { "observer_back" };
+            let front = if p.is("power", "on") { "observer_front_on" } else { "observer_front" };
             let whole = [0.0, 0.0, 16.0, 16.0];
             let faces = [
                 ("observer_side", whole),
                 ("observer_side", whole),
                 ("observer_top", whole),
                 ("observer_top", [0.0, 16.0, 16.0, 0.0]),
-                ("observer_front", whole),
+                (front, whole),
                 (back, whole),
             ];
             s.frame(p.frame_front())
@@ -350,8 +370,8 @@ pub fn register(r: &mut Registry) {
                 .states(|p, s| {
                     // Vanilla's: a furnace's sides, or all its top with the front up or down.
                     let d = p.facing();
-                    let side = if d.horizontal() { "furnace_side" } else { "furnace_top" };
-                    let front = if d.horizontal() { "dispenser_front" } else { "dispenser_front_vertical" };
+                    let side = "furnace_top";
+                    let front = "dispenser_front";
                     s.front_faces(d, side, "furnace_top", front)
                 })
                 // With each new pulse, out of the front.
@@ -397,7 +417,7 @@ pub fn register(r: &mut Registry) {
     r.shaped(C, "slime_block", 1, &["ccc", "cwc", "ccc"], &[('c', "clay"), ('w', "#crops/wheat")]);
     r.shaped(C, "sticky_piston", 1, &["s", "p"], &[('s', "slime_block"), ('p', "piston")]);
     r.shaped(C, "floater", 1, &["ipi", "iri", "ipi"], &[('i', "iron_ingot"), ('r', "redstone"), ('p', "piston")]);
-    r.shaped(C, "copper_lamp", 1, &[" c ", "crc", " c "], &[('c', "gold_ingot"), ('r', "redstone")]);
+    r.shaped(C, "golden_lamp", 1, &[" c ", "crc", " c "], &[('c', "gold_ingot"), ('r', "redstone")]);
     r.shaped(C, "anchor", 1, &["iii", "iri", "iii"], &[('i', "iron_ingot"), ('r', "redstone")]);
     r.shaped(C, "observer", 1, &["ccc", "rri", "ccc"], &[('c', "#cobblestone"), ('r', "redstone"), ('i', "iron_ingot")]);
     r.shaped(C, "dispenser", 1, &["ccc", "csc", "crc"], &[('c', "#cobblestone"), ('s', "#stick"), ('r', "redstone")]);

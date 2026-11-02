@@ -424,7 +424,7 @@ pub fn register(r: &mut Registry) {
         .faces([
             "crafting_table_side",
             "crafting_table_side",
-            "planks_oak",
+            "crafting_table_bottom",
             "crafting_table_top",
             "crafting_table_front",
             "crafting_table_front",

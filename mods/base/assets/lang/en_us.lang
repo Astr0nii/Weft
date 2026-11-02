@@ -271,6 +271,6 @@ block.base.observer = Observer
 block.base.dispenser = Dispenser
 tab.base.redstone = Redstone
 block.base.floater = Floater
-block.base.copper_lamp = Copper Lamp
+block.base.golden_lamp = Golden Lamp
 block.base.anchor = Anchor
 block.base.slime_block = Slime Block
