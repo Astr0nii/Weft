@@ -200,6 +200,7 @@ Per-entity components like a state of a machine, hunger or anything else that ch
 `.set(&C, v)` is different: one value of the kind itself (like a mob's attack damage), while `.attach` gives every entity its own value that changes.\
 Flags from `component_flags` are `SAVE`, `SYNC_OWNER`, `SYNC_WATCHERS`, `SYNC_MENU`, `KEEP` (kept when a player respawns; everything else starts over from its default).\
 You can change them through `w.component_mut(id, &COMP)` and the engine will figure out what to send.\
+A `SAVE` component is saved as its bytes, so don't keep ids in one: ids of dimensions, items, blocks and the like are numbers that shift when a mod comes or goes, and yours would then point at something else. For a dimension save `dimension_key(id)` and read it back with `dimension_of_key(key)`.\
 What the engine itself shows of an entity travels the same way, so a client can read it with `view.component_of(id, &C)`: `core:health` (`[f32; 2]`, health and, for players, max health) `core:burning` (`u8`) and `core:held` (`u32`, a player's item in hand, 0 for none). They are the engine's copies: writing them changes nothing.
 
 ### Sharing types with other mods

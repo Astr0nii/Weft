@@ -202,7 +202,7 @@ pub fn register(r: &mut Registry) {
         .tab(&crate::tabs::FUNCTIONAL);
     r.entity_component(
         &BED_SPAWN,
-        BedSpawn { bed: [0; 3], dim: 0, set: 0 },
+        BedSpawn { bed: [0; 3], set: 0, dim_key: 0 },
         component_flags::SAVE | component_flags::KEEP | component_flags::SYNC_OWNER,
     );
     r.attach(&PLAYER, &BED_SPAWN);
@@ -216,12 +216,11 @@ pub fn register(r: &mut Registry) {
             let Some(spawn) = w.component_mut(e.player, &BED_SPAWN).filter(|s| s.set != 0) else { continue };
             let (Some(st), Some(arriving)) = (w.entity(e.player), w.component_mut(e.player, &ARRIVING)) else { continue };
             // Its mod may be gone by now.
-            let dim = name_of(abi::entry_kind::DIMENSION, spawn.dim);
-            if dim.is_empty() {
+            let Some(dim) = dimension_of_key(spawn.dim_key).map(|d| name_of(abi::entry_kind::DIMENSION, d)) else {
                 spawn.set = 0;
                 w.send(e.player, &MESSAGE, &MISSING);
                 continue;
-            }
+            };
             *arriving = Arriving { from: st.pos, dim: w.dimension(), on_way: 1 };
             w.teleport(e.player, Some(Dimension::generated(dim.to_string())), on_bed(spawn.bed));
         }
@@ -260,9 +259,10 @@ fn use_bed(u: &mut Use) -> bool {
         return true;
     }
     let dim = w.dimension();
+    let dim_key = dimension_key(dim);
     if let Some(spawn) = w.component_mut(player, &BED_SPAWN) {
-        if spawn.set == 0 || spawn.bed != foot || spawn.dim != dim {
-            *spawn = BedSpawn { bed: foot, dim, set: 1 };
+        if spawn.set == 0 || spawn.bed != foot || spawn.dim_key != dim_key {
+            *spawn = BedSpawn { bed: foot, set: 1, dim_key };
             w.send(player, &MESSAGE, &SPAWN_SET);
         }
     }
@@ -299,7 +299,7 @@ fn arrive(w: &World, id: u64) {
     let (Some(a), Some(spawn)) = (w.component_mut(id, &ARRIVING).filter(|a| a.on_way != 0), w.component_mut(id, &BED_SPAWN)) else {
         return;
     };
-    if w.dimension() != spawn.dim {
+    if dimension_key(w.dimension()) != spawn.dim_key {
         return;
     }
     let Some(state) = w.get_loaded(spawn.bed) else { return };

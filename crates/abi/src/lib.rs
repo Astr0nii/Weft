@@ -15,7 +15,7 @@ pub const ABI_VERSION: u64 = fnv(include_str!("lib.rs").as_bytes());
 /// Symbol every mod library exports: `extern "C" fn() -> *const ModDecl`.
 pub const ENTRY_SYMBOL: &[u8] = b"weft_mod\0";
 
-const fn fnv(bytes: &[u8]) -> u64 {
+pub const fn fnv(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut i = 0;
     while i < bytes.len() {
