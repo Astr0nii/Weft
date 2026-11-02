@@ -419,6 +419,7 @@ pub fn register(r: &mut Registry) {
             .hardness(0.3)
             .tab(&crate::tabs::COLORED);
     }
+<<<<<<< HEAD
     r.block(&CRAFTING_TABLE)
         .sound_group("wood")
         .faces([
@@ -429,6 +430,10 @@ pub fn register(r: &mut Registry) {
             "crafting_table_front",
             "crafting_table_front",
         ])
+=======
+    r.block(&CRAFTING_TABLE).sound_group("wood")
+        .faces(["crafting_table_side", "crafting_table_side", "crafting_table_bottom", "crafting_table_top", "crafting_table_front", "crafting_table_front"])
+>>>>>>> 1af40db (redraw crafting table)
         .hardness(2.5)
         .mineable("axe")
         .set(&FUEL, 300)
