@@ -284,6 +284,7 @@ pub fn register(r: &mut Registry) {
             };
             let back = match p.int("power") {
                 1 => "floater_back_going",
+                2 => "floater_back_going",
                 _ => "floater_back",
             };
             let whole = [0.0, 0.0, 16.0, 16.0];
