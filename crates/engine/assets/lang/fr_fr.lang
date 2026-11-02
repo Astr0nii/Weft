@@ -55,6 +55,7 @@ settings.sensitivity = Sensibilité de la souris: {0}%
 settings.on = Oui
 settings.off = Non
 settings.language.current = Langue actuelle: {0}
+settings.first_person_model = Corps à la première personne: {0}
 controls.title = Contrôles
 controls.press = Appuyez sur une touche pour {color:key}{0}{/}...
 controls.conflict = {color:warning}Conflits avec: {0}{/}

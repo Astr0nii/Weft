@@ -118,6 +118,10 @@ impl Settings {
         Some(config::text(id("core:shader_pack"))).filter(|p| !p.is_empty())
     }
 
+    pub fn first_person_model(&self) -> bool {
+        number("core:first_person_model") != 0.0
+    }
+
     pub fn set(&self, name: &str, v: f64) {
         config::set(id(&format!("core:{name}")), v);
     }

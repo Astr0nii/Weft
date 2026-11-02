@@ -632,6 +632,11 @@ impl Screen for SettingsScreen {
                     } else {
                         d.button("settings.chat", &[], 300.0, false, screen("core:chat_settings"));
                     }
+                    d.button("settings.first_person_model", &[on_off(s.first_person_model())], 300.0, false, |r| {
+                        r.settings
+                            .set("first_person_model", !r.settings.first_person_model() as u8 as f64);
+                        r.handle(vec![Request::Rebuild]);
+                    });
                     d.parts("core:settings", "buttons");
                 });
                 d.button("menu.done", &[], 200.0, false, |r| r.handle(vec![Request::Close]));

@@ -1840,6 +1840,7 @@ fn update_game(r: &mut Running, dt: f64, frame_start: Instant) {
         }
         g.client.fov = r.settings.fov();
         g.client.brightness = r.settings.brightness();
+        g.client.first_person_model = r.settings.first_person_model();
         let t = Instant::now();
         if world_input {
             g.client.update(&mut *r.gpu, &r.textures, &r.input, dt);

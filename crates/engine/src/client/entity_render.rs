@@ -688,6 +688,7 @@ impl EntityRenderer {
         cam: &Camera,
         entities: &FxHashMap<u64, ClientEntity>,
         me: Option<&ClientEntity>,
+        show_body: bool,
         hand: Option<Hand>,
         textures: &GameTextures,
         light: &impl Fn(IVec3) -> u32,
@@ -739,9 +740,15 @@ impl EntityRenderer {
                 continue;
             }
             let kind = e.look();
-            let (layers, layer_count) = self.layers(kind, id, &e.worn, lit, hurt);
+            let (mut layers, layer_count) = self.layers(kind, id, &e.worn, lit, hurt);
             if layer_count == 0 {
                 continue;
+            }
+            if show_body && id == self.local {
+                let hidden = 1 << crate::model::role::HEAD;
+                for l in &mut layers[..layer_count] {
+                    l.roles &= !hidden;
+                }
             }
             if e.burning {
                 let (hw, h, _) = e.dims();
