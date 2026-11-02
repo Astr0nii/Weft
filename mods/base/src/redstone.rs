@@ -282,8 +282,12 @@ pub fn register(r: &mut Registry) {
                 2 => "floater_side_stuck",
                 _ => "floater_side",
             };
+            let back = match p.int("power") {
+                1 => "floater_back_going",
+                _ => "floater_back",
+            };
             let whole = [0.0, 0.0, 16.0, 16.0];
-            let faces = [(side, whole), (side, whole), (side, whole), (side, whole), ("floater_front", whole), ("floater_back", whole)];
+            let faces = [(side, whole), (side, whole), (side, whole), (side, whole), ("floater_front", whole), (back, whole)];
             s.frame(p.frame_front())
                 .model_box_faces([0.0, 0.0, 0.0], [16.0, 16.0, 16.0], faces)
                 .turned([1, 3, 2, 0, 0, 0])
