@@ -546,14 +546,29 @@ impl Server {
                 let name = self.players[pi].name.clone();
                 if let Some(cmd) = text.strip_prefix('/') {
                     for line in self.command(c, pi, cmd) {
-                        self.players[pi].conn.send(ToClient::Chat(line));
+                        let from = crate::net::Shown::REPLY;
+                        self.players[pi]
+                            .conn
+                            .send(ToClient::Show(crate::net::Shown { from, ..crate::net::Shown::chat(line) }));
                     }
                 } else {
-                    log::info!("<{name}> {text}");
-                    let line = Msg::new("chat.message", vec![Arg::Text(name), Arg::Text(text)]);
-                    for p in &mut self.players {
-                        p.conn.send(ToClient::Chat(line.clone()));
+                    let text: String = text.chars().take(256).collect();
+                    let mut line = None;
+                    if let Some((r, player)) = self.region(pi) {
+                        let mut q = abi::Query { entity: player, text: abi::Str::new(&text), ..abi::Query::DEFAULT };
+                        if !r.ask(c, abi::question::CHAT, &mut q) {
+                            return;
+                        }
+                        if let Some((owner, cb)) = c.game.chat_format {
+                            let out = &raw mut line as *mut std::ffi::c_void;
+                            r.call(owner, cb, |world| abi::ChatFormatArgs { world, player, text: abi::Str::new(&text), out });
+                        }
+                        r.emit_engine(c, abi::event::CHAT_MESSAGE, &abi::ChatMessage::new(player, &text));
                     }
+                    log::info!("<{name}> {text}");
+                    let line = line.unwrap_or_else(|| Msg::new("chat.message", vec![Arg::Text(name), Arg::Text(text)]));
+                    let shown = crate::net::Shown { from: crate::net::Shown::PLAYER, ..crate::net::Shown::chat(line) };
+                    self.show(abi::Who::All, shown);
                 }
             }
             ToServer::Command { id, line } => {
@@ -613,7 +628,8 @@ impl Server {
                 let line = Msg::new("multiplayer.left", vec![Arg::Text(self.players[pi].name.clone())]);
                 let entity = self.players[pi].entity;
                 for q in self.players.iter_mut().filter(|q| q.joined) {
-                    q.conn.send(ToClient::Chat(line.clone()));
+                    q.conn
+                        .send(ToClient::Show(crate::net::Shown::chat(line.clone())));
                     q.conn.send(ToClient::PlayerGone { entity });
                 }
                 let Server { players, dims, storage, .. } = self;

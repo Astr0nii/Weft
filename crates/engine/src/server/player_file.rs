@@ -95,7 +95,8 @@ impl Server {
         log::info!("{} joined", p.name);
         let line = Msg::new("multiplayer.joined", vec![Arg::Text(p.name.clone())]);
         for q in self.players.iter_mut().filter(|q| q.joined) {
-            q.conn.send(ToClient::Chat(line.clone()));
+            q.conn
+                .send(ToClient::Show(crate::net::Shown::chat(line.clone())));
         }
         let p = &mut self.players[pi];
         p.conn
@@ -118,7 +119,8 @@ impl Server {
             p.conn.send(ToClient::Died);
         }
         if dim == c.void_dim {
-            p.conn.send(ToClient::Chat(void_note(c)));
+            p.conn
+                .send(ToClient::Show(crate::net::Shown::chat(void_note(c))));
         }
         // The skins of who is here already.
         let skins: Vec<(u64, Arc<Vec<u8>>)> = self

@@ -25,6 +25,8 @@ enum Part {
     Crosshair,
     PlayerList,
     Chat,
+    /// Text in `PLACES[i]`.
+    Place(usize),
     /// `DEBUG_GROUPS[i]`.
     DebugGroup(usize),
     /// `mod_debug_groups()[i]`.
@@ -184,7 +186,7 @@ struct Placed {
 #[derive(Default)]
 pub struct Hud {
     pub ui: Ui,
-    key: Option<(bool, usize, [u32; 3], usize, bool, u32, u8, (i32, i32), (u32, u32, u8))>,
+    key: Option<(bool, usize, [u32; 3], bool, bool, u32, u8, (i32, i32), (u32, u32, u8), u64)>,
     /// Player overrides from `config/hud.txt` by element name.
     layout: rustc_hash::FxHashMap<String, Placement>,
     file: std::path::PathBuf,
@@ -287,18 +289,38 @@ impl Hud {
     /// `chat_open`: the chat screen shows the messages itself.
     /// `groups`: bit per `DEBUG_GROUPS` entry shown with the debug overlay.
     pub fn update(&mut self, client: &Client, debug: bool, groups: u32, chat_open: bool, lang: &Lang, input: &crate::input::Input) -> bool {
+        let now = std::time::Instant::now();
         let chat_visible = if chat_open {
             0
         } else {
             client
                 .chat
                 .iter()
-                .filter(|(_, t)| t.elapsed().as_secs() < 10)
+                .filter(|(s, t)| s.alpha(now.duration_since(*t).as_secs_f32()) > 0.0)
                 .count()
         };
         // The held item's name shows for two seconds after a change, fading for the last half.
         let (held, since) = client.held_name;
         let fade = if held.is_empty() { 0 } else { ((2.0 - since.elapsed().as_secs_f32()) / 0.5 * 16.0).clamp(0.0, 16.0) as u8 };
+        // Text on the screen: what is up now, with how far it faded, in 16 steps like the held
+        // name's. Rounded up: step 0 has to mean gone, or the last rebuild leaves it there faint.
+        let up = |place: Option<usize>| -> Vec<(&crate::net::Shown, f32)> {
+            client
+                .shown
+                .iter()
+                .filter(|(s, _)| place.map_or(s.at.is_some(), |p| s.place as usize == p && s.at.is_none()))
+                .map(|(s, t)| (s, s.alpha(now.duration_since(*t).as_secs_f32())))
+                .filter(|(_, alpha)| *alpha > 0.0)
+                .collect()
+        };
+        let shown_steps = client
+            .chat
+            .iter()
+            .chain(&client.shown)
+            .fold(client.shown_changes as u64, |h, (s, t)| {
+                h.wrapping_mul(17)
+                    .wrapping_add((s.alpha(now.duration_since(*t).as_secs_f32()) * 16.0).ceil() as u64)
+            });
         // Free elements are placed from the window's size; narrow screens stack the debug panels.
         let size = (self.ui.size.x as i32, self.ui.size.y as i32);
         // Tab, and only over the game: in the chat it completes.
@@ -308,12 +330,13 @@ impl Hud {
             debug,
             chat_visible,
             [chat.width as u32, chat.closed_height as u32, chat.dim as u32],
-            client.chat.len() | (list_shown as usize) << 32,
+            list_shown,
             client.dead,
             groups,
             client.mode as u8,
             size,
             (held.item, held.data, fade),
+            shown_steps,
         );
         if self.key == Some(key) {
             return false;
@@ -350,6 +373,13 @@ impl Hud {
             ("core:chat".into(), CHAT.into(), 0, Part::Chat),
             ("core:debug.help".into(), a::DEBUG_LEFT.into(), i32::MAX, Part::DebugHelp),
         ];
+        for (i, p) in PLACES
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| !p.element.is_empty())
+        {
+            all.push((p.element.into(), p.anchor.into(), p.order, Part::Place(i)));
+        }
         for (i, g) in DEBUG_GROUPS.iter().enumerate() {
             let side = if g.1 { a::DEBUG_RIGHT } else { a::DEBUG_LEFT };
             all.push((
@@ -379,8 +409,12 @@ impl Hud {
             .filter(|e| shown(e.3))
             .map(|(name, anchor, order, part)| {
                 let p = self.layout.get(&name).cloned().unwrap_or_default();
+                let at = match part {
+                    Part::Place(i) if p.flow.is_none() => p.at.or(PLACES[i].at),
+                    _ => p.at,
+                };
                 let (anchor, order) = p.flow.unwrap_or((anchor, order));
-                Placed { name, anchor, order, part, at: p.at, hidden: p.hidden }
+                Placed { name, anchor, order, part, at, hidden: p.hidden }
             })
             .filter(|e| editing || !e.hidden)
             .collect();
@@ -429,6 +463,18 @@ impl Hud {
             Part::Chat if chat_visible > 0 => crate::game_screens::chat_lines(ui, client, lang, input, false),
             Part::Chat if editing => drop(ui.text(text::rich(lang.get("hud.edit.sample_chat"), lang, None), "chat")),
             Part::Chat => {}
+            Part::Place(i) => {
+                let lines = up(Some(i));
+                for (s, alpha) in &lines {
+                    shown_text(ui, s, *alpha, lang, Some(input));
+                }
+                if lines.is_empty() && editing {
+                    let id = ui.text(text::rich(lang.get(PLACES[i].sample), lang, None), PLACES[i].class);
+                    if let Some(t) = ui.text_mut(id) {
+                        t.scale = PLACES[i].scale;
+                    }
+                }
+            }
             Part::DebugGroup(i) => debug_group(ui, i, align, &|id| line_shown(id, Some(i))),
             Part::DebugMod(i) => debug_mod_panel(ui, mods_debug[i].0, mods_debug[i].2, align, &|ui, (o, cb)| {
                 modui::build(ui, lang, Some(input), o, cb, Some(client))
@@ -564,6 +610,12 @@ impl Hud {
             let [ax, ay, x, y] = e.at.unwrap_or_default();
             emit(ui, e, Style::default().at(ax * window.x + x, ay * window.y + y, [ax, ay]), Align::Start);
         }
+        for (s, alpha) in up(None) {
+            let [ax, ay] = s.at.unwrap_or_default();
+            ui.container(Style::default().at(ax * window.x, ay * window.y, [ax, ay]), |ui| {
+                shown_text(ui, s, alpha, lang, Some(input));
+            });
+        }
         true
     }
 }
@@ -571,6 +623,92 @@ impl Hud {
 /// The engine's own anchors, which mods have no use for.
 const CENTER: &str = "core:center";
 const CHAT: &str = "core:chat";
+
+/// What makes one `abi::show_place` different from another: everything, as text goes the same way.
+pub struct Place {
+    pub scale: f32,
+    /// Fading in, staying, fading out.
+    pub times: [f32; 3],
+    /// More text without an id adds to what is there instead of replacing it.
+    pub stacks: bool,
+    pub class: &'static str,
+    pub wrap: bool,
+    /// Where text stands if no one says, instead of joining an element.
+    pub own_at: Option<[f32; 2]>,
+    /// The element of the HUD it joins and where that goes by default: `anchor` and `order`, or
+    /// a free spot `at` (`Placement::at`). None for what has no element of this table's.
+    pub element: &'static str,
+    pub anchor: &'static str,
+    pub order: i32,
+    pub at: Option<[f32; 4]>,
+    /// What the HUD editor shows of it.
+    pub sample: &'static str,
+}
+
+const NO_ELEMENT: Place = Place {
+    scale: 1.0,
+    times: [0.0, 2.5, 0.5],
+    stacks: true,
+    class: "label",
+    wrap: false,
+    own_at: None,
+    element: "",
+    anchor: "",
+    order: 0,
+    at: None,
+    sample: "",
+};
+
+/// By `abi::show_place`. Vanilla's numbers, with the crosshair between a title and its subtitle.
+pub const PLACES: [Place; 5] = [
+    Place { own_at: Some([0.5, 0.5]), ..NO_ELEMENT },
+    Place { times: [0.0, 10.0, 0.0], class: "chat", wrap: true, ..NO_ELEMENT },
+    Place {
+        stacks: false,
+        element: "core:hint",
+        anchor: weft_abi::hud_anchor::ABOVE_HOTBAR,
+        order: 1,
+        sample: "hud.edit.sample_hint",
+        ..NO_ELEMENT
+    },
+    Place {
+        scale: 4.0,
+        times: [0.5, 3.5, 1.0],
+        stacks: false,
+        element: "core:title",
+        at: Some([0.5, 0.5, 0.0, -24.0]),
+        sample: "hud.edit.sample_title",
+        ..NO_ELEMENT
+    },
+    Place {
+        scale: 2.0,
+        times: [0.5, 3.5, 1.0],
+        stacks: false,
+        element: "core:subtitle",
+        at: Some([0.5, 0.5, 0.0, 18.0]),
+        sample: "hud.edit.sample_subtitle",
+        ..NO_ELEMENT
+    },
+];
+
+/// One text on the screen, whichever way it got there.
+pub fn shown_text(ui: &mut Ui, s: &crate::net::Shown, alpha: f32, lang: &Lang, input: Option<&crate::input::Input>) -> crate::ui::NodeId {
+    let look = s.look();
+    let id = ui.text(s.msg.spans(lang, input), look.class);
+    // Its class's color spelled out, for the alpha to go with it and not jump at the end of a fade.
+    let color = s.color.unwrap_or_else(|| {
+        let class = lang
+            .color(&format!("color.{}", look.class))
+            .or_else(|| lang.color("color.default"));
+        class.map_or(0xFFFFFF, |c| c >> 8)
+    });
+    if let Some(t) = ui.text_mut(id) {
+        t.wrap = look.wrap && s.at.is_none();
+        t.scale = s.scale;
+        t.color = Some(color << 8 | (alpha * 255.0) as u32);
+    }
+    id
+}
 
 type DebugLine = (&'static str, fn(&Ctx) -> Vec<Arg>);
 

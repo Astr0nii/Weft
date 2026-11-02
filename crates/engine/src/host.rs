@@ -110,6 +110,10 @@ pub static HOST: Host = Host {
     energy_insert,
     energy_extract,
     command_reply,
+    show,
+    client_show: crate::app::api::client_show,
+    reg_chat_format,
+    chat_format_set,
     gizmo_on,
     gizmo,
     reg_client_hook,
@@ -1766,6 +1770,42 @@ unsafe extern "C" fn command_reply(args: *mut abi::CommandArgs, key: Str, list: 
     unsafe {
         let reply = &mut *((*args).reply as *mut Vec<crate::ui::text::Msg>);
         reply.push(crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(list)));
+    }
+}
+
+/// The text of a `ShowDesc`, to whoever it goes.
+pub(crate) unsafe fn shown(d: &abi::ShowDesc) -> crate::net::Shown {
+    unsafe {
+        crate::net::Shown {
+            id: d.id.as_str().to_string(),
+            times: d.times,
+            scale: d.scale,
+            at: (d.at[0] >= 0.0 && d.at[1] >= 0.0).then_some(d.at),
+            color: (d.color >= 0).then_some(d.color as u32),
+            ..crate::net::Shown::new(d.place, crate::ui::text::Msg::new(d.key.as_str(), crate::client::modui::args(d.args)))
+        }
+    }
+}
+
+unsafe extern "C" fn show(w: *mut abi::WorldCtx, who: abi::Who, d: *const abi::ShowDesc) {
+    unsafe {
+        dim(w)
+            .events
+            .push(crate::server::DimEvent::Show { who, shown: shown(&*d) })
+    }
+}
+
+unsafe extern "C" fn reg_chat_format(r: *mut abi::Registrar, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        r.game.chat_format = Some((r.owner, cb));
+    }
+}
+
+unsafe extern "C" fn chat_format_set(args: *mut abi::ChatFormatArgs, key: Str, list: abi::Slice<abi::UiArg>) {
+    unsafe {
+        let out = &mut *((*args).out as *mut Option<crate::ui::text::Msg>);
+        *out = Some(crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(list)));
     }
 }
 

@@ -1966,6 +1966,13 @@ pub struct Host {
     /// A line for the player who ran the command: translation `key` with `list`, formatted by
     /// their client in its language. Call again for more lines.
     pub command_reply: unsafe extern "C" fn(args: *mut CommandArgs, key: Str, list: Slice<UiArg>),
+    /// Puts text on players' screens.
+    pub show: unsafe extern "C" fn(w: *mut WorldCtx, who: Who, desc: *const ShowDesc),
+    /// Puts text on this client's screen.
+    pub client_show: unsafe extern "C" fn(client: *mut ClientCtx, desc: *const ShowDesc),
+    /// Makes who writes players' chat lines; the last mod loaded wins.
+    pub reg_chat_format: unsafe extern "C" fn(r: *mut Registrar, cb: Callback),
+    pub chat_format_set: unsafe extern "C" fn(args: *mut ChatFormatArgs, key: Str, list: Slice<UiArg>),
     /// Non-zero when a player in this world shows gizmo group `group` (`/gizmo <group>`).
     pub gizmo_on: unsafe extern "C" fn(world: *mut WorldCtx, group: Str) -> u32,
     /// Debug shape for players showing `group`: `kind` 0 line from `a` to `b`, 1 box between
@@ -2768,6 +2775,8 @@ pub mod event {
     pub const PLAYER_RESPAWNED: &str = "core:player_respawned";
     /// `Pickup`.
     pub const ITEM_PICKED_UP: &str = "core:item_picked_up";
+    /// `ChatMessage`: a player said something, no mod denying it.
+    pub const CHAT_MESSAGE: &str = "core:chat_message";
     /// `Hurt`: damage was applied (after armor and every modifier).
     pub const ENTITY_HURT: &str = "core:entity_hurt";
     /// `ItemUsed`: a player used the held item and something happened.
@@ -2839,6 +2848,34 @@ impl Schema for PlayerEvent {
     const SCHEMA: &'static str = "{player:u64}";
 }
 
+/// A chat line's most: 256 characters of 4 bytes.
+pub const CHAT_BYTES: usize = 1024;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChatMessage {
+    pub player: u64,
+    pub len: u32,
+    pub bytes: [u8; CHAT_BYTES],
+}
+impl Schema for ChatMessage {
+    const SCHEMA: &'static str = "{player:u64,len:u32,bytes:[u8;1024]}";
+}
+impl ChatMessage {
+    pub fn new(player: u64, text: &str) -> ChatMessage {
+        let mut end = text.len().min(CHAT_BYTES);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut bytes = [0; CHAT_BYTES];
+        bytes[..end].copy_from_slice(&text.as_bytes()[..end]);
+        ChatMessage { player, len: end as u32, bytes }
+    }
+    pub fn text(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..(self.len as usize).min(CHAT_BYTES)]).unwrap_or("")
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pickup {
@@ -2867,6 +2904,8 @@ pub mod question {
     pub const PLACE_BLOCK: &str = "core:place_block";
     /// Right click on a block: `entity`, `pos`, `state`.
     pub const USE_BLOCK: &str = "core:use_block";
+    /// A player (`entity`) about to say `text` in the chat. Commands don't ask.
+    pub const CHAT: &str = "core:chat";
     /// `entity` about to change dimension to `dim`.
     pub const ENTER_DIMENSION: &str = "core:enter_dimension";
     /// `entity` (a player) picking up `item` (count in `amount`), `other` the item entity.
@@ -2889,7 +2928,7 @@ pub mod verdict {
 
 /// What a question or a value chain is about; fields one does not use are 0.
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Query {
     pub verdict: u32,
     pub entity: u64,
@@ -2900,8 +2939,10 @@ pub struct Query {
     pub dim: u32,
     pub cause: u32,
     pub amount: f64,
+    /// Valid for the call.
+    pub text: Str,
 }
-defaults!(Query { verdict: 0, entity: 0, other: 0, pos: [0; 3], state: 0, item: 0, dim: 0, cause: 0, amount: 0.0 });
+defaults!(Query { verdict: 0, entity: 0, other: 0, pos: [0; 3], state: 0, item: 0, dim: 0, cause: 0, amount: 0.0, text: Str::EMPTY });
 
 #[repr(C)]
 pub struct InterceptArgs {
@@ -3729,6 +3770,76 @@ pub mod command_value {
     /// Selected entities: `text` holds their ids separated by spaces, `int` how many.
     pub const TARGETS: u32 = 6;
 }
+
+#[repr(C)]
+pub struct ChatFormatArgs {
+    pub world: *mut WorldCtx,
+    pub player: u64,
+    pub text: Str,
+    /// Engine side result, written through `Host::chat_format_set`.
+    pub out: *mut core::ffi::c_void,
+}
+
+/// Text for the screen, the one way of putting any there. A place is a set of defaults for what
+/// is left unset here, and an element of the HUD the text joins when it has no `at`.
+pub mod show_place {
+    /// By itself, at `at` or the middle of the screen.
+    pub const FREE: u32 = 0;
+    pub const CHAT: u32 = 1;
+    pub const HINT: u32 = 2;
+    pub const TITLE: u32 = 3;
+    pub const SUBTITLE: u32 = 4;
+}
+
+/// Who sees text: one player (an entity id works as it is), or a group.
+#[repr(C, u32)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Who {
+    Player(u64),
+    /// Everyone on the server, in any dimension.
+    All,
+    /// Everyone in the dimension of this id (`World::dimension`).
+    Dimension(u32),
+    /// Everyone in a dimension within a distance of a point.
+    Near(u32, [f64; 3], f64),
+}
+
+impl From<u64> for Who {
+    fn from(player: u64) -> Who {
+        Who::Player(player)
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ShowDesc {
+    /// `show_place`.
+    pub place: u32,
+    /// A translation, or text as it is. Empty, with no args, takes away what `place` and `id` show.
+    pub key: Str,
+    pub args: Slice<UiArg>,
+    /// Text with the same place and id replaces this one, in the chat where that line stands.
+    pub id: Str,
+    /// Seconds of fading in, staying and fading out; negative = the place's.
+    pub times: [f32; 3],
+    /// 0 = the place's.
+    pub scale: f32,
+    /// This point of the text lies at the same point of the window, in fractions of either.
+    /// Negative = where the place has it.
+    pub at: [f32; 2],
+    /// `0xRRGGBB`, where the text doesn't color itself; negative = white.
+    pub color: i64,
+}
+defaults!(ShowDesc {
+    place: show_place::FREE,
+    key: Str::EMPTY,
+    args: Slice::EMPTY,
+    id: Str::EMPTY,
+    times: [-1.0; 3],
+    scale: 0.0,
+    at: [-1.0; 2],
+    color: -1,
+});
 
 #[repr(C)]
 pub struct CommandArgs {

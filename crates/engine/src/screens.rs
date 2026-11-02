@@ -679,6 +679,13 @@ impl Screen for ChatSettings {
                     d.slider("settings.chat_height", "core:chat_height", 1.0);
                     d.slider("settings.chat_height_closed", "core:chat_height_closed", 1.0);
                     d.slider("settings.chat_opacity", "core:chat_opacity", 1.0);
+                    let id = crate::config::by_name("core:chat_visibility").unwrap_or(0);
+                    let now = ["all", "system", "hidden"][crate::config::get(id) as usize % 3];
+                    let shown = [Arg::Key(format!("settings.chat_visibility.{now}"))];
+                    d.button("settings.chat_visibility", &shown, 304.0, false, move |r| {
+                        crate::config::set(id, (crate::config::get(id) + 1.0) % 3.0);
+                        r.handle(vec![Request::Rebuild]);
+                    });
                 });
                 d.button("menu.done", &[], 200.0, false, |r| r.handle(vec![Request::Close]));
             });

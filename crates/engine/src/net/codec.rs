@@ -351,10 +351,10 @@ mod tests {
     fn tags_follow_the_message_table() {
         for m in [
             ToClient::Died,
-            ToClient::Chat(Msg::new(
+            ToClient::Show(crate::net::Shown::chat(Msg::new(
                 "chat.message",
                 vec![Arg::Text("me".into()), Arg::Int(-3), Arg::Msg(Msg::new("k", vec![Arg::Float(1.5, 2)]))],
-            )),
+            ))),
             ToClient::Despawn(vec![(4, true)]),
             ToClient::PlayAction(Vec::new()),
         ] {

@@ -205,6 +205,13 @@ impl Args {
             _ => None,
         }
     }
+    pub fn float(&self, name: &str) -> Option<f64> {
+        match self.get(name)? {
+            Value::Float(v) => Some(*v),
+            Value::Int(v) => Some(*v as f64),
+            _ => None,
+        }
+    }
     pub fn text(&self, name: &str) -> Option<&str> {
         match self.get(name)? {
             Value::Text(t) | Value::Id(_, t) => Some(t),

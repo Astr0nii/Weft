@@ -207,9 +207,19 @@ impl Client {
                 self.dead = true;
                 self.events.push(ClientEvent::Died);
             }
-            ToClient::Chat(line) => {
-                log::info!("[chat] {} {:?}", line.key, line.args);
-                self.chat_line(line);
+            ToClient::Show(s) => {
+                let in_chat = s.place == weft_abi::show_place::CHAT;
+                if in_chat {
+                    log::info!("[chat] {} {:?}", s.msg.key, s.msg.args);
+                }
+                let hidden = match crate::settings::chat_visibility() {
+                    crate::settings::ChatVisibility::All => false,
+                    crate::settings::ChatVisibility::System => s.from == crate::net::Shown::PLAYER,
+                    crate::settings::ChatVisibility::Hidden => s.from != crate::net::Shown::REPLY,
+                };
+                if !(in_chat && hidden) {
+                    self.show(s);
+                }
             }
             ToClient::CommandReply { id, lines } => {
                 self.command_replies.insert(id, lines);

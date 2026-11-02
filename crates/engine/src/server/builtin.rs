@@ -2,11 +2,12 @@
 //! side by side, so a listed command always has one.
 
 use glam::{DVec3, IVec3};
-use weft_abi::{ItemStack, damage};
+use weft_abi::{ItemStack, Who, damage};
 
 use super::Server;
 use crate::commands::Args;
 use crate::content::Content;
+use crate::net::Shown;
 use crate::ui::text::{Arg, Msg, Name};
 use crate::world::GameMode;
 
@@ -74,7 +75,86 @@ pub const COMMANDS: &[(&str, &str, Handler, u32)] = &[
     ("op", "<who:targets> [level:int]", op, p::ADMIN),
     ("deop", "<who:targets>", deop, p::ADMIN),
     ("rule", "[name:word(#core:rules)] [value:int]", rule, p::ADMIN),
+    (
+        "title",
+        "<who:targets> title <text:text> | <who:targets> subtitle <text:text> | <who:targets> hint <text:text> | <who:targets> show <x:float> <y:float> <size:float> <text:text> | <who:targets> times <fade_in:float> <stay:float> <fade_out:float> | <who:targets> clear | <who:targets> reset",
+        title,
+        p::GAME_MASTER,
+    ),
+    ("say", "<text:text>", say_all, p::GAME_MASTER),
+    ("msg", "<who:player> <text:text>", whisper, p::EVERYONE),
+    ("tellraw", "<who:targets> <text:text>", tellraw, p::GAME_MASTER),
 ];
+
+fn title(s: &mut Server, x: &Ctx) -> Vec<Msg> {
+    use weft_abi::show_place as place;
+    let a = x.a;
+    let players: Vec<usize> = x
+        .targets(s, "who")
+        .iter()
+        .filter_map(|t| s.player_index(t.1))
+        .collect();
+    let text = a.text("text").unwrap_or("");
+    let shown = |p: u32| Shown::new(p, Msg::template(text));
+    let to_all = |s: &mut Server, shown: Shown| {
+        for &pi in &players {
+            let times = s.players[pi].title_times;
+            let timed = if shown.place == place::FREE || shown.place == place::HINT { None } else { times };
+            let one = Shown { times: timed.unwrap_or(shown.times), ..shown.clone() };
+            s.show(Who::Player(s.players[pi].entity), one);
+        }
+    };
+    if a.get("times").is_some() {
+        let t = [a.float("fade_in").unwrap_or(0.0), a.float("stay").unwrap_or(0.0), a.float("fade_out").unwrap_or(0.0)];
+        for &pi in &players {
+            s.players[pi].title_times = Some(t.map(|v| v.max(0.0) as f32));
+        }
+    } else if a.get("reset").is_some() {
+        for &pi in &players {
+            s.players[pi].title_times = None;
+        }
+    } else if a.get("clear").is_some() {
+        let empty = Msg::new("", vec![]);
+        for p in [place::TITLE, place::SUBTITLE] {
+            to_all(s, Shown::new(p, empty.clone()));
+        }
+    } else if a.get("show").is_some() {
+        let at = [a.float("x").unwrap_or(0.5) as f32, a.float("y").unwrap_or(0.5) as f32];
+        let scale = a.float("size").unwrap_or(1.0) as f32;
+        to_all(s, Shown { at: Some(at), scale, ..shown(place::FREE) });
+    } else {
+        let named = [("subtitle", place::SUBTITLE), ("hint", place::HINT), ("title", place::TITLE)];
+        for (_, p) in named.into_iter().filter(|(name, _)| a.get(name).is_some()) {
+            to_all(s, shown(p));
+        }
+    }
+    say("title.done", vec![int(players.len())])
+}
+
+fn say_all(s: &mut Server, x: &Ctx) -> Vec<Msg> {
+    let name = s.players[x.pi].name.clone();
+    let line = Msg::new("chat.say", vec![Arg::Text(name), text(x.a.text("text").unwrap_or(""))]);
+    s.show(Who::All, Shown::chat(line));
+    Vec::new()
+}
+
+fn whisper(s: &mut Server, x: &Ctx) -> Vec<Msg> {
+    let said = text(x.a.text("text").unwrap_or(""));
+    let to = x.a.text("who").unwrap_or("");
+    let Some(target) = s.players.iter().find(|p| p.name == to).map(|p| p.entity) else { return Vec::new() };
+    let name = s.players[x.pi].name.clone();
+    let heard = Msg::new("chat.whisper", vec![Arg::Text(name), said.clone()]);
+    s.show(Who::Player(target), Shown { from: Shown::PLAYER, ..Shown::chat(heard) });
+    vec![Msg::new("chat.whisper_to", vec![text(to), said])]
+}
+
+fn tellraw(s: &mut Server, x: &Ctx) -> Vec<Msg> {
+    let line = Msg::template(x.a.text("text").unwrap_or(""));
+    for (_, id) in x.targets(s, "who") {
+        s.show(Who::Player(id), Shown::chat(line.clone()));
+    }
+    Vec::new()
+}
 
 fn help(s: &mut Server, x: &Ctx) -> Vec<Msg> {
     let (c, a) = (x.c, x.a);

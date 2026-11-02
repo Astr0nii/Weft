@@ -92,6 +92,8 @@ pub mod settings {
     pub static LANGUAGE: TextConfig = TextConfig::named("core:language");
     /// 0 = automatic.
     pub static GUI_SCALE: Config<u32> = Config::named("core:gui_scale");
+    /// Which chat lines show: 0 all, 1 no players' messages, 2 none but replies to one's commands.
+    pub static CHAT_VISIBILITY: Config<u32> = Config::named("core:chat_visibility");
     pub static VIEW_DISTANCE: Config<i32> = Config::named("core:view_distance");
     pub static VSYNC: Config<bool> = Config::named("core:vsync");
     pub static FOV: Config<f32> = Config::named("core:fov");

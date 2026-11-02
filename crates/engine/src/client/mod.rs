@@ -470,7 +470,11 @@ pub struct Client {
     /// Components of other entities the server shares.
     pub entity_components: FxHashMap<(u64, u32), Vec<u8>>,
     /// Formatted when drawn, in the language shown then.
-    pub chat: Vec<(Msg, Instant)>,
+    pub chat: Vec<(crate::net::Shown, Instant)>,
+    /// Text on the screen other than the chat, some of it possibly over by now.
+    pub shown: Vec<(crate::net::Shown, Instant)>,
+    /// Goes up with every change to `chat` and `shown`, for the HUD to notice.
+    pub shown_changes: u32,
     /// Answers to commands run from code, by their id, until read.
     pub command_replies: rustc_hash::FxHashMap<u32, Vec<Msg>>,
     pub next_command: u32,
@@ -548,9 +552,35 @@ impl Client {
 
     /// Shows a line in the chat as if the server had sent it.
     pub fn chat_line(&mut self, line: Msg) {
-        self.chat.push((line, Instant::now()));
-        let extra = self.chat.len().saturating_sub(100);
-        self.chat.drain(..extra);
+        self.show(crate::net::Shown::chat(line));
+    }
+
+    /// Puts text on the screen. The chat keeps what is over as its history.
+    pub fn show(&mut self, s: crate::net::Shown) {
+        let now = Instant::now();
+        let s = s.settled();
+        self.shown_changes += 1;
+        let in_chat = s.place == weft_abi::show_place::CHAT && s.at.is_none();
+        let list = if in_chat { &mut self.chat } else { &mut self.shown };
+        let replaced = (!s.look().stacks || !s.id.is_empty())
+            .then(|| {
+                list.iter()
+                    .position(|(o, _)| o.place == s.place && o.id == s.id)
+            })
+            .flatten();
+        match replaced {
+            Some(i) if s.clears() => drop(list.remove(i)),
+            Some(i) => list[i] = (s, now),
+            None if s.clears() => {}
+            None => list.push((s, now)),
+        }
+        if in_chat {
+            let extra = list.len().saturating_sub(100);
+            list.drain(..extra);
+        } else {
+            // Not by alpha: that is 0 too at the start of a fade in.
+            list.retain(|(o, at)| now.duration_since(*at).as_secs_f32() < o.times.iter().sum::<f32>());
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -730,6 +760,8 @@ impl Client {
             packets: Vec::new(),
             entity_components: FxHashMap::default(),
             chat: Vec::new(),
+            shown: Vec::new(),
+            shown_changes: 0,
             command_replies: Default::default(),
             next_command: 0,
             gizmos: Default::default(),

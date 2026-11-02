@@ -35,6 +35,10 @@ fn s(x: &str) -> Str {
 }
 
 impl Client {
+    pub(crate) fn ctx(&self) -> *mut abi::ClientCtx {
+        self.raw
+    }
+
     pub(crate) fn from_raw(raw: *mut abi::ClientCtx) -> Client {
         Client { raw }
     }

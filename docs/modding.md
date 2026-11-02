@@ -11,12 +11,13 @@
    - [Blocks](#blocks), [Items](#items), [Entities](#entities), [Machines](#machines), [Liquids](#liquids), [World](#world), [Recipes](#recipes), [Loot](#loot), [Replacing something of another mod](#replacing-something-of-another-mod)
 7. [Hooking into the game](#hooking-into-the-game)
    - [Built-in events](#built-in-events), [Systems and energy](#systems-and-energy)
-8. [Commands](#commands)
-9. [World API](#world-api)
-10. [Client side](#client-side)
-11. [Debugging](#debugging)
-12. [Things that make your and other modders' life easier](#things-that-make-your-and-other-modders-life-easier)
-13. [Guides for bigger systems](#guides-for-other-systems)
+8. [Text on the screen](#text-on-the-screen)
+9. [Commands](#commands)
+10. [World API](#world-api)
+11. [Client side](#client-side)
+12. [Debugging](#debugging)
+13. [Things that make your and other modders' life easier](#things-that-make-your-and-other-modders-life-easier)
+14. [Guides for bigger systems](#guides-for-other-systems)
 
 ## Introduction
 This is a guide describing how the base game itself is written.\
@@ -380,6 +381,8 @@ r.attribute(&MANA, 100.0, 0.0, 1000.0);
 
 Two helpers go with them. `w.after(entity, ticks, &EVENT, value)` fires an event later, saved with the entity (base's animals calm down 3 seconds after being hurt, players' hunger pulses every 4); one per entity and event, so setting it again moves it, instead of counters in components. `r.world_tick(|w| ..)` runs once per tick in every region for logic that is nobody's own, `w.players()` being the players there.
 
+Keeping someone quiet is a question too: `r.intercept(&question::CHAT, |q| if q.text().contains("spam") { Verdict::Deny } else { Verdict::Abstain })`. Reading what was said is the `CHAT_MESSAGE` event (`e.text()`, `e.player`).
+
 ### Built-in events
 `BLOCK_BROKEN`, `BLOCK_PLACED`, `ITEM_PICKED_UP`, `ITEM_USED`, `ENTITY_HURT`, `ENTITY_DIED`, `PLAYER_JOINED`, `PLAYER_RESPAWNED`, and the questions `BREAK_BLOCK`, `PLACE_BLOCK`, `USE_BLOCK`, `USE_ITEM`, `INTERACT_ENTITY`, `ATTACK`, `HURT`, `PICKUP_ITEM`, `ENTER_DIMENSION`\
 base adds `base:smelted`.
@@ -391,6 +394,35 @@ Systems run over every entity with a component all at once, and that is how mach
 Energy is a built-in engine contract, you can give a block entity the `core:energy` component, tag
 cables with `conductor`, and every mod's generators and machines will work together.\
 Networks balance once per tick.
+
+## Text on the screen
+There is one way to put text on someone's screen, `show`. The other three are the same call with different defaults:
+
+```rust
+w.hint(player, "mymod.no_mana", &[]);                              // a short line above the hotbar
+w.chat(Who::All, "mymod.boss_up", &[Arg::Text(name)]);             // a line in the chat
+w.title(Who::Dimension(w.dimension()), "mymod.round", &[Arg::Int(3)]); // big, over the crosshair
+w.subtitle(Who::Near(w.dimension(), pos, 32.0), "mymod.get_ready", &[]); // under the crosshair
+w.show(player, "mymod.timer", &[Arg::Int(left)])                   // by itself, anywhere
+    .id("mymod:timer")
+    .at(0.98, 0.02)
+    .scale(2.0);
+```
+
+The first argument is a player's id or a `Who`. The text is sent at the end of the statement, and everything can be changed on any of them:
+- `.at(x, y)` in fractions of the window. That point of the text lies at the same point of the window, so `.at(1.0, 0.0)` is exactly the top right corner. A hint with `.at` is no longer in the HUD's flow.
+- `.scale(s)`: 1 is menu text, a subtitle is 2, a title 4.
+- `.times(fade_in, stay, fade_out)` in seconds.
+- `.color(0xRRGGBB)` for what doesn't color itself with `{#color}`.
+- `.id("mymod:timer")`: new text with the same place and id replaces the old one, so a timer counts down in one chat line instead of filling the chat. An empty key with no args takes it away.
+
+Players move or hide hints and titles in the HUD editor (`core:hint`, `core:title`, `core:subtitle`), so use those for anything a player might want elsewhere, and `.at` when the position is the point. The client has the same calls for its own screen: `c.show`, `c.hint`, `c.title`, `c.subtitle`, `c.chat_local` (`c.chat` says something as if typed). `c.screen_text` is different: it draws for one frame, for what you animate yourself.
+
+A player's message goes through one mod, the last loaded that asked. Pass what they typed as `Arg::Text`, or players get to format the line:
+```rust
+r.chat_format(|f| f.set("mymod.chat", &[Arg::Text(rank(f.player())), Arg::Text(f.text())]));
+```
+Commands: `/title <who> title|subtitle|hint <text>`, `/title <who> show <x> <y> <size> <text>`, `/title <who> times <in> <stay> <out>`, `/title <who> clear|reset`, `/say`, `/msg`, `/tellraw <who> <text>`. Text in `/title` and `/tellraw` can use `{#color}` and the rest; what `/say`, `/msg` and the chat get stays as typed.
 
 ## Commands
 `r.command("heal", "[amount:int] [who:targets]", |cmd| ..)`\

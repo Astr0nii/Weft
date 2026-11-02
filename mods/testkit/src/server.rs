@@ -29,6 +29,10 @@ static PASSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(
 /// Players can't be hurt (`question::HURT`) or use items (`question::USE_ITEM`) while on.
 pub static NO_HURT: Config<bool> = Config::named("no_hurt");
 pub static NO_USE: Config<bool> = Config::named("no_use");
+/// `chat_hooks`: "forbidden" stays unsaid, lines are written by this mod.
+pub static CHAT_HOOKS: Config<bool> = Config::named("chat_hooks");
+/// What the last `CHAT_MESSAGE` said.
+static LAST_SAID: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 /// Fired by `after` timers; counted.
 static RANG: Event<u64> = Event::named("rang");
 static RINGS: AtomicU32 = AtomicU32::new(0);
@@ -99,6 +103,18 @@ pub fn register(r: &mut Registry) {
     });
     r.config(&NO_HURT).bool(false).world();
     r.config(&NO_USE).bool(false).world();
+    r.config(&CHAT_HOOKS).bool(false).world();
+    r.intercept(&question::CHAT, |q| if CHAT_HOOKS.get() && q.text() == "forbidden" { Verdict::Deny } else { Verdict::Abstain });
+    r.chat_format(|f| {
+        if CHAT_HOOKS.get() {
+            f.set("{0} from a mod", &[Arg::Text(f.text())]);
+        }
+    });
+    r.on(&CHAT_MESSAGE, |b| {
+        for m in b.iter() {
+            *LAST_SAID.lock().unwrap() = m.text().to_string();
+        }
+    });
     let player = |w: &World, id: u64| w.each_player().any(|p| p == id);
     r.intercept(&question::HURT, move |q| if player(&q.world(), q.entity()) && NO_HURT.get() { Verdict::Deny } else { Verdict::Abstain });
     r.intercept(&question::USE_ITEM, |_| if NO_USE.get() { Verdict::Deny } else { Verdict::Abstain });
@@ -250,6 +266,27 @@ type Run = fn(&World, &Command, u64, [i32; 3]) -> Result<String, String>;
 /// parses positions (`~dx`), block, item and entity names, and the answer goes back to the test
 /// that ran it (`Client::run_command`), as `ok ..` or `err ..`.
 const OPS: &[(&str, &str, Run)] = &[
+    ("last_said", "", |_, _, _, _| Ok(LAST_SAID.lock().unwrap().clone())),
+    ("show", "<who:word> <place:word> <text:text>", |w, cmd, player, _| {
+        let pos = w.entity(player).map_or([0.0; 3], |e| e.pos);
+        let who = match word(cmd, "who")? {
+            "all" => Who::All,
+            "dim" => Who::Dimension(w.dimension()),
+            "near" => Who::Near(w.dimension(), pos, 8.0),
+            "far" => Who::Near(w.dimension(), [pos[0] + 100.0, pos[1], pos[2]], 8.0),
+            _ => Who::Player(player),
+        };
+        let text = word(cmd, "text")?;
+        match word(cmd, "place")? {
+            "chat" => drop(w.chat(who, text, &[])),
+            "hint" => drop(w.hint(who, text, &[])),
+            "title" => drop(w.title(who, text, &[])),
+            "subtitle" => drop(w.subtitle(who, text, &[])),
+            "corner" => drop(w.show(who, text, &[]).at(1.0, 0.0).scale(2.0)),
+            p => return Err(format!("no place {p}")),
+        }
+        Ok(String::new())
+    }),
     ("lift", "<at:pos> <r:int>", |w, cmd, _, _| {
         // All in a cube of that reach around it.
         let (p, r) = (pos(cmd, "at")?, int::<i32>(cmd, "r")?);

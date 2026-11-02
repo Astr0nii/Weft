@@ -114,6 +114,14 @@ pub(crate) unsafe fn run<'a>(c: *mut abi::ClientCtx) -> Option<&'a mut Running> 
     unsafe { view(c).and_then(|v| (v.run as *mut Running).as_mut()) }
 }
 
+pub unsafe extern "C" fn client_show(c: *mut abi::ClientCtx, d: *const abi::ShowDesc) {
+    unsafe {
+        if let Some(g) = run(c).and_then(|r| r.game.as_mut()) {
+            g.client.show(crate::host::shown(&*d));
+        }
+    }
+}
+
 /// The answer to a command run with `client_op::RUN_COMMAND`, once it came: its lines in the
 /// client's language, one per line.
 pub unsafe extern "C" fn client_command_reply(c: *mut abi::ClientCtx, id: u32, out: *mut Str) -> u32 {
@@ -457,7 +465,7 @@ pub unsafe extern "C" fn client_text(c: *mut abi::ClientCtx, which: u32, index: 
                     .iter()
                     .rev()
                     .nth(index as usize)
-                    .map_or(Str::EMPTY, |(m, _)| text_out(&m.text(&r.lang))),
+                    .map_or(Str::EMPTY, |(m, _)| text_out(&m.msg.text(&r.lang))),
                 _ => Str::EMPTY,
             },
             ct::BENCH => match run(c) {

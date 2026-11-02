@@ -21,7 +21,7 @@ use crate::abi::{self, ItemStack, Slice, Str};
 use crate::component::Value;
 use crate::{Attribute, Chain, LootSource, Question, Registry, World, callback, host, qualify};
 
-pub use abi::{BlockChange, Death, Hurt, ItemUsed, Pickup, PlayerEvent, attr_op, permission, stage};
+pub use abi::{BlockChange, ChatMessage, Death, Hurt, ItemUsed, Pickup, PlayerEvent, attr_op, permission, stage};
 
 /// The engine's questions (`Registry::intercept`, `World::ask`).
 pub mod question {
@@ -45,6 +45,8 @@ pub mod question {
     pub static INTERACT_ENTITY: Question = Question::named(q::INTERACT_ENTITY);
     /// A player (`entity`) about to use the held `item`, on block `pos` when `state` isn't 0.
     pub static USE_ITEM: Question = Question::named(q::USE_ITEM);
+    /// A player (`entity`) about to say `text()` in the chat. Commands don't ask.
+    pub static CHAT: Question = Question::named(q::CHAT);
 }
 
 /// The engine's value chains (`Registry::modify`, `World::compute`).
@@ -122,7 +124,7 @@ macro_rules! schema_values {
         }
     )*};
 }
-schema_values!(ItemStack, abi::BlockChange, abi::Death, abi::Hurt, abi::PlayerEvent, abi::Pickup, abi::ItemUsed);
+schema_values!(ItemStack, abi::ChatMessage, abi::BlockChange, abi::Death, abi::Hurt, abi::PlayerEvent, abi::Pickup, abi::ItemUsed);
 
 /// The engine's events.
 pub static BLOCK_BROKEN: Event<abi::BlockChange> = Event::named(abi::event::BLOCK_BROKEN);
@@ -133,6 +135,8 @@ pub static PLAYER_JOINED: Event<abi::PlayerEvent> = Event::named(abi::event::PLA
 /// them on from here (a bed) happens before anyone saw them there.
 pub static PLAYER_RESPAWNED: Event<abi::PlayerEvent> = Event::named(abi::event::PLAYER_RESPAWNED);
 pub static ITEM_PICKED_UP: Event<abi::Pickup> = Event::named(abi::event::ITEM_PICKED_UP);
+/// A player said something, no mod denying it.
+pub static CHAT_MESSAGE: Event<abi::ChatMessage> = Event::named(abi::event::CHAT_MESSAGE);
 pub static ENTITY_HURT: Event<abi::Hurt> = Event::named(abi::event::ENTITY_HURT);
 /// A player used the held item and something happened (`stack` as it was before): eating,
 /// emptying a bucket. Another mod reacts to food here, by the item's components.
@@ -191,6 +195,10 @@ impl Ask {
     }
     pub fn state(&self) -> u32 {
         self.query().state
+    }
+    /// What a player is about to say (`question::CHAT`).
+    pub fn text(&self) -> &str {
+        unsafe { self.query().text.as_str() }
     }
     pub fn item(&self) -> u32 {
         self.query().item
