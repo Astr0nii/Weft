@@ -108,6 +108,11 @@ pub async fn run(t: T, src: String) -> R {
                 };
                 t.c().screenshot(&path);
             }
+            // A bench that goes on while the next lines run: for measuring while flying.
+            "bench_bg" => {
+                let (secs, label) = rest.split_once(' ').unwrap_or((rest, ""));
+                t.c().bench(secs.parse().unwrap_or(5.0), label.trim());
+            }
             "bench" => {
                 let (secs, label) = rest.split_once(' ').unwrap_or((rest, ""));
                 t.bench(secs.parse().unwrap_or(5.0), label.trim()).await?;

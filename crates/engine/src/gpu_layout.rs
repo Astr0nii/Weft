@@ -610,20 +610,47 @@ gpu_struct! {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct OcclusionArgs {
+    /// Building a level: the size of the one it is made from, where that starts and where it goes.
+    pub size: [u32; 2],
+    pub src: u32,
+    pub dst: u32,
+    /// Testing: how many records there are.
+    pub count: u32,
+    pub pad: u32,
+}
+
+/// What `occlusion.wgsl` goes by this frame.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct OcclusionView {
     /// The last frame's camera: what it saw is what is known.
     pub prev: [[f32; 4]; 4],
+    /// This frame's sides of the view.
+    pub planes: [[f32; 4]; 4],
     /// From this frame's camera to that one's (xyz), and how much bigger cubes are for it (w).
     pub moved: [f32; 4],
     pub cam_frac: [f32; 4],
-    /// The depth's size, and when building a level, the one it is made from.
+    pub cam_cube: [i32; 4],
+    /// The depth's size.
     pub size: [u32; 2],
-    /// Records that aren't cubes.
+    /// Records made by the CPU that aren't cubes.
     pub skip: [u32; 2],
-    pub count: u32,
     pub levels: u32,
-    /// Where the level it is made from starts and where it goes.
-    pub src: u32,
-    pub dst: u32,
+    /// Whether there is a last frame to go by.
+    pub hiz: u32,
+    pub pad: [u32; 2],
+}
+
+/// A place in `occlusion.wgsl`'s table: a cube's draws of one layer of one kind on one page.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct CubeEntry {
+    pub cube: [i32; 3],
+    /// `page * 4 + kind * 2 + layer`, `u32::MAX` for a free place.
+    pub bucket: u32,
+    pub start: u32,
+    /// Faces by direction rank, 16 bits each; quads: how many, in the first.
+    pub counts: [u32; 3],
 }
 
 /// `particle_sim.wgsl`'s push constants.
@@ -797,6 +824,12 @@ bindings! {
         DEPTHS "depths": "array<f32>",
         ORIGINS "origins": "array<vec4<i32>>",
         DRAWS "draws": "array<u32>",
+        VIEW "view": "View",
+        TABLE "table": "array<Entry>",
+        BUCKETS "buckets": "array<Bucket>",
+        OUT_DRAWS "out_draws": "array<u32>",
+        OUT_ORIGINS "out_origins": "array<vec4<i32>>",
+        FACES_DRAWN "faces_drawn": "Counter",
     }
     particle_sim "particle_sim.wgsl" {
         SIM "sim": "array<SimParticle>",
@@ -889,14 +922,13 @@ pub fn prelude(shader: &str, common: &str) -> String {
 
 /// What goes in front of `occlusion.wgsl`.
 pub fn occlusion_prelude() -> String {
-    let mut s = String::new();
+    let mut s = String::from(
+        "struct View {\n    prev: mat4x4<f32>,\n    planes: array<vec4<f32>, 4>,\n    moved: vec4<f32>,\n    cam_frac: vec4<f32>,\n    cam_cube: vec4<i32>,\n    size: vec2<u32>,\n    skip: vec2<u32>,\n    levels: u32,\n    hiz: u32,\n    pad: vec2<u32>,\n}\nstruct Entry {\n    cube: vec3<i32>,\n    bucket: u32,\n    start: u32,\n    counts: array<u32, 3>,\n}\nstruct Bucket {\n    count: atomic<u32>,\n    base: u32,\n}\nstruct Counter {\n    count: atomic<u32>,\n}\nstruct Args {\n    size: vec2<u32>,\n    src: u32,\n    dst: u32,\n    count: u32,\n    pad: u32,\n}\nvar<immediate> args: Args;\n",
+    );
     for (i, (name, ty)) in bindings("occlusion.wgsl").iter().enumerate() {
-        let access = if *name == "origins" { "read" } else { "read_write" };
+        let access = if matches!(*name, "origins" | "view" | "table") { "read" } else { "read_write" };
         s.push_str(&format!("@group(1) @binding({i}) var<storage, {access}> {name}: {ty};\n"));
     }
-    s.push_str(
-        "struct Args {\n    prev: mat4x4<f32>,\n    moved: vec4<f32>,\n    cam_frac: vec4<f32>,\n    size: vec2<u32>,\n    skip: vec2<u32>,\n    count: u32,\n    levels: u32,\n    src: u32,\n    dst: u32,\n}\nvar<immediate> args: Args;\n",
-    );
     s
 }
 

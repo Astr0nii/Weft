@@ -210,7 +210,7 @@ c.current_action(e.id());                                                 // wha
 c.clip_length(e.id(), "bow");                                             // seconds
 c.entity_held_item(e.id(), false);                                        // the item id in a hand
 ```
-The bones are looked for in the entity's model and in what it holds and has on. This runs on each client by itself, so nobody else's swing is exactly yours. `r.client_entity_frame` is the other hook: one per kind, for a mob's own cosmetics, and it replaces the engine's steps and such unless you call `e.run_engine_effects()`.
+The bones are looked for in the entity's model and in what it holds and has on. An entity out of the view isn't posed, so `bone_position` has nothing for it, and far away a pose lasts a few frames. This runs on each client by itself, so nobody else's swing is exactly yours. `r.client_entity_frame` is the other hook: one per kind, for a mob's own cosmetics, and it replaces the engine's steps and such unless you call `e.run_engine_effects()`.
 
 `World::stop_action(id)` ends what `play_action` started. `action::WALK`, `action::HOLD` and so on are the engine's action names, if you'd rather a typo didn't compile.
 

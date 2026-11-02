@@ -3,7 +3,7 @@
 //! (textured boxes built on the CPU each frame, a few hundred at most).
 
 use super::looks::ItemDraw;
-use super::models::{MAX_LAYERS, Posed};
+use super::models::{MAX_LAYERS, PoseLod, Posed};
 use crate::gpu_layout::box_mode;
 use glam::{DVec3, IVec3, Mat4, Quat, Vec3, Vec4};
 use rustc_hash::FxHashMap;
@@ -146,6 +146,9 @@ pub struct EntityRenderer {
     own_stacks: [ItemStack; 2],
     icon_views: Vec<BufferId>,
     icon_sheets: Vec<IconSheet>,
+    /// Frames drawn, for what doesn't happen every one; and the entities `preload` last went through.
+    frame_count: u32,
+    preloaded: usize,
     /// Stacks whose picture comes next, and the model it is of.
     icons_todo: Vec<(ItemStack, u32)>,
     /// Pictures by model: however many stacks show as one have the one.
@@ -219,6 +222,8 @@ impl EntityRenderer {
             avatars: FxHashMap::default(),
             avatar_pending: Vec::new(),
             gone_pending: Vec::new(),
+            frame_count: 0,
+            preloaded: 0,
             icon_of_model: FxHashMap::default(),
             show_avatars: true,
             fades: FxHashMap::default(),
@@ -523,6 +528,7 @@ impl EntityRenderer {
         held: [ItemStack; 2],
     ) {
         let c = content();
+        self.frame_count = self.frame_count.wrapping_add(1);
         for (id, sent) in std::mem::take(&mut self.avatar_pending) {
             self.set_avatar(gpu, id, sent);
         }
@@ -550,6 +556,16 @@ impl EntityRenderer {
                 None => super::models::icon_done(stack, None),
             }
         }
+        for skin in std::mem::take(&mut self.models.new_skins) {
+            self.load(gpu, assets, &skin);
+        }
+        // What is new shows up soon enough; going through thousands of entities each frame to learn
+        // that nothing is costs more than the rest of this.
+        if entities.len() == self.preloaded && self.frame_count % 16 != 0 {
+            self.models.sync(gpu);
+            return;
+        }
+        self.preloaded = entities.len();
         // Each kind and item looked at once per frame, without listing thousands of entities.
         let mut seen = std::mem::take(&mut self.seen_kinds);
         seen.clear();
@@ -587,9 +603,6 @@ impl EntityRenderer {
             if let Some((_, t)) = c.worn(i) {
                 self.load(gpu, assets, t);
             }
-        }
-        for skin in std::mem::take(&mut self.models.new_skins) {
-            self.load(gpu, assets, &skin);
         }
         self.models.sync(gpu);
     }
@@ -1090,6 +1103,8 @@ impl EntityRenderer {
             self.camera_kick = (Vec3::ZERO, 0.0, 0.0);
         }
         let mut carried: Vec<Carry> = Vec::new();
+        let planes = super::world_render::frustum_planes(cam.proj(aspect) * cam.view());
+        let frame_count = self.frame_count;
         // The first person: its place in `posed`, its layers before the arms were left out of
         // them and which arms the clips bring up.
         let mut own_hand: Option<(usize, [Instance; super::models::MAX_LAYERS], usize, u32)> = None;
@@ -1099,8 +1114,24 @@ impl EntityRenderer {
             .chain(me.map(|m| (self.local, m)))
         {
             let base = rel(e.pos);
-            if base.length_squared() > 160.0 * 160.0 {
+            let far2 = base.length_squared();
+            if far2 > 160.0 * 160.0 {
                 continue;
+            }
+            // Out of the view it has nothing to show. What it may have on goes by its model's reach.
+            if id != self.local && !e.item.is_empty() {
+                if !planes.iter().all(|p| p.dot(base.extend(1.0)) > -1.5) {
+                    continue;
+                }
+            } else if id != self.local {
+                let reach = self
+                    .models
+                    .kinds
+                    .get(self.model_kind(id, e) as usize)
+                    .map_or(4.0, |m| m.reach + 2.0);
+                if !planes.iter().all(|p| p.dot(base.extend(1.0)) > -reach) {
+                    continue;
+                }
             }
             let lit = shade(e.pos + DVec3::Y * 0.5);
             // Below zero the model's shader flashes white instead of red.
@@ -1128,6 +1159,7 @@ impl EntityRenderer {
                     posed.push(Posed {
                         id,
                         kind,
+                        lod: PoseLod::Direct,
                         root,
                         pitch: 0.0,
                         head_yaw: 0.0,
@@ -1185,7 +1217,32 @@ impl EntityRenderer {
                 (e.pitch, e.yaw - e.body_yaw)
             };
             let (mut clips, mut standing) = (Clips::default(), 0);
-            if let Some(m) = self.models.kinds.get(kind as usize) {
+            // Far away a pose lasts a few frames, each entity at its own turn. Who is dying or was
+            // just hit still shows it.
+            let every = if id == self.local || e.dying.is_some() || e.flash > 0.0 || e.hurt > 0.0 {
+                1
+            } else if far2 < 32.0 * 32.0 {
+                1
+            } else if far2 < 64.0 * 64.0 {
+                2
+            } else if far2 < 96.0 * 96.0 {
+                4
+            } else {
+                8
+            };
+            let lod = if every == 1 {
+                PoseLod::Direct
+            } else if (frame_count.wrapping_add(id as u32)) % every != 0 && self.models.has_kept(id, kind) {
+                PoseLod::Kept
+            } else {
+                PoseLod::Fresh
+            };
+            if let Some(m) = self
+                .models
+                .kinds
+                .get(kind as usize)
+                .filter(|_| lod != PoseLod::Kept)
+            {
                 let how = Play { clock: e.age, distance: e.walk * 0.6, speed: e.swing, ..Play::default() };
                 // Stands for what it says unless a mod swapped it for now, and has a clip for that.
                 let swapped = |item: u32, name: &'static str| -> &str {
@@ -1355,7 +1412,7 @@ impl EntityRenderer {
             }
             let from = self.models.clips.len() as u32;
             self.models.clips.extend_from_slice(clips.all());
-            posed.push(Posed { id, kind, root, pitch, head_yaw, clips: (from, self.models.clips.len() as u32), layers, layer_count });
+            posed.push(Posed { id, kind, lod, root, pitch, head_yaw, clips: (from, self.models.clips.len() as u32), layers, layer_count });
             let carry = |what| Carry { holder: posed.len() - 1, what, lit, age: e.age, id };
             if !sleeping {
                 for (item, off) in [(e.held, false), (e.off_held, true)] {
@@ -1488,6 +1545,9 @@ impl EntityRenderer {
         if self.models.frame_number() % 256 == 0 {
             let alive = |id: &u64| *id == self.local || entities.contains_key(id);
             self.fades.retain(|id, _| alive(&id.0));
+            let local = self.local;
+            self.models
+                .retain_kept(|id| id == local || entities.contains_key(&id));
         }
         self.posed = posed;
         self.models

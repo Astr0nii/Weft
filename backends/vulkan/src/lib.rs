@@ -358,6 +358,7 @@ impl VulkanBackend {
             let base = has.features;
             let missing: Vec<&str> = [
                 ("multiDrawIndirect", base.multi_draw_indirect),
+                ("drawIndirectCount", has12.draw_indirect_count),
                 ("drawIndirectFirstInstance", base.draw_indirect_first_instance),
                 ("samplerAnisotropy", base.sampler_anisotropy),
                 ("fillModeNonSolid", base.fill_mode_non_solid),
@@ -1650,6 +1651,19 @@ impl Backend for VulkanBackend {
                         let b = self.buffers.get(buffer.0).raw;
                         self.device
                             .cmd_draw_indexed_indirect(cmd, b, offset, count, size_of::<DrawIndexedArgs>() as u32);
+                    }
+                    Cmd::DrawIndexedIndirectCount { buffer, offset, count_buffer, count_offset, max } => {
+                        let b = self.buffers.get(buffer.0).raw;
+                        let c = self.buffers.get(count_buffer.0).raw;
+                        self.device.cmd_draw_indexed_indirect_count(
+                            cmd,
+                            b,
+                            offset,
+                            c,
+                            count_offset,
+                            max,
+                            size_of::<DrawIndexedArgs>() as u32,
+                        );
                     }
                     Cmd::DrawIndirectCount { buffer, offset, count_buffer, count_offset, max } => {
                         let b = self.buffers.get(buffer.0).raw;

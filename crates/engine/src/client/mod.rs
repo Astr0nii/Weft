@@ -1329,7 +1329,15 @@ impl Client {
                 .filter(|(_, e)| c.game.entities[e.kind as usize].is(weft_abi::entity_flags::SOLID))
                 .map(|(&id, e)| (id, e.pose(at))),
         );
-        for e in self.entities.values_mut().filter(|e| e.pulled.is_none()) {
+        // A crowd's worth on all cores: nothing here depends on another entity.
+        let mut moving: Vec<&mut ClientEntity> = self
+            .entities
+            .values_mut()
+            .filter(|e| e.pulled.is_none())
+            .collect();
+        let frames_ref = &frames;
+        let step = |e: &mut &mut ClientEntity| {
+            let frames = frames_ref;
             let before = e.pos;
             let body = e
                 .rel_target
@@ -1346,7 +1354,9 @@ impl Client {
                 e.pos.lerp(e.target, k)
             };
             let mut dyaw = e.target_yaw - e.yaw;
-            dyaw = (dyaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            if dyaw.abs() > std::f32::consts::PI {
+                dyaw = (dyaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            }
             e.yaw += dyaw * k as f32;
             e.body_yaw = turn_body(e.body_yaw, e.yaw, walked.unwrap_or(e.pos - before), dt as f32);
             advance_swing(&mut e.arm_swing, dt as f32);
@@ -1365,6 +1375,12 @@ impl Client {
                 e.hurt = 0.4;
                 e.burning = false;
             }
+        };
+        if moving.len() >= 512 {
+            use rayon::prelude::*;
+            moving.par_iter_mut().with_min_len(128).for_each(step);
+        } else {
+            moving.iter_mut().for_each(step);
         }
         self.frames = frames;
     }
@@ -2207,7 +2223,14 @@ impl Client {
     }
 
     /// `list` goes in the world's pass, `early` before it.
-    pub fn render(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, early: &mut CommandList, frame: &FrameInfo, textures: &GameTextures) {
+    pub fn render(
+        &mut self,
+        gpu: &mut dyn Backend,
+        list: &mut CommandList,
+        early: &mut CommandList,
+        frame: &FrameInfo,
+        textures: &GameTextures,
+    ) {
         self.entity_render.local = self.player_id;
         for (entity, png) in std::mem::take(&mut self.entity_render.skin_pending) {
             self.entity_render.set_skin(gpu, entity, &png);
@@ -2232,10 +2255,10 @@ impl Client {
             .map(|(&id, e)| (id, physics::Transform::of(e.pos).origin()))
             .collect();
         // The world's light on each, as the server worked it out when it got there.
-        let lights: rustc_hash::FxHashMap<(u64, IVec3), u32> = self
-            .entities
+        let lights: rustc_hash::FxHashMap<(u64, IVec3), u32> = frames
             .iter()
-            .flat_map(|(&id, e)| e.world_light.iter().map(move |(cp, l)| ((id, *cp), *l)))
+            .filter_map(|(id, _)| self.entities.get(id).map(|e| (*id, e)))
+            .flat_map(|(id, e)| e.world_light.iter().map(move |(cp, l)| ((id, *cp), *l)))
             .collect();
         self.render
             .draw(gpu, list, early, frame, &cam, scene_buf, &frames, &lights);

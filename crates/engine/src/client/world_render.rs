@@ -105,6 +105,8 @@ impl Pool {
 
 #[derive(Clone, Copy)]
 struct GpuMesh {
+    /// Its places in `CubeTable`, none for `u32::MAX`.
+    slots: [u32; 4],
     faces: Option<Alloc>,
     /// Per layer, per direction rank (see `mesher::DIR_RANK`).
     face_counts: [[u32; 6]; 3],
@@ -171,7 +173,10 @@ fn region_of(key: MeshKey) -> (u64, IVec3) {
 /// The draws of one visible mesh (its corner `lo` relative to the camera, `k` its structure or
 /// 0), returning the faces drawn. A face direction can be seen only from the side its normal
 /// points to; contiguous visible runs become one draw.
+/// The draws the CPU makes of a mesh: a structure's all, and of the world's what is translucent, the
+/// rest being `CubeTable`'s.
 fn mesh_draws(m: &GpuMesh, key: MeshKey, lo: Vec3, k: i32, cam_cube: IVec3, out: &mut Vec<DrawRecord>) -> u64 {
+    let first_layer = if k == 0 { 2 } else { 0 };
     let rel = if k == 0 { key.1 - cam_cube } else { key.1 };
     let origin = [rel.x, rel.y, rel.z, k];
     let center = lo + Vec3::splat(8.0);
@@ -189,6 +194,10 @@ fn mesh_draws(m: &GpuMesh, key: MeshKey, lo: Vec3, k: i32, cam_cube: IVec3, out:
         let mut off = a.offset;
         for layer in 0..3 {
             let counts = m.face_counts[layer];
+            if layer < first_layer {
+                off += counts.iter().sum::<u32>();
+                continue;
+            }
             let mut run: Option<(u32, u32)> = None;
             for rank in 0..6 {
                 let n = counts[rank];
@@ -214,7 +223,7 @@ fn mesh_draws(m: &GpuMesh, key: MeshKey, lo: Vec3, k: i32, cam_cube: IVec3, out:
         let mut off = a.offset;
         for layer in 0..3 {
             let n = m.quad_counts[layer];
-            if n > 0 {
+            if n > 0 && layer >= first_layer {
                 out.push((1, layer as u8, a.page, args(off, n), origin, center));
             }
             off += n;
@@ -298,6 +307,10 @@ pub struct WorldRenderer {
     /// meshes of the ones seen, nearest first, in parallel.
     meshes: FxHashMap<MeshKey, usize>,
     regions: FxHashMap<(u64, IVec3), Vec<(MeshKey, GpuMesh)>>,
+    /// Meshes the CPU has nothing to do for each frame, there being no translucent draws: they are
+    /// in `table` and not in `regions`.
+    table_only: FxHashMap<MeshKey, GpuMesh>,
+    table: CubeTable,
     globals: Vec<BufferId>,
     origins: Vec<(BufferId, u32)>,
     /// Per frame: camera-relative positions of the structures drawn (index 0: none, the world).
@@ -434,12 +447,14 @@ impl WorldRenderer {
             quads: Pool { words: QUAD_WORDS, pages: Vec::new(), label: "quad page" },
             meshes: FxHashMap::default(),
             regions: FxHashMap::default(),
+            table_only: FxHashMap::default(),
+            table: CubeTable::new(gpu),
             parts: Vec::new(),
             offsets: Vec::new(),
             globals,
             origins: Vec::new(),
             indirect: Vec::new(),
-            occlusion: Occlusion::new(gpu, assets),
+            occlusion: Occlusion::new(gpu, assets)?,
             runs: Vec::new(),
             trans: Vec::new(),
             sorted: FxHashMap::default(),
@@ -568,17 +583,23 @@ impl WorldRenderer {
     }
 
     pub fn remove(&mut self, key: MeshKey) {
-        let Some(i) = self.meshes.remove(&key) else { return };
-        self.sorted.remove(&key);
-        let r = region_of(key);
-        let list = self.regions.get_mut(&r).unwrap();
-        let (_, m) = list.swap_remove(i);
-        if let Some(&(moved, _)) = list.get(i) {
-            self.meshes.insert(moved, i);
-        }
-        if list.is_empty() {
-            self.regions.remove(&r);
-        }
+        let m = if let Some(m) = self.table_only.remove(&key) {
+            m
+        } else {
+            let Some(i) = self.meshes.remove(&key) else { return };
+            self.sorted.remove(&key);
+            let r = region_of(key);
+            let list = self.regions.get_mut(&r).unwrap();
+            let (_, m) = list.swap_remove(i);
+            if let Some(&(moved, _)) = list.get(i) {
+                self.meshes.insert(moved, i);
+            }
+            if list.is_empty() {
+                self.regions.remove(&r);
+            }
+            m
+        };
+        self.table.remove(m.slots);
         if let Some(a) = m.faces {
             self.faces.free(a);
         }
@@ -590,6 +611,8 @@ impl WorldRenderer {
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {
         self.meshes.clear();
         self.regions.clear();
+        self.table_only.clear();
+        self.table.destroy(gpu);
         self.lod.clear();
         for (b, _) in self.faces.pages.drain(..).chain(self.quads.pages.drain(..)) {
             gpu.destroy_buffer(b);
@@ -835,9 +858,20 @@ impl WorldRenderer {
             }
             a
         });
+        let slots = if key.0 == 0 {
+            self.table
+                .add(key.1, faces, &face_counts, quads, &quad_counts)
+        } else {
+            [u32::MAX; 4]
+        };
+        let mesh = GpuMesh { slots, faces, face_counts, quads, quad_counts };
+        if key.0 == 0 && face_counts[2].iter().sum::<u32>() + quad_counts[2] == 0 {
+            self.table_only.insert(key, mesh);
+            return;
+        }
         let list = self.regions.entry(region_of(key)).or_default();
         self.meshes.insert(key, list.len());
-        list.push((key, GpuMesh { faces, face_counts, quads, quad_counts }));
+        list.push((key, mesh));
     }
 
     /// `frames`: structures to draw and where their block (0, 0, 0) is in the world.
@@ -1004,15 +1038,11 @@ impl WorldRenderer {
         lod.sort_by_key(|d| (d.2, d.5.length_squared().to_bits()));
         let lods = lod.len() as u32;
         let n = opaque + lods + trans.len() as u32;
-        self.drawn = n;
-        self.faces_drawn = faces_drawn;
+        let (gpu_draws, gpu_faces) = self.table.drawn_last(gpu, frame.slot);
+        self.drawn = n + gpu_draws;
+        self.faces_drawn = faces_drawn + gpu_faces;
         let mut runs = std::mem::take(&mut self.runs);
         runs.clear();
-        if n == 0 {
-            (self.parts, self.trans, self.runs) = (parts, trans, runs);
-            self.buffers = None;
-            return;
-        }
         let obuf = crate::gpu_layout::frame_buffer(gpu, &mut self.origins, frame.slot, n, 16, usage::STORAGE, "origins");
         let fbuf = crate::gpu_layout::frame_buffer(
             gpu,
@@ -1029,7 +1059,8 @@ impl WorldRenderer {
             offs[(k + 1) * 16..(k + 1) * 16 + 12].copy_from_slice(bytemuck::cast_slice(&o.to_array()));
             offs[(k + 1) * 16 + 12..(k + 1) * 16 + 16].copy_from_slice(&light.to_le_bytes());
         }
-        let ibuf = crate::gpu_layout::frame_buffer(gpu, &mut self.indirect, frame.slot, n, 20, usage::INDIRECT | usage::STORAGE, "indirect");
+        let ibuf =
+            crate::gpu_layout::frame_buffer(gpu, &mut self.indirect, frame.slot, n, 20, usage::INDIRECT | usage::STORAGE, "indirect");
         let origins = Mapped(gpu.mapped(obuf)[..n as usize * 16].as_mut_ptr());
         let indirect = Mapped(gpu.mapped(ibuf)[..n as usize * 20].as_mut_ptr());
         let put = |k: u32, d: &DrawRecord| {
@@ -1079,9 +1110,52 @@ impl WorldRenderer {
         }
         (self.parts, self.trans, self.runs) = (parts, trans, runs);
         self.buffers = Some((gbuf, obuf, ibuf, fbuf, scene));
-        if let Some(last) = last_frame {
-            self.occlusion
-                .test(early, last, cam, obuf, ibuf, n, [opaque, opaque + lods], cam_frac);
+        let moved = last_frame.map_or(Vec3::ZERO, |l| (cam.pos - l.1).as_vec3());
+        let (size, levels) = self.occlusion.depth_size();
+        let view = crate::gpu_layout::OcclusionView {
+            prev: last_frame
+                .map_or(Mat4::IDENTITY, |l| l.0)
+                .to_cols_array_2d(),
+            planes: planes.map(|p| p.to_array()),
+            // What goes from there to here is bigger by how far it came, what it might have been behind.
+            moved: moved.extend(moved.length() + 0.5).to_array(),
+            cam_frac: cam_frac.extend(0.0).to_array(),
+            cam_cube: cam_cube.extend(0).to_array(),
+            size,
+            skip: [opaque, opaque + lods],
+            levels,
+            hiz: last_frame.is_some() as u32,
+            pad: [0; 2],
+        };
+        let vbuf = crate::gpu_layout::frame_buffer(
+            gpu,
+            &mut self.table.views,
+            frame.slot,
+            1,
+            size_of::<crate::gpu_layout::OcclusionView>() as u64,
+            usage::STORAGE,
+            "occlusion view",
+        );
+        gpu.mapped(vbuf)[..size_of::<crate::gpu_layout::OcclusionView>()].copy_from_slice(bytemuck::bytes_of(&view));
+        let depths = self.occlusion.depths();
+        if last_frame.is_some() && n > 0 {
+            self.occlusion.test(early, vbuf, obuf, ibuf, n);
+        }
+        if let Some(pipe) = self.occlusion.cull_pipe() {
+            self.table.cull(gpu, early, frame.slot, pipe, vbuf, depths);
+        }
+        let groups = self.table.groups();
+        for &(kind, layer, page, id, base, max) in &groups {
+            let (pipe, buf) = self.pipe_of(kind, layer, page);
+            self.bind_run(list, pipe, buf, self.table.out.as_ref().map_or(obuf, |o| o.origins));
+            let Some(o) = self.table.out.as_ref() else { continue };
+            list.push(Cmd::DrawIndexedIndirectCount {
+                buffer: o.draws,
+                offset: base as u64 * 20,
+                count_buffer: self.table.buckets[frame.slot].0,
+                count_offset: id as u64 * 8,
+                max,
+            });
         }
         self.emit(list, 0..self.translucent);
     }
@@ -1096,34 +1170,280 @@ impl WorldRenderer {
 
     /// Runs `range` of the last `draw`.
     fn emit(&self, list: &mut CommandList, range: std::ops::Range<usize>) {
-        let Some((gbuf, obuf, ibuf, fbuf, scene)) = self.buffers else { return };
-        if range.is_empty() {
+        let Some((_, obuf, ibuf, _, _)) = self.buffers else { return };
+        for &(kind, layer, page, start, count) in &self.runs[range] {
+            let (pipe, buf) = self.pipe_of(kind, layer, page);
+            self.bind_run(list, pipe, buf, obuf);
+            list.push(Cmd::DrawIndexedIndirect { buffer: ibuf, offset: start as u64 * 20, count });
+        }
+    }
+
+    /// The pipeline and records of a run: kind 0 faces, 1 quads, 3 distant terrain.
+    fn pipe_of(&self, kind: u8, layer: u8, page: u32) -> (PipelineId, BufferId) {
+        if kind == 0 {
+            (self.face_pipes[layer as usize], self.faces.pages[page as usize].0)
+        } else if kind == 3 {
+            (self.lod_pipe, self.faces.pages[page as usize].0)
+        } else {
+            (self.quad_pipes[layer as usize], self.quads.pages[page as usize].0)
+        }
+    }
+
+    fn bind_run(&self, list: &mut CommandList, pipe: PipelineId, records: BufferId, origins: BufferId) {
+        let Some((gbuf, _, _, fbuf, scene)) = self.buffers else { return };
+        list.push(Cmd::IndexBuffer(self.quad_index));
+        list.pipeline(pipe);
+        use crate::gpu_layout::bind::world as b;
+        list.bind(b::G, gbuf);
+        list.bind(b::ORIGINS, origins);
+        list.bind(b::RECORDS, records);
+        list.bind(b::BIOMES, self.biomes);
+        list.bind(b::TEX_INFO, self.tex_info);
+        list.bind(b::FRAMES, self.anim);
+        list.bind(b::OFFSETS, fbuf);
+        list.bind(b::GLOW_MAP, self.glow);
+        list.bind(b::TEX_SHADER, self.tex_shader);
+        list.bind(b::SCENE, scene);
+        list.bind(b::LOD_MASK, self.lod_mask.0);
+        list.bind(b::SOLID, self.solid.buf);
+    }
+}
+
+/// Every cube of the world with something opaque or cutout to draw, kept on the GPU and changed only
+/// when meshes do: a compute shader makes each frame's draws from it, so the CPU's cost doesn't grow
+/// with how many cubes are in view.
+struct CubeTable {
+    entries: Vec<crate::gpu_layout::CubeEntry>,
+    free: Vec<u32>,
+    /// Places changed since the last upload.
+    dirty: Vec<u32>,
+    /// On the GPU, and how many places it has.
+    buffer: BufferId,
+    capacity: u32,
+    /// How many places each bucket (`CubeEntry::bucket`) has.
+    per_bucket: Vec<u32>,
+    /// Per frame: per bucket how many draws were written and where they start, then the faces.
+    buckets: Vec<(BufferId, u32)>,
+    views: Vec<(BufferId, u32)>,
+    out: Option<TableOut>,
+}
+
+/// What `cull` writes: draws and where each one's cube is. One of each serves all frames in flight,
+/// they run in order on the GPU.
+struct TableOut {
+    draws: BufferId,
+    origins: BufferId,
+    capacity: u32,
+}
+
+/// Direction runs of a cube: as many sides as face a camera outside it, in order.
+const DRAWS_PER_FACES: u32 = 3;
+
+impl CubeTable {
+    fn new(gpu: &mut dyn Backend) -> CubeTable {
+        CubeTable {
+            entries: Vec::new(),
+            free: Vec::new(),
+            dirty: Vec::new(),
+            buffer: gpu.create_buffer(32 * 1024, usage::STORAGE, "cube table"),
+            capacity: 1024,
+            per_bucket: Vec::new(),
+            buckets: Vec::new(),
+            views: Vec::new(),
+            out: None,
+        }
+    }
+
+    fn put(&mut self, cube: IVec3, bucket: u32, start: u32, counts: [u32; 3]) -> u32 {
+        let e = crate::gpu_layout::CubeEntry { cube: cube.to_array(), bucket, start, counts };
+        let slot = self.free.pop().unwrap_or_else(|| {
+            self.entries.push(e);
+            self.entries.len() as u32 - 1
+        });
+        self.entries[slot as usize] = e;
+        self.dirty.push(slot);
+        if self.per_bucket.len() <= bucket as usize {
+            self.per_bucket.resize(bucket as usize + 1, 0);
+        }
+        self.per_bucket[bucket as usize] += 1;
+        slot
+    }
+
+    /// A mesh's opaque and cutout layers: their places.
+    fn add(
+        &mut self,
+        cube: IVec3,
+        faces: Option<Alloc>,
+        face_counts: &[[u32; 6]; 3],
+        quads: Option<Alloc>,
+        quad_counts: &[u32; 3],
+    ) -> [u32; 4] {
+        let mut slots = [u32::MAX; 4];
+        if let Some(a) = faces {
+            let mut start = a.offset;
+            for layer in 0..2 {
+                let c = face_counts[layer];
+                let total: u32 = c.iter().sum();
+                if total > 0 {
+                    let counts = [c[0] | c[1] << 16, c[2] | c[3] << 16, c[4] | c[5] << 16];
+                    slots[layer] = self.put(cube, a.page * 4 + layer as u32, start, counts);
+                }
+                start += total;
+            }
+        }
+        if let Some(a) = quads {
+            let mut start = a.offset;
+            for layer in 0..2 {
+                let n = quad_counts[layer];
+                if n > 0 {
+                    slots[2 + layer] = self.put(cube, a.page * 4 + 2 + layer as u32, start, [n, 0, 0]);
+                }
+                start += n;
+            }
+        }
+        slots
+    }
+
+    fn remove(&mut self, slots: [u32; 4]) {
+        for slot in slots.into_iter().filter(|s| *s != u32::MAX) {
+            let e = &mut self.entries[slot as usize];
+            self.per_bucket[e.bucket as usize] -= 1;
+            e.bucket = u32::MAX;
+            self.free.push(slot);
+            self.dirty.push(slot);
+        }
+    }
+
+    /// Brings the GPU's copy up to date, in runs of neighbours.
+    fn upload(&mut self, gpu: &mut dyn Backend) {
+        let n = self.entries.len() as u32;
+        if n > self.capacity {
+            gpu.destroy_buffer(self.buffer);
+            self.capacity = n.next_power_of_two();
+            self.buffer = gpu.create_buffer(self.capacity as u64 * 32, usage::STORAGE, "cube table");
+            gpu.write_buffer(self.buffer, 0, bytemuck::cast_slice(&self.entries));
+            self.dirty.clear();
             return;
         }
-        list.push(Cmd::IndexBuffer(self.quad_index));
-        for &(kind, layer, page, start, count) in &self.runs[range] {
-            let (pipe, buf) = if kind == 0 {
-                (self.face_pipes[layer as usize], self.faces.pages[page as usize].0)
-            } else if kind == 3 {
-                (self.lod_pipe, self.faces.pages[page as usize].0)
-            } else {
-                (self.quad_pipes[layer as usize], self.quads.pages[page as usize].0)
-            };
-            list.pipeline(pipe);
-            use crate::gpu_layout::bind::world as b;
-            list.bind(b::G, gbuf);
-            list.bind(b::ORIGINS, obuf);
-            list.bind(b::RECORDS, buf);
-            list.bind(b::BIOMES, self.biomes);
-            list.bind(b::TEX_INFO, self.tex_info);
-            list.bind(b::FRAMES, self.anim);
-            list.bind(b::OFFSETS, fbuf);
-            list.bind(b::GLOW_MAP, self.glow);
-            list.bind(b::TEX_SHADER, self.tex_shader);
-            list.bind(b::SCENE, scene);
-            list.bind(b::LOD_MASK, self.lod_mask.0);
-            list.bind(b::SOLID, self.solid.buf);
-            list.push(Cmd::DrawIndexedIndirect { buffer: ibuf, offset: start as u64 * 20, count });
+        self.dirty.sort_unstable();
+        self.dirty.dedup();
+        let mut i = 0;
+        while i < self.dirty.len() {
+            let first = self.dirty[i];
+            let mut end = i + 1;
+            while end < self.dirty.len() && self.dirty[end] == first + (end - i) as u32 {
+                end += 1;
+            }
+            let run = &self.entries[first as usize..first as usize + (end - i)];
+            gpu.write_buffer(self.buffer, first as u64 * 32, bytemuck::cast_slice(run));
+            i = end;
+        }
+        self.dirty.clear();
+    }
+
+    /// What this frame slot's last use drew, for showing: draws and faces.
+    fn drawn_last(&mut self, gpu: &mut dyn Backend, slot: usize) -> (u32, u64) {
+        let Some(&(b, _)) = self.buckets.get(slot) else { return (0, 0) };
+        let words: &[u32] = bytemuck::cast_slice(gpu.mapped(b));
+        let n = self.per_bucket.len().min(words.len() / 2);
+        let draws = words[..n * 2].chunks_exact(2).map(|c| c[0]).sum();
+        (draws, words.get(self.per_bucket.len() * 2).copied().unwrap_or(0) as u64)
+    }
+
+    /// Makes this frame's draws. Before the world's pass.
+    fn cull(
+        &mut self,
+        gpu: &mut dyn Backend,
+        list: &mut CommandList,
+        slot: usize,
+        pipe: PipelineId,
+        view: BufferId,
+        depths: Option<BufferId>,
+    ) {
+        self.upload(gpu);
+        let needed: u32 = self
+            .per_bucket
+            .iter()
+            .enumerate()
+            .map(|(id, &n)| n * if id & 2 == 0 { DRAWS_PER_FACES } else { 1 })
+            .sum::<u32>()
+            .max(1);
+        if self.out.as_ref().is_none_or(|o| o.capacity < needed) {
+            if let Some(o) = self.out.take() {
+                gpu.destroy_buffer(o.draws);
+                gpu.destroy_buffer(o.origins);
+            }
+            let capacity = needed.next_power_of_two().max(4096);
+            self.out = Some(TableOut {
+                draws: gpu.create_buffer(capacity as u64 * 20, usage::INDIRECT | usage::STORAGE, "table draws"),
+                origins: gpu.create_buffer(capacity as u64 * 16, usage::STORAGE, "table origins"),
+                capacity,
+            });
+        }
+        let Some(o) = &self.out else { return };
+        let buckets = crate::gpu_layout::frame_buffer(
+            gpu,
+            &mut self.buckets,
+            slot,
+            self.per_bucket.len() as u32 + 1,
+            8,
+            usage::STORAGE | usage::INDIRECT,
+            "table buckets",
+        );
+        {
+            let words: &mut [u32] = bytemuck::cast_slice_mut(gpu.mapped(buckets));
+            let mut base = 0;
+            for (id, &n) in self.per_bucket.iter().enumerate() {
+                words[id * 2] = 0;
+                words[id * 2 + 1] = base;
+                base += n * if id & 2 == 0 { DRAWS_PER_FACES } else { 1 };
+            }
+            words[self.per_bucket.len() * 2] = 0;
+        }
+        use crate::gpu_layout::bind::occlusion as b;
+        list.push(Cmd::Barrier);
+        list.pipeline(pipe);
+        list.bind(b::VIEW, view);
+        list.bind(b::TABLE, self.buffer);
+        list.bind(b::BUCKETS, buckets);
+        list.bind(b::OUT_DRAWS, o.draws);
+        list.bind(b::OUT_ORIGINS, o.origins);
+        // The faces' counter is the one after the last bucket.
+        list.bind_range(b::FACES_DRAWN, buckets, self.per_bucket.len() as u64 * 8, 8);
+        // Its use is decided in the shader, but all a shader mentions has to be bound.
+        list.bind(b::DEPTHS, depths.unwrap_or(self.buffer));
+        let count = self.entries.len() as u32;
+        list.push_constants(&crate::gpu_layout::OcclusionArgs { size: [0; 2], src: 0, dst: 0, count, pad: 0 });
+        list.push(Cmd::Dispatch { x: count.div_ceil(256), y: 1, z: 1 });
+        list.push(Cmd::Barrier);
+    }
+
+    /// The buckets with anything in them, in drawing order, opaque before cutout: kind, layer, page,
+    /// bucket, where its draws start and how many it may have.
+    fn groups(&self) -> Vec<(u8, u8, u32, u32, u32, u32)> {
+        let mut base = 0;
+        let mut out = Vec::new();
+        for (id, &n) in self.per_bucket.iter().enumerate() {
+            let id = id as u32;
+            let (page, kind, layer) = (id / 4, (id >> 1 & 1) as u8, (id & 1) as u8);
+            let max = n * if kind == 0 { DRAWS_PER_FACES } else { 1 };
+            if n > 0 {
+                out.push((kind, layer, page, id, base, max));
+            }
+            base += max;
+        }
+        out.sort_by_key(|g| (g.1, g.0, g.2));
+        out
+    }
+
+    fn destroy(&mut self, gpu: &mut dyn Backend) {
+        gpu.destroy_buffer(self.buffer);
+        for (b, _) in self.buckets.drain(..).chain(self.views.drain(..)) {
+            gpu.destroy_buffer(b);
+        }
+        if let Some(o) = self.out.take() {
+            gpu.destroy_buffer(o.draws);
+            gpu.destroy_buffer(o.origins);
         }
     }
 }
@@ -1137,7 +1457,7 @@ const OCCLUSION_MOVE: f64 = 8.0;
 pub struct Occlusion {
     /// The setting.
     pub on: bool,
-    pipes: Option<[PipelineId; 2]>,
+    pipes: Option<[PipelineId; 3]>,
     /// Depth and its smaller copies; its size; how many levels.
     depths: Option<(BufferId, [u32; 2], u32)>,
     /// This frame's camera, and the last one's if `depths` has its depth.
@@ -1146,26 +1466,31 @@ pub struct Occlusion {
 }
 
 impl Occlusion {
-    fn new(gpu: &mut dyn Backend, assets: &crate::assets::Assets) -> Occlusion {
-        Occlusion { on: true, pipes: Self::pipes(gpu, assets), depths: None, now: None, last: None }
+    /// Without its shader nothing opaque would get drawn, so it is a reason not to start.
+    fn new(gpu: &mut dyn Backend, assets: &crate::assets::Assets) -> Result<Occlusion, String> {
+        Ok(Occlusion { on: true, pipes: Some(Self::pipes(gpu, assets)?), depths: None, now: None, last: None })
     }
 
-    /// Without them nothing is culled, which only costs what culling saves.
-    fn pipes(gpu: &mut dyn Backend, assets: &crate::assets::Assets) -> Option<[PipelineId; 2]> {
+    fn pipes(gpu: &mut dyn Backend, assets: &crate::assets::Assets) -> Result<[PipelineId; 3], String> {
         // Not a shader packs may replace: it decides what is drawn, not how it looks.
         let s = crate::packs::engine_shader(assets, "occlusion.wgsl", &crate::gpu_layout::occlusion_prelude());
-        let made = s.map_err(|e| e.0).and_then(|s| {
-            let mut pipe = |entry| gpu.create_compute(&ComputeDesc { label: "occlusion", shader: &s, entry }).map_err(|e| e.0);
-            Ok([pipe("down")?, pipe("test")?])
-        });
-        made.map_err(|e| log::error!("occlusion shader: {e}")).ok()
+        s.map_err(|e| e.0).and_then(|s| {
+            let mut pipe = |entry| {
+                gpu.create_compute(&ComputeDesc { label: "occlusion", shader: &s, entry })
+                    .map_err(|e| e.0)
+            };
+            Ok([pipe("down")?, pipe("test")?, pipe("cull")?])
+        })
     }
 
     fn reload(&mut self, gpu: &mut dyn Backend, assets: &crate::assets::Assets) {
-        if let Some(new) = Self::pipes(gpu, assets) {
-            for p in self.pipes.replace(new).into_iter().flatten() {
-                gpu.destroy_pipeline(p);
+        match Self::pipes(gpu, assets) {
+            Ok(new) => {
+                for p in self.pipes.replace(new).into_iter().flatten() {
+                    gpu.destroy_pipeline(p);
+                }
             }
+            Err(e) => log::error!("occlusion shader: {e}"),
         }
     }
 
@@ -1185,45 +1510,37 @@ impl Occlusion {
             .filter(|l| self.on && (l.1 - pos).length() < OCCLUSION_MOVE)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn test(
-        &self,
-        list: &mut CommandList,
-        last: (Mat4, DVec3),
-        cam: &Camera,
-        origins: BufferId,
-        draws: BufferId,
-        count: u32,
-        skip: [u32; 2],
-        cam_frac: Vec3,
-    ) {
-        let (Some([_, pipe]), Some((depths, size, levels))) = (self.pipes, self.depths) else { return };
+    /// The size of the depth kept and how many levels it has.
+    fn depth_size(&self) -> ([u32; 2], u32) {
+        self.depths.map_or(([1; 2], 1), |d| (d.1, d.2))
+    }
+
+    fn depths(&self) -> Option<BufferId> {
+        self.depths.map(|d| d.0)
+    }
+
+    fn cull_pipe(&self) -> Option<PipelineId> {
+        self.pipes.map(|p| p[2])
+    }
+
+    /// Takes what the last frame shows to be hidden out of the draws the CPU made.
+    fn test(&self, list: &mut CommandList, view: BufferId, origins: BufferId, draws: BufferId, count: u32) {
+        let (Some([_, pipe, _]), Some((depths, ..))) = (self.pipes, self.depths) else { return };
         use crate::gpu_layout::bind::occlusion as b;
-        // What goes from there to here is bigger by how far it came, what it might have been behind.
-        let moved = (cam.pos - last.1).as_vec3();
         list.push(Cmd::Barrier);
         list.pipeline(pipe);
+        list.bind(b::VIEW, view);
         list.bind(b::DEPTHS, depths);
         list.bind(b::ORIGINS, origins);
         list.bind(b::DRAWS, draws);
-        list.push_constants(&crate::gpu_layout::OcclusionArgs {
-            prev: last.0.to_cols_array_2d(),
-            moved: moved.extend(moved.length() + 0.5).to_array(),
-            cam_frac: cam_frac.extend(0.0).to_array(),
-            size,
-            skip,
-            count,
-            levels,
-            src: 0,
-            dst: 0,
-        });
+        list.push_constants(&crate::gpu_layout::OcclusionArgs { size: [0; 2], src: 0, dst: 0, count, pad: 0 });
         list.push(Cmd::Dispatch { x: count.div_ceil(256), y: 1, z: 1 });
         list.push(Cmd::Barrier);
     }
 
     /// Takes this frame's depth for the next frame to go by. After the world's pass.
     pub fn take_depth(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, depth: TextureId, size: [u32; 2]) {
-        let Some([down, _]) = self.pipes.filter(|_| self.on) else {
+        let Some([down, ..]) = self.pipes.filter(|_| self.on) else {
             self.last = None;
             return;
         };
@@ -1256,17 +1573,7 @@ impl Occlusion {
         let (mut s, mut src) = (size, 0u32);
         for _ in 1..levels {
             let dst = src + s[0] * s[1];
-            list.push_constants(&crate::gpu_layout::OcclusionArgs {
-                prev: [[0.0; 4]; 4],
-                moved: [0.0; 4],
-                cam_frac: [0.0; 4],
-                size: s,
-                skip: [0; 2],
-                count: 0,
-                levels,
-                src,
-                dst,
-            });
+            list.push_constants(&crate::gpu_layout::OcclusionArgs { size: s, src, dst, count: 0, pad: 0 });
             s = s.map(|v| v.div_ceil(2));
             list.push(Cmd::Dispatch { x: s[0].div_ceil(32), y: s[1].div_ceil(32), z: 1 });
             list.push(Cmd::Barrier);
@@ -1277,7 +1584,7 @@ impl Occlusion {
 }
 
 /// Left, right, bottom, top planes; the reverse-Z infinite projection has no useful far plane.
-fn frustum_planes(m: Mat4) -> [Vec4; 4] {
+pub fn frustum_planes(m: Mat4) -> [Vec4; 4] {
     let r = |i: usize| m.row(i);
     let norm = |p: Vec4| p / p.truncate().length();
     [norm(r(3) + r(0)), norm(r(3) - r(0)), norm(r(3) + r(1)), norm(r(3) - r(1))]

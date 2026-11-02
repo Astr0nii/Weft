@@ -51,6 +51,8 @@ pub struct KindModel {
     pub item_bones: [Option<usize>; 2],
     /// Corners of its box at rest, in pixels.
     pub bounds: (Vec3, Vec3),
+    /// How far from its feet it reaches at rest, in blocks.
+    pub reach: f32,
 }
 
 /// A bone that follows its `BoneMotion`.
@@ -321,12 +323,22 @@ pub const MAX_LAYERS: usize = 8;
 pub struct Posed {
     pub id: u64,
     pub kind: u32,
+    /// Far away it isn't posed every frame: `Direct` for the usual, `Fresh` posed and kept, `Kept`
+    /// going by what was.
+    pub lod: PoseLod,
     pub root: Mat4,
     pub pitch: f32,
     pub head_yaw: f32,
     pub clips: (u32, u32),
     pub layers: [Instance; MAX_LAYERS],
     pub layer_count: usize,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum PoseLod {
+    Direct,
+    Fresh,
+    Kept,
 }
 
 #[derive(Clone, Copy)]
@@ -382,6 +394,8 @@ pub struct Models {
     scratch: Vec<Mat4>,
     /// Bones per entity in `add_many`.
     counts: Vec<usize>,
+    /// Far entities' bones as of when they were last posed, from their feet: by entity, the model.
+    kept: FxHashMap<u64, (u32, Vec<Mat4>)>,
 }
 
 /// The items whose slots show a model's picture, and those pictures once drawn. Slots ask from
@@ -671,6 +685,10 @@ fn push_kind(
         eye_bone: model::bone_named(&parts, "eyes"),
         item_bones: [model::item_bone(&parts, false), model::item_bone(&parts, true)],
         bounds: bounds_of(&parts),
+        reach: {
+            let (lo, hi) = bounds_of(&parts);
+            lo.abs().max(hi.abs()).length() / 16.0
+        },
         cuboids: (c0, tables.0.len() as u32 - c0),
         corners: (v0, tables.1.len() as u32 - v0),
         parts,
@@ -863,6 +881,7 @@ impl Models {
             rows: Vec::new(),
             scratch: Vec::new(),
             counts: Vec::new(),
+            kept: FxHashMap::default(),
         };
         m.reload(gpu, assets);
         m
@@ -876,6 +895,7 @@ impl Models {
         self.files.clear();
         self.by_stack.clear();
         self.swings.clear();
+        self.kept.clear();
         self.new_skins.clear();
         let c = content();
         self.stock = STOCK_FILES
@@ -1393,6 +1413,16 @@ impl Models {
         }
     }
 
+    /// Whether `id` has bones kept for this model to go by.
+    pub fn has_kept(&self, id: u64, kind: u32) -> bool {
+        !self.kept.is_empty() && self.kept.get(&id).is_some_and(|k| k.0 == kind)
+    }
+
+    /// Forgets the bones of those `alive` says are gone.
+    pub fn retain_kept(&mut self, alive: impl Fn(u64) -> bool) {
+        self.kept.retain(|id, _| alive(*id));
+    }
+
     /// Poses many models at once, in parallel, straight into the bone table: per entity its kind,
     /// root, look, clips and layers. Nothing is allocated per entity (a thousand mobs are a
     /// thousand of each every frame).
@@ -1417,15 +1447,45 @@ impl Models {
             slices.push(a);
             rest = b;
         }
+        // Taken out of the map for the parallel part, so each is only one worker's, and back after.
+        let mut taken: Vec<Option<(u32, Vec<Mat4>)>> = Vec::with_capacity(entities.len());
+        taken.extend(entities.iter().map(|e| {
+            if e.lod == PoseLod::Direct {
+                return None;
+            }
+            Some(
+                self.kept
+                    .remove(&e.id)
+                    .unwrap_or_else(|| (e.kind, Vec::new())),
+            )
+        }));
         entities
             .par_iter()
             .enumerate()
             .zip(slices)
+            .zip(taken.par_iter_mut())
             .with_min_len(64)
             .for_each_init(
                 || (Vec::new(), Vec::new()),
-                |(scratch, list), ((i, e), out)| {
+                |(scratch, list), (((i, e), out), keep)| {
                     let Some(m) = kinds.get(e.kind as usize) else { return };
+                    if let Some((kept_kind, bones)) = keep {
+                        if e.lod == PoseLod::Fresh || bones.len() != m.parts.len() {
+                            list.clear();
+                            list.extend(playing_of(m, &clips[e.clips.0 as usize..e.clips.1 as usize]));
+                            model::pose(
+                                &m.parts,
+                                Mat4::IDENTITY,
+                                &Motion { pitch: e.pitch, head_yaw: e.head_yaw, aim_root: None, clips: list },
+                                bones,
+                            );
+                            *kept_kind = e.kind;
+                        }
+                        for (o, b) in out.iter_mut().zip(bones.iter()) {
+                            *o = rows(e.root * *b);
+                        }
+                        return;
+                    }
                     list.clear();
                     list.extend(playing_of(m, &clips[e.clips.0 as usize..e.clips.1 as usize]));
                     let aim_root = own.filter(|o| o.0 == i).map(|o| o.1);
@@ -1435,6 +1495,11 @@ impl Models {
                     }
                 },
             );
+        for (e, keep) in entities.iter().zip(taken) {
+            if let Some(k) = keep {
+                self.kept.insert(e.id, k);
+            }
+        }
         let mut first = base as u32;
         for (e, &n) in entities.iter().zip(&counts) {
             self.queue(e.kind, first, e.layers[..e.layer_count].iter().copied());
