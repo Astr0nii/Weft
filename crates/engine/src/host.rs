@@ -114,6 +114,15 @@ pub static HOST: Host = Host {
     gizmo,
     reg_client_hook,
     reg_client_entity_tick,
+    reg_client_entity_watcher,
+    reg_attach_model,
+    reg_bone_motion,
+    reg_item_model_when,
+    client_pose_bone: crate::app::api::client_pose_bone,
+    client_bone_position: crate::app::api::client_bone_position,
+    client_entity_action: crate::app::api::client_entity_action,
+    client_clip_length: crate::app::api::client_clip_length,
+    client_entity_held: crate::app::api::client_entity_held,
     client_entity_defaults: crate::app::api::client_entity_defaults,
     reg_packet,
     reg_key,
@@ -196,7 +205,7 @@ pub static HOST: Host = Host {
     reg_sound,
     reg_music,
     play_action,
-    swap_action,
+    replace_action,
     play_sound,
     client_play_sound: crate::app::api::client_play_sound,
     reg_spawn,
@@ -400,7 +409,7 @@ unsafe extern "C" fn reg_music(r: *mut abi::Registrar, d: *const abi::MusicDesc)
     }
 }
 
-unsafe extern "C" fn swap_action(w: *mut abi::WorldCtx, id: u64, from: Str, to: Str) {
+unsafe extern "C" fn replace_action(w: *mut abi::WorldCtx, id: u64, from: Str, to: Str) {
     unsafe {
         let d = dim(w);
         if d.entities.get(id).is_none() {
@@ -439,6 +448,20 @@ unsafe extern "C" fn swap_action(w: *mut abi::WorldCtx, id: u64, from: Str, to: 
 unsafe extern "C" fn play_action(w: *mut abi::WorldCtx, id: u64, name: Str, looping: u32) {
     unsafe {
         let d = dim(w);
+        // What loops goes on for whoever comes along later too, as anything else they should see.
+        let comp = content().game.field_comps[8];
+        let now = if looping != 0 { name.as_str().as_bytes() } else { &[] };
+        if d.entities.get(id).is_some()
+            && d.entities
+                .comps
+                .get(&(id, comp))
+                .map_or(&[][..], |b| &b[..])
+                != now
+        {
+            d.entities
+                .comps
+                .insert((id, comp), now.to_vec().into_boxed_slice());
+        }
         d.events
             .push(crate::server::DimEvent::PlayAction { id, name: name.as_str().to_string(), looping: looping != 0 });
     }
@@ -2173,6 +2196,41 @@ unsafe extern "C" fn reg_client_hook(r: *mut abi::Registrar, hook: u32, cb: Call
         }
         let owner = r.owner;
         r.game.client_hooks.push((owner, hook, cb));
+    }
+}
+
+unsafe extern "C" fn reg_client_entity_watcher(r: *mut abi::Registrar, kind: Str, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game
+            .client_entity_watchers
+            .push((owner, kind.as_str().to_string(), cb));
+    }
+}
+
+unsafe extern "C" fn reg_attach_model(r: *mut abi::Registrar, kind: Str, model: Str, bone: Str) {
+    unsafe {
+        let (kind, model, bone) = (kind.as_str().to_string(), model.as_str().to_string(), bone.as_str().to_string());
+        reg(r).game.attached_models.push((kind, model, bone));
+    }
+}
+
+unsafe extern "C" fn reg_bone_motion(r: *mut abi::Registrar, model: Str, bone: Str, gravity: f32, spring: f32, drag: f32) {
+    unsafe {
+        let d = crate::model::BoneMotion { gravity, spring, drag };
+        let (model, bone) = (model.as_str().to_string(), bone.as_str().to_string());
+        reg(r).game.bone_motions.push((model, bone, d));
+    }
+}
+
+unsafe extern "C" fn reg_item_model_when(r: *mut abi::Registrar, item: Str, cb: Callback) {
+    unsafe {
+        let r = reg(r);
+        let owner = r.owner;
+        r.game
+            .item_model_for_stack
+            .push((owner, item.as_str().to_string(), cb));
     }
 }
 

@@ -132,6 +132,17 @@ impl Server {
                 .conn
                 .send(ToClient::Skin { entity, png: png.to_vec() });
         }
+        let avatars: Vec<(u64, Arc<crate::net::AvatarData>)> = self
+            .players
+            .iter()
+            .filter(|o| o.joined && o.entity != id)
+            .filter_map(|o| o.avatar.clone().map(|a| (o.entity, a)))
+            .collect();
+        for (entity, avatar) in avatars {
+            self.players[pi]
+                .conn
+                .send(ToClient::Avatar { entity, avatar: (*avatar).clone() });
+        }
     }
 }
 

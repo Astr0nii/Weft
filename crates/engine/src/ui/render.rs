@@ -677,6 +677,13 @@ impl UiRenderer {
 
     /// Item icon: flat sprite, or an isometric cube for block items.
     pub fn item_icon(&mut self, c: &Content, tex: &GameTextures, x: f32, y: f32, size: f32, item: u32) {
+        if !self.model_icon(x, y, size, weft_abi::ItemStack { item, count: 1, data: 0 }) {
+            self.plain_icon(c, tex, x, y, size, item);
+        }
+    }
+
+    /// An item's own picture, what it shows until its model has one or without a model.
+    fn plain_icon(&mut self, c: &Content, tex: &GameTextures, x: f32, y: f32, size: f32, item: u32) {
         let looks = crate::client::looks::current();
         match looks.item_draw(c, item) {
             crate::client::looks::ItemDraw::Model(model) => self.boxes_icon(tex, x, y, size, model, &c.states[0]),
@@ -692,6 +699,17 @@ impl UiRenderer {
             }),
             crate::client::looks::ItemDraw::Block(state) => self.state_icon(c, tex, x, y, size, state),
             crate::client::looks::ItemDraw::Nothing => {}
+        }
+    }
+
+    /// The picture of what `stack` shows as if that is a model, drawn by now.
+    fn model_icon(&mut self, x: f32, y: f32, size: f32, stack: weft_abi::ItemStack) -> bool {
+        match crate::client::models::icon_of(stack) {
+            Some((t, uv)) => {
+                self.image(Rect { x, y, w: size, h: size }, t, uv, 0xFFFFFFFF);
+                true
+            }
+            None => false,
         }
     }
 
@@ -845,7 +863,9 @@ impl UiRenderer {
         }
         let s = 16.0 * scale;
         let (x, y) = (r.x + (r.w - s) / 2.0, r.y + (r.h - s) / 2.0);
-        self.item_icon(c, textures, x, y, s, stack.item);
+        if !self.model_icon(x, y, s, stack) {
+            self.plain_icon(c, textures, x, y, s, stack.item);
+        }
         let def = &c.items[stack.item as usize];
         let damage = crate::stack::damage(&stack);
         if def.durability > 0 && damage > 0 {

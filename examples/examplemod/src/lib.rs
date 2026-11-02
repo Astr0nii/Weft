@@ -199,20 +199,33 @@ fn client(_r: &mut Registry) {
     // static SCROLL: Item = Item::named("scroll");
     // static WAND: Item = Item::named("wand");
     // r.item(&GREATSWORD).two_handed();
-    // r.item(&SCROLL).one_handed_as("hold_one");
+    // r.item(&SCROLL).one_handed_action("hold_one");
     // r.item(&WAND).use_priority(10);
     //
     // A mob's goal that plays its own run instead of walking:
     // static SCARED: Entity = Entity::named("scared");
-    // r.entity(&SCARED).goals(ai::Goals::new().then(ai::playing("walk", "flee", ai::wander(4.0, 12.0))));
+    // r.entity(&SCARED).goals(ai::Goals::new().then(ai::replacing_action("walk", "flee", ai::wander(4.0, 12.0))));
+    //
+    // Any item as a model, in the hand, on the ground and in slots: models/apple.geo.json and
+    // textures/apple.png. All food at once, what has no file stays as it was:
+    // r.set_model("base:apple", "apple");
+    // r.set_model("#food", "food/{name}");
+    //
+    // A tail on who wears it, drawn in the player's pixels; swinging by itself, and wagged by code:
+    // static TAIL: Item = Item::named("tail");
+    // r.item(&TAIL).wearable_model(&EquipmentSlot::named("base:chest"), "tail", "body");
+    // r.bone_motion("tail", "tail2", BoneMotion::SPRINGY);
+    // r.on_entity_frame(&PLAYER, |c, e| {
+    //     c.turn_bone(e.id(), "tail1", [0.0, (e.age() * 6.0).sin() * 20.0, 0.0]);
+    // });
     //
     // Sparks around a mob while it lives, the engine's steps and idle noises kept:
     // static WISP: Entity = Entity::named("wisp");
     // static SPARK: Particle = Particle::named("spark");
-    // r.client_entity_tick(&WISP, |c, e| {
+    // r.client_entity_frame(&WISP, |c, e| {
     //     if e.dying().is_none() {
     //         c.spawn_particles(&SPARK, e.pos());
     //     }
-    //     e.engine_effects();
+    //     e.run_engine_effects();
     // });
 }

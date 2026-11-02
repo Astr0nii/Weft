@@ -230,6 +230,11 @@ impl Client {
                 }
             }
             ToClient::Skin { entity, png } => self.entity_render.skin_pending.push((entity, png)),
+            ToClient::Avatar { entity, avatar } => self
+                .entity_render
+                .avatar_pending
+                .push((entity, std::sync::Arc::new(avatar))),
+            ToClient::PlayerGone { entity } => self.entity_render.gone_pending.push(entity),
             ToClient::PlayAction(list) => {
                 for (id, name, looping) in list {
                     if id == self.player_id {

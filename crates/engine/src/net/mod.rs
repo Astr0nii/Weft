@@ -134,6 +134,27 @@ macro_rules! messages {
     };
 }
 
+/// How much of a player's own model is sent, all its files together.
+pub const AVATAR_BYTES: usize = 512 * 1024;
+
+wire_struct! {
+    /// A player's own model: its files, which the server passes on unread.
+    #[derive(Clone, Debug, Default)]
+    pub struct AvatarData {
+        pub geo: Vec<u8>,
+        pub animations: Vec<u8>,
+        pub bones: Vec<u8>,
+        pub png: Vec<u8>,
+        pub glow: Vec<u8>,
+    }
+}
+
+impl AvatarData {
+    pub fn size(&self) -> usize {
+        self.geo.len() + self.animations.len() + self.bones.len() + self.png.len() + self.glow.len()
+    }
+}
+
 wire_struct! {
     #[derive(Clone, Debug)]
     pub struct EntityView {
@@ -268,6 +289,10 @@ messages! {
         PlayAction(Vec<(u64, String, bool)>),
         /// A player's own skin (PNG), for their entity.
         Skin { entity: u64, png: Vec<u8> },
+        /// A player's own model, for their entity.
+        Avatar { entity: u64, avatar: AvatarData },
+        /// That player left: what they brought can go.
+        PlayerGone { entity: u64 },
     }
 }
 
@@ -324,6 +349,8 @@ messages! {
         Packet { channel: u32, data: Vec<u8> },
         /// The player's skin (PNG, 64 x 64 or 64 x 32).
         Skin(Vec<u8>),
+        /// The player's own model.
+        Avatar(AvatarData),
         /// The client's view distance in cubes: what the server announces edited cubes in.
         View(u32),
     }

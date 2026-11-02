@@ -570,11 +570,8 @@ impl Server {
             }
             ToServer::Skin(png) => {
                 // Only a skin's size of PNG: everyone else stores and uploads it.
-                let size = (png.len() <= 65536 && png.starts_with(b"\x89PNG") && png.len() > 24).then(|| {
-                    let at = |i: usize| u32::from_be_bytes(png[i..i + 4].try_into().unwrap());
-                    (at(16), at(20))
-                });
-                if !self.players[pi].joined || !matches!(size, Some((64, 64) | (64, 32))) {
+                let size = crate::assets::png_size(&png).filter(|_| png.len() <= 65536);
+                if !matches!(size, Some((64, 64) | (64, 32))) {
                     return;
                 }
                 let png = Arc::new(png);
@@ -582,6 +579,20 @@ impl Server {
                 self.players[pi].skin = Some(png.clone());
                 for p in self.players.iter_mut().filter(|p| p.joined) {
                     p.conn.send(ToClient::Skin { entity, png: png.to_vec() });
+                }
+            }
+            ToServer::Avatar(avatar) => {
+                // Once a stay, and only what fits: everyone else keeps it for as long as they play.
+                let allowed = crate::config::by_name("core:allow_avatars").is_none_or(|id| crate::config::get(id) != 0.0);
+                if self.players[pi].avatar.is_some() || avatar.size() > crate::net::AVATAR_BYTES || !allowed {
+                    return;
+                }
+                let avatar = Arc::new(avatar);
+                let entity = self.players[pi].entity;
+                self.players[pi].avatar = Some(avatar.clone());
+                for p in self.players.iter_mut().filter(|p| p.joined) {
+                    p.conn
+                        .send(ToClient::Avatar { entity, avatar: (*avatar).clone() });
                 }
             }
             ToServer::View(r) => {
@@ -600,8 +611,10 @@ impl Server {
                 }
                 log::info!("{} left", self.players[pi].name);
                 let line = Msg::new("multiplayer.left", vec![Arg::Text(self.players[pi].name.clone())]);
+                let entity = self.players[pi].entity;
                 for q in self.players.iter_mut().filter(|q| q.joined) {
                     q.conn.send(ToClient::Chat(line.clone()));
+                    q.conn.send(ToClient::PlayerGone { entity });
                 }
                 let Server { players, dims, storage, .. } = self;
                 let p = &mut players[pi];

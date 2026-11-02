@@ -563,6 +563,7 @@ impl Client {
         key: &str,
         view_radius: i32,
         skin: Option<Vec<u8>>,
+        avatar: Option<crate::net::AvatarData>,
     ) -> Result<Client, String> {
         let c = content();
         let render = WorldRenderer::new(gpu, c, textures, assets)?;
@@ -575,6 +576,9 @@ impl Client {
         conn.send(ToServer::View(view_radius as u32));
         if let Some(png) = skin {
             conn.send(ToServer::Skin(png));
+        }
+        if let Some(a) = avatar {
+            conn.send(ToServer::Avatar(a));
         }
         let (gpu_tx, gpu_rx) = crossbeam_channel::unbounded();
         let gpu_on = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1850,7 +1854,7 @@ impl Client {
     /// Copies an engine field component into the entity (or the own player) that shows it.
     fn engine_field(&mut self, id: u64, comp: u32, bytes: &[u8]) {
         let c = content();
-        let [health, burning, worn, shape, held, off_held, using, swaps] = c.game.field_comps;
+        let [health, burning, worn, shape, held, off_held, using, swaps, looping] = c.game.field_comps;
         let f: Vec<f32> = words(bytes).map(f32::from_le_bytes).collect();
         let shaped = || {
             let size = (f.len() == 4 && f[0] > 0.0).then(|| [f[0], f[1], f[2]]);
@@ -1896,6 +1900,12 @@ impl Client {
             e.held = words(bytes).next().map_or(0, u32::from_le_bytes);
         } else if comp == swaps {
             e.swaps = parse_swaps(bytes);
+        } else if comp == looping {
+            // For who wasn't around when it started; those who were have it from `PlayAction`.
+            let name = String::from_utf8_lossy(bytes);
+            if !name.is_empty() && e.action.as_ref().is_none_or(|a| a.0 != name) {
+                e.action = Some((name.into_owned(), e.age, true));
+            }
         } else if comp == off_held {
             e.off_held = words(bytes).next().map_or(0, u32::from_le_bytes);
         } else if comp == using {
@@ -2049,7 +2059,7 @@ impl Client {
     }
 
     /// The local player as an entity.
-    fn self_entity(&self) -> ClientEntity {
+    pub fn self_entity(&self) -> ClientEntity {
         let w = &content().game.player_layout.worn;
         let worn: Vec<u32> = self
             .inventory

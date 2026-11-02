@@ -571,7 +571,7 @@ impl Dim {
     /// Writes the fields clients show (`registry::HEALTH` ...) into their synced components when
     /// they differ, so they travel like mods' components. Absent ones stay absent while default.
     pub fn mirror_fields(&mut self, c: &Content) {
-        let [health, burning, worn, shape, held, off_held, using, _] = c.game.field_comps;
+        let [health, burning, worn, shape, held, off_held, using, ..] = c.game.field_comps;
         let maxes: Vec<(u64, f32)> = self
             .entities
             .list

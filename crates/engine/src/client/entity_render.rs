@@ -8,10 +8,11 @@ use crate::gpu_layout::box_mode;
 use glam::{DVec3, IVec3, Mat4, Quat, Vec3, Vec4};
 use rustc_hash::FxHashMap;
 
-use super::models::{Act, Clips, Play};
+use super::models::{Act, Clips, Fade, Play};
 use crate::block_model::Display;
 use crate::gpu_layout::rows;
 use crate::model::{Drive, role};
+use weft_abi::ItemStack;
 use weft_render::*;
 
 use super::ClientEntity;
@@ -40,6 +41,57 @@ pub struct Hand {
     pub lag: (f32, f32),
     /// The body shows too, not only what the clips bring up.
     pub body: bool,
+}
+
+/// A player's avatar: its model and what it is painted with.
+struct AvatarLook {
+    kind: u32,
+    tex: TextureId,
+    index: u32,
+    size: [u32; 2],
+    glow: Option<(TextureId, u32)>,
+}
+
+impl AvatarLook {
+    fn destroy(self, gpu: &mut dyn Backend) {
+        gpu.destroy_texture(self.tex);
+        if let Some((g, _)) = self.glow {
+            gpu.destroy_texture(g);
+        }
+    }
+}
+
+/// Biggest avatar texture, each way.
+const AVATAR_TEXTURE: u32 = 1024;
+
+/// A sheet of pictures of items' models, `ICON_CELLS` a side, each `ICON_PIXELS` big.
+struct IconSheet {
+    color: TextureId,
+    depth: TextureId,
+    index: u32,
+    used: u32,
+}
+
+const ICON_PIXELS: u32 = 64;
+const ICON_CELLS: u32 = 16;
+
+/// What something on an entity is.
+#[derive(Clone, Copy)]
+enum Carrying {
+    /// In a hand: a model, or a sprite or block when it is none.
+    Held { item: u32, model: Option<u32>, off: bool },
+    /// A model on one of its bones.
+    On { model: u32, bone: usize },
+}
+
+/// Something on an entity this frame: its place in `posed`, what, its light, its age and who.
+#[derive(Clone, Copy)]
+struct Carry {
+    holder: usize,
+    what: Carrying,
+    lit: u32,
+    age: f32,
+    id: u64,
 }
 
 /// Opaque pixels of a sprite, for drawing it as a 1/16 thick solid like vanilla's held items.
@@ -75,6 +127,29 @@ pub struct EntityRenderer {
     player_skins: FxHashMap<u64, (TextureId, u32, [u32; 2])>,
     /// Skins received and not uploaded yet.
     pub skin_pending: Vec<(u64, Vec<u8>)>,
+    /// Players' avatars as they sent them, as uploaded, and received but not looked at yet.
+    avatar_sent: FxHashMap<u64, std::sync::Arc<crate::net::AvatarData>>,
+    avatars: FxHashMap<u64, AvatarLook>,
+    pub avatar_pending: Vec<(u64, std::sync::Arc<crate::net::AvatarData>)>,
+    /// Players who left, their skins and avatars to go.
+    pub gone_pending: Vec<u64>,
+    /// The setting: other than the kind's own model, a player's avatar shows.
+    pub show_avatars: bool,
+    /// What plays on who coming in and going out, by entity and model: clips are the model's.
+    fades: FxHashMap<(u64, u32), Vec<Fade>>,
+    /// Actions asked for with no clip on a model, once said so.
+    warned_actions: rustc_hash::FxHashSet<(u32, String)>,
+    /// When the last frame was, and from where.
+    last_draw: std::time::Instant,
+    last_cam: DVec3,
+    /// The local player's stacks in hand: others show by the item alone.
+    own_stacks: [ItemStack; 2],
+    icon_views: Vec<BufferId>,
+    icon_sheets: Vec<IconSheet>,
+    /// Stacks whose picture comes next, and the model it is of.
+    icons_todo: Vec<(ItemStack, u32)>,
+    /// Pictures by model: however many stacks show as one have the one.
+    icon_of_model: FxHashMap<u32, (u32, [f32; 4])>,
     /// The local player's entity.
     pub local: u64,
     glows: FxHashMap<String, (TextureId, u32)>,
@@ -136,7 +211,24 @@ impl EntityRenderer {
             .map(|_| gpu.create_buffer(size_of::<Scene>() as u64, usage::STORAGE | usage::HOST, "preview scene"))
             .collect();
         let (item_pipe, hand_item_pipe) = Self::item_pipelines(gpu, assets)?;
+        let icon_views = (0..frames)
+            .map(|_| gpu.create_buffer(size_of::<Scene>() as u64, usage::STORAGE | usage::HOST, "icon scene"))
+            .collect();
         Ok(EntityRenderer {
+            avatar_sent: FxHashMap::default(),
+            avatars: FxHashMap::default(),
+            avatar_pending: Vec::new(),
+            gone_pending: Vec::new(),
+            icon_of_model: FxHashMap::default(),
+            show_avatars: true,
+            fades: FxHashMap::default(),
+            warned_actions: Default::default(),
+            last_draw: std::time::Instant::now(),
+            last_cam: DVec3::ZERO,
+            own_stacks: [ItemStack::default(); 2],
+            icon_views,
+            icon_sheets: Vec::new(),
+            icons_todo: Vec::new(),
             item_pipe,
             hand_item_pipe,
             item_models: FxHashMap::default(),
@@ -269,6 +361,21 @@ impl EntityRenderer {
             Err(e) => log::error!("model shader: {e}"),
         }
         self.models.reload(gpu, assets);
+        // Avatars are models, gone with the others: they come back from what was sent.
+        for (id, a) in self.avatars.drain() {
+            a.destroy(gpu);
+            if let Some(sent) = self.avatar_sent.get(&id) {
+                self.avatar_pending.push((id, sent.clone()));
+            }
+        }
+        // Clips and models have new numbers.
+        self.fades.clear();
+        self.icon_of_model.clear();
+        for s in self.icon_sheets.drain(..) {
+            gpu.destroy_texture(s.color);
+            gpu.destroy_texture(s.depth);
+        }
+        self.icons_todo.clear();
         // Skins and masks are read again the next time they are used.
         for t in self
             .skins
@@ -315,9 +422,61 @@ impl EntityRenderer {
         }
     }
 
+    /// Takes in player `entity`'s avatar: a model made of what it sent, painted with its picture.
+    fn set_avatar(&mut self, gpu: &mut dyn Backend, entity: u64, sent: std::sync::Arc<crate::net::AvatarData>) {
+        let fits = |png: &[u8]| crate::assets::png_size(png).is_some_and(|(w, h)| w <= AVATAR_TEXTURE && h <= AVATAR_TEXTURE);
+        let img = Some(&sent.png)
+            .filter(|p| fits(p))
+            .and_then(|p| crate::assets::decode_png(p));
+        let Some(img) = img else {
+            log::warn!("avatar of {entity}: no usable picture");
+            return;
+        };
+        let kind = match self.models.add_avatar(&sent) {
+            Ok(k) => k,
+            Err(e) => {
+                log::warn!("avatar of {entity}: {e}");
+                return;
+            }
+        };
+        let tex = gpu.create_texture(
+            &TextureDesc { width: img.width, height: img.height, mips: 1, format: Format::Rgba8Srgb, render_target: false },
+            "avatar",
+        );
+        gpu.write_texture(tex, 0, &img.rgba);
+        let glow = Some(&sent.glow)
+            .filter(|p| fits(p))
+            .and_then(|p| crate::assets::decode_png(p))
+            .filter(|g| (g.width, g.height) == (img.width, img.height))
+            .map(|g| {
+                let mask = crate::assets::glow_mask(&g.rgba);
+                let t = gpu.create_texture(
+                    &TextureDesc { width: g.width, height: g.height, mips: 1, format: Format::R8Unorm, render_target: false },
+                    "avatar glow",
+                );
+                gpu.write_texture(t, 0, &mask);
+                (t, gpu.texture_index(t))
+            });
+        let look = AvatarLook { kind, tex, index: gpu.texture_index(tex), size: [img.width, img.height], glow };
+        if let Some(old) = self.avatars.insert(entity, look) {
+            old.destroy(gpu);
+        }
+        self.avatar_sent.insert(entity, sent);
+    }
+
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {
         for (t, ..) in self.player_skins.drain().map(|(_, v)| v) {
             gpu.destroy_texture(t);
+        }
+        for a in self.avatars.drain().map(|(_, v)| v) {
+            a.destroy(gpu);
+        }
+        for s in self.icon_sheets.drain(..) {
+            gpu.destroy_texture(s.color);
+            gpu.destroy_texture(s.depth);
+        }
+        for b in self.icon_views.drain(..) {
+            gpu.destroy_buffer(b);
         }
         for (b, _) in self.buffers.drain(..) {
             gpu.destroy_buffer(b);
@@ -352,12 +511,44 @@ impl EntityRenderer {
         }
     }
 
-    /// Loads skins and worn textures the first time something visible uses them; `worn` is what
-    /// the local player wears.
-    pub fn preload(&mut self, gpu: &mut dyn Backend, assets: &Assets, entities: &FxHashMap<u64, ClientEntity>, worn: &[u32], held: &[u32]) {
+    /// Gets ready what this frame draws, before anything is recorded: it may put new models in the
+    /// tables. Loads skins and worn textures the first time something visible uses them; `worn` is
+    /// what the local player wears.
+    pub fn preload(
+        &mut self,
+        gpu: &mut dyn Backend,
+        assets: &Assets,
+        entities: &FxHashMap<u64, ClientEntity>,
+        worn: &[u32],
+        held: [ItemStack; 2],
+    ) {
         let c = content();
-        for &i in held {
-            self.load_held(gpu, assets, i);
+        for (id, sent) in std::mem::take(&mut self.avatar_pending) {
+            self.set_avatar(gpu, id, sent);
+        }
+        for id in std::mem::take(&mut self.gone_pending) {
+            self.avatar_sent.remove(&id);
+            if let Some(a) = self.avatars.remove(&id) {
+                a.destroy(gpu);
+            }
+            if let Some((t, ..)) = self.player_skins.remove(&id) {
+                gpu.destroy_texture(t);
+            }
+        }
+        for s in held {
+            self.load_sprite(assets, s.item);
+            self.models.model_for(assets, s);
+        }
+        self.own_stacks = held;
+        let wanted = std::mem::take(&mut super::models::ICONS.lock().unwrap().wanted);
+        for stack in wanted {
+            match self.models.model_for(assets, stack) {
+                Some(k) => match self.icon_of_model.get(&k) {
+                    Some(&icon) => super::models::icon_done(stack, Some(icon)),
+                    None => self.icons_todo.push((stack, k)),
+                },
+                None => super::models::icon_done(stack, None),
+            }
         }
         // Each kind and item looked at once per frame, without listing thousands of entities.
         let mut seen = std::mem::take(&mut self.seen_kinds);
@@ -371,6 +562,9 @@ impl EntityRenderer {
                 seen_items[e.item.item as usize] = true;
                 self.load_sprite(assets, e.item.item);
             }
+            if !e.item.is_empty() && !c.game.item_model_for_stack.is_empty() {
+                self.models.model_for(assets, e.item);
+            }
             if !std::mem::replace(&mut seen[e.look() as usize], true) {
                 self.load(gpu, assets, &c.game.entities[e.look() as usize].texture);
             }
@@ -382,7 +576,7 @@ impl EntityRenderer {
             for i in [e.held, e.off_held] {
                 if i != 0 && seen_items.get(i as usize).is_some_and(|s| !s) {
                     seen_items[i as usize] = true;
-                    self.load_held(gpu, assets, i);
+                    self.load_sprite(assets, i);
                 }
             }
         }
@@ -394,14 +588,28 @@ impl EntityRenderer {
                 self.load(gpu, assets, t);
             }
         }
-    }
-
-    /// What drawing an item in a hand takes.
-    fn load_held(&mut self, gpu: &mut dyn Backend, assets: &Assets, item: u32) {
-        self.load_sprite(assets, item);
-        if let Some(skin) = self.models.item_kinds.get(&item).map(|k| k.1.clone()) {
+        for skin in std::mem::take(&mut self.models.new_skins) {
             self.load(gpu, assets, &skin);
         }
+        self.models.sync(gpu);
+    }
+
+    /// The instance of a model that isn't an entity kind's, painted with its own texture.
+    fn model_layer(&self, kind: u32, light: u32, hurt: f32) -> Option<Instance> {
+        let m = self.models.kinds.get(kind as usize)?;
+        let skin = m.skin.as_ref()?;
+        let (_, tex, size) = self.skins.get(skin)?.as_ref()?;
+        let size = m.texture.unwrap_or(*size);
+        Some(Instance {
+            color: [1.0; 3],
+            light,
+            hurt,
+            tex: *tex,
+            tex_size: [size[0] as f32, size[1] as f32],
+            roles: u32::MAX,
+            glow: self.glows.get(skin).map_or(u32::MAX, |g| g.1),
+            ..Default::default()
+        })
     }
 
     /// The opaque pixels of an item's sprite, read the first time it is held or dropped.
@@ -595,6 +803,18 @@ impl EntityRenderer {
             glow: glow(&k.texture),
             ..Default::default()
         };
+        // An avatar is painted its own way, which armor's textures know nothing of.
+        if let Some(a) = self.avatar_of(entity, kind) {
+            let size = self
+                .models
+                .kinds
+                .get(a.kind as usize)
+                .and_then(|m| m.texture)
+                .unwrap_or(a.size);
+            out.0[0] = Instance { tex: a.index, tex_size: size.map(|v| v as f32), glow: a.glow.map_or(u32::MAX, |g| g.1), ..base };
+            out.1 = 1;
+            return out;
+        }
         out.0[0] = base;
         out.1 = 1;
         for &i in worn {
@@ -613,6 +833,126 @@ impl EntityRenderer {
             }
         }
         out
+    }
+
+    /// The action entity `id` is playing now, and how long a clip of `name` is on it, if it has one.
+    pub fn action_of<'a>(&self, id: u64, e: &'a ClientEntity) -> Option<&'a str> {
+        let (name, start, looping) = e.action.as_ref()?;
+        let m = self.models.kinds.get(self.model_kind(id, e) as usize)?;
+        let last = *m.action(e.held, name).last()?;
+        let done = m
+            .anims
+            .get(last as usize)?
+            .finished(e.age - start, *looping);
+        (!done).then_some(name.as_str())
+    }
+
+    pub fn clip_length(&self, id: u64, e: &ClientEntity, name: &str) -> Option<f32> {
+        let m = self.models.kinds.get(self.model_kind(id, e) as usize)?;
+        let last = *m.action(e.held, name).last()?;
+        Some(m.anims.get(last as usize)?.anim.length)
+    }
+
+    fn model_kind(&self, id: u64, e: &ClientEntity) -> u32 {
+        let look = e.look();
+        self.avatar_of(id, look).map_or(look, |a| a.kind)
+    }
+
+    fn avatar_of(&self, entity: u64, kind: u32) -> Option<&AvatarLook> {
+        if self.avatars.is_empty() || !self.show_avatars || kind != content().game.player_kind {
+            return None;
+        }
+        self.avatars.get(&entity)
+    }
+
+    /// Draws the pictures of items' models that slots asked for; whether there are new ones.
+    pub fn draw_icons(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo) -> bool {
+        if self.icons_todo.is_empty() {
+            return false;
+        }
+        let side = ICON_PIXELS * ICON_CELLS;
+        if self
+            .icon_sheets
+            .last()
+            .is_none_or(|s| s.used == ICON_CELLS * ICON_CELLS)
+        {
+            let desc = |format| TextureDesc { width: side, height: side, mips: 1, format, render_target: true };
+            let color = gpu.create_texture(&desc(Format::Rgba8Srgb), "item pictures");
+            let depth = gpu.create_texture(&desc(Format::Depth32), "item pictures depth");
+            self.icon_sheets
+                .push(IconSheet { color, depth, index: gpu.texture_index(color), used: 0 });
+            let unit = 2.0 * ICON_PIXELS as f32 / side as f32;
+            let proj = Mat4::from_cols(
+                Vec4::new(unit, 0.0, 0.0, 0.0),
+                Vec4::new(0.0, unit, 0.0, 0.0),
+                Vec4::new(0.0, 0.0, 0.1, 0.0),
+                Vec4::new(-1.0, 1.0, 0.5, 1.0),
+            );
+            for &vb in &self.icon_views {
+                let v = Scene { view_proj: proj.to_cols_array_2d(), params: [1e9, 2e9, 1.0, crate::shaders::time()], ..Default::default() };
+                gpu.mapped(vb)[..size_of::<Scene>()].copy_from_slice(bytemuck::bytes_of(&v));
+            }
+        }
+        let new_sheet = self.icon_sheets.last().is_some_and(|s| s.used == 0);
+        let Some(sheet) = self.icon_sheets.last() else { return false };
+        let (color, depth, index, mut used) = (sheet.color, sheet.depth, sheet.index, sheet.used);
+        self.models.begin();
+        // As block.json turns a block in a slot.
+        let turn = Mat4::from_rotation_x(30f32.to_radians()) * Mat4::from_rotation_y(225f32.to_radians());
+        while used < ICON_CELLS * ICON_CELLS {
+            let Some((stack, kind)) = self.icons_todo.pop() else { break };
+            if let Some(&icon) = self.icon_of_model.get(&kind) {
+                super::models::icon_done(stack, Some(icon));
+                continue;
+            }
+            let Some(layer) = self.model_layer(kind, FULL_LIGHT, 0.0) else {
+                super::models::icon_done(stack, None);
+                continue;
+            };
+            let Some(m) = self.models.kinds.get(kind as usize) else { continue };
+            let mut clips = Clips::default();
+            m.play(&mut clips, m.act(Act::Idle), &Play { looping: true, ..Play::default() });
+            m.play(&mut clips, m.action(0, "gui"), &Play::default());
+            let bones = self.models.pose_only(kind, turn, clips.all());
+            let Some(m) = self.models.kinds.get(kind as usize) else { continue };
+            // However it is shaped and turned, it fills the slot.
+            let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+            for (p, at) in m.parts.iter().zip(&bones) {
+                crate::model::part_points(p, |v| {
+                    let v = at.transform_point3(v);
+                    lo = lo.min(v);
+                    hi = hi.max(v);
+                });
+            }
+            let across = (hi.x - lo.x).max(hi.y - lo.y);
+            if !across.is_finite() || across <= 0.0 {
+                super::models::icon_done(stack, None);
+                continue;
+            }
+            let (col, row) = (used % ICON_CELLS, used / ICON_CELLS);
+            let cell = Vec3::new(col as f32 + 0.5, -(row as f32 + 0.5), 0.0);
+            let root = Mat4::from_translation(cell)
+                * Mat4::from_scale(Vec3::splat(0.92 / across))
+                * Mat4::from_translation(-(lo + hi) / 2.0)
+                * turn;
+            let first = self.models.pose_clips(kind, root, clips.all());
+            self.models.queue(kind, first, [layer]);
+            let f = 1.0 / ICON_CELLS as f32;
+            let icon = (index, [col as f32 * f, row as f32 * f, (col + 1) as f32 * f, (row + 1) as f32 * f]);
+            self.icon_of_model.insert(kind, icon);
+            super::models::icon_done(stack, Some(icon));
+            used += 1;
+        }
+        if let Some(s) = self.icon_sheets.last_mut() {
+            s.used = used;
+        }
+        let keep = if new_sheet { Some([0.0; 4]) } else { None };
+        list.push(Cmd::BeginPass { color: Some((Target::Texture(color), keep)), depth: Some((depth, Some(0.0))) });
+        let vb = self.icon_views[frame.slot];
+        self.models
+            .draw(gpu, list, frame, super::models::Batch::Icon, self.preview_pipe, vb);
+        list.push(Cmd::EndPass);
+        true
     }
 
     /// Renders the local player's model into a `size` texture (physical pixels), turned towards
@@ -658,12 +998,37 @@ impl EntityRenderer {
         let layers = self.layers(c.game.player_kind, self.local, worn, FULL_LIGHT, 0.0);
         self.models.begin();
         let root = Mat4::from_rotation_y(yaw) * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
-        self.models.add(
-            c.game.player_kind,
-            root,
-            &crate::model::Motion { pitch, head_yaw: 0.0, aim_root: None, clips: &[] },
-            layers.0[..layers.1].iter().copied(),
-        );
+        let kind = self
+            .avatar_of(self.local, c.game.player_kind)
+            .map_or(c.game.player_kind, |a| a.kind);
+        let clock = crate::shaders::time();
+        let idle = |m: &super::models::KindModel, t: f32| {
+            let mut clips = Clips::default();
+            m.play(&mut clips, m.act(Act::Idle), &Play { clock: t, looping: true, ..Play::default() });
+            clips
+        };
+        let clips = self
+            .models
+            .kinds
+            .get(kind as usize)
+            .map_or(Clips::default(), |m| idle(m, clock));
+        let first = self
+            .models
+            .add_clips(kind, root, (pitch, 0.0), clips.all(), layers.0[..layers.1].iter().copied());
+        let mut on: Vec<(u32, usize)> = Vec::new();
+        self.models
+            .carried_by(kind, worn, |model, bone| on.push((model, bone)));
+        for (model, bone) in on {
+            let Some(layer) = self.model_layer(model, FULL_LIGHT, 0.0) else { continue };
+            let at = self.models.bone(first as usize + bone);
+            let clips = self
+                .models
+                .kinds
+                .get(model as usize)
+                .map_or(Clips::default(), |m| idle(m, clock));
+            let bones = self.models.pose_clips(model, at, clips.all());
+            self.models.queue(model, bones, [layer]);
+        }
         let vb = self.preview[frame.slot];
         // Full daylight, no fog.
         let v = Scene { view_proj: proj.to_cols_array_2d(), params: [1e9, 2e9, 1.0, crate::shaders::time()], ..Default::default() };
@@ -710,6 +1075,10 @@ impl EntityRenderer {
         instances.clear();
         let rel = |p: DVec3| (p - cam.pos).as_vec3();
         let shade = |p: DVec3| light(p.floor().as_ivec3());
+        let dt = std::mem::replace(&mut self.last_draw, std::time::Instant::now())
+            .elapsed()
+            .as_secs_f32();
+        let moved = (cam.pos - std::mem::replace(&mut self.last_cam, cam.pos)).as_vec3();
 
         // Models: bones posed here (in parallel when many), drawn instanced per kind.
         let mut posed = std::mem::take(&mut self.posed);
@@ -720,8 +1089,7 @@ impl EntityRenderer {
         if hand.is_none() {
             self.camera_kick = (Vec3::ZERO, 0.0, 0.0);
         }
-        // Who holds something: its place in `posed`, the item, its light, in the other hand, its age.
-        let mut holders: Vec<(usize, u32, u32, bool, f32)> = Vec::new();
+        let mut carried: Vec<Carry> = Vec::new();
         // The first person: its place in `posed`, its layers before the arms were left out of
         // them and which arms the clips bring up.
         let mut own_hand: Option<(usize, [Instance; super::models::MAX_LAYERS], usize, u32)> = None;
@@ -738,19 +1106,49 @@ impl EntityRenderer {
             // Below zero the model's shader flashes white instead of red.
             let hurt = if e.flash > 0.0 { -1.0 } else { (e.hurt / 0.5).clamp(0.0, 1.0) };
             if !e.item.is_empty() {
-                if let Some(m) = self.item_model(textures, e.item.item) {
+                // Made of bones: posed like anything else that is, its feet off the ground.
+                let bones = self
+                    .models
+                    .model_seen(e.item)
+                    .and_then(|k| Some((k, self.model_layer(k, lit, hurt)?)));
+                if let Some((kind, layer)) = bones {
+                    let m = &self.models.kinds[kind as usize];
+                    let mut clips = Clips::default();
+                    let how = Play { clock: e.age, looping: true, ..Play::default() };
+                    m.play(&mut clips, m.act(Act::Idle), &how);
+                    m.play(&mut clips, m.act(Act::Ground), &how);
+                    let (lo, hi) = m.bounds;
+                    let root = ground_spin(base, e.age)
+                        * Mat4::from_scale(Vec3::splat(0.5 / 16.0))
+                        * Mat4::from_translation(Vec3::new(-(lo.x + hi.x) / 2.0, -lo.y, -(lo.z + hi.z) / 2.0));
+                    let from = self.models.clips.len() as u32;
+                    self.models.clips.extend_from_slice(clips.all());
+                    let mut layers = [Instance::default(); MAX_LAYERS];
+                    layers[0] = layer;
+                    posed.push(Posed {
+                        id,
+                        kind,
+                        root,
+                        pitch: 0.0,
+                        head_yaw: 0.0,
+                        clips: (from, self.models.clips.len() as u32),
+                        layers,
+                        layer_count: 1,
+                    });
+                } else if let Some(m) = self.item_model(textures, e.item.item) {
                     instances.push((e.item.item, item_instance(ground_transform(base, e.age, e.item.item), m.0, hurt, lit)));
                 }
                 continue;
             }
-            let kind = e.look();
+            let look = e.look();
+            let kind = self.model_kind(id, e);
             let own_view = id == self.local && hand.is_some();
             // With its body showing the player sees its real arms, moving as anyone else sees them.
             // Without it there is nothing for them to be attached to: they are held in the view.
             let body = own_view && hand.as_ref().is_some_and(|h| h.body);
             let in_view = own_view && !body;
             let hurt = if own_view { 0.0 } else { hurt };
-            let (mut layers, mut layer_count) = self.layers(kind, id, &e.worn, lit, hurt);
+            let (mut layers, mut layer_count) = self.layers(look, id, &e.worn, lit, hurt);
             if layer_count == 0 {
                 continue;
             }
@@ -815,12 +1213,11 @@ impl EntityRenderer {
                     // What it holds, and what it does with that. An item for both hands in the
                     // other hand, or with something there, plays what it has for one.
                     let hold_in = |item: u32, busy: bool| -> &str {
-                        match crate::content::one_handed_action(c, item).filter(|_| busy && crate::content::two_handed(c, item)) {
-                            Some(one) => one,
-                            None => swapped(item, hold_of(c, m, item)),
-                        }
+                        let one =
+                            if busy && crate::content::two_handed(c, item) { crate::content::one_handed_action(c, item) } else { None };
+                        one.unwrap_or_else(|| swapped(item, hold_of(c, m, item)))
                     };
-                    let held_how = Play { looping: true, aim: true, ..how };
+                    let held_how = Play { looping: true, aim: true, hand: true, ..how };
                     if e.held != 0 {
                         m.play(&mut clips, m.action_seen(e.held, hold_in(e.held, e.off_held != 0), in_view), &held_how);
                     } else if in_view {
@@ -833,7 +1230,7 @@ impl EntityRenderer {
                             &Play { mirror: true, ..held_how },
                         );
                     }
-                    let progress = Play { drive: Drive::Progress, aim: in_view, ..how };
+                    let progress = Play { drive: Drive::Progress, aim: in_view, hand: true, ..how };
                     if let Some(h) = hand.as_ref().filter(|_| in_view) {
                         m.play(
                             &mut clips,
@@ -865,6 +1262,10 @@ impl EntityRenderer {
                 if let Some((name, start, looping)) = &e.action {
                     let secs = e.age - start;
                     let list = m.action_seen(e.held, name, in_view);
+                    if list.is_empty() && !self.warned_actions.contains(&(kind, name.clone())) {
+                        log::warn!("no clip for action {name} on {}", c.game.entities[look as usize].name);
+                        self.warned_actions.insert((kind, name.clone()));
+                    }
                     let running = list
                         .last()
                         .and_then(|&i| m.anims.get(i as usize))
@@ -873,10 +1274,18 @@ impl EntityRenderer {
                         m.play(&mut clips, list, &Play { clock: secs, looping: *looping, aim: in_view, ..how });
                     }
                 }
+                // Coming and going smoothly. Nearly all of a crowd has nothing here to look at.
+                if clips.n > standing || (!self.fades.is_empty() && self.fades.contains_key(&(id, kind))) {
+                    let fades = self.fades.entry((id, kind)).or_default();
+                    super::models::fade_clips(fades, m, &mut clips, standing, dt);
+                    if fades.is_empty() {
+                        self.fades.remove(&(id, kind));
+                    }
+                }
             }
             if own_view {
                 // Its model goes where the camera is: the camera doesn't sit in the torso, whatever pose it's in.
-                let eye = c.game.entities[kind as usize].eye;
+                let eye = c.game.entities[look as usize].eye;
                 if let Some(at) = self
                     .models
                     .eye_point(kind, root, &clips.all()[..standing], eye)
@@ -938,7 +1347,7 @@ impl EntityRenderer {
                 self.camera_kick = kick;
                 own_hand = in_view.then_some((posed.len(), layers, layer_count, arms_up));
                 for l in &mut layers[..layer_count] {
-                    l.roles &= !(1 << role::HEAD | arms_up);
+                    l.roles &= !(1 << role::HEAD | 1 << role::ON_HEAD | arms_up);
                 }
                 if !body {
                     layer_count = 0;
@@ -946,20 +1355,47 @@ impl EntityRenderer {
             }
             let from = self.models.clips.len() as u32;
             self.models.clips.extend_from_slice(clips.all());
-            posed.push(Posed { kind, root, pitch, head_yaw, clips: (from, self.models.clips.len() as u32), layers, layer_count });
+            posed.push(Posed { id, kind, root, pitch, head_yaw, clips: (from, self.models.clips.len() as u32), layers, layer_count });
+            let carry = |what| Carry { holder: posed.len() - 1, what, lit, age: e.age, id };
             if !sleeping {
-                let age = e.age;
-                if e.held != 0 {
-                    holders.push((posed.len() - 1, e.held, lit, false, age));
+                for (item, off) in [(e.held, false), (e.off_held, true)] {
+                    if item != 0 {
+                        // Its stack is known of the local player only.
+                        let shown = if id == self.local { self.own_stacks[off as usize] } else { ItemStack { item, count: 1, data: 0 } };
+                        let model = self.models.model_seen(shown);
+                        carried.push(carry(Carrying::Held { item, model, off }));
+                    }
                 }
-                if e.off_held != 0 {
-                    holders.push((posed.len() - 1, e.off_held, lit, true, age));
-                }
+            }
+            // Held in the view, there is no body to have anything on.
+            if !in_view {
+                let parts = self
+                    .models
+                    .kinds
+                    .get(kind as usize)
+                    .map_or(&[][..], |m| m.parts.as_slice());
+                self.models.carried_by(kind, &e.worn, |model, bone| {
+                    let on_head = matches!(parts[bone].role, role::HEAD | role::ON_HEAD);
+                    if !(own_view && on_head) {
+                        carried.push(carry(Carrying::On { model, bone }));
+                    }
+                });
             }
         }
         let vb = scene_buf;
         let first_bone = self.models.bones_so_far();
         self.models.add_many(&posed, aim_root);
+        // Where each one's bones start.
+        let mut firsts = Vec::with_capacity(posed.len());
+        let mut at = first_bone;
+        for p in &posed {
+            firsts.push(at);
+            at += self
+                .models
+                .kinds
+                .get(p.kind as usize)
+                .map_or(0, |m| m.parts.len());
+        }
         // The first person's arms lag behind a turning camera. Its bones are the last ones.
         let mut own_first = 0;
         if let (Some((i, ..)), Some(h)) = (&own_hand, &hand) {
@@ -968,7 +1404,7 @@ impl EntityRenderer {
                 .kinds
                 .get(posed[*i].kind as usize)
                 .map_or(&[][..], |m| m.parts.as_slice());
-            own_first = self.models.bones_so_far() - parts.len();
+            own_first = firsts[*i];
             let arms: Vec<usize> = parts
                 .iter()
                 .enumerate()
@@ -976,69 +1412,82 @@ impl EntityRenderer {
                 .map(|(i, _)| i)
                 .collect();
             let lag = steady.inverse() * Mat4::from_rotation_x(-h.lag.0 * 0.1) * Mat4::from_rotation_y(-h.lag.1 * 0.1) * steady;
+            let kind = posed[*i].kind;
             for a in arms {
-                self.models.move_bone(own_first + a, lag);
+                self.models.move_subtree(kind, own_first, a, lag);
             }
+        }
+        // What moves by itself, once clips and the rest are done.
+        for (p, &at) in posed.iter().zip(&firsts) {
+            self.models.located_at(p.id, p.kind, at);
+            self.models.move_live(p.id, p.kind, 0, at, dt, moved);
         }
         let mut hand_items: Vec<(GpuBox, u32)> = Vec::new();
         let mut own_items: Vec<(u32, u32, Instance)> = Vec::new();
-        let (mut at, mut next) = (first_bone, 0);
-        for (holder, item, lit, off, age) in holders {
-            at += posed[next..holder]
-                .iter()
-                .filter_map(|p| self.models.kinds.get(p.kind as usize))
-                .map(|m| m.parts.len())
-                .sum::<usize>();
-            next = holder;
+        for Carry { holder, what, lit, age, id } in carried {
+            let at = firsts[holder];
             let parts = self
                 .models
                 .kinds
                 .get(posed[holder].kind as usize)
                 .map(|m| m.parts.as_slice())
                 .unwrap_or_default();
-            let side = if off { role::ARM_LEFT } else { role::ARM_RIGHT };
-            let Some(i) = parts.iter().position(|p| p.role == side) else {
-                continue;
-            };
-            let arm = self.models.bone(at + i) * Mat4::from_translation(Vec3::from_array(parts[i].pivot));
             let own = own_hand.as_ref().is_some_and(|o| o.0 == holder);
-            // Made of bones: posed by the holder's clips of the same names, from the palm.
-            if let Some(&(kind, ref skin)) = self.models.item_kinds.get(&item) {
-                let layer = self
-                    .skins
-                    .get(skin)
-                    .and_then(|s| s.as_ref())
-                    .map(|(_, tex, size)| Instance {
-                        color: [1.0; 3],
-                        light: lit,
-                        tex: *tex,
-                        tex_size: [size[0] as f32, size[1] as f32],
-                        roles: u32::MAX,
-                        glow: u32::MAX,
-                        ..Default::default()
-                    });
-                let root = palm(arm) * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
-                let (from, to) = posed[holder].clips;
-                let clips = self
-                    .models
-                    .clips_along(kind, posed[holder].kind, &self.models.clips[from as usize..to as usize], age, off);
-                let bones = self.models.pose_clips(kind, root, clips.all());
-                if let Some(l) = layer {
-                    if own {
-                        own_items.push((kind, bones, l));
-                    } else {
-                        self.models.queue(kind, bones, [l]);
+            let (model, root, off, slot) = match what {
+                Carrying::On { model, bone } => (Some(model), self.models.bone(at + bone), false, model + 2),
+                Carrying::Held { item, model, off } => {
+                    let side = if off { role::ARM_LEFT } else { role::ARM_RIGHT };
+                    let holder_model = self.models.kinds.get(posed[holder].kind as usize);
+                    // Its bone for it, as a shoulder that far up the arm from there; else the arm.
+                    let on_bone = holder_model.and_then(|m| m.item_bones[off as usize]);
+                    let arm = match on_bone {
+                        Some(b) => {
+                            self.models.bone(at + b) * Mat4::from_translation(Vec3::from_array(parts[b].pivot) + Vec3::Y * PALM_PIXELS)
+                        }
+                        None => {
+                            let Some(i) = parts.iter().position(|p| p.role == side) else {
+                                continue;
+                            };
+                            self.models.bone(at + i) * Mat4::from_translation(Vec3::from_array(parts[i].pivot))
+                        }
+                    };
+                    if model.is_none() {
+                        if let Some(m) = self.item_model(textures, item) {
+                            let display = self.models.displays.get(&item).copied();
+                            let inst = item_instance(held_transform(arm, item, off, display), m.0, 0.0, lit);
+                            if own {
+                                hand_items.push((inst, m.1));
+                            } else {
+                                instances.push((item, inst));
+                            }
+                        }
+                        continue;
                     }
+                    (model, palm(arm) * Mat4::from_scale(Vec3::splat(1.0 / 16.0)), off, off as u32)
                 }
-            } else if let Some(m) = self.item_model(textures, item) {
-                let display = self.models.displays.get(&item).copied();
-                let inst = item_instance(held_transform(arm, item, off, display), m.0, 0.0, lit);
+            };
+            // A model: posed by the holder's clips of the same names, then whatever moves by itself.
+            let Some(kind) = model else { continue };
+            let (from, to) = posed[holder].clips;
+            let clips = self
+                .models
+                .clips_along(kind, posed[holder].kind, &self.models.clips[from as usize..to as usize], age, off);
+            let bones = self.models.pose_clips(kind, root, clips.all());
+            self.models.located_at(id, kind, bones as usize);
+            self.models
+                .move_live(id, kind, slot, bones as usize, dt, moved);
+            if let Some(l) = self.model_layer(kind, lit, 0.0) {
                 if own {
-                    hand_items.push((inst, m.1));
+                    own_items.push((kind, bones, l));
                 } else {
-                    instances.push((item, inst));
+                    self.models.queue(kind, bones, [l]);
                 }
             }
+        }
+        self.models.end_located(cam.pos);
+        if self.models.frame_number() % 256 == 0 {
+            let alive = |id: &u64| *id == self.local || entities.contains_key(id);
+            self.fades.retain(|id, _| alive(&id.0));
         }
         self.posed = posed;
         self.models
@@ -1372,19 +1821,27 @@ fn hold_of(c: &crate::content::Content, m: &super::models::KindModel, item: u32)
     if tool && !m.has_own(item, "hold") { "hold_tool" } else { "hold" }
 }
 
+/// From the shoulder to the palm, along the arm.
+const PALM_PIXELS: f32 = 10.0;
+
 /// Where a model of bones held in the hand has its origin: on the palm, its front (-Z) along the
 /// arm, so an arm held out points it ahead with its top (+Y) up.
 fn palm(arm: Mat4) -> Mat4 {
     arm * Mat4::from_scale(Vec3::splat(16.0))
-        * Mat4::from_translation(Vec3::new(0.0, -10.0 / 16.0, 0.0))
+        * Mat4::from_translation(Vec3::new(0.0, -PALM_PIXELS / 16.0, 0.0))
         * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2)
+}
+
+/// How a dropped item turns and bobs.
+fn ground_spin(base: Vec3, age: f32) -> Mat4 {
+    let bob = (age * 2.5).sin() * 0.06 + 0.15;
+    Mat4::from_translation(base + Vec3::Y * bob) * Mat4::from_rotation_y(age * 1.5)
 }
 
 /// Dropped items spin and bob: a block a quarter of a block across, a sprite half a block
 /// (vanilla's ground transforms).
 fn ground_transform(base: Vec3, age: f32, item: u32) -> Mat4 {
-    let bob = (age * 2.5).sin() * 0.06 + 0.15;
-    let spin = Mat4::from_translation(base + Vec3::Y * bob) * Mat4::from_rotation_y(age * 1.5);
+    let spin = ground_spin(base, age);
     if shows_block(item) {
         spin * Mat4::from_translation(Vec3::splat(-0.125)) * Mat4::from_scale(Vec3::splat(0.25))
     } else {

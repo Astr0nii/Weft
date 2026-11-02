@@ -71,6 +71,7 @@ pub fn all() -> Vec<TestDef> {
         gameplay::advancements,
         gameplay::beds,
         gameplay::second_hand,
+        gameplay::model_bones,
         gameplay::beds_far,
         gameplay::dedicated_server,
         gameplay::base_alone,

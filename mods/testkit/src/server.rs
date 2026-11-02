@@ -417,6 +417,11 @@ const OPS: &[(&str, &str, Run)] = &[
             .set(int(cmd, "index")?, ItemStack::new(id(cmd, "item")?, int(cmd, "count").unwrap_or(1)));
         Ok(String::new())
     }),
+    ("wear", "@owner <index:int> <amount:int>", |w, cmd, _, _| {
+        let (inv, i) = (w.inventory(owner(w, cmd)?), int(cmd, "index")?);
+        inv.set(i, inv.get(i).with_damage(int(cmd, "amount")?));
+        Ok(String::new())
+    }),
     ("insert", "<pos:pos> <item:item> [count:int]", |w, cmd, _, _| {
         let p = pos(cmd, "pos")?;
         let o = match w.block_entity(p) {
@@ -518,8 +523,8 @@ const OPS: &[(&str, &str, Run)] = &[
     }),
     ("swap", "<id:int> <from:word> [to:word]", |w, cmd, _, _| {
         match cmd.text("to") {
-            Some(to) => w.swap_action(int(cmd, "id")?, word(cmd, "from")?, to),
-            None => w.unswap_action(int(cmd, "id")?, word(cmd, "from")?),
+            Some(to) => w.replace_action(int(cmd, "id")?, word(cmd, "from")?, to),
+            None => w.restore_action(int(cmd, "id")?, word(cmd, "from")?),
         }
         Ok(String::new())
     }),

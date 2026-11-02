@@ -20,16 +20,21 @@ impl World {
         unsafe { (host().play_action)(self.raw(), id, Str::new(name), looping as u32) }
     }
 
+    /// Stops the action `play_action` started.
+    pub fn stop_action(&self, id: u64) {
+        self.play_action(id, "", false);
+    }
+
     /// While this holds, entity `id` plays action `to` wherever it would play `from`: a creeper
     /// running from a cat plays its own run instead of `walk`. Everyone who sees it sees it, and
     /// without a clip for `to` it goes on playing `from`.
-    pub fn swap_action(&self, id: u64, from: &str, to: &str) {
-        unsafe { (host().swap_action)(self.raw(), id, Str::new(from), Str::new(to)) }
+    pub fn replace_action(&self, id: u64, from: &str, to: &str) {
+        unsafe { (host().replace_action)(self.raw(), id, Str::new(from), Str::new(to)) }
     }
 
-    /// Ends `swap_action`.
-    pub fn unswap_action(&self, id: u64, from: &str) {
-        unsafe { (host().swap_action)(self.raw(), id, Str::new(from), Str::new("")) }
+    /// Ends `replace_action`.
+    pub fn restore_action(&self, id: u64, from: &str) {
+        unsafe { (host().replace_action)(self.raw(), id, Str::new(from), Str::new("")) }
     }
 
     pub fn light(&self, pos: [i32; 3]) -> u32 {
@@ -778,13 +783,7 @@ impl EntityBuilder<'_> {
             .push(Pending::text(abi::comp::SOUND, &prefix));
         self
     }
-    /// Model from `models/<name>.geo.json` (Bedrock geometry, as Blockbench exports it) instead of
-    /// the parts in code. A file named like the kind is used even without this.
-    pub fn model_file(mut self, name: &str) -> Self {
-        let name = crate::asset("", name);
-        self.components.push(Pending::text(abi::comp::MODEL, &name));
-        self
-    }
+
     /// Keyframe animations from `animations/<name>.animation.json`: `idle` and `walk` play by
     /// themselves, others with `World::play_action`. A file named like the kind is used even
     /// without this.
@@ -875,13 +874,13 @@ fn raw_part(p: &Part) -> abi::ModelPart {
     }
 }
 
-impl Registry {
-    /// The model of a kind registered elsewhere, another mod's or the engine's (`core:player`
-    /// is drawn with `biped(false)` by base); a later mod's wins.
-    pub fn entity_model(&mut self, kind: &Entity, model: impl Into<Model>) {
-        let m = model.into();
-        let parts: Vec<abi::ModelPart> = m.parts.iter().map(raw_part).collect();
-        unsafe { (host().reg_entity_model)(self.raw, Str::new(kind.name()), Slice::new(&parts), m.uv[0], m.uv[1]) }
+impl crate::content::ModelSource for Model {
+    /// A kind's model, another mod's or the engine's (`core:player` is drawn with `biped(false)` by
+    /// base); a later mod's wins.
+    fn set_on(self, r: &mut Registry, what: crate::content::Target<'_>) {
+        let parts: Vec<abi::ModelPart> = self.parts.iter().map(raw_part).collect();
+        let kind = crate::qualify(r.ns, what.name());
+        unsafe { (host().reg_entity_model)(r.raw, Str::new(&kind), Slice::new(&parts), self.uv[0], self.uv[1]) }
     }
 }
 

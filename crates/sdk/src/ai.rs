@@ -99,21 +99,21 @@ impl<G: Goal> Goal for Playing<G> {
     fn run(&self, w: &World, id: u64, st: &EntityState) -> bool {
         let on = self.goal.run(w, id, st);
         if on {
-            w.swap_action(id, self.from, self.to);
+            w.replace_action(id, self.from, self.to);
         } else {
-            w.unswap_action(id, self.from);
+            w.restore_action(id, self.from);
         }
         on
     }
 
     fn passed_over(&self, w: &World, id: u64) {
-        w.unswap_action(id, self.from);
+        w.restore_action(id, self.from);
         self.goal.passed_over(w, id);
     }
 }
 
 /// `goal`, and while it is what the mob does, it plays action `to` wherever it would play `from`.
-pub fn playing(from: &'static str, to: &'static str, goal: impl Goal) -> impl Goal {
+pub fn replacing_action(from: &'static str, to: &'static str, goal: impl Goal) -> impl Goal {
     Playing { from, to, goal }
 }
 

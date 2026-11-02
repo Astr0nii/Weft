@@ -213,6 +213,13 @@ pub struct LoadedTexture {
     pub anim: Option<Anim>,
 }
 
+/// A picture of the `_e.png` kind as a mask: it glows by its red channel times alpha.
+pub fn glow_mask(rgba: &[u8]) -> Vec<u8> {
+    rgba.chunks_exact(4)
+        .map(|p| (p[0] as u32 * p[3] as u32 / 255) as u8)
+        .collect()
+}
+
 /// Emission like LabPBR, only that part of it: `<name>_s.png` (a LabPBR specular map) glows by
 /// its alpha, 0..254 from none to full and 255 for none; or our own `<name>_e.png`, glowing by
 /// its red channel times alpha. Same size and frames as the texture, and from the same pack or
@@ -225,11 +232,7 @@ pub fn emission_mask(assets: &Assets, name: &str) -> Option<Image> {
             .and_then(|b| decode_png(&b))
     };
     if let Some(mut img) = read("_e") {
-        img.rgba = img
-            .rgba
-            .chunks_exact(4)
-            .map(|p| (p[0] as u32 * p[3] as u32 / 255) as u8)
-            .collect();
+        img.rgba = glow_mask(&img.rgba);
         return Some(img);
     }
     let mut img = read("_s")?;
@@ -607,7 +610,8 @@ pub fn texture_size(name: &str) -> Option<(u32, u32)> {
     size
 }
 
-fn png_size(b: &[u8]) -> Option<(u32, u32)> {
+/// How big a PNG says it is, before anything is unpacked.
+pub fn png_size(b: &[u8]) -> Option<(u32, u32)> {
     let w = u32::from_be_bytes(b.get(16..20)?.try_into().ok()?);
     let h = u32::from_be_bytes(b.get(20..24)?.try_into().ok()?);
     (b.starts_with(b"\x89PNG") && w > 0 && h > 0).then_some((w, h))

@@ -399,6 +399,35 @@ fn off_bed(t: &T, foot: [i32; 3]) -> f64 {
 /// player comes back at the bed. Breaking one half takes the other and drops one bed, and an
 /// explosion taking one half takes the other too.
 /// The second hand: what goes first on a right click, and what needs both hands.
+/// What is on an entity is where a mod can ask, moves when a mod says, and what dangles hangs.
+pub async fn model_bones(t: T) -> R {
+    t.flat().await?;
+    let me = t.c().player();
+    let at = |bone: &str| t.c().bone_position(me, bone);
+    t.op("put me 0 testmod:lantern").await?;
+    t.secs(2.5).await?;
+    t.check(at("no_such_bone").is_none(), "no bone of that name");
+    let (hook, lamp) = (at("hook").ok_or("the lantern's hook")?, at("hanging_lamp").ok_or("the lantern's lamp")?);
+    t.check(hook[1] - lamp[1] > 0.5, format!("it hangs from the hand: {hook:?} {lamp:?}"));
+    t.check((hook[0] - lamp[0]).abs() + (hook[2] - lamp[2]).abs() < 0.3, format!("straight down when still: {hook:?} {lamp:?}"));
+    // Past its hold easing in.
+    t.op("put me 0 testmod:greatsword").await?;
+    t.secs(0.5).await?;
+    let tip = at("tip").ok_or("the sword's tip")?;
+    for _ in 0..6 {
+        t.c().turn_bone(me, "blade", [90.0, 0.0, 0.0]);
+        t.frames(1).await?;
+    }
+    let bent = at("tip").ok_or("the sword's tip")?;
+    let moved: f64 = (0..3).map(|i| (tip[i] - bent[i]).powi(2)).sum();
+    t.check(moved > 0.1, format!("a mod turned the blade: {tip:?} to {bent:?}"));
+    t.frames(4).await?;
+    let back = at("tip").ok_or("the sword's tip")?;
+    let again: f64 = (0..3).map(|i| (tip[i] - back[i]).powi(2)).sum();
+    t.check(again < 0.01, format!("for as long as it said so: {tip:?} and {back:?}"));
+    Ok(())
+}
+
 pub async fn second_hand(t: T) -> R {
     t.flat().await?;
     let f = t.feet();

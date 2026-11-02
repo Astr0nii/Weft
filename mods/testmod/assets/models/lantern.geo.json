@@ -1,0 +1,153 @@
+{
+ "format_version": "1.12.0",
+ "minecraft:geometry": [
+  {
+   "description": {
+    "identifier": "geometry.lantern",
+    "texture_width": 64,
+    "texture_height": 64
+   },
+   "bones": [
+    {
+     "name": "hook",
+     "pivot": [
+      0,
+      0,
+      0
+     ],
+     "cubes": [
+      {
+       "origin": [
+        -1,
+        -1,
+        -1
+       ],
+       "size": [
+        2,
+        2,
+        2
+       ],
+       "uv": [
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "name": "hanging_chain",
+     "pivot": [
+      0,
+      0,
+      0
+     ],
+     "cubes": [
+      {
+       "origin": [
+        -0.5,
+        -7,
+        -0.5
+       ],
+       "size": [
+        1,
+        7,
+        1
+       ],
+       "uv": [
+        8,
+        0
+       ]
+      }
+     ],
+     "parent": "hook"
+    },
+    {
+     "name": "hanging_chain2",
+     "pivot": [
+      0,
+      -7,
+      0
+     ],
+     "cubes": [
+      {
+       "origin": [
+        -0.5,
+        -13,
+        -0.5
+       ],
+       "size": [
+        1,
+        6,
+        1
+       ],
+       "uv": [
+        12,
+        0
+       ]
+      }
+     ],
+     "parent": "hanging_chain"
+    },
+    {
+     "name": "hanging_lamp",
+     "pivot": [
+      0,
+      -13,
+      0
+     ],
+     "cubes": [
+      {
+       "origin": [
+        -2,
+        -14,
+        -2
+       ],
+       "size": [
+        4,
+        1,
+        4
+       ],
+       "uv": [
+        16,
+        0
+       ]
+      },
+      {
+       "origin": [
+        -1.5,
+        -19,
+        -1.5
+       ],
+       "size": [
+        3,
+        5,
+        3
+       ],
+       "uv": [
+        32,
+        0
+       ]
+      },
+      {
+       "origin": [
+        -2,
+        -20,
+        -2
+       ],
+       "size": [
+        4,
+        1,
+        4
+       ],
+       "uv": [
+        44,
+        0
+       ]
+      }
+     ],
+     "parent": "hanging_chain2"
+    }
+   ]
+  }
+ ]
+}

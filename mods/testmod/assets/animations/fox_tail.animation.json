@@ -1,0 +1,30 @@
+{
+ "format_version": "1.8.0",
+ "animations": {
+  "animation.fox_tail.walk": {
+   "loop": true,
+   "animation_length": 1.0,
+   "bones": {
+    "tail1": {
+     "rotation": {
+      "0": [
+       8,
+       -18,
+       0
+      ],
+      "0.5": [
+       8,
+       18,
+       0
+      ],
+      "1": [
+       8,
+       -18,
+       0
+      ]
+     }
+    }
+   }
+  }
+ }
+}

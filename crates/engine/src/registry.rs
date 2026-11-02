@@ -332,6 +332,14 @@ pub struct Game {
     pub client_hooks: Vec<(ModId, u32, Callback)>,
     /// Client cosmetics by entity kind (`Host::reg_client_entity_tick`).
     pub client_entity_ticks: FxHashMap<u32, (ModId, Callback)>,
+    /// Every frame on the client, for entities of a kind, as many as mods add.
+    pub client_entity_watchers: FxHashMap<u32, Vec<(ModId, Callback)>>,
+    /// (entity kind's name, model, bone it goes on).
+    pub attached_models: Vec<(String, String, String)>,
+    /// (model, bone, how it moves).
+    pub bone_motions: Vec<(String, String, crate::model::BoneMotion)>,
+    /// Who says which model a stack of an item shows as.
+    pub item_model_for_stack: FxHashMap<u32, (ModId, Callback)>,
     /// Mod message channels by id (sorted by name, so both sides agree).
     pub packets: Vec<PacketDef>,
     pub packet_names: FxHashMap<String, u32>,
@@ -352,8 +360,8 @@ pub struct Game {
     pub world_ticks: Vec<(ModId, Callback)>,
     /// `abi::comp::NAME` as an entity component.
     pub name_comp: u32,
-    /// `HEALTH`, `BURNING`, `WORN`, `SHAPE`, `HELD`, `OFF_HELD`, `USING`, `SWAPS`.
-    pub field_comps: [u32; 8],
+    /// `HEALTH`, `BURNING`, `WORN`, `SHAPE`, `HELD`, `OFF_HELD`, `USING`, `SWAPS`, `LOOPING_ACTION`.
+    pub field_comps: [u32; 9],
     /// `SIMULATED`.
     pub simulated_comp: u32,
     /// Entity components with `SYNC_WATCHERS` / `SYNC_MENU`.
@@ -680,8 +688,12 @@ pub struct RawGame {
     pub client_hooks: Vec<(ModId, u32, Callback)>,
     /// (owner, entity kind, callback).
     pub client_entity_ticks: Vec<(ModId, String, Callback)>,
+    pub client_entity_watchers: Vec<(ModId, String, Callback)>,
     /// (entity kind, parts, skin size) set with `Host::reg_entity_model`.
     pub entity_models: Vec<(String, Vec<Part>, [u32; 2])>,
+    pub attached_models: Vec<(String, String, String)>,
+    pub bone_motions: Vec<(String, String, crate::model::BoneMotion)>,
+    pub item_model_for_stack: Vec<(ModId, String, Callback)>,
     /// (owner, name, side, callback).
     /// (owner, channel, schema, side, callback).
     pub packets: Vec<(ModId, String, String, u32, Callback)>,
@@ -1194,6 +1206,7 @@ pub const HELD: &str = "core:held";
 pub const OFF_HELD: &str = "core:off_held";
 pub const USING: &str = "core:using";
 pub const SWAPS: &str = "core:swaps";
+pub const LOOPING_ACTION: &str = "core:looping_action";
 /// Entity component (`u64`, saved): the world time a system last simulated it to, so it can
 /// catch up on what it missed (`Dim::run_systems`).
 pub const SIMULATED: &str = "core:simulated";
@@ -1341,8 +1354,15 @@ pub fn freeze(
         CategoryDef { name: "core:passive".into(), cap: 6, despawn: 0.0 },
     ];
     let mut entity_ticks: Vec<(ModId, String, Callback)> = Vec::new();
+    let mut entity_watchers: Vec<(ModId, String, Callback)> = Vec::new();
+    let mut attached_models: Vec<(String, String, String)> = Vec::new();
+    let mut item_models: Vec<(ModId, String, Callback)> = Vec::new();
     for r in raws {
         entity_ticks.extend(r.client_entity_ticks);
+        entity_watchers.extend(r.client_entity_watchers);
+        attached_models.extend(r.attached_models);
+        g.bone_motions.extend(r.bone_motions);
+        item_models.extend(r.item_model_for_stack);
         sounds.extend(r.sounds);
         music.extend(r.music);
         particles.extend(r.particles);
@@ -1414,6 +1434,33 @@ pub fn freeze(
                 g.client_entity_ticks.insert(k, (owner, cb));
             }
             None => errors.push(format!("client entity tick for unknown entity {kind}")),
+        }
+    }
+    entity_watchers.sort_by_key(|t| order(t.0));
+    for (owner, kind, cb) in entity_watchers {
+        match g.entity_names.get(&kind) {
+            Some(&k) => g
+                .client_entity_watchers
+                .entry(k)
+                .or_default()
+                .push((owner, cb)),
+            None => errors.push(format!("on_entity_frame for unknown entity {kind}")),
+        }
+    }
+    for a in attached_models {
+        if g.entity_names.contains_key(&a.0) {
+            g.attached_models.push(a);
+        } else {
+            errors.push(format!("model {} attached to unknown entity {}", a.1, a.0));
+        }
+    }
+    item_models.sort_by_key(|t| order(t.0));
+    for (owner, item, cb) in item_models {
+        match item_names.get(&item) {
+            Some(&i) => {
+                g.item_model_for_stack.insert(i, (owner, cb));
+            }
+            None => errors.push(format!("item_model_for_stack for unknown item {item}")),
         }
     }
     freeze_particles(&mut g, particles, errors);
@@ -1654,6 +1701,7 @@ pub fn freeze(
         (OFF_HELD, 4, shown, vec![0; 4]),
         (USING, 4, shown, vec![0; 4]),
         (SWAPS, 0, own | shown, Vec::new()),
+        (LOOPING_ACTION, 0, shown, Vec::new()),
         (SIMULATED, 8, save, vec![0; 8]),
     ] {
         components.push(RawComponent {
@@ -1677,7 +1725,7 @@ pub fn freeze(
     g.modifiers_comp = g.component_names[MODIFIERS];
     g.timers_comp = g.component_names[TIMERS];
     g.name_comp = g.component_names[abi::comp::NAME];
-    g.field_comps = [HEALTH, BURNING, WORN, SHAPE, HELD, OFF_HELD, USING, SWAPS].map(|n| g.component_names[n]);
+    g.field_comps = [HEALTH, BURNING, WORN, SHAPE, HELD, OFF_HELD, USING, SWAPS, LOOPING_ACTION].map(|n| g.component_names[n]);
     g.simulated_comp = g.component_names[SIMULATED];
     let with_flag = |f: u32| {
         g.components

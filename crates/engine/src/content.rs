@@ -2442,6 +2442,7 @@ fn declare_components(
         (crate::registry::OFF_HELD, "u32"),
         (crate::registry::USING, "u32"),
         (crate::registry::SWAPS, "bytes"),
+        (crate::registry::LOOPING_ACTION, "bytes"),
         (crate::registry::SHAPE, "bytes"),
         (crate::registry::SIMULATED, "u64"),
     ] {
@@ -2591,6 +2592,9 @@ fn fill_components(
                     }
                     if let (Some(&i), true) = (item_names.get(base), props.is_empty()) {
                         hits.push((comps::ITEM, i));
+                    }
+                    if hits.is_empty() {
+                        hits.extend(entities.names.get(base).map(|&k| (comps::ENTITY, k)));
                     }
                 }
                 Target::Tagged(pattern) => {

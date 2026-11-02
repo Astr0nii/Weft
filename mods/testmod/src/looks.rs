@@ -135,7 +135,6 @@ pub fn register(r: &mut Registry) {
     r.entity(&IDOL)
         .size(0.6, 1.1)
         .health(20.0)
-        .model_file("idol")
         .animations("idol")
         .on_interact(|e| {
             let mut bowed = BOWED.lock().unwrap();
@@ -168,7 +167,7 @@ pub fn register(r: &mut Registry) {
                 .uv(32, 16),
         );
 
-    r.set_text_on(Target::Entity("core:player"), &ANIMATIONS, "testmod:player");
+    r.set_animations(&PLAYER, "testmod:player");
     r.item(&TOTEM).max_stack(1);
     // Goes before what the other hand holds, and leaves it its turn with nothing to shoot.
     static LONG_BOW: Item = Item::named("long_bow");
@@ -181,11 +180,27 @@ pub fn register(r: &mut Registry) {
         .max_stack(1)
         .two_handed()
         .on_use(|_| true);
+    // A metre of katana in the hand, on the ground and in a slot; much less of one once damaged.
+    r.set_model(&GREATSWORD, "katana");
+    r.item_model_for_stack(&GREATSWORD, |s| (s.damage() > 0).then_some("testmod:katana_broken"));
+    // Food with models of its own, by one line and a file each: what has none stays as it was.
+    r.set_model("#food", "food/{name}");
+    // Its chain hangs and sways by itself: its bones are called `hanging_..`.
+    static LANTERN: Item = Item::named("lantern");
+    r.item(&LANTERN).max_stack(1);
+    r.set_model(&LANTERN, "lantern");
+    // Only who wears it has a tail, moved by what plays on them and swinging by itself.
+    static FOX_TAIL: Item = Item::named("fox_tail");
+    r.item(&FOX_TAIL)
+        .max_stack(1)
+        .wearable_model(&EquipmentSlot::named("base:chest"), "fox_tail", "body");
+    r.bone_motion("fox_tail", "tail2", BoneMotion::SPRINGY);
+    r.bone_motion("fox_tail", "tail3", BoneMotion::SPRINGY);
     // Both hands, or one if the other is busy.
     static MAP_SHEET: Item = Item::named("map_sheet");
     r.item(&MAP_SHEET)
         .max_stack(1)
-        .one_handed_as("hold_one")
+        .one_handed_action("hold_one")
         .on_use(|_| true);
     // A model of bones in `models/item/`, its slide going back in the same clip as the arm.
     static BLASTER: Item = Item::named("blaster");

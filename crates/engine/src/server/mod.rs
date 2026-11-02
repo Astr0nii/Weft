@@ -73,6 +73,8 @@ pub struct Player {
     pub name: String,
     /// The skin this player sent, passed on to everyone who joins.
     skin: Option<Arc<Vec<u8>>>,
+    /// The same for their own model.
+    avatar: Option<Arc<crate::net::AvatarData>>,
     /// Public key: the identity saves are keyed by.
     pub key: String,
     conn: ServerConn,
@@ -464,6 +466,7 @@ impl Server {
         while let Ok(conn) = self.incoming.try_recv() {
             self.players.push(Player {
                 skin: None,
+                avatar: None,
                 name: String::new(),
                 key: String::new(),
                 conn,

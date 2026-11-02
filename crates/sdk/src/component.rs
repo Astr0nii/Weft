@@ -562,6 +562,7 @@ pub static CONDUCTOR: Tag = Tag::named(abi::comp::CONDUCTOR);
 pub static ENERGY: Component<abi::Energy> = Component::named(abi::comp::ENERGY);
 pub static WORN: Component<abi::Worn> = Component::named(abi::comp::WORN);
 pub static WORN_TEXTURE: Component<Text> = Component::named(abi::comp::WORN_TEXTURE);
+pub static WORN_MODEL: Component<Text> = Component::named(abi::comp::WORN_MODEL);
 pub static WEAR_PER_HIT: Component<u32> = Component::named(abi::comp::WEAR_PER_HIT);
 pub static LIQUID: Component<Text> = Component::named(abi::comp::LIQUID);
 pub static REMAINDER: Component<ItemRef> = Component::named(abi::comp::REMAINDER);

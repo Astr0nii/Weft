@@ -337,6 +337,7 @@ impl Screen for Profile {
                 ui.add(Kind::Container { class: None }, Style::default().h(4.0));
                 label(ui, cx, "profile.skin", &[], "default");
                 label(ui, cx, "profile.skin_hint", &[], "dim");
+                label(ui, cx, "profile.avatar_hint", &[], "dim");
                 let dir = cx.settings.run_dir.join("skins");
                 button(ui, cx, "profile.skins_folder", &[], 120.0, move |_| crate::packs::open_folder(&dir));
             });
@@ -635,6 +636,11 @@ impl Screen for SettingsScreen {
                     d.button("settings.first_person_model", &[on_off(s.first_person_model())], 300.0, false, |r| {
                         r.settings
                             .set("first_person_model", !r.settings.first_person_model() as u8 as f64);
+                        r.handle(vec![Request::Rebuild]);
+                    });
+                    d.button("settings.show_avatars", &[on_off(s.show_avatars())], 300.0, false, |r| {
+                        r.settings
+                            .set("show_avatars", !r.settings.show_avatars() as u8 as f64);
                         r.handle(vec![Request::Rebuild]);
                     });
                     d.parts("core:settings", "buttons");

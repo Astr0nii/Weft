@@ -1,0 +1,33 @@
+{
+ "format_version": "1.8.0",
+ "animations": {
+  "animation.lantern.hold": {
+   "loop": true,
+   "animation_length": 0.05,
+   "override_previous_animation": true,
+   "blend_weight": 0.6,
+   "bones": {
+    "mainArm": {
+     "rotation": [
+      -48,
+      6,
+      0
+     ]
+    }
+   }
+  },
+  "animation.lantern.ground": {
+   "loop": true,
+   "animation_length": 0.05,
+   "bones": {
+    "root": {
+     "rotation": [
+      90,
+      0,
+      0
+     ]
+    }
+   }
+  }
+ }
+}
