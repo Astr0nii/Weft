@@ -1204,7 +1204,7 @@ impl Backend for VulkanBackend {
         let format = self.vk_format(desc.format);
         let depth = desc.format == Format::Depth32;
         let usage = if depth {
-            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC
         } else {
             let mut u = vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST;
             if desc.render_target {
@@ -1659,6 +1659,35 @@ impl Backend for VulkanBackend {
                     }
                     Cmd::Dispatch { x, y, z } => self.device.cmd_dispatch(cmd, x, y, z),
                     Cmd::Barrier => self.memory_barrier(cmd),
+                    Cmd::CopyDepthToBuffer { depth, buffer } => {
+                        let t = self.textures.get(depth.0);
+                        let (image, width, height) = (t.image, t.desc.width, t.desc.height);
+                        let raw = self.buffers.get(buffer.0).raw;
+                        self.barrier_image(
+                            cmd,
+                            image,
+                            depth_range(),
+                            vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                        );
+                        let region = vk::BufferImageCopy::default()
+                            .image_subresource(vk::ImageSubresourceLayers {
+                                aspect_mask: vk::ImageAspectFlags::DEPTH,
+                                mip_level: 0,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                            })
+                            .image_extent(vk::Extent3D { width, height, depth: 1 });
+                        self.device
+                            .cmd_copy_image_to_buffer(cmd, image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, raw, &[region]);
+                        self.barrier_image(
+                            cmd,
+                            image,
+                            depth_range(),
+                            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                            vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+                        );
+                    }
                     Cmd::Mark => {
                         if marks < MAX_MARKS - 1 {
                             self.device

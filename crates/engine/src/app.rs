@@ -180,6 +180,8 @@ pub(crate) struct Running {
     window: Arc<Window>,
     depth: (TextureId, u32, u32),
     list: CommandList,
+    /// What goes in the world's pass this frame, while it is being made.
+    world_list: CommandList,
     input: Input,
     pub(crate) settings: Settings,
     lang: Lang,
@@ -401,6 +403,7 @@ impl App {
             window,
             depth,
             list: CommandList::default(),
+            world_list: CommandList::default(),
             input,
             settings,
             lang,
@@ -1875,6 +1878,7 @@ fn update_game(r: &mut Running, dt: f64, frame_start: Instant) {
         g.client.brightness = r.settings.brightness();
         g.client.first_person_model = r.settings.first_person_model();
         g.client.entity_render.show_avatars = r.settings.show_avatars();
+        g.client.render.occlusion.on = r.settings.occlusion_culling();
         let t = Instant::now();
         if world_input {
             g.client.update(&mut *r.gpu, &r.textures, &r.input, dt);
@@ -2247,12 +2251,24 @@ fn record_passes(r: &mut Running, info: &weft_render::FrameInfo, scale: f32) {
             .simulate(&mut *r.gpu, &mut r.list, info.slot, &r.textures, &g.client.world, &cam);
         g.client.update_wires(&mut *r.gpu, &r.textures);
     }
+    // What the world's draws go by has to be done before its pass, and is known only making them.
+    let mut world = std::mem::take(&mut r.world_list);
+    world.clear();
+    if let Some(g) = &mut r.game {
+        g.client
+            .render(&mut *r.gpu, &mut world, &mut r.list, info, &r.textures);
+    }
     r.list
         .push(Cmd::BeginPass { color: Some((world_target, Some(clear))), depth: Some((r.depth.0, Some(0.0))) });
-    if let Some(g) = &mut r.game {
-        g.client.render(&mut *r.gpu, &mut r.list, info, &r.textures);
-    }
+    r.list.append(&mut world);
+    r.world_list = world;
     r.list.push(Cmd::EndPass);
+    if let Some(g) = &mut r.game {
+        g.client
+            .render
+            .occlusion
+            .take_depth(&mut *r.gpu, &mut r.list, r.depth.0, [r.depth.1, r.depth.2]);
+    }
     if post {
         r.post.apply(&mut *r.gpu, &mut r.list, info);
     } else {

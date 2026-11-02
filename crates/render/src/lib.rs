@@ -186,6 +186,11 @@ pub enum Cmd {
     },
     /// Makes shader writes visible to later commands. Only needed between compute and its consumers.
     Barrier,
+    /// Copies a depth texture to the start of a buffer, 32-bit floats row by row. Outside a pass.
+    CopyDepthToBuffer {
+        depth: TextureId,
+        buffer: BufferId,
+    },
     /// GPU timestamp, see [`Backend::gpu_times`].
     Mark,
 }

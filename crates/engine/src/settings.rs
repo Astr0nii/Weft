@@ -118,6 +118,10 @@ impl Settings {
         Some(config::text(id("core:shader_pack"))).filter(|p| !p.is_empty())
     }
 
+    pub fn occlusion_culling(&self) -> bool {
+        number("core:occlusion_culling") != 0.0
+    }
+
     pub fn show_avatars(&self) -> bool {
         number("core:show_avatars") != 0.0
     }

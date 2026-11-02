@@ -2206,7 +2206,8 @@ impl Client {
         [v.x, v.y, v.z, v.y.max(0.0)]
     }
 
-    pub fn render(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, textures: &GameTextures) {
+    /// `list` goes in the world's pass, `early` before it.
+    pub fn render(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, early: &mut CommandList, frame: &FrameInfo, textures: &GameTextures) {
         self.entity_render.local = self.player_id;
         for (entity, png) in std::mem::take(&mut self.entity_render.skin_pending) {
             self.entity_render.set_skin(gpu, entity, &png);
@@ -2237,7 +2238,7 @@ impl Client {
             .flat_map(|(&id, e)| e.world_light.iter().map(move |(cp, l)| ((id, *cp), *l)))
             .collect();
         self.render
-            .draw(gpu, list, frame, &cam, scene_buf, &frames, &lights);
+            .draw(gpu, list, early, frame, &cam, scene_buf, &frames, &lights);
         let lit: Vec<u32> = frames
             .iter()
             .map(|(id, _)| {

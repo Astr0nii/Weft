@@ -303,6 +303,8 @@ pub struct WorldRenderer {
     /// Per frame: camera-relative positions of the structures drawn (index 0: none, the world).
     offsets: Vec<(BufferId, u32)>,
     indirect: Vec<(BufferId, u32)>,
+    /// Not drawing what the last frame shows to be behind something.
+    pub occlusion: Occlusion,
     /// Of the last `draw`: its runs (kind, layer, page, first record, records), and its
     /// translucent draws, sorted far to near.
     runs: Vec<(u8, u8, u32, u32, u32)>,
@@ -437,6 +439,7 @@ impl WorldRenderer {
             globals,
             origins: Vec::new(),
             indirect: Vec::new(),
+            occlusion: Occlusion::new(gpu, assets),
             runs: Vec::new(),
             trans: Vec::new(),
             sorted: FxHashMap::default(),
@@ -515,6 +518,7 @@ impl WorldRenderer {
 
     /// Recompiles the world shader; keeps the old pipelines when the new source has errors.
     pub fn reload_shaders(&mut self, gpu: &mut dyn Backend, textures: &GameTextures, assets: &crate::assets::Assets) {
+        self.occlusion.reload(gpu, assets);
         match world_shader(assets)
             .map_err(|e| e.0)
             .and_then(|(s, slots)| Ok((Self::pipelines(gpu, &s)?, slots)))
@@ -609,6 +613,7 @@ impl WorldRenderer {
         {
             gpu.destroy_buffer(b);
         }
+        self.occlusion.destroy(gpu);
         for p in self
             .face_pipes
             .into_iter()
@@ -840,6 +845,7 @@ impl WorldRenderer {
         &mut self,
         gpu: &mut dyn Backend,
         list: &mut CommandList,
+        early: &mut CommandList,
         frame: &FrameInfo,
         cam: &Camera,
         scene: BufferId,
@@ -849,6 +855,7 @@ impl WorldRenderer {
         self.sort_translucent(gpu, cam.pos, frames);
         let aspect = frame.width as f32 / frame.height.max(1) as f32;
         let view_proj = cam.proj(aspect) * cam.view();
+        let last_frame = self.occlusion.next_frame(view_proj, cam.pos);
         let cam_block = cam.pos.floor();
         let cam_cube: IVec3 = cam_block.as_ivec3() >> 4i32;
         let cam_frac = (cam.pos - (cam_cube * 16).as_dvec3()).as_vec3();
@@ -1022,7 +1029,7 @@ impl WorldRenderer {
             offs[(k + 1) * 16..(k + 1) * 16 + 12].copy_from_slice(bytemuck::cast_slice(&o.to_array()));
             offs[(k + 1) * 16 + 12..(k + 1) * 16 + 16].copy_from_slice(&light.to_le_bytes());
         }
-        let ibuf = crate::gpu_layout::frame_buffer(gpu, &mut self.indirect, frame.slot, n, 20, usage::INDIRECT, "indirect");
+        let ibuf = crate::gpu_layout::frame_buffer(gpu, &mut self.indirect, frame.slot, n, 20, usage::INDIRECT | usage::STORAGE, "indirect");
         let origins = Mapped(gpu.mapped(obuf)[..n as usize * 16].as_mut_ptr());
         let indirect = Mapped(gpu.mapped(ibuf)[..n as usize * 20].as_mut_ptr());
         let put = |k: u32, d: &DrawRecord| {
@@ -1072,6 +1079,10 @@ impl WorldRenderer {
         }
         (self.parts, self.trans, self.runs) = (parts, trans, runs);
         self.buffers = Some((gbuf, obuf, ibuf, fbuf, scene));
+        if let Some(last) = last_frame {
+            self.occlusion
+                .test(early, last, cam, obuf, ibuf, n, [opaque, opaque + lods], cam_frac);
+        }
         self.emit(list, 0..self.translucent);
     }
 
@@ -1114,6 +1125,154 @@ impl WorldRenderer {
             list.bind(b::SOLID, self.solid.buf);
             list.push(Cmd::DrawIndexedIndirect { buffer: ibuf, offset: start as u64 * 20, count });
         }
+    }
+}
+
+/// How far the camera may go in a frame for what the last one saw to still say anything.
+const OCCLUSION_MOVE: f64 = 8.0;
+
+/// Occlusion culling on the GPU, by the depth of the frame before: the cubes it shows to be behind
+/// something get no draw. A cube wrongly left out is back the frame after, since it then isn't in
+/// that depth and nothing there hides it any longer.
+pub struct Occlusion {
+    /// The setting.
+    pub on: bool,
+    pipes: Option<[PipelineId; 2]>,
+    /// Depth and its smaller copies; its size; how many levels.
+    depths: Option<(BufferId, [u32; 2], u32)>,
+    /// This frame's camera, and the last one's if `depths` has its depth.
+    now: Option<(Mat4, DVec3)>,
+    last: Option<(Mat4, DVec3)>,
+}
+
+impl Occlusion {
+    fn new(gpu: &mut dyn Backend, assets: &crate::assets::Assets) -> Occlusion {
+        Occlusion { on: true, pipes: Self::pipes(gpu, assets), depths: None, now: None, last: None }
+    }
+
+    /// Without them nothing is culled, which only costs what culling saves.
+    fn pipes(gpu: &mut dyn Backend, assets: &crate::assets::Assets) -> Option<[PipelineId; 2]> {
+        // Not a shader packs may replace: it decides what is drawn, not how it looks.
+        let s = crate::packs::engine_shader(assets, "occlusion.wgsl", &crate::gpu_layout::occlusion_prelude());
+        let made = s.map_err(|e| e.0).and_then(|s| {
+            let mut pipe = |entry| gpu.create_compute(&ComputeDesc { label: "occlusion", shader: &s, entry }).map_err(|e| e.0);
+            Ok([pipe("down")?, pipe("test")?])
+        });
+        made.map_err(|e| log::error!("occlusion shader: {e}")).ok()
+    }
+
+    fn reload(&mut self, gpu: &mut dyn Backend, assets: &crate::assets::Assets) {
+        if let Some(new) = Self::pipes(gpu, assets) {
+            for p in self.pipes.replace(new).into_iter().flatten() {
+                gpu.destroy_pipeline(p);
+            }
+        }
+    }
+
+    fn destroy(&mut self, gpu: &mut dyn Backend) {
+        for p in self.pipes.take().into_iter().flatten() {
+            gpu.destroy_pipeline(p);
+        }
+        if let Some((b, ..)) = self.depths.take() {
+            gpu.destroy_buffer(b);
+        }
+    }
+
+    /// What this frame may go by: the last frame's camera, unless it went too far since.
+    fn next_frame(&mut self, view_proj: Mat4, pos: DVec3) -> Option<(Mat4, DVec3)> {
+        self.now = Some((view_proj, pos));
+        self.last
+            .filter(|l| self.on && (l.1 - pos).length() < OCCLUSION_MOVE)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn test(
+        &self,
+        list: &mut CommandList,
+        last: (Mat4, DVec3),
+        cam: &Camera,
+        origins: BufferId,
+        draws: BufferId,
+        count: u32,
+        skip: [u32; 2],
+        cam_frac: Vec3,
+    ) {
+        let (Some([_, pipe]), Some((depths, size, levels))) = (self.pipes, self.depths) else { return };
+        use crate::gpu_layout::bind::occlusion as b;
+        // What goes from there to here is bigger by how far it came, what it might have been behind.
+        let moved = (cam.pos - last.1).as_vec3();
+        list.push(Cmd::Barrier);
+        list.pipeline(pipe);
+        list.bind(b::DEPTHS, depths);
+        list.bind(b::ORIGINS, origins);
+        list.bind(b::DRAWS, draws);
+        list.push_constants(&crate::gpu_layout::OcclusionArgs {
+            prev: last.0.to_cols_array_2d(),
+            moved: moved.extend(moved.length() + 0.5).to_array(),
+            cam_frac: cam_frac.extend(0.0).to_array(),
+            size,
+            skip,
+            count,
+            levels,
+            src: 0,
+            dst: 0,
+        });
+        list.push(Cmd::Dispatch { x: count.div_ceil(256), y: 1, z: 1 });
+        list.push(Cmd::Barrier);
+    }
+
+    /// Takes this frame's depth for the next frame to go by. After the world's pass.
+    pub fn take_depth(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, depth: TextureId, size: [u32; 2]) {
+        let Some([down, _]) = self.pipes.filter(|_| self.on) else {
+            self.last = None;
+            return;
+        };
+        let (texels, levels) = {
+            let (mut s, mut texels, mut levels) = (size, 0u64, 0);
+            loop {
+                texels += s[0] as u64 * s[1] as u64;
+                levels += 1;
+                if s[0] <= 1 && s[1] <= 1 {
+                    break (texels, levels);
+                }
+                s = s.map(|v| v.div_ceil(2));
+            }
+        };
+        let buffer = match self.depths.filter(|d| d.1 == size) {
+            Some(d) => d.0,
+            None => {
+                if let Some((old, ..)) = self.depths.take() {
+                    gpu.destroy_buffer(old);
+                }
+                let b = gpu.create_buffer(texels * 4, usage::STORAGE, "depth levels");
+                self.depths = Some((b, size, levels));
+                b
+            }
+        };
+        list.push(Cmd::CopyDepthToBuffer { depth, buffer });
+        list.push(Cmd::Barrier);
+        list.pipeline(down);
+        list.bind(crate::gpu_layout::bind::occlusion::DEPTHS, buffer);
+        let (mut s, mut src) = (size, 0u32);
+        for _ in 1..levels {
+            let dst = src + s[0] * s[1];
+            list.push_constants(&crate::gpu_layout::OcclusionArgs {
+                prev: [[0.0; 4]; 4],
+                moved: [0.0; 4],
+                cam_frac: [0.0; 4],
+                size: s,
+                skip: [0; 2],
+                count: 0,
+                levels,
+                src,
+                dst,
+            });
+            s = s.map(|v| v.div_ceil(2));
+            list.push(Cmd::Dispatch { x: s[0].div_ceil(32), y: s[1].div_ceil(32), z: 1 });
+            list.push(Cmd::Barrier);
+            src = dst;
+        }
+        self.last = self.now.take();
     }
 }
 

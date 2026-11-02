@@ -606,6 +606,26 @@ gpu_struct! {
     }
 }
 
+/// `occlusion.wgsl`'s push constants.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct OcclusionArgs {
+    /// The last frame's camera: what it saw is what is known.
+    pub prev: [[f32; 4]; 4],
+    /// From this frame's camera to that one's (xyz), and how much bigger cubes are for it (w).
+    pub moved: [f32; 4],
+    pub cam_frac: [f32; 4],
+    /// The depth's size, and when building a level, the one it is made from.
+    pub size: [u32; 2],
+    /// Records that aren't cubes.
+    pub skip: [u32; 2],
+    pub count: u32,
+    pub levels: u32,
+    /// Where the level it is made from starts and where it goes.
+    pub src: u32,
+    pub dst: u32,
+}
+
 /// `particle_sim.wgsl`'s push constants.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -773,6 +793,11 @@ bindings! {
         PARTICLES "particles": "array<Particle>",
         SCENE "scene": "Scene",
     }
+    occlusion "occlusion.wgsl" {
+        DEPTHS "depths": "array<f32>",
+        ORIGINS "origins": "array<vec4<i32>>",
+        DRAWS "draws": "array<u32>",
+    }
     particle_sim "particle_sim.wgsl" {
         SIM "sim": "array<SimParticle>",
         DST "dst": "array<Particle>",
@@ -859,6 +884,19 @@ pub fn prelude(shader: &str, common: &str) -> String {
     }
     s.push_str(common);
     s.push('\n');
+    s
+}
+
+/// What goes in front of `occlusion.wgsl`.
+pub fn occlusion_prelude() -> String {
+    let mut s = String::new();
+    for (i, (name, ty)) in bindings("occlusion.wgsl").iter().enumerate() {
+        let access = if *name == "origins" { "read" } else { "read_write" };
+        s.push_str(&format!("@group(1) @binding({i}) var<storage, {access}> {name}: {ty};\n"));
+    }
+    s.push_str(
+        "struct Args {\n    prev: mat4x4<f32>,\n    moved: vec4<f32>,\n    cam_frac: vec4<f32>,\n    size: vec2<u32>,\n    skip: vec2<u32>,\n    count: u32,\n    levels: u32,\n    src: u32,\n    dst: u32,\n}\nvar<immediate> args: Args;\n",
+    );
     s
 }
 
