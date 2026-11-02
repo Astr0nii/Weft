@@ -1,0 +1,94 @@
+{
+ "format_version": "1.12.0",
+ "minecraft:geometry": [
+  {
+   "description": {
+    "identifier": "geometry.katana_broken",
+    "texture_width": 64,
+    "texture_height": 64
+   },
+   "bones": [
+    {
+     "name": "grip",
+     "pivot": [
+      0,
+      0,
+      0
+     ],
+     "cubes": [
+      {
+       "origin": [
+        -0.5,
+        -7,
+        -1
+       ],
+       "size": [
+        1,
+        9,
+        2
+       ],
+       "uv": [
+        0,
+        0
+       ]
+      }
+     ]
+    },
+    {
+     "name": "guard",
+     "pivot": [
+      0,
+      2,
+      0
+     ],
+     "cubes": [
+      {
+       "origin": [
+        -1.5,
+        2,
+        -2
+       ],
+       "size": [
+        3,
+        1,
+        4
+       ],
+       "uv": [
+        6,
+        0
+       ]
+      }
+     ],
+     "parent": "grip"
+    },
+    {
+     "name": "blade",
+     "pivot": [
+      0,
+      3,
+      0
+     ],
+     "cubes": [
+      {
+       "origin": [
+        -0.5,
+        3,
+        -1
+       ],
+       "size": [
+        1,
+        5,
+        2
+       ],
+       "uv": [
+        20,
+        0
+       ]
+      }
+     ],
+     "parent": "guard"
+    }
+   ]
+  }
+ ]
+}

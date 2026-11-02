@@ -134,6 +134,27 @@ macro_rules! messages {
     };
 }
 
+/// How much of a player's own model is sent, all its files together.
+pub const AVATAR_BYTES: usize = 512 * 1024;
+
+wire_struct! {
+    /// A player's own model: its files, which the server passes on unread.
+    #[derive(Clone, Debug, Default)]
+    pub struct AvatarData {
+        pub geo: Vec<u8>,
+        pub animations: Vec<u8>,
+        pub bones: Vec<u8>,
+        pub png: Vec<u8>,
+        pub glow: Vec<u8>,
+    }
+}
+
+impl AvatarData {
+    pub fn size(&self) -> usize {
+        self.geo.len() + self.animations.len() + self.bones.len() + self.png.len() + self.glow.len()
+    }
+}
+
 wire_struct! {
     #[derive(Clone, Debug)]
     pub struct EntityView {
@@ -209,7 +230,7 @@ messages! {
         /// Items picked up: (item entity, who took it). They fly to the taker before going.
         Taken(Vec<(u64, u64)>),
         /// A use (right click) did something: the arm swings, and dips if the held item was used.
-        Swing { used_item: bool },
+        Swing { used_item: bool, off_hand: bool },
         GameMode(crate::world::GameMode),
         /// Everyone online, sent when someone joins or leaves.
         Players(Vec<String>),
@@ -229,12 +250,14 @@ messages! {
         /// Mining that block is not allowed (`question::BREAK_BLOCK`).
         BreakRefused { frame: u64, pos: IVec3 },
         /// Holding the use button started on an item that takes this many ticks, or it ended.
-        Using(Option<u32>),
+        /// Ticks it takes, and whether in the other hand.
+        Using(Option<(u32, bool)>),
         Weather { raining: bool, thunder: bool },
         /// A white flash on an entity.
         Flash(u64),
         /// Someone else's arm swings: a hit, a use, mining.
-        EntitySwing(u64),
+        /// Who, and whether with the other hand.
+        EntitySwing { id: u64, off: bool },
         /// Who is mining what, besides this player.
         Cracks(Vec<Crack>),
         /// The player's `permission` level, for what its client offers.
@@ -263,9 +286,13 @@ messages! {
         /// Sound events: (event, position, volume, pitch or 0).
         Sounds(Vec<(u32, DVec3, f32, f32)>),
         /// Keyframe animations started on entities: (entity, name, looping); empty name = none.
-        Animate(Vec<(u64, String, bool)>),
+        PlayAction(Vec<(u64, String, bool)>),
         /// A player's own skin (PNG), for their entity.
         Skin { entity: u64, png: Vec<u8> },
+        /// A player's own model, for their entity.
+        Avatar { entity: u64, avatar: AvatarData },
+        /// That player left: what they brought can go.
+        PlayerGone { entity: u64 },
     }
 }
 
@@ -284,6 +311,8 @@ messages! {
         StopBreak,
         /// Let go of the use button before the item took effect.
         StopUsing,
+        /// The main hand's item goes to the other hand and back.
+        SwapHands,
         /// `frame`: the structure (entity) the block is part of, its position in the structure's
         /// coordinates; 0 for the world. `face`: of its selection that was hit.
         /// `part`: which of what is in the cell.
@@ -320,6 +349,8 @@ messages! {
         Packet { channel: u32, data: Vec<u8> },
         /// The player's skin (PNG, 64 x 64 or 64 x 32).
         Skin(Vec<u8>),
+        /// The player's own model.
+        Avatar(AvatarData),
         /// The client's view distance in cubes: what the server announces edited cubes in.
         View(u32),
     }

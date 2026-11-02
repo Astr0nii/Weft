@@ -317,7 +317,12 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
                 let layout = &c.game.player_layout;
                 let def = b.menu.and_then(|k| c.game.menus.get(k as usize));
                 let id = b.ui.open(Kind::Container { class: None }, style);
-                for e in &layout.equipment {
+                // The other hand has its own place in a screen (`ui.group`).
+                for e in layout
+                    .equipment
+                    .iter()
+                    .filter(|e| e.name != weft_abi::OFF_HAND_SLOT)
+                {
                     if let Some((g, first, _)) = def.and_then(|d| d.group(layout, &e.name)) {
                         let s = b.ui.add(
                             Kind::Custom { tag: TAG_SLOT, data: first as u64 },

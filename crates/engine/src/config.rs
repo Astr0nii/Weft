@@ -412,6 +412,10 @@ pub fn engine_configs(keys: &[(String, String)]) -> Vec<ConfigDef> {
         ConfigDef::text("core:shader_pack", ""),
         ConfigDef { scope: scope::WORLD, ..ConfigDef::number("core:mob_spawning", ck::BOOL, 1.0, 0.0, 1.0, 0.0) },
         ConfigDef { scope: scope::WORLD, ..ConfigDef::number("core:simulation_distance", ck::INT, 8.0, 2.0, 64.0, 1.0) },
+        ConfigDef::number("core:first_person_model", ck::BOOL, 0.0, 0.0, 1.0, 0.0),
+        ConfigDef::number("core:show_avatars", ck::BOOL, 1.0, 0.0, 1.0, 0.0),
+        ConfigDef::number("core:occlusion_culling", ck::BOOL, 1.0, 0.0, 1.0, 0.0),
+        ConfigDef { scope: scope::WORLD, ..ConfigDef::number("core:allow_avatars", ck::BOOL, 1.0, 0.0, 1.0, 0.0) },
     ];
     out.extend(
         keys.iter()

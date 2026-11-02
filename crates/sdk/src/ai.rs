@@ -49,6 +49,8 @@ pub(crate) fn provoked(w: &World, h: &crate::Hurt) {
 /// One behavior: acts this tick and returns true, or returns false to let a lower one act.
 pub trait Goal: Send + Sync + 'static {
     fn run(&self, w: &World, id: u64, st: &EntityState) -> bool;
+    /// A goal above it acted this tick, so this one didn't get to run.
+    fn passed_over(&self, _w: &World, _id: u64) {}
 }
 
 impl<F: Fn(&World, u64, &EntityState) -> bool + Send + Sync + 'static> Goal for F {
@@ -74,13 +76,45 @@ impl Goals {
         let w = t.world();
         for &id in t.ids() {
             let Some(st) = w.entity(id) else { continue };
-            for g in &self.0 {
+            let mut goals = self.0.iter();
+            for g in goals.by_ref() {
                 if g.run(&w, id, &st) {
                     break;
                 }
             }
+            for g in goals {
+                g.passed_over(&w, id);
+            }
         }
     }
+}
+
+struct Playing<G> {
+    from: &'static str,
+    to: &'static str,
+    goal: G,
+}
+
+impl<G: Goal> Goal for Playing<G> {
+    fn run(&self, w: &World, id: u64, st: &EntityState) -> bool {
+        let on = self.goal.run(w, id, st);
+        if on {
+            w.replace_action(id, self.from, self.to);
+        } else {
+            w.restore_action(id, self.from);
+        }
+        on
+    }
+
+    fn passed_over(&self, w: &World, id: u64) {
+        w.restore_action(id, self.from);
+        self.goal.passed_over(w, id);
+    }
+}
+
+/// `goal`, and while it is what the mob does, it plays action `to` wherever it would play `from`.
+pub fn replacing_action(from: &'static str, to: &'static str, goal: impl Goal) -> impl Goal {
+    Playing { from, to, goal }
 }
 
 /// Now and then walks somewhere within `radius` blocks at `speed`; idle in between.

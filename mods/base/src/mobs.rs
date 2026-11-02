@@ -156,7 +156,7 @@ pub static COW: Entity = Entity::named("cow");
 
 pub fn register(r: &mut Registry) {
     // The engine's player kind, drawn as the same humanoid as the zombie.
-    r.entity_model(&Entity::named("core:player"), biped(false));
+    r.set_model(&PLAYER, biped(false));
     r.entity_component(&BRAIN, Brain::default(), 0);
     r.on(&CALM, |b| {
         let w = b.world();

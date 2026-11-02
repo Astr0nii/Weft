@@ -547,52 +547,6 @@ pub async fn redstone_timing(t: T) -> R {
     Ok(())
 }
 
-/// A sticky piston that lost its power before it was out at all leaves its block out there; given
-/// any longer, it brings it back.
-pub async fn redstone_spit(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    // An observer's pulse is 2 ticks.
-    let z = -4;
-    let (piston, block) = (add(f, [3, 0, z]), add(f, [4, 0, z]));
-    t.set(piston, "base:sticky_piston[facing=east]").await?;
-    t.set(block, "base:cobblestone").await?;
-    t.set(add(f, [2, 0, z]), "base:observer[facing=west]")
-        .await?;
-    settle(&t).await?;
-    t.set(add(f, [1, 0, z]), "base:stone").await?;
-    t.secs(1.0).await?;
-    t.check(!lit(&t, piston).await?, "the piston came back after a short pulse");
-    t.check(t.block(add(f, [5, 0, z])).await?.contains("cobblestone"), "without its block");
-    t.check(t.block(block).await?.contains("air"), "leaving a gap");
-
-    // Nothing to push: what its head reached comes back, however short the pulse.
-    let z = -12;
-    let (piston, reached) = (add(f, [3, 0, z]), add(f, [5, 0, z]));
-    t.set(piston, "base:sticky_piston[facing=east]").await?;
-    t.set(reached, "base:cobblestone").await?;
-    t.set(add(f, [2, 0, z]), "base:observer[facing=west]")
-        .await?;
-    settle(&t).await?;
-    t.set(add(f, [1, 0, z]), "base:stone").await?;
-    t.secs(1.0).await?;
-    t.check(t.block(add(f, [4, 0, z])).await?.contains("cobblestone"), "a short pulse brings back what it didn't push");
-
-    // A lever held for a moment.
-    let z = -8;
-    let (piston, block, switch) = (add(f, [3, 0, z]), add(f, [4, 0, z]), add(f, [2, 0, z]));
-    t.set(piston, "base:sticky_piston[facing=east]").await?;
-    t.set(block, "base:cobblestone").await?;
-    t.set(switch, &lever(true)).await?;
-    settle(&t).await?;
-    t.check(lit(&t, piston).await?, "out with the lever on");
-    t.set(switch, &lever(false)).await?;
-    settle(&t).await?;
-    t.check(!lit(&t, piston).await?, "in with the lever off");
-    t.check(t.block(block).await?.contains("cobblestone"), "bringing its block back");
-    Ok(())
-}
-
 /// With power it stops a push and stays behind what moves; without, it is any block.
 pub async fn redstone_anchor(t: T) -> R {
     t.flat().await?;
@@ -999,71 +953,6 @@ pub async fn redstone_floater(t: T) -> R {
     Ok(())
 }
 
-/// A mod's structure: blocks out of the world, moved, and back.
-pub async fn redstone_lift_api(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    let (y, z) = (4, -5);
-    let at = add(f, [2, y, z]);
-    t.set(at, "base:chest").await?;
-    t.set(add(at, [1, 0, 0]), "base:stone").await?;
-    t.frames(5).await?;
-    t.op(&format!("put {} {} {} 0 base:cobblestone 2", at[0], at[1], at[2]))
-        .await?;
-    let id = t
-        .op(&format!("lift {} {} {} 1", at[0], at[1], at[2]))
-        .await?;
-    t.check(t.block(at).await?.contains("air"), "out of the world");
-    t.check_eq(t.op(&format!("sblock {id} 1 0 0")).await?, "base:stone".to_string(), "and on the structure");
-    t.op(&format!("bodygo {id} {} {} {} 10", at[0] as f64 + 3.5, at[1], at[2] as f64 + 0.5))
-        .await?;
-    t.secs(1.0).await?;
-    t.op(&format!("putdown {id}")).await?;
-    settle(&t).await?;
-    let to = add(at, [3, 0, 0]);
-    t.check(t.block(to).await?.contains("chest"), "back in the world where it went");
-    t.check(t.block(add(to, [1, 0, 0])).await?.contains("stone"), "all of it");
-    t.check_eq(
-        t.op(&format!("slot {} {} {} 0", to[0], to[1], to[2]))
-            .await?
-            .split_whitespace()
-            .nth(1)
-            .map(str::to_string),
-        Some("2".to_string()),
-        "with what the chest held",
-    );
-    Ok(())
-}
-
-/// Vanilla's copper bulb: a pulse flips it, and a comparator reads which way it is, by the way any
-/// block can say what a comparator reads.
-pub async fn redstone_copper_lamp(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    let z = -5;
-    let (switch, bulb, gate, lamp) = (add(f, [2, 0, z]), add(f, [3, 0, z]), add(f, [4, 0, z]), add(f, [5, 0, z]));
-    t.set(bulb, "base:copper_lamp").await?;
-    t.set(gate, &on_floor("comparator", EAST, "")).await?;
-    t.set(lamp, "base:redstone_lamp").await?;
-    t.set(switch, &lever(false)).await?;
-    settle(&t).await?;
-    t.check(!t.block(bulb).await?.contains("lit=true"), "dark to begin with");
-    t.check(!lit(&t, lamp).await?, "a comparator reads nothing of it");
-    t.set(switch, &lever(true)).await?;
-    settle(&t).await?;
-    t.check(t.block(bulb).await?.contains("lit=true"), "a pulse lights it");
-    t.check(lit(&t, lamp).await?, "and a comparator reads that");
-    t.set(switch, &lever(false)).await?;
-    settle(&t).await?;
-    t.check(t.block(bulb).await?.contains("lit=true"), "it stays lit without power");
-    t.check(lit(&t, lamp).await?, "and is still read");
-    t.set(switch, &lever(true)).await?;
-    settle(&t).await?;
-    t.check(!t.block(bulb).await?.contains("lit=true"), "the next pulse puts it out");
-    t.check(!lit(&t, lamp).await?, "and is read too");
-    Ok(())
-}
-
 /// A mob on a flying structure walks its deck, the structure going on under it.
 pub async fn body_walking(t: T) -> R {
     t.flat().await?;
@@ -1298,25 +1187,6 @@ pub async fn redstone_floater_riders(t: T) -> R {
     }
     t.check_eq(levers, 0, "the lever didn't get through it");
     t.check(items(t.clone(), at(2, 3), 14).await? >= 1, "it dropped");
-    Ok(())
-}
-
-/// Up it goes too, with what is on it.
-pub async fn redstone_floater_up(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    let z = -5;
-    let at = |y: i32| add(f, [3, y, z]);
-    t.set(at(0), "base:floater[facing=up]").await?;
-    t.set(at(1), "base:slime_block").await?;
-    t.set(add(f, [4, 1, z]), "base:slime_block").await?;
-    // What stops it.
-    t.set(at(5), "base:obsidian").await?;
-    // What feeds it, stuck to the slime, next to the floater.
-    t.set(add(f, [4, 0, z]), "base:redstone_block").await?;
-    t.secs(2.0).await?;
-    t.check(t.block(at(3)).await?.contains("floater"), format!("the floater got up under what stops it: {}", t.block(at(3)).await?));
-    t.check(t.block(at(4)).await?.contains("slime"), "the block in front of it with it");
     Ok(())
 }
 
@@ -1729,59 +1599,6 @@ pub async fn redstone_flying_machine(t: T) -> R {
     Ok(())
 }
 
-/// A pulse out of the back of an observer when what it looks at changes.
-pub async fn redstone_observer(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    let z = -3;
-    let watched = add(f, [3, 0, z]);
-    let lamp = add(f, [5, 0, z]);
-    t.set(add(f, [4, 0, z]), "base:observer[facing=west]")
-        .await?;
-    t.set(lamp, "base:redstone_lamp").await?;
-    settle(&t).await?;
-    t.check(!lit(&t, lamp).await?, "quiet with nothing changing");
-    t.set(watched, "base:stone").await?;
-    t.until("the pulse", Duration::from_secs(2), |t| {
-        t.c()
-            .block(lamp)
-            .is_some_and(|s| state_prop(s, "power") == Some("on"))
-    })
-    .await?;
-    t.until("the pulse over", Duration::from_secs(2), |t| {
-        t.c()
-            .block(lamp)
-            .is_some_and(|s| state_prop(s, "power") == Some("off"))
-    })
-    .await?;
-    Ok(())
-}
-
-/// A dispenser gives one item for each new pulse.
-pub async fn redstone_dispenser(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    let z = -4;
-    let (at, switch) = (add(f, [4, 0, z]), add(f, [3, 0, z]));
-    t.set(switch, &lever(false)).await?;
-    t.set(at, "base:dispenser[facing=east]").await?;
-    settle(&t).await?;
-    t.op(&format!("put {} {} {} 0 cobblestone 5", at[0], at[1], at[2]))
-        .await?;
-    let owner = format!("{} {} {}", at[0], at[1], at[2]);
-    t.set(switch, &lever(true)).await?;
-    settle(&t).await?;
-    t.check_eq(t.slot(&owner, 0).await?.1, 4, "one out");
-    settle(&t).await?;
-    t.check_eq(t.slot(&owner, 0).await?.1, 4, "only one for a pulse");
-    t.set(switch, &lever(false)).await?;
-    settle(&t).await?;
-    t.set(switch, &lever(true)).await?;
-    settle(&t).await?;
-    t.check_eq(t.slot(&owner, 0).await?.1, 3, "another for the next");
-    Ok(())
-}
-
 /// By hand: dust goes on the face clicked, next to any there, and breaks one piece at a time; gates
 /// go on the face clicked and turn with the look; and a piece without support comes off.
 pub async fn redstone_by_hand(t: T) -> R {
@@ -1844,61 +1661,6 @@ pub async fn redstone_by_hand(t: T) -> R {
     t.secs(0.3).await?;
     let switch = t.block(cell).await?;
     t.check(switch.contains("attach=north") && switch.contains("front=down"), format!("a lever on the wall: {switch}"));
-    Ok(())
-}
-
-/// The very first piece of wire in a place shows, with nothing around that had any.
-pub async fn redstone_first_piece(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    let z = -3;
-    t.fill(add(f, [-3, -1, z - 2]), add(f, [3, -1, z + 2]), "base:snow")
-        .await?;
-    let piece = add(f, [0, 0, z]);
-    t.look_at(add(piece, [0, -1, 0]));
-    t.secs(0.5).await?;
-    let red = |c: probe::C| c[0] as i32 > c[1] as i32 + 25 && c[0] as i32 > c[2] as i32 + 25;
-    let before = t.shot("before").await?.share(0.3, 0.2, 0.7, 0.8, red);
-    t.set(piece, &wire(&[DOWN])).await?;
-    t.secs(0.5).await?;
-    let after = t.shot("after").await?.share(0.3, 0.2, 0.7, 0.8, red);
-    t.check(after > before + 0.002, format!("one piece on the screen: {before} then {after}"));
-    Ok(())
-}
-
-/// Nothing of a piston's head shows behind it on the way out or in, seen from the side against a
-/// white wall.
-pub async fn redstone_head_stays_inside(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    let z = -4;
-    t.fill(add(f, [-5, 0, z - 1]), add(f, [5, 3, z - 1]), "base:snow")
-        .await?;
-    let piston = add(f, [0, 0, z]);
-    // Its lever on top, for nothing to be behind it.
-    t.set(add(f, [0, 1, z]), "base:stone").await?;
-    t.set(add(f, [0, 2, z]), "base:lever[attach=down,front=north,power=off]")
-        .await?;
-    t.set(piston, "base:piston[facing=east]").await?;
-    t.look_at(piston);
-    t.secs(0.5).await?;
-    // The middle of the air an eighth of a block behind the piston, at the rod's height.
-    let Some((x, y)) = t.on_screen([f[0] as f64 - 0.125, f[1] as f64 + 0.5, (f[2] + z) as f64 + 0.5]) else {
-        return Err("behind the piston isn't in view".into());
-    };
-    // The rod is wood and the wall gray, whatever the light does as the piston changes.
-    let wood = |c: probe::C| c[0] as i32 > c[2] as i32 + 25;
-    for on in [true, false] {
-        t.set(add(f, [0, 2, z]), &format!("base:lever[attach=down,front=north,power={}]", if on { "on" } else { "off" }))
-            .await?;
-        let mut clear = true;
-        for _ in 0..60 {
-            t.frames(1).await?;
-            clear &= !wood(t.pixel(x, y).await?);
-        }
-        t.check(clear, format!("nothing behind the piston as it goes {}", if on { "out" } else { "in" }));
-        t.check_eq(t.block(piston).await?.contains("power=on"), on, "it went");
-    }
     Ok(())
 }
 
@@ -2012,39 +1774,6 @@ pub async fn redstone_looks(t: T) -> R {
     t.secs(1.0).await?;
     t.shot("close").await?;
 
-    Ok(())
-}
-
-/// The mod side: a gate of its own logic, and wire of another block that doesn't join this one.
-pub async fn redstone_for_mods(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    let z = -3;
-    // On when both the rear and a side have power.
-    let (rear, side) = (add(f, [3, 0, z]), add(f, [4, 0, z - 1]));
-    t.set(rear, &lever(true)).await?;
-    t.set(add(f, [4, 0, z]), &on_floor("testkit:and_gate", EAST, "").replace("base:testkit", "testkit"))
-        .await?;
-    let lamp = add(f, [5, 0, z]);
-    t.set(lamp, "base:redstone_lamp").await?;
-    t.set(side, &lever(false)).await?;
-    settle(&t).await?;
-    t.check(!lit(&t, lamp).await?, "one input isn't enough");
-    t.set(side, &lever(true)).await?;
-    settle(&t).await?;
-    t.check(lit(&t, lamp).await?, "two are");
-
-    let z = -7;
-    t.set(add(f, [3, 0, z]), &lever(true)).await?;
-    t.set(add(f, [4, 0, z]), &wire(&[DOWN])).await?;
-    t.set(add(f, [5, 0, z]), "testkit:blue_wire[faces=4]")
-        .await?;
-    t.set(add(f, [6, 0, z]), "testkit:blue_wire[faces=4]")
-        .await?;
-    let lamp = add(f, [7, 0, z]);
-    t.set(lamp, "base:redstone_lamp").await?;
-    settle(&t).await?;
-    t.check(!lit(&t, lamp).await?, "two kinds of wire don't join");
     Ok(())
 }
 
@@ -2254,53 +1983,6 @@ pub fn build_turned(w: &World, seed: u64, from: [i32; 3]) -> Result<String, Stri
         }
     }
     Ok(String::new())
-}
-
-/// Leaving while a piston's blocks are on their way loses none and makes none.
-pub async fn redstone_saved_moving(t: T) -> R {
-    t.world(1).await?;
-    t.op("mode creative").await?;
-    let f = t.feet();
-    let z = -4;
-    t.fill(add(f, [-1, -1, z - 2]), add(f, [8, -1, z + 2]), "base:snow")
-        .await?;
-    t.fill(add(f, [-1, 0, z - 2]), add(f, [8, 3, z + 2]), "air")
-        .await?;
-    let switch = add(f, [1, 0, z]);
-    t.set(switch, &lever(false)).await?;
-    t.set(add(f, [2, 0, z]), "base:piston[facing=east]").await?;
-    t.set(add(f, [3, 0, z]), "base:obsidian").await?;
-    t.set(add(f, [3, 0, z]), "base:cobblestone").await?;
-    settle(&t).await?;
-    // Clearing the ground may have dropped seeds.
-    let dropped = t
-        .op(&format!("near {} {} {} 8", f[0] + 3, f[1], f[2] + z))
-        .await?;
-    t.set(switch, &lever(true)).await?;
-    // In the middle of it, or just after the blocks landed with the body still there.
-    t.frames(3).await?;
-    t.c().leave_world();
-    t.screen("core:title").await?;
-    t.c().open_world(&format!("test-{}", t.name()), 1);
-    t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED))
-        .await?;
-    t.loaded().await?;
-    settle(&t).await?;
-    let (mut blocks, near) = (
-        0,
-        t.op(&format!("near {} {} {} 8", f[0] + 3, f[1], f[2] + z))
-            .await?,
-    );
-    for x in 3..7 {
-        blocks += t.block(add(f, [x, 0, z])).await?.contains("cobblestone") as u32;
-    }
-    t.check_eq(blocks, 1, "one block, where it was going");
-    t.check(
-        near.split(' ')
-            .all(|e| !e.contains("item") || dropped.contains(e)),
-        format!("nothing dropped: {near}"),
-    );
-    Ok(())
 }
 
 /// Wire and devices on a moving structure that came from a save run, and don't bring the game down.

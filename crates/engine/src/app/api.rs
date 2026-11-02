@@ -681,6 +681,89 @@ pub unsafe extern "C" fn client_particles(c: *mut abi::ClientCtx, burst: *const 
     }
 }
 
+pub unsafe extern "C" fn client_pose_bone(
+    c: *mut abi::ClientCtx,
+    entity: u64,
+    bone: Str,
+    turn: *const [f32; 3],
+    by: *const [f32; 3],
+    scale: *const [f32; 3],
+) {
+    unsafe {
+        let Some(g) = run(c).and_then(|r| r.game.as_mut()) else { return };
+        let pose = crate::client::models::BonePose {
+            turn: glam::Vec3::from_array(*turn),
+            by: glam::Vec3::from_array(*by),
+            scale: glam::Vec3::from_array(*scale),
+        };
+        g.client
+            .entity_render
+            .models
+            .turned
+            .entry(entity)
+            .or_default()
+            .push((bone.as_str().to_string(), pose));
+    }
+}
+
+/// Runs `f` on an entity as the renderer sees it, the local player too.
+unsafe fn with_entity<T>(
+    c: *mut abi::ClientCtx,
+    entity: u64,
+    f: impl FnOnce(&crate::client::Client, &crate::client::ClientEntity) -> T,
+) -> Option<T> {
+    unsafe {
+        let g = run(c)?.game.as_ref()?;
+        if entity == g.client.player_id {
+            return Some(f(&g.client, &g.client.self_entity()));
+        }
+        g.client.entities.get(&entity).map(|e| f(&g.client, e))
+    }
+}
+
+pub unsafe extern "C" fn client_entity_action(c: *mut abi::ClientCtx, entity: u64, out: *mut Str) -> u32 {
+    unsafe {
+        let name = with_entity(c, entity, |g, e| g.entity_render.action_of(entity, e).map(str::to_string));
+        match name.flatten() {
+            Some(n) => {
+                *out = text_out(&n);
+                1
+            }
+            None => 0,
+        }
+    }
+}
+
+pub unsafe extern "C" fn client_clip_length(c: *mut abi::ClientCtx, entity: u64, name: Str) -> f32 {
+    unsafe {
+        with_entity(c, entity, |g, e| g.entity_render.clip_length(entity, e, name.as_str()))
+            .flatten()
+            .unwrap_or(-1.0)
+    }
+}
+
+pub unsafe extern "C" fn client_entity_held(c: *mut abi::ClientCtx, entity: u64, off: u32) -> u32 {
+    unsafe { with_entity(c, entity, |_, e| if off != 0 { e.off_held } else { e.held }).unwrap_or(0) }
+}
+
+pub unsafe extern "C" fn client_bone_position(c: *mut abi::ClientCtx, entity: u64, bone: Str, out: *mut [f64; 3]) -> u32 {
+    unsafe {
+        let Some(g) = run(c).and_then(|r| r.game.as_ref()) else { return 0 };
+        match g
+            .client
+            .entity_render
+            .models
+            .bone_position(entity, bone.as_str())
+        {
+            Some(p) => {
+                *out = p.to_array();
+                1
+            }
+            None => 0,
+        }
+    }
+}
+
 pub unsafe extern "C" fn client_play_sound(c: *mut abi::ClientCtx, sound: u32, pos: *const [f64; 3], volume: f32, pitch: f32) {
     unsafe {
         let Some(r) = run(c) else { return };

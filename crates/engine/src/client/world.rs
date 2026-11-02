@@ -71,6 +71,8 @@ pub struct ClientWorld {
     pub removed: Vec<IVec3>,
     /// Cubes to look at again for redstone wire (`wires.rs`).
     wire_dirty: rustc_hash::FxHashSet<IVec3>,
+    /// Some cube has had wire: only then its neighbors have anything to ask about.
+    wire_seen: bool,
     /// What left the world this batch, to be freed off the main thread.
     unloaded: Vec<Slot>,
     next_version: u32,
@@ -196,6 +198,7 @@ impl ClientWorld {
             next_version: 0,
             next_rev: 0,
             wire_dirty: Default::default(),
+            wire_seen: false,
             filler: content()
                 .states
                 .iter()
@@ -451,7 +454,9 @@ impl ClientWorld {
 
     /// `around`: the cubes around it not to wait for.
     pub fn insert(&mut self, pos: IVec3, cube: Arc<Cube>, around: super::terrain::Around) {
-        if self.has_wire(&cube) || self.cubes.get(&pos).is_some_and(|s| self.has_wire(&s.cube)) || self.wire_around(pos) {
+        let wired = self.has_wire(&cube);
+        self.wire_seen |= wired;
+        if wired || self.wire_around(pos) {
             self.wire_dirty.insert(pos);
         }
         let (hidden, sky) = (around.hidden, around.sky);
@@ -506,8 +511,12 @@ impl ClientWorld {
         crate::wire::has_wire(crate::content::content(), cube)
     }
 
-    /// Whether this cube or one next to it has wire.
+    /// Whether this cube or one next to it has wire. Most worlds have none, and asking for all the
+    /// neighbors of each cube coming and going was a tenth of a frame while flying.
     fn wire_around(&self, pos: IVec3) -> bool {
+        if !self.wire_seen {
+            return false;
+        }
         std::iter::once(IVec3::ZERO)
             .chain(crate::world::DIRS)
             .any(|d| {
@@ -556,6 +565,7 @@ impl ClientWorld {
         let c = crate::content::content();
         let (old, new) = (&c.states[slot.cube.get(local_index(p)) as usize], &c.states[state as usize]);
         let wire = weft_abi::signal_kind::WIRE;
+        self.wire_seen |= new.signal.kind == wire;
         if !crate::wire::same_shape(old, new) && (old.signal.kind == wire || new.signal.kind == wire || self.wire_around(cp)) {
             self.wire_dirty.insert(cp);
         }

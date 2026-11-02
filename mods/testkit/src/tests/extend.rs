@@ -80,53 +80,6 @@ pub async fn vetoes_and_timers(t: T) -> R {
     Ok(())
 }
 
-/// Placing picks the allowed facing nearest the player's look: the test mod's vent (up, north,
-/// east) put against a wall faces the player.
-pub async fn facing_placement(t: T) -> R {
-    t.flat().await?;
-    let f = t.feet();
-    t.op("mode creative").await?;
-    t.op("put me 0 testmod:vent 4").await?;
-    t.c().select(0);
-    // Against a wall two blocks south, looking at it: the front turns north, towards the player
-    // (looking steeply down it would face up).
-    let wall = add(f, [0, 0, 3]);
-    t.fill(wall, add(wall, [0, 1, 0]), "cobblestone").await?;
-    t.look_at(wall);
-    t.frames(2).await?;
-    t.press("core:use");
-    t.secs(0.3).await?;
-    t.check_eq(t.block(add(wall, [0, 0, -1])).await?, "testmod:vent[facing=north]".to_string(), "the vent faces north");
-    // States by name in a command, and one property changed by name keeping the other.
-    let p = add(f, [3, 0, 0]);
-    t.cmd(&format!("/setblock {} base:furnace[lit=true,facing=east]", at(p)))
-        .await?;
-    t.check_eq(t.block(p).await?, "base:furnace[facing=east,lit=true]".to_string(), "/setblock with properties");
-    t.check_eq(t.op(&format!("setprop {} lit false", at(p))).await?, "1".to_string(), "set_prop");
-    t.check_eq(t.block(p).await?, "base:furnace[facing=east,lit=false]".to_string(), "put out, still facing east");
-    t.check_eq(t.op(&format!("setprop {} lit maybe", at(p))).await?, "0".to_string(), "an unknown value is refused");
-    Ok(())
-}
-
-/// One naming rule for every kind of thing: a name without a namespace is the declaring mod's,
-/// another mod's is written in full, and both resolve the same way when read.
-pub async fn names(t: T) -> R {
-    use weft_sdk::*;
-    static PROBE: Key = Key::named("probe");
-    static OWN_EVENT: Event<u32> = Event::named("marks");
-    static COAL: Item = Item::named("base:coal");
-    static NOWHERE: Block = Block::named("no_such_block");
-    t.flat().await?;
-    t.check_eq(PROBE.name().to_string(), "testkit:probe".into(), "a key's relative name");
-    t.check_eq(OWN_EVENT.name().to_string(), "testkit:marks".into(), "an event's relative name");
-    t.check_eq(screens::PAUSE.name().to_string(), "core:pause".into(), "an engine screen");
-    t.check_eq(question::BREAK_BLOCK.name().to_string(), "core:break_block".into(), "an engine question");
-    t.check_eq(Some(COAL.id()), Item::lookup("base:coal"), "another mod's item by handle and by typed name");
-    t.check_eq(Item::generated("base:coal".into()).id(), COAL.id(), "a generated handle");
-    t.check_eq(NOWHERE.id(), u32::MAX, "an unknown block");
-    Ok(())
-}
-
 /// Block properties are components: testkit's `r.set` gives base's mossy cobblestone blue light,
 /// and the engine's lighting uses it.
 pub async fn block_properties(t: T) -> R {
@@ -141,61 +94,4 @@ pub async fn block_properties(t: T) -> R {
         .map_err(|e| format!("light: {e}"))?;
     t.check_eq([(l >> 8) & 255, (l >> 16) & 255, l >> 24], [0, 0, 8], "block light above the overridden block (r, g, b)");
     Ok(())
-}
-
-/// A mod's client tick for pigs runs every frame, gets a last call when a death ends, and keeps
-/// the engine's cosmetics (the smoke) through `engine_effects`.
-pub async fn client_entity_tick(t: T) -> R {
-    use std::sync::atomic::Ordering::Relaxed;
-    t.flat().await?;
-    let p = add(t.feet(), [3, 0, 0]);
-    let before = crate::PIG_TICKS.load(Relaxed);
-    t.op(&format!("spawn pig {}", at(p))).await?;
-    t.until("the pig's client tick", Duration::from_secs(3), |_| crate::PIG_TICKS.load(Relaxed) > before + 10)
-        .await?;
-    let deaths = crate::PIG_DEATHS.load(Relaxed);
-    t.cmd("/kill @e[type=base:pig]").await?;
-    t.until("the last call when the death ends", Duration::from_secs(5), |_| crate::PIG_DEATHS.load(Relaxed) > deaths)
-        .await?;
-    let smoke = t.state().particles;
-    t.check(smoke >= 10, format!("the engine's death smoke through engine_effects: {smoke} particles"));
-    Ok(())
-}
-
-/// Typed channels: a `value!` struct and a string go to the server and the answers come back
-/// typed, no bytes handled by hand.
-pub async fn typed_channels(t: T) -> R {
-    t.flat().await?;
-    t.c()
-        .send(&crate::server::ECHO, &crate::server::Echo { n: 21 });
-    t.until("the doubled echo", Duration::from_secs(5), |_| crate::ECHOED.load(std::sync::atomic::Ordering::Relaxed) == 42)
-        .await?;
-    t.c().send(&crate::server::GREET, &"Steve".to_string());
-    t.until("the greeting", Duration::from_secs(5), |_| *crate::GREETED.lock().unwrap() == "hello, Steve")
-        .await?;
-    Ok(())
-}
-
-/// A key declared with `on_press_server` reaches the server by itself, and not while the chat
-/// has the input.
-pub async fn key_to_server(t: T) -> R {
-    t.flat().await?;
-    let before: u32 = t.op("pings").await?.parse().unwrap_or(0);
-    t.c().key("F10", 0.2);
-    let mut now = before;
-    for _ in 0..50 {
-        now = t.op("pings").await?.parse().unwrap_or(0);
-        if now > before {
-            break;
-        }
-        t.frames(2).await?;
-    }
-    t.check_eq(now, before + 1, "presses the server got");
-    t.press("core:chat");
-    t.screen("core:chat").await?;
-    t.c().key("F10", 0.2);
-    t.secs(0.5).await?;
-    t.check_eq(t.op("pings").await?.parse().unwrap_or(0), now, "presses while typing in the chat");
-    t.c().key("Escape", 0.0);
-    t.no_screen().await
 }

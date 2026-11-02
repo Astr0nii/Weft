@@ -18,8 +18,7 @@ fn place(bone: u32, p: vec3<f32>) -> vec3<f32> {
     return vec3(dot(b.rows[0], q), dot(b.rows[1], q), dot(b.rows[2], q));
 }
 
-@vertex
-fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
+fn vertex(vi: u32, ii: u32) -> VOut {
     let inst = instances[ii];
     var out: VOut;
     var world: vec3<f32>;
@@ -93,4 +92,18 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
     }
     let f = fog_amount(in.dist, scene.params.x, scene.params.y);
     return vec4(mix(c.rgb, scene.fog_color.rgb, f), 1.0);
+}
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
+    return vertex(vi, ii);
+}
+
+// The first person's arms: depth squeezed into the near half (reverse Z), in front of the world
+// (nothing the player collides with comes closer than ~0.2 blocks) but sorted within themselves.
+@vertex
+fn vs_hand(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
+    var out = vertex(vi, ii);
+    out.clip.z = (0.5 + 0.5 * out.clip.z / out.clip.w) * out.clip.w;
+    return out;
 }

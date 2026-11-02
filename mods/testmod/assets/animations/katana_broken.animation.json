@@ -1,0 +1,18 @@
+{
+ "format_version": "1.8.0",
+ "animations": {
+  "animation.katana_broken.ground": {
+   "loop": true,
+   "animation_length": 0.05,
+   "bones": {
+    "root": {
+     "rotation": [
+      90,
+      0,
+      0
+     ]
+    }
+   }
+  }
+ }
+}

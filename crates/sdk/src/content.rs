@@ -241,6 +241,8 @@ pub type LootTable = Handle<kind::LootTable>;
 pub type TextCondition = Handle<kind::TextCondition>;
 pub type Music = Handle<kind::Music>;
 pub type EquipmentSlot = Handle<kind::EquipmentSlot>;
+/// The second hand, in the player's equipment: register it to have one, with any background.
+pub static OFF_HAND: EquipmentSlot = EquipmentSlot::named(abi::OFF_HAND_SLOT);
 
 /// Things that name a loot table: a block or entity kind (what it drops) or a table of its own.
 pub trait LootSource {
@@ -515,8 +517,59 @@ impl Registry {
         self.send_set(target, &Pending::tag(tag), false);
     }
 
-    /// A text component on entries of any mod, e.g. keyframes for the player:
-    /// `r.set_text_on(Target::Entity("core:player"), &ANIMATIONS, "mymod:player")`.
+    /// What an item or an entity of any mod looks like. From a file, `models/<file>.geo.json` with
+    /// its `textures/<file>.png`, shown everywhere the item shows, or from code:
+    /// `r.set_model("base:apple", "foodmod:apple")`, `r.set_model("core:player", biped(false))`.
+    /// A whole tag at once takes `{name}`; items without a file stay as they were:
+    /// `r.set_model("#food", "foodmod:food/{name}")`.
+    pub fn set_model(&mut self, what: impl ModelTarget, model: impl ModelSource) {
+        model.set_on(self, what.target());
+    }
+
+    /// The clips of an item or an entity of any mod: `r.set_animations("core:player",
+    /// "mymod:player")` plays `animations/player.animation.json` of `mymod` on every player.
+    pub fn set_animations(&mut self, what: impl ModelTarget, file: &str) {
+        let file = crate::asset("", file);
+        self.set_text_on(what.target(), &c::ANIMATIONS, &file);
+    }
+
+    /// Every entity of `kind` has `model` on its bone `bone`, drawn in that model's own pixels, with
+    /// the same origin as the kind's. What plays on the entity plays on it too, by the names of
+    /// clips and bones: `r.attach_model(&PLAYER, "tailmod:tail", "body")`.
+    pub fn attach_model(&mut self, kind: impl ModelTarget, model: &str, bone: &str) {
+        let (model, kind) = (crate::asset("", model), qualify(self.ns, kind.target().name()));
+        unsafe { (host().reg_attach_model)(self.raw, Str::new(&kind), Str::new(&model), Str::new(bone)) }
+    }
+
+    /// `bone` of `model` moves by itself. A bone called `hanging` or `hanging_<anything>` does without this.
+    pub fn bone_motion(&mut self, model: &str, bone: &str, motion: BoneMotion) {
+        let model = crate::asset("", model);
+        unsafe { (host().reg_bone_motion)(self.raw, Str::new(&model), Str::new(bone), motion.gravity, motion.spring, motion.drag) }
+    }
+
+    /// Which model a stack of `item` shows as, by what is in it: `None` for its usual one. Asked once
+    /// per kind of stack. Other players' hands show the usual one: their stacks aren't sent.
+    pub fn item_model_for_stack<R: AsRef<str>>(
+        &mut self,
+        item: impl ModelTarget,
+        f: impl Fn(&abi::ItemStack) -> Option<R> + Send + Sync + 'static,
+    ) {
+        thread_local! {
+            static NAME: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+        }
+        let cb = callback(move |a: &mut abi::ItemModelArgs| {
+            if let Some(name) = f(&a.stack) {
+                NAME.with(|n| {
+                    *n.borrow_mut() = crate::asset("", name.as_ref());
+                    a.model = Str::new(&n.borrow());
+                });
+            }
+        });
+        let item = qualify(self.ns, item.target().name());
+        unsafe { (host().reg_item_model_when)(self.raw, Str::new(&item), cb) }
+    }
+
+    /// A text component on entries of any mod.
     pub fn set_text_on<T: c::TextValue>(&mut self, target: Target, comp: &Component<T>, text: &str) {
         self.send_set(target, &Pending::text_as(comp.name(), &T::schema(), text), false);
     }
@@ -540,6 +593,94 @@ impl Registry {
             abi::SetDesc { target_kind: kind, target: Str::new(&name), value: values[0], remove: remove as u32, ..abi::SetDesc::DEFAULT };
         unsafe { (host().reg_set)(self.raw, &desc) }
     }
+}
+
+/// How a bone moves by itself, on top of its clips. Numbers don't depend on the bone's size.
+#[derive(Clone, Copy, Debug)]
+pub struct BoneMotion {
+    /// Pull toward hanging straight down. The bigger, the faster it swings.
+    pub gravity: f32,
+    /// Pull back to where the clips have it.
+    pub spring: f32,
+    /// How fast the swing dies down.
+    pub drag: f32,
+}
+
+impl BoneMotion {
+    /// On a chain: a lantern. What a bone called `hanging` does.
+    pub const HANGING: BoneMotion = BoneMotion { gravity: 40.0, spring: 0.0, drag: 2.5 };
+    /// Keeps its shape, droops a little and lags behind: a tail.
+    pub const SPRINGY: BoneMotion = BoneMotion { gravity: 6.0, spring: 30.0, drag: 5.0 };
+}
+
+/// What `Registry::set_model` takes: a file's name, or a model made in code.
+pub trait ModelSource {
+    fn set_on(self, r: &mut Registry, what: Target<'_>);
+}
+
+impl ModelSource for &str {
+    fn set_on(self, r: &mut Registry, what: Target<'_>) {
+        let file = crate::asset("", self);
+        r.set_text_on(what, &c::MODEL, &file);
+    }
+}
+
+/// What has a model: a name or `#tag` as text, or the handle of an item, a block or an entity.
+pub trait ModelTarget {
+    fn target(&self) -> Target<'_>;
+}
+
+impl ModelTarget for &str {
+    fn target(&self) -> Target<'_> {
+        Target::Name(self)
+    }
+}
+
+impl ModelTarget for &Item {
+    fn target(&self) -> Target<'_> {
+        Target::Name(self.name())
+    }
+}
+
+impl ModelTarget for &Block {
+    fn target(&self) -> Target<'_> {
+        Target::Name(self.name())
+    }
+}
+
+impl ModelTarget for &crate::Entity {
+    fn target(&self) -> Target<'_> {
+        Target::Entity(self.name())
+    }
+}
+
+impl Target<'_> {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Target::Name(n) | Target::Entity(n) | Target::Biome(n) | Target::Dimension(n) => n,
+        }
+    }
+}
+
+/// The actions the engine plays by itself, by the names clips have in files. Any other name is a
+/// mod's own.
+pub mod action {
+    pub const IDLE: &str = "idle";
+    pub const WALK: &str = "walk";
+    pub const SNEAK: &str = "sneak";
+    pub const SWIM: &str = "swim";
+    pub const CRAWL: &str = "crawl";
+    pub const DEATH: &str = "death";
+    pub const HOLD: &str = "hold";
+    pub const HOLD_TOOL: &str = "hold_tool";
+    pub const HOLD_EMPTY: &str = "hold_empty";
+    pub const SWING: &str = "swing";
+    pub const SWING_HELD: &str = "swing_held";
+    pub const USE: &str = "use";
+    pub const EQUIP: &str = "equip";
+    /// An item's model lying on the ground, and in a slot.
+    pub const GROUND: &str = "ground";
+    pub const GUI: &str = "gui";
 }
 
 #[derive(Clone)]
@@ -1708,6 +1849,32 @@ impl ItemBuilder<'_> {
     pub fn max_stack(self, n: u32) -> Self {
         self.set(&c::MAX_STACK, n)
     }
+    /// Its clips, from `animations/<name>.animation.json`; a file named after the item is used
+    /// even without this. They play on whoever holds it.
+    pub fn animations(mut self, name: &str) -> Self {
+        let name = crate::asset("", name);
+        self.components
+            .push(Pending::text(abi::comp::ANIMATIONS, &name));
+        self
+    }
+    /// Needs both hands: while the other holds something it does nothing, and it can't go in
+    /// the other hand. Its `hold` action shows the two.
+    pub fn two_handed(self) -> Self {
+        self.tag(abi::comp::TWO_HANDED)
+    }
+    /// A `two_handed` item may be held in one hand after all, playing this action. It goes in
+    /// the other hand then too.
+    pub fn one_handed_action(mut self, action: &str) -> Self {
+        self.components
+            .push(Pending::text(abi::comp::ONE_HANDED, action));
+        self.tag(abi::comp::TWO_HANDED)
+    }
+    /// On a right click the hand whose item has the higher priority goes first, whichever hand
+    /// that is (default 0, then the main hand first). The other hand gets its turn when this
+    /// item does nothing: a bow with no arrows.
+    pub fn use_priority(self, priority: i32) -> Self {
+        self.set(&c::USE_PRIORITY, priority)
+    }
     /// Uses before it breaks (`durability`); damageable items do not stack.
     pub fn durability(self, d: u32) -> Self {
         self.set(&c::DURABILITY, d).set(&c::MAX_STACK, 1)
@@ -1755,6 +1922,15 @@ impl ItemBuilder<'_> {
         self.block = block.name().to_string();
         self
     }
+    /// Worn in equipment `slot`, where it shows as `model` on the wearer's bone `bone`, moved by
+    /// what plays on the wearer, like `Registry::attach_model`: a tail only those who wear it have.
+    pub fn wearable_model(self, slot: &EquipmentSlot, model: &str, bone: &str) -> Self {
+        let model = format!("{}@{bone}", crate::asset("", model));
+        self.tag(&format!("worn/{}", slot.name()))
+            .set(&c::WORN, abi::Worn { roles: 0, inflate: 0.0 })
+            .set_text(&c::WORN_MODEL, &model)
+    }
+
     /// Creative inventory tab, see `Registry::creative_tab`.
     pub fn tab(self, tab: &CreativeTab) -> Self {
         let tag = format!("tab/{}", tab.name());

@@ -14,6 +14,9 @@
 //! look 90 -20         # yaw, pitch in degrees
 //! chat /give stone 10
 //! say_config testmod:x  # a config's value as this client has it, into the chat
+//! view 32             # view distance, for measuring: tests and scripts start at 12
+//! vsync off           # the same for vsync
+//! occlusion off       # and for occlusion culling, to compare
 //! shot name.png       # into run/screenshots (or --shot-dir)
 //! bench 5 label       # BENCH line over 5 seconds
 //! host ticket.txt     # host, write the join ticket there
@@ -87,6 +90,13 @@ pub async fn run(t: T, src: String) -> R {
             }
             "look" => t.c().look(num(0, 0.0), num(1, 0.0)),
             "chat" => t.c().chat(rest),
+            // `view 64 vsync off`-like settings, past what `same_conditions` fixed.
+            "view" => weft_sdk::settings::VIEW_DISTANCE.set(rest.parse().map_err(|_| "view: a number")?),
+            "vsync" => weft_sdk::settings::VSYNC.set(rest == "on"),
+            "occlusion" => {
+                static OCCLUSION: weft_sdk::Config<bool> = weft_sdk::Config::named("core:occlusion_culling");
+                OCCLUSION.set(rest == "on");
+            }
             "say_config" => {
                 let cfg = weft_sdk::Config::<f64>::named(Box::leak(rest.to_string().into_boxed_str()));
                 t.c().chat(&format!("config {rest} = {}", cfg.get()));
@@ -97,6 +107,11 @@ pub async fn run(t: T, src: String) -> R {
                     None => rest.to_string(),
                 };
                 t.c().screenshot(&path);
+            }
+            // A bench that goes on while the next lines run: for measuring while flying.
+            "bench_bg" => {
+                let (secs, label) = rest.split_once(' ').unwrap_or((rest, ""));
+                t.c().bench(secs.parse().unwrap_or(5.0), label.trim());
             }
             "bench" => {
                 let (secs, label) = rest.split_once(' ').unwrap_or((rest, ""));

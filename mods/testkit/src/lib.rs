@@ -21,31 +21,13 @@ declare_mod!(deps: [], init: init);
 
 static PLAN: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
 
-/// What came back on the typed channels (`extend::typed_channels`).
-pub static ECHOED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-pub static GREETED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
-/// Calls of the pigs' client tick, and the last ones, when a death ends (`extend::client_entity_tick`).
-pub static PIG_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-pub static PIG_DEATHS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
 fn init(r: &mut Registry) {
     server::register(r);
-    r.client_packet(&server::ECHO_BACK, |_, e| ECHOED.store(e.n, std::sync::atomic::Ordering::Relaxed));
-    r.client_packet(&server::GREET, |_, text| *GREETED.lock().unwrap() = text);
     r.key(&runner::PROBE, "F9");
     // A branch of an engine command, handled by this mod (on the client, like /gizmo).
     r.client_command_branch("gizmo", "probe <n:int>", |cmd| {
         let n = cmd.int("n").unwrap_or(0);
         cmd.reply("command.testkit.gizmo_probe", &[Arg::Int(n as i64)]);
-    });
-    // Pigs' cosmetics through a mod's tick that keeps the engine's (testkit is never shipped).
-    static PIG: Entity = Entity::named("base:pig");
-    r.client_entity_tick(&PIG, |_, e| {
-        PIG_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if e.dying().is_some_and(|d| d >= 1.0) {
-            PIG_DEATHS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        e.engine_effects();
     });
     // An engine command a mod replaces (testkit is never shipped).
     r.command("regions", "", |cmd| cmd.reply("command.testkit.regions", &[]));
@@ -78,6 +60,12 @@ const ALONE: &[&str] = &["edit_while_loading", "skiff_smooth"];
 /// failure halfway, or leaving a server, which reads the player's settings back).
 pub(crate) fn same_conditions(c: &Client) {
     use weft_sdk::settings::*;
+    // Tests look at what the hands hold, in the view.
+    static FIRST_PERSON_MODEL: Config<bool> = Config::named("core:first_person_model");
+    let scripted = PLAN.get().is_some_and(|p| p.1.is_some());
+    if FIRST_PERSON_MODEL.get() && !scripted {
+        FIRST_PERSON_MODEL.set(false);
+    }
     // The player's packs would change every picture.
     let packs = !RESOURCE_PACKS.get().is_empty() || !SHADER_PACK.get().is_empty();
     LANGUAGE.set("en_us");

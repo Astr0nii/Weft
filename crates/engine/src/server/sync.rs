@@ -215,7 +215,7 @@ fn send_mining(p: &mut Player, cracks: &[crate::net::Crack], tick: u64) {
             .iter()
             .filter(|m| m.0 != p.entity && p.known.contains(&m.0))
         {
-            p.conn.send(ToClient::EntitySwing(m.0));
+            p.conn.send(ToClient::EntitySwing { id: m.0, off: false });
         }
     }
 }

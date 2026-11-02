@@ -104,6 +104,18 @@ pub struct ClientEntity {
     pub worn: Vec<u32>,
     /// A player's item in hand, 0 for none.
     pub held: u32,
+    /// And in the other hand.
+    pub off_held: u32,
+    /// Into using what it holds, 0..1, and whether with the other hand.
+    pub using: Option<(f32, bool)>,
+    /// Ticks using it takes.
+    pub use_ticks: f32,
+    /// How far into sneaking, 0..1: the pose fades in and out.
+    pub crouched: f32,
+    /// Actions a mod has play as another for now: which, as what.
+    pub swaps: Vec<(String, String)>,
+    /// Its swing is the other hand's.
+    pub swing_off: bool,
     /// Accumulated walk distance and current swing amplitude, for limb animation.
     pub walk: f32,
     /// Blocks actually walked, which limbs at full swing fall behind of.
@@ -115,8 +127,8 @@ pub struct ClientEntity {
     pub dying: Option<f32>,
     /// Walk distance at which its next step sounds.
     pub next_step: f32,
-    /// Keyframe animation the server started: name, age it started at, looping.
-    pub anim: Option<(String, f32, bool)>,
+    /// Action the server started: name, age it started at, looping.
+    pub action: Option<(String, f32, bool)>,
     /// How a player holds itself: its box and how the model stands.
     pub pose: Pose,
     /// Where the body faces: follows the head with a lag, and where it walks.
@@ -157,6 +169,19 @@ impl LocalPlayer {
 /// `u32` and `f32` values of an engine field component (`registry::HEALTH` ...).
 fn words(bytes: &[u8]) -> impl Iterator<Item = [u8; 4]> + '_ {
     bytes.chunks_exact(4).map(|w| [w[0], w[1], w[2], w[3]])
+}
+
+fn parse_swaps(bytes: &[u8]) -> Vec<(String, String)> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect()
+}
+
+/// A pose comes and goes in about a tenth of a second.
+fn fade_pose(now: f32, on: bool, dt: f32) -> f32 {
+    (now + if on { dt } else { -dt } / 0.1).clamp(0.0, 1.0)
 }
 
 impl ClientEntity {
@@ -273,8 +298,8 @@ pub struct Client {
     pub player: LocalPlayer,
     pub joined: bool,
     pub player_id: u64,
-    /// Keyframe animation the server started on us: (name, start, looping).
-    self_anim: Option<(String, f32, bool)>,
+    /// Action the server started on us: (name, start, looping).
+    self_action: Option<(String, f32, bool)>,
     accum: f64,
     tick_accum: f64,
     /// Seconds of physics steps taken, the clock solid bodies are shown by.
@@ -338,8 +363,13 @@ pub struct Client {
     pub view: u8,
     /// F1: no hand and no block outline.
     pub hide_gui: bool,
+    /// Show your own body in first person instead of just the hand.
+    pub first_person_model: bool,
     /// Arm swing progress 0..1 while swinging.
     hand_swing: Option<f32>,
+    /// That swing is the other hand's.
+    hand_swing_off: bool,
+    using_off: bool,
     /// The stack the hand shows: a new one only comes up after the old one went down.
     hand_stack: ItemStack,
     /// How far the hand is up, 0..1.
@@ -365,6 +395,8 @@ pub struct Client {
     /// Own walk distance and swing amplitude, for the third person model and view bobbing.
     self_walk: f32,
     self_swing: f32,
+    self_crouched: f32,
+    self_swaps: Vec<(String, String)>,
     /// Vanilla's bobbing state: distance walked (x0.6) and the smoothed amplitude.
     walk_dist: f32,
     bob: f32,
@@ -531,6 +563,7 @@ impl Client {
         key: &str,
         view_radius: i32,
         skin: Option<Vec<u8>>,
+        avatar: Option<crate::net::AvatarData>,
     ) -> Result<Client, String> {
         let c = content();
         let render = WorldRenderer::new(gpu, c, textures, assets)?;
@@ -543,6 +576,9 @@ impl Client {
         conn.send(ToServer::View(view_radius as u32));
         if let Some(png) = skin {
             conn.send(ToServer::Skin(png));
+        }
+        if let Some(a) = avatar {
+            conn.send(ToServer::Avatar(a));
         }
         let (gpu_tx, gpu_rx) = crossbeam_channel::unbounded();
         let gpu_on = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -587,7 +623,7 @@ impl Client {
             },
             joined: false,
             player_id: 0,
-            self_anim: None,
+            self_action: None,
             accum: 0.0,
             tick_accum: 0.0,
             body_clock: 0.0,
@@ -647,7 +683,10 @@ impl Client {
             controls: controls::Controls::default(),
             view: 0,
             hide_gui: false,
+            first_person_model: false,
             hand_swing: None,
+            hand_swing_off: false,
+            using_off: false,
             hand_stack: ItemStack::default(),
             hand_height: 1.0,
             swing_since: 1000.0,
@@ -667,6 +706,8 @@ impl Client {
             fall_top: f64::NEG_INFINITY,
             self_walk: 0.0,
             self_swing: 0.0,
+            self_crouched: 0.0,
+            self_swaps: Vec::new(),
             walk_dist: 0.0,
             bob: 0.0,
             last_smooth: DVec3::ZERO,
@@ -729,10 +770,11 @@ impl Client {
     }
 
     pub fn held(&self) -> ItemStack {
-        self.inventory
-            .get(self.selected)
-            .copied()
-            .unwrap_or_default()
+        crate::content::in_main_hand(content(), &self.inventory, self.selected as u32)
+    }
+
+    pub fn off_held(&self) -> ItemStack {
+        crate::content::in_off_hand(content(), &self.inventory)
     }
 
     /// Starts the terrain over for dimension `dim` (joined, or moved to another dimension).
@@ -755,6 +797,13 @@ impl Client {
     /// Meshes still to come or to upload.
     pub fn pending_meshes(&self) -> usize {
         self.world.pending_meshes() + self.meshes.len()
+    }
+
+    /// The key that swaps what is in the two hands.
+    fn swap_hands(&mut self, input: &Input) {
+        if input.captured && self.mode != GameMode::Spectator && input.pressed("core:swap_hands") {
+            self.conn.send(ToServer::SwapHands);
+        }
     }
 
     pub fn close_menu(&mut self) {
@@ -897,6 +946,7 @@ impl Client {
         let speed = moved / std::mem::replace(&mut self.moved_over, dt as f32).max(1e-4);
         // Limbs swing with horizontal speed in the air too, like vanilla.
         crate::model::walk_limbs(&mut self.self_walk, &mut self.self_swing, speed, dt as f32);
+        self.self_crouched = fade_pose(self.self_crouched, self.player.pose == Pose::Crouch, dt as f32);
         // Vanilla's: swimming doesn't bob, even touching the bottom.
         let walking = self.player.on_ground && !self.player.flying && self.player.pose != Pose::Swim && !self.dead;
         // Vanilla: amplitude follows the per-tick speed capped at 0.1, eased by 0.4 per tick.
@@ -904,6 +954,7 @@ impl Client {
         let target = if walking { (speed * crate::world::TICK as f32).min(0.1) } else { 0.0 };
         self.bob += (target - self.bob) * (1.0 - 0.6f32.powf(dt as f32 * crate::world::TPS as f32));
         advance_swing(&mut self.hand_swing, dt as f32);
+        self.swap_hands(input);
         // A use swings only when the server says it did something (`ToClient::Swing`).
         if input.captured && !spectator && (input.pressed("core:attack") || (input.held("core:attack") && self.breaking.is_some())) {
             self.swing_arm();
@@ -1278,7 +1329,15 @@ impl Client {
                 .filter(|(_, e)| c.game.entities[e.kind as usize].is(weft_abi::entity_flags::SOLID))
                 .map(|(&id, e)| (id, e.pose(at))),
         );
-        for e in self.entities.values_mut().filter(|e| e.pulled.is_none()) {
+        // A crowd's worth on all cores: nothing here depends on another entity.
+        let mut moving: Vec<&mut ClientEntity> = self
+            .entities
+            .values_mut()
+            .filter(|e| e.pulled.is_none())
+            .collect();
+        let frames_ref = &frames;
+        let step = |e: &mut &mut ClientEntity| {
+            let frames = frames_ref;
             let before = e.pos;
             let body = e
                 .rel_target
@@ -1295,7 +1354,9 @@ impl Client {
                 e.pos.lerp(e.target, k)
             };
             let mut dyaw = e.target_yaw - e.yaw;
-            dyaw = (dyaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            if dyaw.abs() > std::f32::consts::PI {
+                dyaw = (dyaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            }
             e.yaw += dyaw * k as f32;
             e.body_yaw = turn_body(e.body_yaw, e.yaw, walked.unwrap_or(e.pos - before), dt as f32);
             advance_swing(&mut e.arm_swing, dt as f32);
@@ -1303,6 +1364,10 @@ impl Client {
             let speed = (walked.unwrap_or(e.pos - before).with_y(0.0).length() / dt.max(1e-4)) as f32;
             e.walked += speed * dt as f32;
             crate::model::walk_limbs(&mut e.walk, &mut e.swing, speed, dt as f32);
+            e.crouched = fade_pose(e.crouched, e.pose == Pose::Crouch, dt as f32);
+            if let Some((p, _)) = &mut e.using {
+                *p = (*p + dt as f32 * crate::world::TPS as f32 / e.use_ticks.max(1.0)).min(1.0);
+            }
             e.hurt = (e.hurt - dt as f32).max(0.0);
             e.age += dt as f32;
             if let Some(d) = &mut e.dying {
@@ -1310,6 +1375,12 @@ impl Client {
                 e.hurt = 0.4;
                 e.burning = false;
             }
+        };
+        if moving.len() >= 512 {
+            use rayon::prelude::*;
+            moving.par_iter_mut().with_min_len(128).for_each(step);
+        } else {
+            moving.iter_mut().for_each(step);
         }
         self.frames = frames;
     }
@@ -1799,7 +1870,7 @@ impl Client {
     /// Copies an engine field component into the entity (or the own player) that shows it.
     fn engine_field(&mut self, id: u64, comp: u32, bytes: &[u8]) {
         let c = content();
-        let [health, burning, worn, shape, held] = c.game.field_comps;
+        let [health, burning, worn, shape, held, off_held, using, swaps, looping] = c.game.field_comps;
         let f: Vec<f32> = words(bytes).map(f32::from_le_bytes).collect();
         let shaped = || {
             let size = (f.len() == 4 && f[0] > 0.0).then(|| [f[0], f[1], f[2]]);
@@ -1826,6 +1897,8 @@ impl Client {
                 let (size, look) = shaped();
                 self.player.size = size.unwrap_or(c.game.entities[c.game.player_kind as usize].size());
                 self.self_look = look;
+            } else if comp == swaps {
+                self.self_swaps = parse_swaps(bytes);
             }
             return;
         }
@@ -1841,6 +1914,20 @@ impl Client {
             e.worn = words(bytes).map(u32::from_le_bytes).collect();
         } else if comp == held {
             e.held = words(bytes).next().map_or(0, u32::from_le_bytes);
+        } else if comp == swaps {
+            e.swaps = parse_swaps(bytes);
+        } else if comp == looping {
+            // For who wasn't around when it started; those who were have it from `PlayAction`.
+            let name = String::from_utf8_lossy(bytes);
+            if !name.is_empty() && e.action.as_ref().is_none_or(|a| a.0 != name) {
+                e.action = Some((name.into_owned(), e.age, true));
+            }
+        } else if comp == off_held {
+            e.off_held = words(bytes).next().map_or(0, u32::from_le_bytes);
+        } else if comp == using {
+            let v = words(bytes).next().map_or(0, u32::from_le_bytes);
+            e.use_ticks = (v & !(1 << 31)) as f32;
+            e.using = (v != 0).then(|| (e.using.map_or(0.0, |u| u.0), v >> 31 != 0));
         } else if comp == shape {
             (e.size, e.look) = shaped();
         }
@@ -1948,10 +2035,11 @@ impl Client {
         let fallen = self
             .dead_for
             .map_or(0.0, |t| 40.0 - 8000.0 / ((t * crate::world::TPS as f32).min(20.0) + 200.0));
+        let (kick, roll, pitch) = self.entity_render.camera_kick;
         cam.bob = (
-            Vec3::new(f.sin() * g * 0.5, -(f.cos() * g).abs(), 0.0),
-            (f.sin() * g * 3.0 - jolt + fallen).to_radians(),
-            ((f - 0.2).cos() * g).abs().to_radians() * 5.0,
+            Vec3::new(f.sin() * g * 0.5, -(f.cos() * g).abs(), 0.0) + kick,
+            (f.sin() * g * 3.0 - jolt + fallen).to_radians() + roll,
+            ((f - 0.2).cos() * g).abs().to_radians() * 5.0 + pitch,
         );
         cam
     }
@@ -1960,6 +2048,7 @@ impl Client {
     /// being mined.
     fn swing_arm(&mut self) {
         restart_swing(&mut self.hand_swing);
+        self.hand_swing_off = false;
     }
 
     /// The camera drawn from: the eye, or up to 4 blocks behind or in front of it in third person,
@@ -1985,8 +2074,8 @@ impl Client {
         self.bobbed(cam)
     }
 
-    /// The local player as an entity, for third person.
-    fn self_entity(&self) -> ClientEntity {
+    /// The local player as an entity.
+    pub fn self_entity(&self) -> ClientEntity {
         let w = &content().game.player_layout.worn;
         let worn: Vec<u32> = self
             .inventory
@@ -2006,7 +2095,15 @@ impl Client {
             health: self.health,
             hurt: self.hurt_flash,
             worn,
-            held: self.held().item,
+            held: if self.view == 0 { self.hand_stack.item } else { self.held().item },
+            off_held: self.off_held().item,
+            using: self
+                .using
+                .map(|(left, all)| (1.0 - left / all.max(1.0), self.using_off)),
+            use_ticks: 0.0,
+            crouched: self.self_crouched,
+            swaps: self.self_swaps.clone(),
+            swing_off: self.hand_swing_off,
             walk: self.self_walk,
             walked: self.self_walk,
             swing: self.self_swing,
@@ -2014,7 +2111,7 @@ impl Client {
             burning: self.burning,
             dying: None,
             next_step: 0.0,
-            anim: self.self_anim.clone(),
+            action: self.self_action.clone(),
             pose: self.player.pose,
             track: Default::default(),
             pulled: None,
@@ -2125,7 +2222,15 @@ impl Client {
         [v.x, v.y, v.z, v.y.max(0.0)]
     }
 
-    pub fn render(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, frame: &FrameInfo, textures: &GameTextures) {
+    /// `list` goes in the world's pass, `early` before it.
+    pub fn render(
+        &mut self,
+        gpu: &mut dyn Backend,
+        list: &mut CommandList,
+        early: &mut CommandList,
+        frame: &FrameInfo,
+        textures: &GameTextures,
+    ) {
         self.entity_render.local = self.player_id;
         for (entity, png) in std::mem::take(&mut self.entity_render.skin_pending) {
             self.entity_render.set_skin(gpu, entity, &png);
@@ -2150,13 +2255,13 @@ impl Client {
             .map(|(&id, e)| (id, physics::Transform::of(e.pos).origin()))
             .collect();
         // The world's light on each, as the server worked it out when it got there.
-        let lights: rustc_hash::FxHashMap<(u64, IVec3), u32> = self
-            .entities
+        let lights: rustc_hash::FxHashMap<(u64, IVec3), u32> = frames
             .iter()
-            .flat_map(|(&id, e)| e.world_light.iter().map(move |(cp, l)| ((id, *cp), *l)))
+            .filter_map(|(id, _)| self.entities.get(id).map(|e| (*id, e)))
+            .flat_map(|(id, e)| e.world_light.iter().map(move |(cp, l)| ((id, *cp), *l)))
             .collect();
         self.render
-            .draw(gpu, list, frame, &cam, scene_buf, &frames, &lights);
+            .draw(gpu, list, early, frame, &cam, scene_buf, &frames, &lights);
         let lit: Vec<u32> = frames
             .iter()
             .map(|(id, _)| {
@@ -2192,17 +2297,14 @@ impl Client {
             &overlays,
         );
         self.render.draw_translucent(&mut late);
-        let me = (self.view != 0 && !self.dead && self.mode != GameMode::Spectator).then(|| self.self_entity());
-        let hand = (self.view == 0 && !self.dead && self.player.lying.is_none() && self.mode != GameMode::Spectator && !self.hide_gui)
-            .then(|| entity_render::Hand {
-                stack: self.hand_stack,
-                swing: self.hand_swing,
-                lowered: 1.0 - self.hand_height,
-                lag: (self.player.pitch - self.hand_view.0, angle_diff(self.player.yaw, self.hand_view.1)),
-                using: self.using,
-                anim: self.self_anim.clone(),
-                age: self.start.elapsed().as_secs_f32(),
-            });
+        let alive = !self.dead && self.mode != GameMode::Spectator;
+        let first_person = self.view == 0;
+        let hand = (alive && first_person && !self.hide_gui).then(|| entity_render::Hand {
+            lowered: 1.0 - self.hand_height,
+            lag: (self.player.pitch - self.hand_view.0, angle_diff(self.player.yaw, self.hand_view.1)),
+            body: self.first_person_model,
+        });
+        let me = (alive && (!first_person || hand.is_some())).then(|| self.self_entity());
         let world = &self.world;
         let light = |p: IVec3| world.light(p);
         let mut hand_late = std::mem::take(&mut self.hand_late);

@@ -92,6 +92,53 @@ impl Client {
         self.input(abi::client_input::TYPE, text, 0.0, 0.0);
     }
 
+    fn pose_bone(&self, entity: u64, bone: &str, turn: [f32; 3], by: [f32; 3], scale: [f32; 3]) {
+        unsafe { (host().client_pose_bone)(self.raw, entity, s(bone), &turn, &by, &scale) }
+    }
+
+    /// Turns a bone of `entity`'s model or of what it has on, for this frame, on top of its clips:
+    /// degrees about x, y, z, the way Blockbench counts them. From `client_frame` or
+    /// `on_entity_frame`, every frame it should last.
+    pub fn turn_bone(&self, entity: u64, bone: &str, degrees: [f32; 3]) {
+        let [x, y, z] = degrees.map(f32::to_radians);
+        self.pose_bone(entity, bone, [-x, y, -z], [0.0; 3], [1.0; 3]);
+    }
+
+    /// Moves a bone this far in pixels, for this frame, the same way.
+    pub fn move_bone(&self, entity: u64, bone: &str, pixels: [f32; 3]) {
+        self.pose_bone(entity, bone, [0.0; 3], pixels, [1.0; 3]);
+    }
+
+    /// Scales a bone and what hangs on it, for this frame, the same way. All 0 hides it.
+    pub fn scale_bone(&self, entity: u64, bone: &str, scale: [f32; 3]) {
+        self.pose_bone(entity, bone, [0.0; 3], [0.0; 3], scale);
+    }
+
+    /// The action `entity` is playing now (`World::play_action`), until its clip is over.
+    pub fn current_action(&self, entity: u64) -> Option<String> {
+        let mut out = Str::new("");
+        (unsafe { (host().client_entity_action)(self.raw, entity, &mut out) } != 0).then(|| unsafe { out.as_str().to_string() })
+    }
+
+    /// How long a clip of action `name` is on `entity`'s model, in seconds.
+    pub fn clip_length(&self, entity: u64, name: &str) -> Option<f32> {
+        let secs = unsafe { (host().client_clip_length)(self.raw, entity, s(name)) };
+        (secs >= 0.0).then_some(secs)
+    }
+
+    /// The item id in `entity`'s hand, the other hand with `off_hand`; 0 for none. Other players'
+    /// stacks aren't sent, so this is the item without what is in it.
+    pub fn entity_held_item(&self, entity: u64, off_hand: bool) -> u32 {
+        unsafe { (host().client_entity_held)(self.raw, entity, off_hand as u32) }
+    }
+
+    /// Where a bone of `entity`'s model or of what it has on was in the world the last frame: for
+    /// sparks off a sword's tip, smoke over a lantern.
+    pub fn bone_position(&self, entity: u64, bone: &str) -> Option<[f64; 3]> {
+        let mut out = [0.0; 3];
+        (unsafe { (host().client_bone_position)(self.raw, entity, s(bone), &mut out) } != 0).then_some(out)
+    }
+
     pub fn release_all(&self) {
         self.input(abi::client_input::RELEASE_ALL, "", 0.0, 0.0);
     }
@@ -583,13 +630,22 @@ impl Registry {
     }
 
     /// Cosmetics of entities of `kind` on the client, every frame (wing flaps, sparks, purring),
-    /// instead of the engine's steps, idle noises and death smoke; `e.engine_effects()` keeps
+    /// instead of the engine's steps, idle noises and death smoke; `e.run_engine_effects()` keeps
     /// those. One per kind: a later mod's replaces an earlier one's.
-    pub fn client_entity_tick(&mut self, kind: &crate::Entity, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
+    pub fn client_entity_frame(&mut self, kind: &crate::Entity, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::ClientEntityArgs| {
             f(&Client::from_raw(a.client), unsafe { &*(a as *const abi::ClientEntityArgs as *const ClientEntity) })
         });
         unsafe { (host().reg_client_entity_tick)(self.raw, s(kind.name()), cb) }
+    }
+
+    /// Every frame on the client for each entity of `kind`, the local player too, beside whatever
+    /// else runs for them: any number of mods may watch one kind, and steps and such go on.
+    pub fn on_entity_frame(&mut self, kind: &crate::Entity, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
+        let cb = callback(move |a: &mut abi::ClientEntityArgs| {
+            f(&Client::from_raw(a.client), unsafe { &*(a as *const abi::ClientEntityArgs as *const ClientEntity) })
+        });
+        unsafe { (host().reg_client_entity_watcher)(self.raw, s(kind.name()), cb) }
     }
 
     /// When the top screen changes; the name is empty back in the world.
@@ -682,6 +738,7 @@ pub mod keys {
     pub static SCREENSHOT: Key = Key::named("core:screenshot");
     pub static PERSPECTIVE: Key = Key::named("core:perspective");
     pub static HIDE_HUD: Key = Key::named("core:hide_hud");
+    pub static SWAP_HANDS: Key = Key::named("core:swap_hands");
     pub static RELOAD: Key = Key::named("core:reload");
     pub static RECIPES: Key = Key::named("core:recipes");
     pub static USES: Key = Key::named("core:uses");
@@ -715,7 +772,7 @@ pub mod screens {
     pub static DEBUG_OPTIONS: Screen = Screen::named("core:debug_options");
 }
 
-/// One entity in `Registry::client_entity_tick`.
+/// One entity in `Registry::client_entity_frame`.
 #[repr(transparent)]
 pub struct ClientEntity(abi::ClientEntityArgs);
 
@@ -749,7 +806,7 @@ impl ClientEntity {
         self.0.dt
     }
     /// What the engine does for kinds without a tick: steps, idle noises, death smoke.
-    pub fn engine_effects(&self) {
+    pub fn run_engine_effects(&self) {
         let mut a = abi::ClientEntityArgs { ..self.0 };
         unsafe { (host().client_entity_defaults)(&mut a) }
     }

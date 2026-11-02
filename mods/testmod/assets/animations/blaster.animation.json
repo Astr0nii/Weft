@@ -1,0 +1,70 @@
+{
+ "format_version": "1.8.0",
+ "animations": {
+  "animation.blaster.hold": {
+   "loop": true,
+   "animation_length": 0.05,
+   "bones": {
+    "mainArm": {
+     "rotation": [
+      -84,
+      6,
+      0
+     ]
+    },
+    "offArm": {
+     "rotation": [
+      -70,
+      -30,
+      0
+     ]
+    }
+   },
+   "override_previous_animation": true,
+   "blend_weight": 0.5
+  },
+  "animation.blaster.swing": {
+   "animation_length": 0.3,
+   "bones": {
+    "mainArm": {
+     "rotation": {
+      "0": [
+       0,
+       0,
+       0
+      ],
+      "0.1": [
+       -10,
+       0,
+       0
+      ],
+      "0.3": [
+       0,
+       0,
+       0
+      ]
+     }
+    },
+    "slide": {
+     "position": {
+      "0": [
+       0,
+       0,
+       0
+      ],
+      "0.08": [
+       0,
+       0,
+       -4
+      ],
+      "0.3": [
+       0,
+       0,
+       0
+      ]
+     }
+    }
+   }
+  }
+ }
+}

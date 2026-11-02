@@ -194,61 +194,6 @@ pub async fn debug_lines(t: T) -> R {
     Ok(())
 }
 
-/// Resource packs move by their handles: up and down the list, out of it and back in. Every row
-/// keeps its handle inside the window however many packs are on.
-pub async fn pack_drag(t: T) -> R {
-    let dir = format!("{}/resourcepacks", t.c().run_dir());
-    let ids = ["testkit_a", "testkit_b", "testkit_c"];
-    for id in ids {
-        std::fs::create_dir_all(format!("{dir}/{id}")).map_err(|e| e.to_string())?;
-    }
-    let out = drag_packs(&t).await;
-    weft_sdk::settings::RESOURCE_PACKS.set("");
-    for id in ids {
-        let _ = std::fs::remove_dir_all(format!("{dir}/{id}"));
-    }
-    t.c().close_screen();
-    out
-}
-
-async fn drag_packs(t: &T) -> R {
-    use weft_sdk::settings::RESOURCE_PACKS;
-    t.screen("core:title").await?;
-    RESOURCE_PACKS.set("testkit_a,testkit_b,testkit_c");
-    t.check(t.c().open_screen(&screens::RESOURCE_PACKS), "cannot open the resource packs");
-    t.screen("core:resource_packs").await?;
-    t.until("the rows", Duration::from_secs(2), |t| t.c().ui_rect("id:pack_handle:testkit_c").is_some())
-        .await?;
-    t.shot("three_packs").await?;
-    t.laid_out(&["id:pack_handle:testkit_a", "id:pack_handle:testkit_b", "id:pack_handle:testkit_c"]);
-    let drag = async |id: &str, x: f32, y: f32, name: &str| -> R {
-        let [hx, hy, hw, hh] = t
-            .c()
-            .ui_rect(&format!("id:pack_handle:{id}"))
-            .ok_or(format!("no handle of {id}"))?;
-        t.c().cursor(hx + hw / 2.0, hy + hh / 2.0);
-        t.frames(3).await?;
-        t.c().click(0, 0.4);
-        t.frames(3).await?;
-        t.c().cursor(x, y);
-        t.frames(4).await?;
-        t.check(t.c().ui_rect("id:pack_ghost").is_some(), format!("the copy of {id} follows the cursor"));
-        t.shot(name).await?;
-        t.until("the drop", Duration::from_secs(3), |t| t.c().ui_rect("id:pack_ghost").is_none())
-            .await
-    };
-    let [ax, ay, _, _] = t.c().ui_rect("id:pack:testkit_a").ok_or("no row")?;
-    drag("testkit_c", ax + 0.02, ay + 0.002, "to_top").await?;
-    t.check_eq(RESOURCE_PACKS.get(), "testkit_c,testkit_a,testkit_b".to_string(), "dragged to the top");
-    let [lx, ly, lw, lh] = t.c().ui_rect("id:packs_available").ok_or("no list")?;
-    drag("testkit_a", lx + lw / 2.0, ly + lh / 2.0, "out").await?;
-    t.check_eq(RESOURCE_PACKS.get(), "testkit_c,testkit_b".to_string(), "dragged out of the selected");
-    let [sx, sy, sw, sh] = t.c().ui_rect("id:packs_selected").ok_or("no list")?;
-    drag("testkit_a", sx + sw / 2.0, sy + sh - 0.01, "back").await?;
-    t.check_eq(RESOURCE_PACKS.get(), "testkit_c,testkit_b,testkit_a".to_string(), "dragged back in, at the bottom");
-    Ok(())
-}
-
 /// F3 shows its panels inside the window, also in the widest case (Russian at GUI scale 3), the
 /// engine's on the left and right halves and a mod's own panel, which its group bit hides.
 pub async fn f3(t: T) -> R {
@@ -742,61 +687,5 @@ pub async fn rebind(t: T) -> R {
     t.check(k > 1.0, format!("K walks after rebinding forward to it (moved {k:.2})"));
     t.check(alone < 0.2 && chord > 1.0, format!("bound to Ctrl+K, K alone moved {alone:.2} and Ctrl+K {chord:.2}"));
     t.check(shift > 1.0, format!("a right Shift let go of alone is the key (moved {shift:.2})"));
-    Ok(())
-}
-
-/// A long list shows a scroll bar; clicking low on its track scrolls the list down.
-pub async fn scrollbar(t: T) -> R {
-    t.c().open_screen(&screens::CONTROLS);
-    t.screen("core:controls").await?;
-    t.frames(2).await?;
-    let [x, y, w, h] = t
-        .c()
-        .ui_rect("scrollbar")
-        .ok_or("no scroll bar on the controls screen")?;
-    let first = t.c().ui_rect("text:Walk forward").ok_or("no first entry")?;
-    t.c().cursor(x + w / 2.0, y + h * 0.95);
-    t.frames(1).await?;
-    t.c().click(0, 0.05);
-    t.frames(4).await?;
-    let moved = t.c().ui_rect("text:Walk forward").map_or(-1.0, |r| r[1]);
-    t.check(moved < first[1] - 0.05, format!("the list scrolled (first entry at {:.3}, was {:.3})", moved, first[1]));
-    t.c().close_screen();
-    Ok(())
-}
-
-/// A mod's LED switches it for the next start and leaving does nothing else; the restart button
-/// shows only with something to bring in.
-pub async fn mods_switch(t: T) -> R {
-    t.c().open_screen(&screens::MODS);
-    t.screen("core:mods").await?;
-    t.frames(3).await?;
-    t.check(t.c().ui_rect("id:mods_restart").is_none(), "nothing to restart for yet");
-    let file = format!("{}/test-config/disabled_mods.txt", t.c().run_dir());
-    t.check(t.click_ui("id:mod_led:testmod", 0), "a LED for the mod");
-    t.until("the restart button comes", Duration::from_secs(2), |t| t.c().ui_rect("id:mods_restart").is_some())
-        .await?;
-    t.check(
-        std::fs::read_to_string(&file)
-            .unwrap_or_default()
-            .contains("testmod"),
-        "it is written down",
-    );
-    // The LED is in the mod's row, and clicking it isn't clicking the row.
-    let (led, row) = (t.c().ui_rect("id:mod_led:testmod").ok_or("no LED")?, t.c().ui_rect("id:mod:testmod").ok_or("no row")?);
-    t.check(led[0] > row[0] && led[0] + led[2] <= row[0] + row[2] + 0.001, format!("the LED {led:?} inside its row {row:?}"));
-    t.check(t.c().ui_rect("text:Needs").is_none(), "the row isn't selected by it (only testmod needs something)");
-    t.shot("switched").await?;
-    t.check(t.click_ui("id:mod_led:testmod", 0), "and back");
-    t.until("nothing to restart for again", Duration::from_secs(2), |t| t.c().ui_rect("id:mods_restart").is_none())
-        .await?;
-    t.c().close_screen();
-    t.frames(3).await?;
-    t.check(
-        !std::fs::read_to_string(&file)
-            .unwrap_or_default()
-            .contains("testmod"),
-        "back on",
-    );
     Ok(())
 }

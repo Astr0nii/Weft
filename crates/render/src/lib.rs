@@ -172,6 +172,14 @@ pub enum Cmd {
         offset: u64,
         count: u32,
     },
+    /// Up to `max` [`DrawIndexedArgs`] records, how many a shader wrote at `count_offset`.
+    DrawIndexedIndirectCount {
+        buffer: BufferId,
+        offset: u64,
+        count_buffer: BufferId,
+        count_offset: u64,
+        max: u32,
+    },
     DrawIndirectCount {
         buffer: BufferId,
         offset: u64,
@@ -186,6 +194,11 @@ pub enum Cmd {
     },
     /// Makes shader writes visible to later commands. Only needed between compute and its consumers.
     Barrier,
+    /// Copies a depth texture to the start of a buffer, 32-bit floats row by row. Outside a pass.
+    CopyDepthToBuffer {
+        depth: TextureId,
+        buffer: BufferId,
+    },
     /// GPU timestamp, see [`Backend::gpu_times`].
     Mark,
 }

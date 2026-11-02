@@ -40,6 +40,8 @@ pub struct Entity {
     pub fire: u32,
     /// Hotbar slot the player holds.
     pub selected: u32,
+    /// Using what it holds: the ticks that takes, and whether in the other hand. Others see it.
+    pub using: (u32, bool),
     pub anchor: Option<IVec3>,
     pub sent: Option<(DVec3, f32, f32, crate::world::Pose)>,
     /// Worn items as last sent to clients.
@@ -116,6 +118,7 @@ impl Entity {
             mode: crate::world::GameMode::Survival,
             fire: 0,
             selected: 0,
+            using: (0, false),
             anchor: None,
             sent: None,
             worn: Vec::new(),
@@ -266,11 +269,18 @@ fn starting_value(c: &Content, kind: &crate::registry::EntityKind, comp: u32) ->
 }
 
 impl Entities {
-    /// What it holds in the selected slot.
-    pub fn held(&self, id: u64) -> weft_abi::ItemStack {
+    /// What is in its selected slot, whether it can do anything with it or not.
+    pub fn in_selected_slot(&self, id: u64) -> weft_abi::ItemStack {
         self.get(id)
-            .and_then(|e| self.inventories.get(&id)?.get(e.selected as usize).copied())
-            .unwrap_or_default()
+            .map_or_else(Default::default, |e| self.inventory_slot(id, e.selected))
+    }
+
+    /// What it holds and can use (`content::in_main_hand`).
+    pub fn held(&self, id: u64) -> weft_abi::ItemStack {
+        let c = crate::content::content();
+        self.get(id)
+            .zip(self.inventories.get(&id))
+            .map_or_else(Default::default, |(e, i)| crate::content::in_main_hand(c, i, e.selected))
     }
 
     pub fn get(&self, id: u64) -> Option<&Entity> {
@@ -461,6 +471,14 @@ impl Entities {
             .collect();
     }
 
+    pub fn inventory_slot(&self, owner: u64, slot: u32) -> ItemStack {
+        self.inventories
+            .get(&owner)
+            .and_then(|i| i.get(slot as usize))
+            .copied()
+            .unwrap_or_default()
+    }
+
     pub fn set_slot(&mut self, owner: u64, slot: u32, stack: ItemStack) {
         if let Some(inv) = self.inventories.get_mut(&owner) {
             if let Some(s) = inv.get_mut(slot as usize) {
@@ -474,7 +492,9 @@ impl Entities {
     pub fn insert_item(&mut self, c: &Content, owner: u64, mut stack: ItemStack) -> ItemStack {
         let max = c.max_stack(stack.item);
         // Pickups never go into a player's equipment.
-        let worn = if self.get(owner).is_some_and(|e| e.player) { c.game.player_layout.worn.clone() } else { 0..0 };
+        let is_player = self.get(owner).is_some_and(|e| e.player);
+        let off = c.game.player_layout.off.filter(|_| is_player);
+        let worn = if is_player { c.game.player_layout.worn.clone() } else { 0..0 };
         let Some(inv) = self.inventories.get_mut(&owner) else { return stack };
         for (_, s) in inv
             .iter_mut()
@@ -490,10 +510,11 @@ impl Entities {
                 stack.count -= n;
             }
         }
+        // Nor into an empty other hand.
         for (_, s) in inv
             .iter_mut()
             .enumerate()
-            .filter(|(i, _)| !worn.contains(&(*i as u32)))
+            .filter(|(i, _)| !worn.contains(&(*i as u32)) && off != Some(*i as u32))
         {
             if stack.count == 0 {
                 break;

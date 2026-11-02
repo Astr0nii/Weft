@@ -302,47 +302,6 @@ pub async fn crater(t: T) -> R {
     Ok(())
 }
 
-/// Testmod's dynamite: lit with a right click, it burns down its fuse and leaves a crater of
-/// the set radius, dug by the engine's area edit in one go.
-pub async fn dynamite(t: T) -> R {
-    static RADIUS: Config<i32> = Config::named("testmod:dynamite_radius");
-    t.flat().await?;
-    t.op("mode creative").await?;
-    let before = RADIUS.get();
-    RADIUS.set(24);
-    // Into whatever block the player looks at, whatever the ground does there.
-    t.c().look(0.0, -20.0);
-    t.secs(0.4).await?;
-    let aim = t.op("look").await?;
-    let v: Vec<i32> = aim
-        .split_whitespace()
-        .skip(1)
-        .take(3)
-        .filter_map(|v| v.parse().ok())
-        .collect();
-    let [x, y, z] = v[..] else { return Err(format!("looking at nothing: {aim}")) };
-    let d = [x, y, z];
-    t.set(d, "testmod:dynamite").await?;
-    t.secs(0.2).await?;
-    t.press("core:use");
-    t.secs(0.5).await?;
-    let lit = t.block(d).await?;
-    t.check(lit.starts_with("testmod:dynamite[fuse="), format!("lit dynamite is {lit}"));
-    t.check(lit != "testmod:dynamite[fuse=0]", "the click lit the fuse");
-    // Out of the blast, above it, looking down into where it will be.
-    t.cmd(&format!("/tp {} {} {}", d[0], d[1] + 30, d[2] + 40))
-        .await?;
-    t.c().look(0.0, -35.0);
-    t.secs(6.0).await?;
-    RADIUS.set(before);
-    t.check_eq(t.block(d).await?, "core:air".to_string(), "the dynamite went off");
-    for p in [add(d, [0, -20, 0]), add(d, [20, 0, 0]), add(d, [0, 0, -20]), add(d, [10, -10, 10])] {
-        t.check_eq(t.block(p).await?, "core:air".to_string(), &format!("{p:?} is in the crater"));
-    }
-    t.shot("crater").await?;
-    Ok(())
-}
-
 /// A crater bigger than what is loaded survives closing the world: the part never loaded gets
 /// it when visited after reopening, and what was built in the crater since stays.
 pub async fn crater_saved(t: T) -> R {
@@ -370,65 +329,6 @@ pub async fn crater_saved(t: T) -> R {
     for p in [far, add(far, [0, -40, 0]), add(far, [0, 40, 30])] {
         t.check_eq(t.block(p).await?, "core:air".to_string(), &format!("{p:?}, first loaded after reopening, is in the crater"));
     }
-    Ok(())
-}
-
-/// The view reaches as far down as sideways: standing beyond a deep crater's rim, its bottom
-/// stays loaded and lit (it used to reach six cubes down plus the air under the player, so the
-/// bottom unloaded the moment the player stepped off the rim).
-pub async fn crater_view(t: T) -> R {
-    t.world(5).await?;
-    t.idle().await?;
-    t.op("mode creative").await?;
-    let f = t.feet();
-    t.op("crater_fast 150").await?;
-    t.op("look").await?;
-    // The wall's cubes, cut through, reach the client at once with the rest (they used to wait
-    // for their light to be redone, a share per tick: pillars of old blocks for seconds).
-    t.secs(0.2).await?;
-    t.sync_blocks(add(f, [144, -6, -2]), add(f, [152, -1, 2]))
-        .await?;
-    let rim = [f[0], OVERWORLD.column(5, f[0], f[2] + 170).height.max(f[1]) + 1, f[2] + 170];
-    t.cmd(&format!("/tp {} {} {}", rim[0], rim[1], rim[2]))
-        .await?;
-    t.secs(1.0).await?;
-    t.loaded().await?;
-    t.idle().await?;
-    // Beyond what the server simulates: the client made the crater on its own terrain and lit it.
-    let bottom = add(f, [0, -140, 0]);
-    let light = t.c().light(bottom).unwrap_or(0);
-    t.check_eq(light & 255, 15, "the crater's bottom, seen from beyond the rim, is loaded and lit");
-    t.check_eq(t.c().block(bottom), Some(0), "the crater's bottom is air on the client");
-    t.c().look(0.0, -30.0);
-    t.frames(20).await?;
-    t.shot("from_rim").await?;
-    Ok(())
-}
-
-/// An edited cube in the sky column over the view (generated so sky light comes down right,
-/// never drawn) is announced like any other: the client keeps the edit, not generation. It
-/// used to be announced only up to the view's top.
-pub async fn sky_column_edit(t: T) -> R {
-    weft_sdk::settings::VIEW_DISTANCE.set(6);
-    let r = sky_column(&t).await;
-    weft_sdk::settings::VIEW_DISTANCE.set(12);
-    r
-}
-
-async fn sky_column(t: &T) -> R {
-    t.world(5).await?;
-    t.idle().await?;
-    let f = t.feet();
-    // Two cubes over the view's top (6 over the player's cube), under open sky (cube 16).
-    let cube = (f[1] >> 4) + 8;
-    if cube >= 16 {
-        t.fail(format!("the player stands too high ({}) for a sky column", f[1]));
-        return Ok(());
-    }
-    let p = [f[0], cube * 16 + 5, f[2]];
-    t.set(p, "gold_block").await?;
-    t.until("the client has the block", Duration::from_secs(5), |t| t.c().block(p).is_some_and(|b| b != 0))
-        .await?;
     Ok(())
 }
 
@@ -589,6 +489,20 @@ pub async fn item_farm(t: T) -> R {
         "fps {:.0}, frame {:.2} ms, p99 {:.2} ms (in tests the hidden window's presents are throttled: compare the log's cpu record ms)",
         b[0], b[1], b[2]
     ));
+    Ok(())
+}
+
+/// A crowd of walking mobs in view: what posing their bones costs a frame.
+pub async fn mob_crowd(t: T) -> R {
+    t.flat().await?;
+    t.cmd("/rule testkit:peace 1").await?;
+    t.op("crowd base:zombie 4000").await?;
+    t.op("crowd base:pig 4000").await?;
+    t.c().look(0.0, -20.0);
+    t.secs(4.0).await?;
+    t.note(format!("{} entities on the client", t.c().entities().len()));
+    t.shot("crowd").await?;
+    t.bench(5.0, "mob_crowd").await?;
     Ok(())
 }
 
@@ -1109,43 +1023,6 @@ async fn edit_while_loading_once(t: &T) -> Result<f64, String> {
     Ok(ms)
 }
 
-/// Past the view, distant terrain is made and drawn: tiles come, and the horizon seen from up
-/// high is land, not the sky it is with distant terrain off.
-pub async fn distant_terrain(t: T) -> R {
-    static VIEW: Config<i32> = Config::named("core:view_distance");
-    static LOD: Config<i32> = Config::named("core:lod_distance");
-    let before = (VIEW.get(), LOD.get());
-    VIEW.set(8);
-    LOD.set(256);
-    let out = distant_terrain_at(&t).await;
-    VIEW.set(before.0);
-    LOD.set(before.1);
-    out
-}
-
-async fn distant_terrain_at(t: &T) -> R {
-    static LOD: Config<i32> = Config::named("core:lod_distance");
-    t.world(5).await?;
-    t.idle().await?;
-    t.op("mode spectator").await?;
-    t.cmd("/tp ~ ~100 ~").await?;
-    t.c().look(0.0, -8.0);
-    t.until("distant terrain made", Duration::from_secs(20), |t| t.state().lod_tiles > 50 && t.state().lod_pending == 0)
-        .await?;
-    t.frames(5).await?;
-    let tiles = t.state().lod_tiles;
-    t.note(format!("{tiles} distant terrain tiles shown"));
-    let with = t.grab().await?;
-    LOD.set(0);
-    t.frames(10).await?;
-    let without = t.grab().await?;
-    let changed = T::differ(&with, &without);
-    t.note(format!("share of the picture that is distant terrain: {changed:.2}"));
-    t.check(changed > 0.1, format!("the horizon has land on it ({changed:.2} of the picture changes without it)"));
-    t.check_eq(t.state().lod_tiles, 0, "no tiles shown with it off");
-    Ok(())
-}
-
 /// Terrain the GPU makes is the CPU's to the bit (integer math on both sides): every cube of a
 /// fresh world is made again on the CPU and compared.
 pub async fn gpu_terrain(t: T) -> R {
@@ -1165,36 +1042,5 @@ pub async fn gpu_terrain(t: T) -> R {
     }
     .await;
     CHECK.set(before);
-    out
-}
-
-/// Distant terrain has no underside: from deep below the land it isn't drawn, and it is back on
-/// coming up.
-pub async fn distant_terrain_underground(t: T) -> R {
-    static VIEW: Config<i32> = Config::named("core:view_distance");
-    static LOD: Config<i32> = Config::named("core:lod_distance");
-    let before = (VIEW.get(), LOD.get());
-    VIEW.set(8);
-    LOD.set(256);
-    let out = async {
-        t.world(5).await?;
-        t.idle().await?;
-        t.op("mode spectator").await?;
-        let s = t.state().pos;
-        t.until("distant terrain made", Duration::from_secs(20), |t| t.state().lod_tiles > 50)
-            .await?;
-        t.c().teleport([s[0], -300.0, s[2]]);
-        t.until("none deep under the land", Duration::from_secs(5), |t| t.state().lod_tiles == 0)
-            .await?;
-        t.c().look(0.0, 30.0);
-        t.secs(0.3).await?;
-        t.shot("below").await?;
-        t.c().teleport(s);
-        t.until("back over the land", Duration::from_secs(5), |t| t.state().lod_tiles > 50)
-            .await
-    }
-    .await;
-    VIEW.set(before.0);
-    LOD.set(before.1);
     out
 }

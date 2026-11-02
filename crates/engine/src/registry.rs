@@ -181,7 +181,7 @@ impl GroupDef {
     pub fn span(&self, layout: &PlayerLayout) -> (u32, u32, u32) {
         use weft_abi::slot_owner as so;
         match self.owner {
-            so::PLAYER_MAIN => (layout.hotbar, layout.slots - layout.hotbar - layout.worn.len() as u32, layout.hotbar.max(1)),
+            so::PLAYER_MAIN => (layout.hotbar, layout.main().count() as u32, layout.hotbar.max(1)),
             so::PLAYER_HOTBAR => (0, layout.hotbar, layout.hotbar.max(1)),
             _ => (self.start, self.cols * self.rows, self.cols.max(1)),
         }
@@ -190,14 +190,7 @@ impl GroupDef {
     /// Owner inventory index of the group's `i`-th slot (the main inventory skips worn slots).
     pub fn index(&self, layout: &PlayerLayout, i: u32) -> u32 {
         let (start, _, _) = self.span(layout);
-        if self.owner == weft_abi::slot_owner::PLAYER_MAIN {
-            (start..layout.slots)
-                .filter(|s| !layout.worn.contains(s))
-                .nth(i as usize)
-                .unwrap_or(u32::MAX)
-        } else {
-            start + i
-        }
+        if self.owner == weft_abi::slot_owner::PLAYER_MAIN { layout.main().nth(i as usize).unwrap_or(u32::MAX) } else { start + i }
     }
 }
 
@@ -339,6 +332,14 @@ pub struct Game {
     pub client_hooks: Vec<(ModId, u32, Callback)>,
     /// Client cosmetics by entity kind (`Host::reg_client_entity_tick`).
     pub client_entity_ticks: FxHashMap<u32, (ModId, Callback)>,
+    /// Every frame on the client, for entities of a kind, as many as mods add.
+    pub client_entity_watchers: FxHashMap<u32, Vec<(ModId, Callback)>>,
+    /// (entity kind's name, model, bone it goes on).
+    pub attached_models: Vec<(String, String, String)>,
+    /// (model, bone, how it moves).
+    pub bone_motions: Vec<(String, String, crate::model::BoneMotion)>,
+    /// Who says which model a stack of an item shows as.
+    pub item_model_for_stack: FxHashMap<u32, (ModId, Callback)>,
     /// Mod message channels by id (sorted by name, so both sides agree).
     pub packets: Vec<PacketDef>,
     pub packet_names: FxHashMap<String, u32>,
@@ -359,8 +360,8 @@ pub struct Game {
     pub world_ticks: Vec<(ModId, Callback)>,
     /// `abi::comp::NAME` as an entity component.
     pub name_comp: u32,
-    /// `HEALTH`, `BURNING`, `WORN`, `SHAPE`, `HELD`.
-    pub field_comps: [u32; 5],
+    /// `HEALTH`, `BURNING`, `WORN`, `SHAPE`, `HELD`, `OFF_HELD`, `USING`, `SWAPS`, `LOOPING_ACTION`.
+    pub field_comps: [u32; 9],
     /// `SIMULATED`.
     pub simulated_comp: u32,
     /// Entity components with `SYNC_WATCHERS` / `SYNC_MENU`.
@@ -687,8 +688,12 @@ pub struct RawGame {
     pub client_hooks: Vec<(ModId, u32, Callback)>,
     /// (owner, entity kind, callback).
     pub client_entity_ticks: Vec<(ModId, String, Callback)>,
+    pub client_entity_watchers: Vec<(ModId, String, Callback)>,
     /// (entity kind, parts, skin size) set with `Host::reg_entity_model`.
     pub entity_models: Vec<(String, Vec<Part>, [u32; 2])>,
+    pub attached_models: Vec<(String, String, String)>,
+    pub bone_motions: Vec<(String, String, crate::model::BoneMotion)>,
+    pub item_model_for_stack: Vec<(ModId, String, Callback)>,
     /// (owner, name, side, callback).
     /// (owner, channel, schema, side, callback).
     pub packets: Vec<(ModId, String, String, u32, Callback)>,
@@ -797,6 +802,8 @@ pub struct PlayerLayout {
     pub slots: u32,
     /// The first this many are the hotbar.
     pub hotbar: u32,
+    /// The slot of the second hand, past the equipment, if there is one.
+    pub off: Option<u32>,
     /// Equipment: never filled by pickups, worn on the model.
     pub worn: std::ops::Range<u32>,
     /// Named groups: the declared ones, each equipment slot, and `core:equipment` for all of them.
@@ -831,7 +838,10 @@ impl Default for PlayerLayout {
 
 impl PlayerLayout {
     /// The hotbar group first, then the other groups in order, then the equipment slots.
-    pub fn new(groups: &[(String, u32, u32, u32)], equipment: Vec<EquipmentSlot>) -> PlayerLayout {
+    pub fn new(groups: &[(String, u32, u32, u32)], mut equipment: Vec<EquipmentSlot>) -> PlayerLayout {
+        // The other hand shows among the equipment but isn't worn: last, past `worn`.
+        equipment.sort_by_key(|e| e.name == weft_abi::OFF_HAND_SLOT);
+        let off = equipment.iter().any(|e| e.name == weft_abi::OFF_HAND_SLOT) as u32;
         let mut ordered: Vec<&(String, u32, u32, u32)> = groups
             .iter()
             .filter(|g| g.3 & weft_abi::slot_flags::HOTBAR != 0)
@@ -852,12 +862,12 @@ impl PlayerLayout {
             out.push(PlayerGroup { name: name.clone(), start: at, count: cols * rows, cols: *cols });
             at += cols * rows;
         }
-        let worn = at..at + equipment.len() as u32;
+        let worn = at..at + equipment.len() as u32 - off;
         for (i, e) in equipment.iter().enumerate() {
             out.push(PlayerGroup { name: e.name.clone(), start: worn.start + i as u32, count: 1, cols: 1 });
         }
         out.push(PlayerGroup { name: EQUIPMENT_GROUP.into(), start: worn.start, count: worn.len() as u32, cols: 1 });
-        PlayerLayout { slots: worn.end, hotbar, worn, groups: out, equipment }
+        PlayerLayout { slots: worn.end + off, off: (off == 1).then_some(worn.end), hotbar, worn, groups: out, equipment }
     }
 
     pub fn group(&self, name: &str) -> Option<&PlayerGroup> {
@@ -868,7 +878,7 @@ impl PlayerLayout {
 impl PlayerLayout {
     /// Main inventory slots: neither hotbar nor equipment.
     pub fn main(&self) -> impl Iterator<Item = u32> + '_ {
-        (self.hotbar..self.slots).filter(|i| !self.worn.contains(i))
+        (self.hotbar..self.slots).filter(move |i| !self.worn.contains(i) && Some(*i) != self.off)
     }
 }
 
@@ -1193,6 +1203,10 @@ pub const BURNING: &str = "core:burning";
 pub const WORN: &str = "core:worn";
 pub const SHAPE: &str = "core:shape";
 pub const HELD: &str = "core:held";
+pub const OFF_HELD: &str = "core:off_held";
+pub const USING: &str = "core:using";
+pub const SWAPS: &str = "core:swaps";
+pub const LOOPING_ACTION: &str = "core:looping_action";
 /// Entity component (`u64`, saved): the world time a system last simulated it to, so it can
 /// catch up on what it missed (`Dim::run_systems`).
 pub const SIMULATED: &str = "core:simulated";
@@ -1340,8 +1354,15 @@ pub fn freeze(
         CategoryDef { name: "core:passive".into(), cap: 6, despawn: 0.0 },
     ];
     let mut entity_ticks: Vec<(ModId, String, Callback)> = Vec::new();
+    let mut entity_watchers: Vec<(ModId, String, Callback)> = Vec::new();
+    let mut attached_models: Vec<(String, String, String)> = Vec::new();
+    let mut item_models: Vec<(ModId, String, Callback)> = Vec::new();
     for r in raws {
         entity_ticks.extend(r.client_entity_ticks);
+        entity_watchers.extend(r.client_entity_watchers);
+        attached_models.extend(r.attached_models);
+        g.bone_motions.extend(r.bone_motions);
+        item_models.extend(r.item_model_for_stack);
         sounds.extend(r.sounds);
         music.extend(r.music);
         particles.extend(r.particles);
@@ -1413,6 +1434,33 @@ pub fn freeze(
                 g.client_entity_ticks.insert(k, (owner, cb));
             }
             None => errors.push(format!("client entity tick for unknown entity {kind}")),
+        }
+    }
+    entity_watchers.sort_by_key(|t| order(t.0));
+    for (owner, kind, cb) in entity_watchers {
+        match g.entity_names.get(&kind) {
+            Some(&k) => g
+                .client_entity_watchers
+                .entry(k)
+                .or_default()
+                .push((owner, cb)),
+            None => errors.push(format!("on_entity_frame for unknown entity {kind}")),
+        }
+    }
+    for a in attached_models {
+        if g.entity_names.contains_key(&a.0) {
+            g.attached_models.push(a);
+        } else {
+            errors.push(format!("model {} attached to unknown entity {}", a.1, a.0));
+        }
+    }
+    item_models.sort_by_key(|t| order(t.0));
+    for (owner, item, cb) in item_models {
+        match item_names.get(&item) {
+            Some(&i) => {
+                g.item_model_for_stack.insert(i, (owner, cb));
+            }
+            None => errors.push(format!("item_model_for_stack for unknown item {item}")),
         }
     }
     freeze_particles(&mut g, particles, errors);
@@ -1650,6 +1698,10 @@ pub fn freeze(
         (WORN, 0, shown, Vec::new()),
         (SHAPE, 16, own, shape),
         (HELD, 4, shown, vec![0; 4]),
+        (OFF_HELD, 4, shown, vec![0; 4]),
+        (USING, 4, shown, vec![0; 4]),
+        (SWAPS, 0, own | shown, Vec::new()),
+        (LOOPING_ACTION, 0, shown, Vec::new()),
         (SIMULATED, 8, save, vec![0; 8]),
     ] {
         components.push(RawComponent {
@@ -1673,7 +1725,7 @@ pub fn freeze(
     g.modifiers_comp = g.component_names[MODIFIERS];
     g.timers_comp = g.component_names[TIMERS];
     g.name_comp = g.component_names[abi::comp::NAME];
-    g.field_comps = [HEALTH, BURNING, WORN, SHAPE, HELD].map(|n| g.component_names[n]);
+    g.field_comps = [HEALTH, BURNING, WORN, SHAPE, HELD, OFF_HELD, USING, SWAPS, LOOPING_ACTION].map(|n| g.component_names[n]);
     g.simulated_comp = g.component_names[SIMULATED];
     let with_flag = |f: u32| {
         g.components
@@ -1755,6 +1807,9 @@ pub fn freeze(
         };
         m.groups.remove(at);
         for (i, e) in layout.equipment.iter().enumerate().rev() {
+            let off = e.name == weft_abi::OFF_HAND_SLOT;
+            // The other hand shows with the equipment but is numbered last, as in vanilla.
+            let at = if off { m.groups.len() } else { at };
             m.groups.insert(
                 at,
                 GroupDef {
@@ -1763,9 +1818,9 @@ pub fn freeze(
                     start: layout.worn.start + i as u32,
                     cols: 1,
                     rows: 1,
-                    flags: 0,
-                    accepts: format!("worn/{}", e.name),
-                    limit: 1,
+                    flags: if off { weft_abi::slot_flags::OFF_HAND } else { 0 },
+                    accepts: if off { String::new() } else { format!("worn/{}", e.name) },
+                    limit: if off { 0 } else { 1 },
                     size: 18.0,
                     background: (!e.background.is_empty()).then(|| e.background.clone()),
                     tooltip: None,

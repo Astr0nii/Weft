@@ -254,6 +254,12 @@ pub mod comp {
     pub const TOOL_LEVEL: &str = "tool_level";
     /// The block drops its loot only to a fitting tool of at least this level (0 = any tier).
     pub const HARVEST_LEVEL: &str = "harvest_level";
+    /// Items: right click tries the hand whose item has the higher one first (default 0).
+    pub const USE_PRIORITY: &str = "use_priority";
+    /// Items, a tag: needs both hands.
+    pub const TWO_HANDED: &str = "two_handed";
+    /// Items: a two-handed item may be held in one hand after all, playing this action.
+    pub const ONE_HANDED: &str = "one_handed";
     /// How many times a block's loot is rolled when it breaks (two slabs in one block).
     pub const LOOT_ROLLS: &str = "loot_rolls";
     pub const DAMAGE: &str = "damage";
@@ -304,6 +310,8 @@ pub mod comp {
     /// Entity kinds: model file (`models/<name>.geo.json`, Bedrock geometry as Blockbench
     /// writes it) used instead of the parts in code; without it `<ns>:<kind name>` is tried.
     pub const MODEL: &str = "model";
+    /// A worn item shows as this model on the wearer: `model@bone`.
+    pub const WORN_MODEL: &str = "worn_model";
     /// Entity kinds: keyframe animations (`animations/<name>.animation.json`, Bedrock format);
     /// `idle` and `walk` play by themselves, others when the server says so. Without it
     /// `<ns>:<kind name>` is tried.
@@ -1384,7 +1392,12 @@ pub mod slot_flags {
     /// The player's hotbar (a group of `reg_player_inventory`): selected with the number keys,
     /// shown at the bottom of the screen.
     pub const HOTBAR: u32 = 4;
+    /// The other hand: takes any item that can be held in one hand.
+    pub const OFF_HAND: u32 = 8;
 }
+
+/// The equipment slot of the second hand. Without it, players have one.
+pub const OFF_HAND_SLOT: &str = "core:off_hand";
 
 /// Whose inventory a slot group shows.
 pub mod slot_owner {
@@ -1976,6 +1989,24 @@ pub struct Host {
     /// the engine's (steps, idle noises, the smoke when a death ends); one per kind, a later mod's
     /// replaces an earlier one's.
     pub reg_client_entity_tick: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, cb: Callback),
+    /// Every frame for each entity of `kind`, alongside whatever else runs for it.
+    pub reg_client_entity_watcher: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, cb: Callback),
+    /// Every entity of `kind` has `model` on its bone `bone`.
+    pub reg_attach_model: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, model: Str, bone: Str),
+    /// A bone of `model` hangs and swings by itself.
+    pub reg_bone_motion: unsafe extern "C" fn(reg: *mut Registrar, model: Str, bone: Str, gravity: f32, spring: f32, drag: f32),
+    pub reg_item_model_when: unsafe extern "C" fn(reg: *mut Registrar, item: Str, cb: Callback),
+    /// Moves a bone of what `entity` is or has on, for the next frame: radians about x, y, z, pixels, scale.
+    pub client_pose_bone:
+        unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, bone: Str, turn: *const [f32; 3], by: *const [f32; 3], scale: *const [f32; 3]),
+    /// The action `entity` plays now, in `out`; 0 for none.
+    pub client_entity_action: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, out: *mut Str) -> u32,
+    /// Seconds a clip of an action takes on `entity`; below 0 if it has none.
+    pub client_clip_length: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, name: Str) -> f32,
+    /// The item in `entity`'s hand, the other hand with `off` set; 0 for none.
+    pub client_entity_held: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, off: u32) -> u32,
+    /// Where a bone of what `entity` is or has on was, the last frame. 0 if there is none.
+    pub client_bone_position: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, bone: Str, out: *mut [f64; 3]) -> u32,
     /// The engine's own cosmetics for this entity, what a kind without a tick gets.
     pub client_entity_defaults: unsafe extern "C" fn(args: *mut ClientEntityArgs),
     /// Message channel `name` between a mod's client and server parts, carrying values of
@@ -2185,10 +2216,11 @@ pub struct Host {
     pub reg_sound: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SoundDesc),
     /// Background music, see `MusicDesc`.
     pub reg_music: unsafe extern "C" fn(reg: *mut Registrar, desc: *const MusicDesc),
-    /// Server: entity `id` plays keyframe animation `name` (from its kind's animation file) for
-    /// everyone who sees it; `looping` keeps it going until another one starts, empty `name`
-    /// goes back to idle/walk.
-    pub play_animation: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, name: Str, looping: u32),
+    /// Server: entity `id` plays action `name` for everyone who sees it; `looping` keeps it going
+    /// until another one starts, empty `name` ends it.
+    pub play_action: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, name: Str, looping: u32),
+    /// Entity `id` plays action `to` wherever it would play `from`; `to` empty ends that.
+    pub replace_action: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, from: Str, to: Str),
     /// Server: sound event `sound` (`find` with `entry_kind::SOUND`) at `pos` for every player in
     /// its range; `pitch` 0 picks one from the event's range.
     pub play_sound: unsafe extern "C" fn(world: *mut WorldCtx, sound: u32, pos: *const [f64; 3], volume: f32, pitch: f32),
@@ -3137,6 +3169,13 @@ pub mod client_hook {
 #[repr(C)]
 pub struct ClientFrameArgs {
     pub client: *mut ClientCtx,
+}
+
+/// `Host::reg_item_model_when`: the name of the model `stack` shows as, or left empty for its usual.
+#[repr(C)]
+pub struct ItemModelArgs {
+    pub stack: ItemStack,
+    pub model: Str,
 }
 
 /// One entity on the client, for `Host::reg_client_entity_tick`.

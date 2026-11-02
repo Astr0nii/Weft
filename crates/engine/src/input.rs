@@ -40,6 +40,7 @@ pub const ENGINE_KEYS: &[(&str, Key)] = {
         ("core:fullscreen", Key::Code(F11)),
         ("core:player_list", Key::Code(Tab)),
         ("core:hide_hud", Key::Code(F1)),
+        ("core:swap_hands", Key::Code(KeyG)),
         // Also F3+T, like vanilla.
         ("core:reload", Key::Code(F8)),
         ("core:recipes", Key::Code(KeyR)),

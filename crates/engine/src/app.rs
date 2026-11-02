@@ -180,6 +180,8 @@ pub(crate) struct Running {
     window: Arc<Window>,
     depth: (TextureId, u32, u32),
     list: CommandList,
+    /// What goes in the world's pass this frame, while it is being made.
+    world_list: CommandList,
     input: Input,
     pub(crate) settings: Settings,
     lang: Lang,
@@ -401,6 +403,7 @@ impl App {
             window,
             depth,
             list: CommandList::default(),
+            world_list: CommandList::default(),
             input,
             settings,
             lang,
@@ -617,6 +620,7 @@ impl Running {
             &key,
             self.settings.view_distance(),
             std::fs::read(self.settings.run_dir.join("skins").join("skin.png")).ok(),
+            read_avatar(&self.settings.run_dir),
         ) {
             Ok(mut client) => {
                 client.sent = load_chat_history(&self.settings.run_dir);
@@ -782,6 +786,7 @@ impl Running {
                             &key,
                             self.settings.view_distance(),
                             std::fs::read(self.settings.run_dir.join("skins").join("skin.png")).ok(),
+                            read_avatar(&self.settings.run_dir),
                         ) {
                             Ok(mut client) => {
                                 client.sent = load_chat_history(&self.settings.run_dir);
@@ -1171,6 +1176,35 @@ impl Running {
                     if let Some(g) = &mut self.game {
                         g.client.entity_effects(&a);
                     }
+                }
+            }
+        }
+        // Who only watches, every one of them; the local player is an entity to them as well.
+        if !c.game.client_entity_watchers.is_empty() {
+            let mine = self
+                .game
+                .as_ref()
+                .map(|g| g.client.self_entity().args(g.client.player_id, dt));
+            let others = self.game.as_ref().map_or(Vec::new(), |g| {
+                g.client
+                    .entities
+                    .iter()
+                    .filter(|(_, e)| e.item.is_empty() && e.structure.is_none())
+                    .filter(|(_, e)| c.game.client_entity_watchers.contains_key(&e.kind))
+                    .map(|(&id, e)| e.args(id, dt))
+                    .collect()
+            });
+            for mut a in others.into_iter().chain(mine) {
+                for &(owner, cb) in c
+                    .game
+                    .client_entity_watchers
+                    .get(&a.kind)
+                    .into_iter()
+                    .flatten()
+                {
+                    let mut v = self.frame_view();
+                    a.client = v.raw();
+                    crate::host::invoke(owner, cb, &mut a);
                 }
             }
         }
@@ -1803,6 +1837,8 @@ fn reload_assets(r: &mut Running, opts: &Options) {
             .reload_shaders(&mut *r.gpu, &r.textures, &r.assets);
         g.client.render.set_textures(&mut *r.gpu, &r.textures);
         g.client.entity_render.reload(&mut *r.gpu, &r.assets);
+        // Slots may show pictures that are gone now.
+        r.quads_dirty = true;
         g.client.particles.reload(&mut *r.gpu, &r.assets);
         g.client.wires.reload(&mut *r.gpu, &r.assets);
         g.client.weather_render.reload(&mut *r.gpu, &r.assets);
@@ -1840,6 +1876,9 @@ fn update_game(r: &mut Running, dt: f64, frame_start: Instant) {
         }
         g.client.fov = r.settings.fov();
         g.client.brightness = r.settings.brightness();
+        g.client.first_person_model = r.settings.first_person_model();
+        g.client.entity_render.show_avatars = r.settings.show_avatars();
+        g.client.render.occlusion.on = r.settings.occlusion_culling();
         let t = Instant::now();
         if world_input {
             g.client.update(&mut *r.gpu, &r.textures, &r.input, dt);
@@ -2144,8 +2183,43 @@ fn draw_overlays(r: &mut Running, info: &weft_render::FrameInfo, scale: f32, tex
     }
 }
 
+/// The player's own model, if `skins/avatar` has one: a Blockbench geometry and its picture, and
+/// if they like clips, what bones do by themselves and a glow mask.
+fn read_avatar(run_dir: &std::path::Path) -> Option<crate::net::AvatarData> {
+    let dir = run_dir.join("skins").join("avatar");
+    let file = |name: &str| std::fs::read(dir.join(name)).unwrap_or_default();
+    let a = crate::net::AvatarData {
+        geo: file("avatar.geo.json"),
+        animations: file("avatar.animation.json"),
+        bones: file("avatar.bones"),
+        png: file("avatar.png"),
+        glow: file("avatar_e.png"),
+    };
+    if a.geo.is_empty() || a.png.is_empty() {
+        return None;
+    }
+    if a.size() > crate::net::AVATAR_BYTES {
+        log::warn!("avatar: {} bytes, at most {} are sent", a.size(), crate::net::AVATAR_BYTES);
+        return None;
+    }
+    Some(a)
+}
+
 fn record_passes(r: &mut Running, info: &weft_render::FrameInfo, scale: f32) {
     r.list.clear();
+    if let Some(g) = &mut r.game {
+        let worn = g.client.worn();
+        let held = [g.client.held(), g.client.off_held()];
+        g.client
+            .entity_render
+            .preload(&mut *r.gpu, &r.assets, &g.client.entities, &worn, held);
+        if g.client
+            .entity_render
+            .draw_icons(&mut *r.gpu, &mut r.list, info)
+        {
+            r.quads_dirty = true;
+        }
+    }
     if let Some(g) = r.game.as_mut().filter(|_| !r.screens.is_empty()) {
         if let Some(&[x, y, w, h]) = r.previews.first() {
             let worn = g.client.worn();
@@ -2177,17 +2251,24 @@ fn record_passes(r: &mut Running, info: &weft_render::FrameInfo, scale: f32) {
             .simulate(&mut *r.gpu, &mut r.list, info.slot, &r.textures, &g.client.world, &cam);
         g.client.update_wires(&mut *r.gpu, &r.textures);
     }
+    // What the world's draws go by has to be done before its pass, and is known only making them.
+    let mut world = std::mem::take(&mut r.world_list);
+    world.clear();
+    if let Some(g) = &mut r.game {
+        g.client
+            .render(&mut *r.gpu, &mut world, &mut r.list, info, &r.textures);
+    }
     r.list
         .push(Cmd::BeginPass { color: Some((world_target, Some(clear))), depth: Some((r.depth.0, Some(0.0))) });
-    if let Some(g) = &mut r.game {
-        let worn = g.client.worn();
-        let held = g.client.held().item;
-        g.client
-            .entity_render
-            .preload(&mut *r.gpu, &r.assets, &g.client.entities, &worn, held);
-        g.client.render(&mut *r.gpu, &mut r.list, info, &r.textures);
-    }
+    r.list.append(&mut world);
+    r.world_list = world;
     r.list.push(Cmd::EndPass);
+    if let Some(g) = &mut r.game {
+        g.client
+            .render
+            .occlusion
+            .take_depth(&mut *r.gpu, &mut r.list, r.depth.0, [r.depth.1, r.depth.2]);
+    }
     if post {
         r.post.apply(&mut *r.gpu, &mut r.list, info);
     } else {

@@ -35,12 +35,6 @@ pub fn brown(c: C) -> bool {
     r > g + 8 && g > b + 5 && (50..200).contains(&r)
 }
 
-/// Gold, light gizmos, yellow text.
-pub fn yellow(c: C) -> bool {
-    let [r, g, b] = i(c);
-    r > 170 && g > 140 && b < r - 70
-}
-
 /// Lava, fire.
 pub fn orange(c: C) -> bool {
     let [r, g, b] = i(c);
@@ -67,16 +61,4 @@ pub fn dark(c: C) -> bool {
 pub fn under_water(c: C) -> bool {
     let [r, g, b] = i(c);
     r + 12 > g && b > r + 40
-}
-
-/// The test mod's GUI circuit lines.
-pub fn teal(c: C) -> bool {
-    let [r, g, b] = i(c);
-    g > r + 30 && b > r + 20
-}
-
-/// Skin of the default player model.
-pub fn skin(c: C) -> bool {
-    let [r, g, b] = i(c);
-    r > 140 && r > g + 25 && g > b + 10
 }

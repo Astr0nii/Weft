@@ -219,6 +219,9 @@ pub fn close(m: OpenMenu, dim: &mut Dim, c: &Content, player: u64) {
 }
 
 fn fits(c: &Content, s: &SlotRef, item: u32) -> bool {
+    if s.flags & sf::OFF_HAND != 0 && !crate::content::fits_one_hand(c, item) {
+        return false;
+    }
     s.accepts == u32::MAX || item == 0 || c.components.has(crate::components::ITEM, item, s.accepts)
 }
 
@@ -426,6 +429,7 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
                     s.owner == Owner::Player
                         && s.index < layout.slots
                         && !layout.worn.contains(&s.index)
+                        && s.flags & sf::OFF_HAND == 0
                         && (s.index < layout.hotbar) != hotbar
                 })
                 .collect()

@@ -29,23 +29,11 @@ static PASSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(
 /// Players can't be hurt (`question::HURT`) or use items (`question::USE_ITEM`) while on.
 pub static NO_HURT: Config<bool> = Config::named("no_hurt");
 pub static NO_USE: Config<bool> = Config::named("no_use");
-value! {
-    /// A number sent to the server, which answers with it doubled (typed channels).
-    pub struct Echo { pub n: u32 }
-}
-pub static ECHO: Channel<Echo> = Channel::named("echo");
-pub static ECHO_BACK: Channel<Echo> = Channel::named("echo_back");
-/// Text both ways: the server answers with a greeting.
-pub static GREET: Channel<String> = Channel::named("greet");
 /// Fired by `after` timers; counted.
 static RANG: Event<u64> = Event::named("rang");
 static RINGS: AtomicU32 = AtomicU32::new(0);
 /// Mobs walked by tests (`drive`): (entity, direction, ticks left).
 static DRIVEN: std::sync::Mutex<Vec<(u64, [f32; 2], u32)>> = std::sync::Mutex::new(Vec::new());
-/// A key whose presses reach the server: the test counts them there.
-pub static PING: Key = Key::named("ping");
-static PINGS: AtomicU32 = AtomicU32::new(0);
-static JUMPS: AtomicU32 = AtomicU32::new(0);
 
 fn count(i: usize, n: usize) {
     COUNTS[i].fetch_add(n as u32, Ordering::Relaxed);
@@ -78,34 +66,11 @@ pub fn register(r: &mut Registry) {
         .no_item();
     static VARIED_CUBE: Block = Block::named("varied_cube");
     r.block(&VARIED_CUBE).texture("varied_cube").no_item();
-    // A mod's own redstone: a gate on when both its rear and a side have power, another wire.
-    static AND_GATE: Block = Block::named("and_gate");
-    static BLUE_WIRE: Block = Block::named("blue_wire");
-    static UNBREAKABLE: Block = Block::named("unbreakable");
-    r.block(&UNBREAKABLE)
-        .texture("varied")
-        .unbreakable()
-        .no_item();
-    static TINTED_PLANT: Block = Block::named("tinted_plant");
-    r.block(&TINTED_PLANT)
-        .texture("base:tallgrass")
-        .plant()
-        .tint(&tints::GRASS);
     r.block(&DRILL)
         .on_pass(|_| {
             PASSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         })
         .texture("varied")
-        .no_item();
-    r.block(&AND_GATE)
-        .signal_logic(1, |s| if s.rear() > 0 && s.sides().iter().any(|v| *v > 0) { 15 } else { 0 })
-        .model_box([0.0, 0.0, 0.0], [16.0, 2.0, 16.0])
-        .not_solid()
-        .texture("varied")
-        .no_item();
-    r.block(&BLUE_WIRE)
-        .wire()
-        .textures("varied", "varied", "varied")
         .no_item();
     r.entity_component(&MARK, 0, component_flags::SYNC_WATCHERS);
     r.attach(&PIG, &MARK);
@@ -137,13 +102,6 @@ pub fn register(r: &mut Registry) {
     let player = |w: &World, id: u64| w.each_player().any(|p| p == id);
     r.intercept(&question::HURT, move |q| if player(&q.world(), q.entity()) && NO_HURT.get() { Verdict::Deny } else { Verdict::Abstain });
     r.intercept(&question::USE_ITEM, |_| if NO_USE.get() { Verdict::Deny } else { Verdict::Abstain });
-    r.world_tick(|w| {
-        let jumped = w
-            .each_player()
-            .filter(|&p| w.entity(p).is_some_and(|s| s.jumped != 0))
-            .count();
-        JUMPS.fetch_add(jumped as u32, Ordering::Relaxed);
-    });
     r.on(&RANG, |b| {
         RINGS.fetch_add(b.len() as u32, Ordering::Relaxed);
     });
@@ -162,11 +120,6 @@ pub fn register(r: &mut Registry) {
     r.on(&PLAYER_JOINED, |b| count(5, b.len()));
     r.on(&ITEM_USED, |b| count(6, b.len()));
     r.on(&SMELTED, |b| count(7, b.len()));
-    r.key(&PING, "F10").on_press_server(|_| {
-        PINGS.fetch_add(1, Ordering::Relaxed);
-    });
-    r.packet(&ECHO, |p, e| p.reply(&ECHO_BACK, &Echo { n: e.n * 2 }));
-    r.packet(&GREET, |p, name| p.reply(&GREET, &format!("hello, {name}")));
     // A mob walks where a test says for a while, after its own AI had its say.
     r.world_tick(|w| {
         let mut driven = DRIVEN.lock().unwrap();
@@ -178,7 +131,6 @@ pub fn register(r: &mut Registry) {
         }
         driven.retain(|d| d.2 > 0);
     });
-    r.intercept(&question::BREAK_BLOCK, |q| if *PROTECTED.lock().unwrap() == Some(q.pos()) { Verdict::Deny } else { Verdict::Abstain });
     register_ops(r);
 }
 
@@ -294,9 +246,6 @@ fn clock(w: &World, p: [i32; 3]) -> Result<String, String> {
 /// `(name, usage, what it does)`, the running player and where it stands given.
 type Run = fn(&World, &Command, u64, [i32; 3]) -> Result<String, String>;
 
-/// A block `question::BREAK_BLOCK` says no about.
-static PROTECTED: std::sync::Mutex<Option<[i32; 3]>> = std::sync::Mutex::new(None);
-
 /// The operations tests run on the server, as one command (`/tk set ~ ~ ~2 stone`): the engine
 /// parses positions (`~dx`), block, item and entity names, and the answer goes back to the test
 /// that ran it (`Client::run_command`), as `ok ..` or `err ..`.
@@ -313,18 +262,6 @@ const OPS: &[(&str, &str, Run)] = &[
             }
         }
         Ok(w.lift(p, &cells).to_string())
-    }),
-    ("putdown", "<id:int>", |w, cmd, _, _| {
-        w.put_down(int(cmd, "id")?);
-        Ok(String::new())
-    }),
-    ("bodygo", "<id:int> <x:float> <y:float> <z:float> <ticks:int>", |w, cmd, _, _| {
-        w.body_go(
-            int(cmd, "id")?,
-            [cmd.float("x").ok_or("x")? as f64, cmd.float("y").ok_or("y")? as f64, cmd.float("z").ok_or("z")? as f64],
-            int(cmd, "ticks")?,
-        );
-        Ok(String::new())
     }),
     ("passes", "", |_, _, _, _| {
         Ok(PASSES
@@ -441,17 +378,6 @@ const OPS: &[(&str, &str, Run)] = &[
         let g = w.inventory(owner(w, cmd)?).group(word(cmd, "name")?);
         Ok(format!("{} {}", g.len(), (0..g.len()).filter(|&i| !g.get(i).is_empty()).count()))
     }),
-    ("pings", "", |_, _, _, _| Ok(PINGS.load(Ordering::Relaxed).to_string())),
-    ("jumps", "", |_, _, _, _| Ok(JUMPS.load(Ordering::Relaxed).to_string())),
-    ("modes", "", |w, _, player, _| Ok(format!("{} {} {}", w.game_mode(player), w.creative(player) as u32, w.exempt(player) as u32))),
-    ("bad_item", "", |w, _, player, _| {
-        let at = w.entity(player).map_or([0.0; 3], |e| e.pos);
-        w.spawn_item(at, ItemStack::new(u32::MAX - 1, 1));
-        Ok(String::new())
-    }),
-    ("setprop", "<pos:pos> <prop:word> <value:word>", |w, cmd, _, _| {
-        Ok((w.set_prop(pos(cmd, "pos")?, word(cmd, "prop")?, word(cmd, "value")?) as u32).to_string())
-    }),
     ("sblock", "<id:int> <pos:pos> [block:block]", |w, cmd, _, _| {
         // A block of a moving structure, or set it.
         let (id_, p) = (int::<u64>(cmd, "id")?, pos(cmd, "pos")?);
@@ -491,12 +417,10 @@ const OPS: &[(&str, &str, Run)] = &[
             .set(int(cmd, "index")?, ItemStack::new(id(cmd, "item")?, int(cmd, "count").unwrap_or(1)));
         Ok(String::new())
     }),
-    ("give", "<item:item> [count:int]", |w, cmd, player, _| {
-        let count: u32 = int(cmd, "count").unwrap_or(1);
-        let left = w
-            .inventory(player)
-            .insert(ItemStack::new(id(cmd, "item")?, count));
-        Ok((count - left.count).to_string())
+    ("wear", "@owner <index:int> <amount:int>", |w, cmd, _, _| {
+        let (inv, i) = (w.inventory(owner(w, cmd)?), int(cmd, "index")?);
+        inv.set(i, inv.get(i).with_damage(int(cmd, "amount")?));
+        Ok(String::new())
     }),
     ("insert", "<pos:pos> <item:item> [count:int]", |w, cmd, _, _| {
         let p = pos(cmd, "pos")?;
@@ -528,7 +452,6 @@ const OPS: &[(&str, &str, Run)] = &[
         let e = w.entity(owner(w, cmd)?).ok_or("no such entity")?;
         Ok(format!("{} {:.2} {:.2} {:.2} {}", name_of(ek::ENTITY, e.kind), e.pos[0], e.pos[1], e.pos[2], e.health))
     }),
-    ("vel_y", "@entity", |w, cmd, _, _| Ok(w.entity(owner(w, cmd)?).ok_or("no such entity")?.vel[1].to_string())),
     ("size", "@entity", |w, cmd, _, _| {
         let s = w.entity(owner(w, cmd)?).ok_or("no such entity")?.size;
         Ok(format!("{:.3} {:.3} {:.3}", s[0], s[1], s[2]))
@@ -547,8 +470,8 @@ const OPS: &[(&str, &str, Run)] = &[
             .collect();
         Ok(parts.join(" "))
     }),
-    ("animate", "@owner [name:word]", |w, cmd, _, _| {
-        w.play_animation(owner(w, cmd)?, cmd.text("name").unwrap_or(""), false);
+    ("action", "@owner [name:word]", |w, cmd, _, _| {
+        w.play_action(owner(w, cmd)?, cmd.text("name").unwrap_or(""), false);
         Ok(String::new())
     }),
     ("survey", "<r:int>", |w, cmd, _, me| {
@@ -586,6 +509,24 @@ const OPS: &[(&str, &str, Run)] = &[
             w.spawn_item([me[0] as f64 + x, me[1] as f64 + 0.5, me[2] as f64 + z], ItemStack::new(kinds[i as usize % kinds.len()], 1));
         }
         Ok(format!("{n} drops"))
+    }),
+    ("crowd", "<kind:word> <n:int>", |w, cmd, _, me| {
+        // `n` mobs in a grid north of the player, walking on the spot if they have room to.
+        let n: u32 = int(cmd, "n")?;
+        let kind = Entity::lookup(word(cmd, "kind")?).ok_or("no such entity")?;
+        let side = (n as f64).sqrt().ceil() as u32;
+        for i in 0..n {
+            let (x, z) = ((i % side) as f64 * 1.5 - side as f64 * 0.75, -8.0 - (i / side) as f64 * 1.5);
+            w.spawn(kind, [me[0] as f64 + x, me[1] as f64, me[2] as f64 + z]);
+        }
+        Ok(format!("{n} mobs"))
+    }),
+    ("swap", "<id:int> <from:word> [to:word]", |w, cmd, _, _| {
+        match cmd.text("to") {
+            Some(to) => w.replace_action(int(cmd, "id")?, word(cmd, "from")?, to),
+            None => w.restore_action(int(cmd, "id")?, word(cmd, "from")?),
+        }
+        Ok(String::new())
     }),
     ("find", "<r:int> <block:block>", |w, cmd, _, me| {
         // The first block of that kind within `r` of the player, not far above or below.
@@ -658,13 +599,6 @@ const OPS: &[(&str, &str, Run)] = &[
             }
         }
         Ok(format!("{} {} {} {}", n[0], n[1], n[2], n[3]))
-    }),
-    ("play", "<sound:word>", |w, cmd, _, me| {
-        // A sound event at the player, by name.
-        static BOOM: Sound = Sound::named("testmod:boom");
-        let _ = word(cmd, "sound")?;
-        w.play_sound(&BOOM, [me[0] as f64, me[1] as f64, me[2] as f64], 1.0);
-        Ok(String::new())
     }),
     ("onto", "<id:int> <h:float> [rider:int]", |w, cmd, player, _| {
         // The player (or the rider) on top of an entity `h` high, in the same tick (moving
@@ -850,22 +784,6 @@ const OPS: &[(&str, &str, Run)] = &[
     ("in_liquid", "<x:float> <y:float> <z:float>", |w, cmd, _, _| {
         let p = ["x", "y", "z"].map(|a| cmd.float(a).unwrap_or(0.0));
         Ok((w.in_liquid(p) as u32).to_string())
-    }),
-    ("near_bodies", "<pos:pos> <r:float>", |w, cmd, _, _| {
-        let p = pos(cmd, "pos")?;
-        let ids = w.near_targets([p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5], cmd.float("r").ok_or("missing r")?, None);
-        Ok(ids
-            .iter()
-            .filter_map(|&id| {
-                w.entity(id)
-                    .map(|e| name_of(ek::ENTITY, e.kind).to_string())
-            })
-            .collect::<Vec<_>>()
-            .join(" "))
-    }),
-    ("protect", "<pos:pos> | off", |_, cmd, _, _| {
-        *PROTECTED.lock().unwrap() = if cmd.has("off") { None } else { Some(pos(cmd, "pos")?) };
-        Ok(String::new())
     }),
     // A hit from the player who runs it.
     ("hurt", "<id:int> <amount:float>", |w, cmd, player, _| {

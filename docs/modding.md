@@ -262,6 +262,7 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 - `placed_block(&BLOCK)`
 - `handheld()`: held by its end and pointing ahead in third person, like a stick. `tool(..)` does it already, and so does the tag `handheld`
 - `wearable(&HEAD, inflate, texture)` for armor and anything else worn in an equipment slot
+- `two_handed()`, `one_handed_action(action)`, `use_priority(n)`: [what it does in the hands](models.md#items-in-the-hand)
 - `on_use`: what using it does. Before it runs anyone can say no to `question::USE_ITEM`, and after it the `ITEM_USED` event tells every mod (testmod heals with base's food through it). `base_api::eat` is the base game's eating: `.set(&FOOD, ..).use_time(1.6).on_use(base_api::eat)`
 
 ### Entities
@@ -270,7 +271,8 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 - `size(w, h)`, with `eye(height)` when its eyes aren't at 85% of that, `health`, `speed`
 - `hostile()` or `passive()` or `category(..)`
 - `texture` (by default `entity/<name>`)
-- `model(biped(..))` or `model_file("thing")` (Blockbench geo.json)
+- `model(biped(..))`, or `r.set_model("name", "thing")` for a Blockbench geo.json (any item's or entity's, also someone else's, `"#tag"` for many)
+- `r.attach_model(..)`, `.wearable_model(..)` on an item: a model on a bone. `r.bone_motion`, `c.turn_bone`, `c.bone_position`: bones moving by themselves or by code (`docs/models.md`)
 - `sound("hurt")`, `sound("death")`, `sound("ambient")`: files from `sounds/entity/<name>/`
 - `animations(..)`
 - `goals(..)` for AI (see `weft_sdk::ai`); `ai::melee(reach)` with `.attack_damage(3.0)` makes it hit like a player does, so `question::ATTACK` and `chain::ATTACK_DAMAGE` (a strength effect, a peaceful zone) work on mobs too
@@ -404,7 +406,7 @@ Also:
 - messages both ways on a typed channel: `static BOOST: Channel<Boost> = Channel::named("boost")` with a `value!` struct (or `String`, `Vec<u8>`, `()`), `r.packet(&BOOST, |p, b| ..)` on the server (`p.reply(&OTHER, &v)` answers), `r.client_packet` on the client, `w.send` / `client.send`. Both ends must declare the same type, the engine checks it like event values
 - `client.run_command("/tp ~ ~5 ~")` runs a command as the player and `client.command_reply(id)` gives its answer to your code instead of the chat (testkit drives its server half like this)
 - frame hooks (`r.client_frame`)
-- cosmetics of your mobs: `r.client_entity_tick(&MOB, |c, e| ..)` every frame, with its position, distance walked, age and death; it replaces the engine's steps, idle noises and death smoke unless you call `e.engine_effects()`
+- cosmetics of your mobs: `r.client_entity_frame(&MOB, |c, e| ..)` every frame, with its position, distance walked, age and death; it replaces the engine's steps, idle noises and death smoke unless you call `e.run_engine_effects()`
 - particles and screen effects from shader snippets in `assets/shaders`
 - sounds with `r.sound(..).category(..)` (every category gets its own volume slider), music
 - settings that show up in Mod Settings by themselves (`r.config(&SPARKS).bool(true)`); the player's own by default, `.server()` for the server's value (sent to its players on every change), `.world()` for one saved with the world. The engine's settings are the same kind of thing (`settings::FOV`, `settings::LANGUAGE`, key bindings `core:key.<action>`, all in `config/core.txt`): set one and the client applies it
@@ -439,7 +441,7 @@ You can contact me on Discord: `@vortex_so`
 - [Localization](localization.md): all text, item tooltips, rich text and effects, icons and meters, lines by tag, adding them from other mods and packs
 - [Worldgen](worldgen.md): ores, structures, biomes, spawns, new dimensions and terrain, also in other mods' dimensions
 - [Sky](sky.md): suns, moons, stars and skyboxes in any dimension, changing or removing the ones there
-- [Models and animations](models.md): mob models in code or Blockbench, keyframes, the first-person hand, armor
+- [Models and animations](models.md): mob models in code or Blockbench, keyframes and actions, items in the hands, armor
 - [UI](ui.md): screens, HUD, menus, looks, GUI textures
 - [Machines](machines.md): blocks with inventories, recipes, energy
 - [Shaders](shaders.md): text effects, panels, mobs, particles, screen effects, shader packs
