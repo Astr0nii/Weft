@@ -219,6 +219,7 @@ key.core.perspective = Perspective (basculable)
 key.core.fullscreen = Fullscreen (basculable)
 key.core.player_list = Lister les joueur.eus.es
 key.core.hide_hud = Masquer l'HUD
+key.core.swap_hands = Échanger d'une main à l'autre
 settings.sound = Sons
 shape.stairs = {0} (escalier)
 shape.slab = {0} (dalle)

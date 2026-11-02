@@ -219,6 +219,7 @@ key.core.perspective = Toggle perspective
 key.core.fullscreen = Toggle fullscreen
 key.core.player_list = List players
 key.core.hide_hud = Hide HUD
+key.core.swap_hands = Swap Item With Other Hand
 settings.sound = Sound
 shape.stairs = {0} Stairs
 shape.slab = {0} Slab

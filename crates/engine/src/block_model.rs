@@ -46,6 +46,32 @@ pub struct FileModel {
     pub cube: Option<[String; 6]>,
     /// `item/generated` or `item/handheld`: a flat item showing `layer0`.
     pub sprite: Option<String>,
+    /// Where it goes in the hand, if the model or a parent says.
+    pub display: Option<Display>,
+}
+
+/// An item model's place in the hand, as Blockbench's Display tab writes it: degrees, pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Display {
+    pub rotation: [f32; 3],
+    pub translation: [f32; 3],
+    pub scale: [f32; 3],
+}
+
+fn read_display(root: &Value) -> Option<Display> {
+    let d = root.get("display")?.get("thirdperson_righthand")?;
+    let three = |key: &str, default: f32| -> [f32; 3] {
+        d.get(key)
+            .and_then(|v| v.as_array())
+            .map_or([default; 3], |a| {
+                std::array::from_fn(|i| {
+                    a.get(i)
+                        .and_then(|v| v.as_f64())
+                        .map_or(default, |v| v as f32)
+                })
+            })
+    };
+    Some(Display { rotation: three("rotation", 0.0), translation: three("translation", 0.0), scale: three("scale", 1.0) })
 }
 
 use weft_abi::FACE_NAMES as FACES;
@@ -57,11 +83,13 @@ pub fn load(name: &str, read: &dyn Fn(&str) -> Option<String>) -> Result<Option<
     let mut textures: FxHashMap<String, String> = FxHashMap::default();
     let mut elements: Option<Vec<Value>> = None;
     let mut builtin: Option<String> = None;
+    let mut display = None;
     let (mut src, mut current) = (src, name.to_string());
     // Child first: its textures win, its elements replace the parent's.
     for _ in 0..16 {
         let root: Value = serde_json::from_str(&src).map_err(|e| format!("model {current}: {e}"))?;
         let ns = current.split_once(':').map_or("", |x| x.0).to_string();
+        display = display.or_else(|| read_display(&root));
         for (k, v) in root
             .get("textures")
             .and_then(Value::as_object)
@@ -107,7 +135,7 @@ pub fn load(name: &str, read: &dyn Fn(&str) -> Option<String>) -> Result<Option<
         }
         String::new()
     };
-    let mut out = FileModel::default();
+    let mut out = FileModel { display, ..FileModel::default() };
     if let Some(list) = elements {
         for (i, e) in list.iter().enumerate() {
             let v3 = |k: &str| -> Result<[f32; 3], String> {

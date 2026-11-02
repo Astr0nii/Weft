@@ -84,10 +84,8 @@ pub struct Player {
     to_send_far: Vec<IVec3>,
     known: FxHashSet<u64>,
     joined: bool,
-    /// The item it holds the use button on, and the server tick that takes effect.
-    using: Option<(u32, u64)>,
-    /// That tick came: this `UseItem` is the one to carry out.
-    use_finishing: bool,
+    /// The item it holds the use button on, the server tick that takes effect, the slot it is in.
+    using: Option<(u32, u64, u32)>,
     mining: Option<Mining>,
     sent_cracks: Vec<crate::net::Crack>,
     /// The tick rate its client has.
@@ -477,7 +475,6 @@ impl Server {
                 known: FxHashSet::default(),
                 joined: false,
                 using: None,
-                use_finishing: false,
                 mining: None,
                 sent_rate: 0,
                 glow_sent: false,
@@ -651,14 +648,14 @@ impl Server {
         let mut sounds: Vec<Vec<(u32, DVec3, f32, f32)>> = vec![Vec::new(); self.players.len()];
         for ev in events {
             match ev {
-                DimEvent::Animation { id, name, looping } => {
+                DimEvent::PlayAction { id, name, looping } => {
                     for p in self
                         .players
                         .iter_mut()
                         .filter(|p| p.joined && (p.known.contains(&id) || p.entity == id))
                     {
                         p.conn
-                            .send(ToClient::Animate(vec![(id, name.clone(), looping)]));
+                            .send(ToClient::PlayAction(vec![(id, name.clone(), looping)]));
                     }
                 }
                 DimEvent::Sound { dim, sound, pos: at, volume, pitch } => {
@@ -730,13 +727,13 @@ impl Server {
                         p.conn.send(ToClient::Flash(id));
                     }
                 }
-                DimEvent::EntitySwing { id } => {
+                DimEvent::EntitySwing { id, off } => {
                     for p in self
                         .players
                         .iter_mut()
                         .filter(|p| p.joined && p.entity != id && p.known.contains(&id))
                     {
-                        p.conn.send(ToClient::EntitySwing(id));
+                        p.conn.send(ToClient::EntitySwing { id, off });
                     }
                 }
                 DimEvent::StopSprint { player } => {

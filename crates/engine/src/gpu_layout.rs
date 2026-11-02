@@ -983,3 +983,8 @@ mod tests {
         }
     }
 }
+
+/// A transform as the three rows the shaders read.
+pub fn rows(m: glam::Mat4) -> [[f32; 4]; 3] {
+    [m.row(0).to_array(), m.row(1).to_array(), m.row(2).to_array()]
+}

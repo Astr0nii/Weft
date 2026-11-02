@@ -15,21 +15,157 @@ impl Server {
     /// Items held long enough take effect; another item in hand ends it.
     pub(super) fn finish_uses(&mut self, c: &'static Content) {
         for pi in 0..self.players.len() {
-            let Some((item, done)) = self.players[pi].using else { continue };
+            let Some((item, done, slot)) = self.players[pi].using else { continue };
             let held = self
                 .region(pi)
-                .map_or(ItemStack::EMPTY, |(r, id)| r.entities.held(id));
-            if held.item != item || held.is_empty() {
-                self.players[pi].using = None;
-                self.players[pi].conn.send(ToClient::Using(None));
+                .map_or(ItemStack::EMPTY, |(r, id)| r.entities.inventory_slot(id, slot));
+            let selected = self
+                .region(pi)
+                .and_then(|(r, id)| r.entities.get(id).map(|e| e.selected));
+            let off = c.game.player_layout.off == Some(slot);
+            if held.item != item || held.is_empty() || (!off && selected != Some(slot)) {
+                self.stop_using(pi);
             } else if self.tick >= done {
-                self.players[pi].using = None;
-                self.players[pi].conn.send(ToClient::Using(None));
-                self.players[pi].use_finishing = true;
-                self.handle(c, pi, ToServer::UseItem { target: None });
-                self.players[pi].use_finishing = false;
+                self.stop_using(pi);
+                self.use_in_hand(c, pi, slot, None, true);
             }
         }
+    }
+
+    fn stop_using(&mut self, pi: usize) {
+        self.players[pi].using = None;
+        self.players[pi].conn.send(ToClient::Using(None));
+        if let Some(e) = self.region(pi).and_then(|(r, id)| r.entities.get_mut(id)) {
+            e.using = (0, false);
+        }
+    }
+
+    /// The hands to try, in order, for the player's right click.
+    fn hands(&mut self, c: &'static Content, pi: usize) -> Vec<u32> {
+        self.region(pi).map_or(Vec::new(), |(r, id)| {
+            let sel = r.entities.get(id).map_or(0, |e| e.selected);
+            r.entities
+                .inventories
+                .get(&id)
+                .map_or(Vec::new(), |i| crate::content::hands_in_order(c, i, sel))
+        })
+    }
+
+    /// A click on a block with the item in `slot`: places it if it is a block, uses it if not.
+    #[allow(clippy::too_many_arguments)]
+    fn place_or_use(
+        &mut self,
+        c: &'static Content,
+        pi: usize,
+        slot: u32,
+        frame: u64,
+        pos: IVec3,
+        face: u8,
+        look: [f32; 3],
+        hit: [f32; 3],
+    ) -> bool {
+        let off_hand = c.game.player_layout.off == Some(slot);
+        let Some((r, entity)) = self.region(pi) else { return false };
+        let Some(e) = r.entities.get(entity) else { return false };
+        let creative = e.mode == GameMode::Creative;
+        let held = r.entities.inventory_slot(entity, slot);
+        let Some(state) = c
+            .items
+            .get(held.item as usize)
+            .and_then(|i| i.block)
+            .filter(|_| !held.is_empty())
+        else {
+            // Items used on a block (buckets) work on the world's blocks only, so far.
+            return self.use_in_hand(c, pi, slot, (frame == 0).then_some((pos, face)), false);
+        };
+        let placed = r.with_space(c, frame, |d, _| {
+            let hit = hit.map(|v| v.clamp(0.0, 1.0));
+            let target = d.place_clicked(c, pos, face, state, look, hit, entity, held.item)?;
+            // A named stack names the block entity it becomes (a renamed chest).
+            if let (Some(name), Some(id)) = (crate::stack::name(&held), d.anchored(target)) {
+                d.entities
+                    .comps
+                    .insert((id, c.game.name_comp), name.into_bytes().into_boxed_slice());
+            }
+            Some(())
+        });
+        if !matches!(placed, Some(Some(()))) {
+            return false;
+        }
+        if !creative {
+            r.entities
+                .set_slot(entity, slot, ItemStack { count: held.count - 1, ..held });
+        }
+        r.events
+            .push(DimEvent::EntitySwing { id: entity, off: off_hand });
+        self.players[pi]
+            .conn
+            .send(ToClient::Swing { used_item: true, off_hand });
+        true
+    }
+
+    /// Uses the item in `slot` on what was clicked: true if it did something, or started to.
+    fn use_in_hand(&mut self, c: &'static Content, pi: usize, slot: u32, target: Option<(IVec3, u8)>, finishing: bool) -> bool {
+        let off_hand = c.game.player_layout.off == Some(slot);
+        let Some((r, entity)) = self.region(pi) else { return false };
+        let held = r.entities.inventory_slot(entity, slot);
+        let Some(def) = c.items.get(held.item as usize) else { return false };
+        let (pos, face) = target.unwrap_or((IVec3::ZERO, 0));
+        let state = target.and_then(|_| r.get(pos)).unwrap_or(0);
+        let mut q = abi::Query { entity, item: held.item, pos: pos.to_array(), state, ..abi::Query::DEFAULT };
+        if !r.ask(c, abi::question::USE_ITEM, &mut q) {
+            return false;
+        }
+        // An item that takes time starts here, and comes back through this when it is done.
+        let ticks = crate::content::use_ticks(c, held.item);
+        if ticks > 0 && !finishing {
+            if let Some(e) = r.entities.get_mut(entity) {
+                e.using = (ticks, off_hand);
+            }
+            let done = self.tick + ticks as u64;
+            self.players[pi].using = Some((held.item, done, slot));
+            self.players[pi]
+                .conn
+                .send(ToClient::Using(Some((ticks, off_hand))));
+            return true;
+        }
+        let Some((r, entity)) = self.region(pi) else { return false };
+        let mut used = false;
+        if def.on_use.is_none() {
+            if let Some(after) = r.use_container(c, entity, held) {
+                if after != held {
+                    r.entities.set_slot(entity, slot, after);
+                    used = true;
+                }
+            }
+        } else if let Some(cb) = def.on_use {
+            let a = r.call(def.owner, cb, |w| abi::ItemUseArgs {
+                world: w,
+                player: entity,
+                stack: held,
+                pos: pos.to_array(),
+                face: face as u32,
+                has_target: target.is_some() as u32,
+                handled: 0,
+            });
+            if a.handled != 0 && a.stack != held && crate::host::known_item("on_use", &a.stack) {
+                r.entities.set_slot(entity, slot, a.stack);
+            }
+            used = a.handled != 0;
+        }
+        if used {
+            r.emit_engine(
+                c,
+                abi::event::ITEM_USED,
+                &abi::ItemUsed { player: entity, stack: held, pos: pos.to_array(), has_target: target.is_some() as u32 },
+            );
+            r.events
+                .push(DimEvent::EntitySwing { id: entity, off: off_hand });
+            self.players[pi]
+                .conn
+                .send(ToClient::Swing { used_item: true, off_hand });
+        }
+        used
     }
 
     /// The region holding player `pi`'s entity, with the entity id.
@@ -93,7 +229,24 @@ impl Server {
                 }
             }
             ToServer::StopBreak => self.players[pi].mining = None,
-            ToServer::StopUsing => self.players[pi].using = None,
+            ToServer::StopUsing => self.stop_using(pi),
+            ToServer::SwapHands => {
+                let Some(off) = c.game.player_layout.off else { return };
+                let Some((r, entity)) = self.region(pi) else { return };
+                let Some(e) = r
+                    .entities
+                    .get(entity)
+                    .filter(|e| e.mode != GameMode::Spectator)
+                else {
+                    return;
+                };
+                let sel = e.selected;
+                let (main, other) = (r.entities.inventory_slot(entity, sel), r.entities.inventory_slot(entity, off));
+                if crate::content::fits_one_hand(c, main.item) {
+                    r.entities.set_slot(entity, sel, other);
+                    r.entities.set_slot(entity, off, main);
+                }
+            }
             ToServer::Move { pos, yaw, pitch, on_ground, pose, sprint, flying, jumped, frame } => {
                 if !pos.is_finite() {
                     return;
@@ -181,7 +334,7 @@ impl Server {
                         .send(ToClient::BreakRefused { frame, pos });
                 }
                 let Some((r, _)) = self.region(pi) else { return };
-                if worn == Some(true) {
+                if worn == Some(true) && !r.entities.held(entity).is_empty() {
                     wear(c, r, entity, sel, 1);
                 }
             }
@@ -189,119 +342,41 @@ impl Server {
             ToServer::Use { pos, part, face, look, hit, sneak, frame } => {
                 let Some((r, _)) = self.region(pi) else { return };
                 let (frame, pos) = r.landed_as(frame, pos);
-                enum Did {
-                    Used,
-                    Placed,
-                    Nothing,
-                    NoBlock,
-                }
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get(entity) else { return };
-                let (eye, sel, creative) = (e.pos + DVec3::Y * e.eye(c), e.selected, e.mode == GameMode::Creative);
-                let held = r.entities.held(entity);
+                let eye = e.pos + DVec3::Y * e.eye(c);
                 let reach = r.block_reach(c, entity);
-                let did = r.with_space(c, frame, |d, o| {
+                // The block clicked goes first; only then what is in the hands.
+                let used = r.with_space(c, frame, |d, o| {
                     if !within(o.to_local(eye), pos, reach) {
-                        return Did::Nothing;
+                        return None;
                     }
-                    if !sneak && d.player_use(c, pos, part, face, entity) {
-                        return Did::Used;
-                    }
-                    let Some(state) = c
-                        .items
-                        .get(held.item as usize)
-                        .and_then(|i| i.block)
-                        .filter(|_| !held.is_empty())
-                    else {
-                        return Did::NoBlock;
-                    };
-                    let hit = hit.map(|v| v.clamp(0.0, 1.0));
-                    if let Some(target) = d.place_clicked(c, pos, face, state, look, hit, entity, held.item) {
-                        // A named stack names the block entity it becomes (a renamed chest).
-                        if let (Some(name), Some(id)) = (crate::stack::name(&held), d.anchored(target)) {
-                            d.entities
-                                .comps
-                                .insert((id, c.game.name_comp), name.into_bytes().into_boxed_slice());
-                        }
-                        Did::Placed
-                    } else {
-                        Did::Nothing
-                    }
+                    Some(!sneak && d.player_use(c, pos, part, face, entity))
                 });
-                match did {
-                    Some(Did::Used) => self.players[pi]
-                        .conn
-                        .send(ToClient::Swing { used_item: false }),
-                    Some(Did::Placed) => {
-                        if !creative {
-                            r.entities
-                                .set_slot(entity, sel, ItemStack { count: held.count - 1, ..held });
-                        }
+                match used {
+                    Some(Some(true)) => {
+                        r.events
+                            .push(DimEvent::EntitySwing { id: entity, off: false });
                         self.players[pi]
                             .conn
-                            .send(ToClient::Swing { used_item: true });
+                            .send(ToClient::Swing { used_item: false, off_hand: false });
                     }
-                    // Items used on a block (buckets) work on the world's blocks only, so far.
-                    Some(Did::NoBlock) => self.handle(c, pi, ToServer::UseItem { target: (frame == 0).then_some((pos, face)) }),
+                    Some(Some(false)) => {
+                        for slot in self.hands(c, pi) {
+                            if self.place_or_use(c, pi, slot, frame, pos, face, look, hit) {
+                                break;
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
 
             ToServer::UseItem { target } => {
-                let Some((r, entity)) = self.region(pi) else { return };
-                let Some(sel) = r.entities.get(entity).map(|e| e.selected) else { return };
-                let held = r.entities.held(entity);
-                let Some(def) = c.items.get(held.item as usize) else { return };
-                let (pos, face) = target.unwrap_or((IVec3::ZERO, 0));
-                let state = target.and_then(|_| r.get(pos)).unwrap_or(0);
-                let mut q = abi::Query { entity, item: held.item, pos: pos.to_array(), state, ..abi::Query::DEFAULT };
-                if !r.ask(c, abi::question::USE_ITEM, &mut q) {
-                    return;
-                }
-                // An item that takes time starts here, and comes back through this when it is done.
-                let ticks = crate::content::use_ticks(c, held.item);
-                let finishing = std::mem::take(&mut self.players[pi].use_finishing);
-                if ticks > 0 && !finishing {
-                    let done = self.tick + ticks as u64;
-                    self.players[pi].using = Some((held.item, done));
-                    self.players[pi].conn.send(ToClient::Using(Some(ticks)));
-                    return;
-                }
-                let Some((r, entity)) = self.region(pi) else { return };
-                let mut used = false;
-                if def.on_use.is_none() {
-                    if let Some(after) = r.use_container(c, entity, held) {
-                        if after != held {
-                            r.entities.set_slot(entity, sel, after);
-                            used = true;
-                        }
+                for slot in self.hands(c, pi) {
+                    if self.use_in_hand(c, pi, slot, target, false) {
+                        break;
                     }
-                } else if let Some(cb) = def.on_use {
-                    let a = r.call(def.owner, cb, |w| abi::ItemUseArgs {
-                        world: w,
-                        player: entity,
-                        stack: held,
-                        pos: pos.to_array(),
-                        face: face as u32,
-                        has_target: target.is_some() as u32,
-                        handled: 0,
-                    });
-                    if a.handled != 0 && a.stack != held && crate::host::known_item("on_use", &a.stack) {
-                        r.entities.set_slot(entity, sel, a.stack);
-                    }
-                    used = a.handled != 0;
-                }
-                if used {
-                    r.emit_engine(
-                        c,
-                        abi::event::ITEM_USED,
-                        &abi::ItemUsed { player: entity, stack: held, pos: pos.to_array(), has_target: target.is_some() as u32 },
-                    );
-                }
-                if used {
-                    self.players[pi]
-                        .conn
-                        .send(ToClient::Swing { used_item: true });
                 }
             }
             ToServer::Pick { item } => {
@@ -379,7 +454,7 @@ impl Server {
                 if handled {
                     self.players[pi]
                         .conn
-                        .send(ToClient::Swing { used_item: false });
+                        .send(ToClient::Swing { used_item: false, off_hand: false });
                 }
             }
             ToServer::OpenInventory => {
@@ -431,7 +506,8 @@ impl Server {
             ToServer::Drop { all } => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(sel) = r.entities.get(entity).map(|e| e.selected) else { return };
-                let held = r.entities.held(entity);
+                // A two-handed item that does nothing can still be thrown away.
+                let held = r.entities.in_selected_slot(entity);
                 if held.is_empty() {
                     return;
                 }
@@ -566,15 +642,10 @@ pub(super) fn wear(c: &Content, d: &mut Dim, player: u64, slot: u32, amount: u32
     {
         return;
     }
-    let Some(stack) = d
-        .entities
-        .inventories
-        .get(&player)
-        .and_then(|i| i.get(slot as usize))
-        .copied()
-    else {
+    let stack = d.entities.inventory_slot(player, slot);
+    if stack.is_empty() {
         return;
-    };
+    }
     let next = crate::stack::worn(c, stack, amount);
     if next != stack {
         d.entities.set_slot(player, slot, next);

@@ -465,8 +465,8 @@ const OPS: &[(&str, &str, Run)] = &[
             .collect();
         Ok(parts.join(" "))
     }),
-    ("animate", "@owner [name:word]", |w, cmd, _, _| {
-        w.play_animation(owner(w, cmd)?, cmd.text("name").unwrap_or(""), false);
+    ("action", "@owner [name:word]", |w, cmd, _, _| {
+        w.play_action(owner(w, cmd)?, cmd.text("name").unwrap_or(""), false);
         Ok(String::new())
     }),
     ("survey", "<r:int>", |w, cmd, _, me| {
@@ -504,6 +504,24 @@ const OPS: &[(&str, &str, Run)] = &[
             w.spawn_item([me[0] as f64 + x, me[1] as f64 + 0.5, me[2] as f64 + z], ItemStack::new(kinds[i as usize % kinds.len()], 1));
         }
         Ok(format!("{n} drops"))
+    }),
+    ("crowd", "<kind:word> <n:int>", |w, cmd, _, me| {
+        // `n` mobs in a grid north of the player, walking on the spot if they have room to.
+        let n: u32 = int(cmd, "n")?;
+        let kind = Entity::lookup(word(cmd, "kind")?).ok_or("no such entity")?;
+        let side = (n as f64).sqrt().ceil() as u32;
+        for i in 0..n {
+            let (x, z) = ((i % side) as f64 * 1.5 - side as f64 * 0.75, -8.0 - (i / side) as f64 * 1.5);
+            w.spawn(kind, [me[0] as f64 + x, me[1] as f64, me[2] as f64 + z]);
+        }
+        Ok(format!("{n} mobs"))
+    }),
+    ("swap", "<id:int> <from:word> [to:word]", |w, cmd, _, _| {
+        match cmd.text("to") {
+            Some(to) => w.swap_action(int(cmd, "id")?, word(cmd, "from")?, to),
+            None => w.unswap_action(int(cmd, "id")?, word(cmd, "from")?),
+        }
+        Ok(String::new())
     }),
     ("find", "<r:int> <block:block>", |w, cmd, _, me| {
         // The first block of that kind within `r` of the player, not far above or below.

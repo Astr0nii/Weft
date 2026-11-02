@@ -241,6 +241,8 @@ pub type LootTable = Handle<kind::LootTable>;
 pub type TextCondition = Handle<kind::TextCondition>;
 pub type Music = Handle<kind::Music>;
 pub type EquipmentSlot = Handle<kind::EquipmentSlot>;
+/// The second hand, in the player's equipment: register it to have one, with any background.
+pub static OFF_HAND: EquipmentSlot = EquipmentSlot::named(abi::OFF_HAND_SLOT);
 
 /// Things that name a loot table: a block or entity kind (what it drops) or a table of its own.
 pub trait LootSource {
@@ -1707,6 +1709,32 @@ impl ItemBuilder<'_> {
     /// Stack size (`max_stack`).
     pub fn max_stack(self, n: u32) -> Self {
         self.set(&c::MAX_STACK, n)
+    }
+    /// Its clips, from `animations/<name>.animation.json`; a file named after the item is used
+    /// even without this. They play on whoever holds it.
+    pub fn animations(mut self, name: &str) -> Self {
+        let name = crate::asset("", name);
+        self.components
+            .push(Pending::text(abi::comp::ANIMATIONS, &name));
+        self
+    }
+    /// Needs both hands: while the other holds something it does nothing, and it can't go in
+    /// the other hand. Its `hold` action shows the two.
+    pub fn two_handed(self) -> Self {
+        self.tag(abi::comp::TWO_HANDED)
+    }
+    /// A `two_handed` item may be held in one hand after all, playing this action. It goes in
+    /// the other hand then too.
+    pub fn one_handed_as(mut self, action: &str) -> Self {
+        self.components
+            .push(Pending::text(abi::comp::ONE_HANDED, action));
+        self.tag(abi::comp::TWO_HANDED)
+    }
+    /// On a right click the hand whose item has the higher priority goes first, whichever hand
+    /// that is (default 0, then the main hand first). The other hand gets its turn when this
+    /// item does nothing: a bow with no arrows.
+    pub fn use_priority(self, priority: i32) -> Self {
+        self.set(&c::USE_PRIORITY, priority)
     }
     /// Uses before it breaks (`durability`); damageable items do not stack.
     pub fn durability(self, d: u32) -> Self {

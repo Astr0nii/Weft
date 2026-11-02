@@ -492,6 +492,20 @@ pub async fn item_farm(t: T) -> R {
     Ok(())
 }
 
+/// A crowd of walking mobs in view: what posing their bones costs a frame.
+pub async fn mob_crowd(t: T) -> R {
+    t.flat().await?;
+    t.cmd("/rule testkit:peace 1").await?;
+    t.op("crowd base:zombie 4000").await?;
+    t.op("crowd base:pig 4000").await?;
+    t.c().look(0.0, -20.0);
+    t.secs(4.0).await?;
+    t.note(format!("{} entities on the client", t.c().entities().len()));
+    t.shot("crowd").await?;
+    t.bench(5.0, "mob_crowd").await?;
+    Ok(())
+}
+
 /// Plants grow by world time: wheat ripens when the clock jumps ahead, and sugar cane in an area
 /// nobody was in catches up when the player comes back.
 pub async fn growth(t: T) -> R {

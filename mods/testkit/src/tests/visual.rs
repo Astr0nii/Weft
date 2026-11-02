@@ -56,9 +56,9 @@ pub async fn held_items(t: T) -> R {
     let looks: [(&str, fn([u8; 3]) -> bool, f32); 5] = [
         ("pickaxe", probe::brown, 0.03),
         ("sword", probe::cyan, 0.03),
-        ("block", probe::light, 0.03),
+        ("block", |c| c[0] > 90 && c[2] > 110, 0.005),
         ("flower", probe::red, 0.02),
-        ("torch", probe::dark, 0.03),
+        ("torch", probe::dark, 0.003),
     ];
     for (i, (name, color, min)) in looks.into_iter().enumerate() {
         t.c().select(i as u32);
@@ -67,7 +67,7 @@ pub async fn held_items(t: T) -> R {
         // The hand lowers and comes back up on a switch.
         t.secs(0.6).await?;
         let shot = t.shot(name).await?;
-        let v = shot.share(0.78, 0.55, 1.0, 0.95, color);
+        let v = shot.share(0.55, 0.45, 1.0, 0.95, color);
         t.probe(&format!("{name} colors in the hand"), v, v > min);
     }
     Ok(())

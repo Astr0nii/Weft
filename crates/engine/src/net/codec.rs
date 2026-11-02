@@ -356,7 +356,7 @@ mod tests {
                 vec![Arg::Text("me".into()), Arg::Int(-3), Arg::Msg(Msg::new("k", vec![Arg::Float(1.5, 2)]))],
             )),
             ToClient::Despawn(vec![(4, true)]),
-            ToClient::Animate(Vec::new()),
+            ToClient::PlayAction(Vec::new()),
         ] {
             let bytes = encode_client(&m);
             assert_eq!(bytes[0] as usize, m.kind());

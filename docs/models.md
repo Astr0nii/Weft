@@ -1,11 +1,12 @@
 # Models and animations guide
 
-How things are shaped: blocks and items from boxes, entities from bones, written in code or made in Blockbench, plus keyframe animations, the first-person hand, and armor drawn on the wearer.
+How things are shaped: blocks and items from boxes, entities from bones, written in code or made in Blockbench, plus keyframe animations and actions, items in the hands, and armor drawn on the wearer.
 
 ## Note
 Examples to copy from:
 - `mods/testmod/assets/models/idol.geo.json` and `animations/idol.animation.json`: a model with mesh wings, an idle and a bow
-- `mods/testmod/assets/animations/player.animation.json`: a wave for the player, first-person hand included
+- `mods/testmod/assets/animations/player.animation.json`: a wave for the player
+- `mods/testmod/assets/animations/greatsword.animation.json`, `blaster.animation.json`: items held in two hands, one swinging with the whole body, one with a bone of its own
 - `mods/testmod/src/looks.rs`: entities with models from code (`wisp`, `orb`) and from a file (`idol`)
 - `mods/base/src/mobs.rs`: the `biped`, `quadruped` and `spider` mobs
 - `mods/testmod/assets/models/block/pedestal.json` and `models/item/totem.json`: a block and an item shaped by files
@@ -22,7 +23,7 @@ For items, `models/item/<name>.json` with `"parent": "item/generated"` and a `la
 A resource pack replaces these files like any other: its `models/block/stone.json` in `base/` redraws stone, and the block's item with it unless the pack has a `models/item/stone.json`. Only the drawing changes; what a block collides with, how it is selected and which neighbors it hides stay what the mod gave every player, since a server knows nothing of packs. A `.ctm` can pick among models by position or neighbors, and let a block stop hiding its neighbors: [models as tiles](ctm.md#models-as-tiles).
 
 ## Quick links
-[the basics](#the-basics) | [model in code](#model-in-code) | [model from Blockbench](#model-from-blockbench) | [roles](#roles) | [animations](#animations) | [first person hand](#first-person-hand) | [armor](#armor-and-other-worn-items)
+[the basics](#the-basics) | [model in code](#model-in-code) | [model from Blockbench](#model-from-blockbench) | [roles](#roles) | [animations](#animations) | [items in the hand](#items-in-the-hand) | [armor](#armor-and-other-worn-items)
 
 ## The basics
 An entity has a size, which is its hitbox, and a model, which is what gets drawn. The two are independent: `.size(0.6, 1.8)` is in blocks, and the model can be bigger or smaller than the box it lives in.
@@ -69,12 +70,12 @@ The engine reads bones with their `pivot`, `parent` and resting `rotation`, boxe
 Two things trip people up. A rotated box is drawn unrotated (the log warns about it), so put it in its own bone and rotate the bone. And list parent bones before their children, as Blockbench does. Molang expressions aren't evaluated, only plain numbers.
 
 ## Roles
-A role tells the engine what a bone should do on its own, without any keyframes: look where the entity looks, swing while it walks. It comes from the bone's name, in code and in Blockbench files alike (case and `_` don't matter), so the ready made models can be animated and worn on by the same names:
+A role tells the engine what a bone is: which stock clips move it, what armor covers it, where a hand is. It comes from the bone's name, in code and in Blockbench files alike (case and `_` don't matter), so the ready made models can be animated and worn on by the same names:
 
 | bone name | role |
 |---|---|
 | `head` | follows where the entity looks |
-| `leftArm`, `rightArm` | swing while walking; resting held out (rotated about 90 degrees on x, a zombie's) they only sway |
+| `leftArm`, `rightArm` (also `mainArm`, `offArm`) | swing while walking; resting held out (rotated about 90 degrees on x, a zombie's) they only sway |
 | `body` | leans forward when sneaking |
 | `leftLeg`, `rightLeg` (also `leg0`, `leg1`) | swing while walking |
 | `leg2`, `leg3` | the front legs of a four-legged animal, opposite to the back ones |
@@ -101,14 +102,37 @@ One file holds any number of animations, and an animation's name is whatever fol
 ```
 Each bone can carry `rotation` (degrees), `position` (model pixels) and `scale`, as keyframes at times in seconds. A keyframe is a plain `[x, y, z]` or an object with `pre`, `post` and `"lerp_mode": "catmullrom"` when you want a jump or a smooth curve. Between keys the value is linear. `loop` is `true` to repeat, `false` to play once and go back to normal, or `"hold_on_last_frame"` to stay in the last pose.
 
-Keyframes are added on top of a bone's role and resting angle, so even a walking leg can be animated. The angles follow Blockbench's convention: a Bedrock arm turned -90 degrees on x points forward.
+Keyframes are added on top of what is below them, and of a bone's resting angle, so even a walking leg can be animated. Set `"override_previous_animation": true` (Blockbench's Override box) and they go over what is below on the bones they name instead: `blend_weight` then says how much of that it hides, and its own angles stay what the file has. So 1 replaces it, and 0.9 on a greatsword's `hold` leaves a tenth of the walk on the arms, so they stir without dangling. A clip only ever touches the bones it names: arms only and the walk goes on, the whole body for a heavy swing and it doesn't. The angles follow Blockbench's convention: a Bedrock arm turned -90 degrees on x points forward.
 
-### When they play
-`idle` plays all the time and `walk` while the entity moves, with nothing for you to do but name them that way. Any other animation is started from code and everyone who sees the entity sees it:
+Without override `blend_weight` scales the clip: a number, or `query.modified_move_speed` for how fast it walks. `anim_time_update` says what moves the clip's time: `query.modified_distance_moved` for steps, or anything with `progress` in it to stretch the clip over however long the action takes. Other Molang isn't evaluated.
+
+### Actions
+What plays goes by the name of an action, and that name is all there is to it. The engine looks for these by itself:
+
+| action | when | time |
+|---|---|---|
+| `idle` | always | clock |
+| `walk` | walking, more the faster | distance walked |
+| `sneak`, `swim`, `crawl` | in that pose (`crawl` falls back on `swim`) | clock, distance |
+| `hold` | something in hand (`hold_tool` for tools that don't have their own) | clock |
+| `hold_empty` | nothing in hand, for `.first_person` only by default | clock |
+| `equip` | the hand going down and up as it changes items or recharges | progress |
+| `swing`, `use` | swinging (`swing_held` with an item that has no `swing` of its own), and using what it holds | progress |
+| `death` | dying | clock |
+
+The engine has clips for all of these (`assets/animations/stock_*.animation.json`), picked by the shape of the model: walking on two legs, four, eight. So any model with the right [bone names](#roles) walks without a single keyframe. Your own clip of the same name takes over on the bones it names, and the stock one keeps moving the others.
+
+`mainArm` and `offArm` in a clip mean the arm with the item and the other one, whatever the model calls them. A clip for the item in the other hand plays mirrored, so you write each one once, for the main hand. There is also a bone no model needs: `root` moves the whole model, and `camera` moves the view of a player seeing it through their own eyes.
+
+Anything else is yours to name. Started from code, everyone who sees the entity sees it:
 ```rust
-world.play_animation(entity_id, "bow", false);   // false plays once, true repeats
-world.play_animation(entity_id, "", false);      // back to idle and walk
+world.play_action(entity_id, "bow", false);    // false plays once, true repeats
+world.play_action(entity_id, "", false);       // back to normal
+world.swap_action(creeper, "walk", "flee_cat"); // plays flee_cat wherever it would walk
+world.unswap_action(creeper, "walk");
 ```
+`swap_action` is the one for a mob's goal, and `ai::playing("walk", "flee_cat", goal)` does it for as long as the goal runs. Without a `flee_cat` clip it just goes on walking.
+
 The file is found by the entity's name, or by `.animations("name")` when it is called something else.
 
 ### Animations for something that already exists
@@ -116,10 +140,24 @@ A file can also be attached to an entity that belongs to someone else, the playe
 ```rust
 r.set_text_on(Target::Entity("core:player"), &ANIMATIONS, "mymod:player");
 ```
-After that the player has the animations of your `animations/player.animation.json`, and `play_animation(player, "wave", false)` plays one.
+After that the player has the animations of your `animations/player.animation.json`, and `play_action(player, "wave", false)` plays one.
 
-## First person hand
-In first person all you see is the hand: the boxes of the player model's `rightArm` bone, so a model with another arm shows that one. It can be animated as well. A bone called `hand` in the animation moves and turns it. No model has such a bone, only the animation names it. The wave in `player.animation.json` raises the arm and moves `hand` along, so the hand you see follows suit.
+## Items in the hand
+An item brings its own clips: `animations/<item>.animation.json`, or `.animations("name")` on the item. They are the same clips with the same action names, for whoever holds it. `hold` with `mainArm` and `offArm` both in it is a two-handed grip, and that's all a second arm takes: it comes up because the clip names it.
+
+A `position` on an arm pulls it off its shoulder. A `hold` clip has its real angles, so what you see in Blockbench is what plays. The stock one has override and `blend_weight` 0.5: an arm holding something walks at half its swing, as in vanilla. Arms named by what is held follow the view: from the eyes they stay where they are on screen, and from outside they go half way with the look. The same clip and the same item size play seen from anywhere. With the First Person Model setting on, you see your real arms from your own eyes, exactly as others see them. With it off there is no body for them to hang from: an arm a held clip names leaves out the walking under it, stays put on screen and is seen from a little above and behind the eyes. If that view does need something else, `swing.first_person` plays there instead of `swing`, and so on for any action.
+
+What an item may do in the hands is a property of the item:
+```rust
+r.item(&GREATSWORD).two_handed();                     // does nothing while the other hand holds something
+r.item(&MAP).one_handed_as("hold_one");               // two hands, or one with this action
+r.item(&BOW).use_priority(10);                        // goes before the other hand on a right click
+```
+A right click goes to the block first (not while sneaking), then to the hands by `use_priority`, the main hand if they are equal. The next hand gets its turn when the item does nothing, which `on_use` says by returning `false`: a bow with no arrows lets the torches in the other hand go down. Hits are for the main hand. The second hand itself is an equipment slot, `r.equipment_slot(&OFF_HAND, 0, "slot_offhand")`, and base registers it. A menu with `.equipment()` has it; its screen places it with `ui.group(OFF_HAND.name())`, as `ui.equipment()` draws only what is worn.
+
+Where the item sits in the hand comes from `display.thirdperson_righthand` of `models/item/<name>.json`, which is Blockbench's Display tab, the same from the eyes and from outside; the other hand mirrors it. And `models/item/<name>.geo.json` makes the item out of bones (its texture is `textures/item/<name>.png`). Its origin is the palm with -Z along the arm, and its bones go in the same clips as the arms, so a gun's slide is one more bone in `swing`. On the ground and in the inventory it still shows its sprite.
+
+`examples/examplemod/assets/models/player_template.geo.json` is the player's skeleton to open in Blockbench and animate on. Arms from the eyes are seen from 1.62 blocks up at the front of the head, plus 5 pixels up, 10 back and 3 to the left.
 
 ## Armor and other worn items
 An item shows up on the wearer when it sits in an equipment slot. The slots are declared once, with the bones what is worn there covers and the silhouette of the empty slot, and an item only names its slot:

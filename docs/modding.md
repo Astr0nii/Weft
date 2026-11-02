@@ -262,6 +262,7 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 - `placed_block(&BLOCK)`
 - `handheld()`: held by its end and pointing ahead in third person, like a stick. `tool(..)` does it already, and so does the tag `handheld`
 - `wearable(&HEAD, inflate, texture)` for armor and anything else worn in an equipment slot
+- `two_handed()`, `one_handed_as(action)`, `use_priority(n)`: [what it does in the hands](models.md#items-in-the-hand)
 - `on_use`: what using it does. Before it runs anyone can say no to `question::USE_ITEM`, and after it the `ITEM_USED` event tells every mod (testmod heals with base's food through it). `base_api::eat` is the base game's eating: `.set(&FOOD, ..).use_time(1.6).on_use(base_api::eat)`
 
 ### Entities
@@ -439,7 +440,7 @@ You can contact me on Discord: `@vortex_so`
 - [Localization](localization.md): all text, item tooltips, rich text and effects, icons and meters, lines by tag, adding them from other mods and packs
 - [Worldgen](worldgen.md): ores, structures, biomes, spawns, new dimensions and terrain, also in other mods' dimensions
 - [Sky](sky.md): suns, moons, stars and skyboxes in any dimension, changing or removing the ones there
-- [Models and animations](models.md): mob models in code or Blockbench, keyframes, the first-person hand, armor
+- [Models and animations](models.md): mob models in code or Blockbench, keyframes and actions, items in the hands, armor
 - [UI](ui.md): screens, HUD, menus, looks, GUI textures
 - [Machines](machines.md): blocks with inventories, recipes, energy
 - [Shaders](shaders.md): text effects, panels, mobs, particles, screen effects, shader packs

@@ -4,29 +4,12 @@ struct VOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
-    @location(2) @interpolate(flat) tex: u32,
     @location(3) @interpolate(flat) layer: u32,
     @location(4) @interpolate(flat) mode: u32,
     @location(5) dist: f32,
     @location(6) @interpolate(flat) glow: u32,
     // Unlit, unshaded color (linear) glowing texels take.
     @location(7) @interpolate(flat) tint: vec3<f32>,
-}
-
-// Texel rectangle (x, y, w, h) of a face in the classic box unwrap.
-fn face_rect(face: u32, d: vec3<f32>, o: vec2<f32>) -> vec4<f32> {
-    let w = d.x;
-    let h = d.y;
-    let z = d.z;
-    switch face {
-        // The hand, in vanilla's model space (y down): not `Cuboid::face_rects`, for a box on ours.
-        case 0u: { return vec4(o.x + z, o.y + z, -z, h); }
-        case 1u: { return vec4(o.x + z * 2.0 + w, o.y + z, -z, h); }
-        case 2u: { return vec4(o.x + z + w, o.y, w, z); }
-        case 3u: { return vec4(o.x + z, o.y, w, z); }
-        case 4u: { return vec4(o.x + z, o.y + z, w, h); }
-        default: { return vec4(o.x + z * 2.0 + w, o.y + z, w, h); }
-    }
 }
 
 @vertex
@@ -69,7 +52,6 @@ fn box_vertex(b: Box, v: u32) -> VOut {
     out.dist = length(world);
     let uv = UVS[c];
     out.mode = b.ids.y;
-    out.tex = b.ids.x;
     out.glow = 0xffffffffu;
     if b.ids.y == BOX_MODE_TEXEL {
         // One texel for the whole box (pixels of held item sprites); `ids.w` = faces to skip.
@@ -108,10 +90,6 @@ fn box_vertex(b: Box, v: u32) -> VOut {
             out.glow = glow_map[out.layer];
         }
         out.uv = mix(b.uvo.xy, b.uvo.zw, UVS[c]);
-    } else {
-        let r = face_rect(face, b.dims.xyz, b.uvo.xy);
-        out.uv = (r.xy + uv * r.zw) / b.uvo.zw;
-        out.layer = 0u;
     }
     let hurt = b.color.a;
     var tint = b.color.rgb;
@@ -132,13 +110,6 @@ fn box_vertex(b: Box, v: u32) -> VOut {
 // The held item: depth squeezed into the near half (reverse Z), in front of the world (nothing the
 // player collides with comes closer than ~0.2 blocks, depth 0.3) but still sorted within itself.
 @vertex
-fn vs_hand(@builtin(vertex_index) vi: u32) -> VOut {
-    var out = box_vertex(boxes[vi / 36u], vi % 36u);
-    out.clip.z = (0.5 + 0.5 * out.clip.z / out.clip.w) * out.clip.w;
-    return out;
-}
-
-@vertex
 fn vs_hand_item(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VOut {
     var out = box_vertex(item_box(vi, ii), vi % 36u);
     out.clip.z = (0.5 + 0.5 * out.clip.z / out.clip.w) * out.clip.w;
@@ -153,9 +124,7 @@ fn fog(in: VOut, rgb: vec3<f32>) -> vec3<f32> {
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {
     var albedo = vec4(1.0);
-    if in.mode == BOX_MODE_SKIN {
-        albedo = textureSample(textures[in.tex], nearest_clamp, in.uv);
-    } else if in.mode == BOX_MODE_FACES || in.mode == BOX_MODE_FLAMES {
+    if in.mode == BOX_MODE_FACES || in.mode == BOX_MODE_FLAMES {
         albedo = textureSample(textures[in.layer], nearest_mipped, in.uv);
     } else if in.mode == BOX_MODE_TEXEL {
         albedo = textureSampleLevel(textures[in.layer], nearest_mipped, in.uv, 0.0);

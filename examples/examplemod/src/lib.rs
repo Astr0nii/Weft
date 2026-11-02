@@ -192,6 +192,20 @@ fn client(_r: &mut Registry) {
     // r.screen(&ABOUT, |ui| ui.panel("background", S::col().pad(8.0), |ui| ui.text("examplemod.about")));
     // r.hud_element(&MANA, hud_anchor::HOTBAR_RIGHT, 2, |ui| ui.text_bind(|c, out| { /* ... */ }));
     //
+    // In the hands: both or none, one with its own action, first on a right click. An item's clips
+    // go in `animations/<item>.animation.json`, `models/player_template.geo.json` is the skeleton
+    // to animate on in Blockbench. `mainArm` and `offArm` in a clip are the two arms.
+    // static GREATSWORD: Item = Item::named("greatsword");
+    // static SCROLL: Item = Item::named("scroll");
+    // static WAND: Item = Item::named("wand");
+    // r.item(&GREATSWORD).two_handed();
+    // r.item(&SCROLL).one_handed_as("hold_one");
+    // r.item(&WAND).use_priority(10);
+    //
+    // A mob's goal that plays its own run instead of walking:
+    // static SCARED: Entity = Entity::named("scared");
+    // r.entity(&SCARED).goals(ai::Goals::new().then(ai::playing("walk", "flee", ai::wander(4.0, 12.0))));
+    //
     // Sparks around a mob while it lives, the engine's steps and idle noises kept:
     // static WISP: Entity = Entity::named("wisp");
     // static SPARK: Particle = Particle::named("spark");

@@ -183,6 +183,7 @@ key.core.perspective = Сменить вид
 key.core.fullscreen = Полный экран
 key.core.player_list = Список игроков
 key.core.hide_hud = Скрыть интерфейс
+key.core.swap_hands = Сменить руку
 settings.sound = Звук
 shape.stairs = {0} (ступеньки)
 shape.slab = {0} (полублок)

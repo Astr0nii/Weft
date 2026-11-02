@@ -82,9 +82,10 @@ impl Client {
                     e.world_light = lights.into_iter().collect();
                 }
             }
-            ToClient::Swing { used_item } => {
+            ToClient::Swing { used_item, off_hand } => {
                 self.swing_arm();
-                if used_item && !self.held().is_empty() {
+                self.hand_swing_off = off_hand;
+                if used_item && !off_hand && !self.held().is_empty() {
                     self.hand_height = 0.0;
                 }
             }
@@ -178,16 +179,20 @@ impl Client {
                 self.breaking = None;
             }
             ToClient::Permission(level) => self.permission = level,
-            ToClient::Using(ticks) => self.using = ticks.map(|t| (t as f32, t as f32)),
+            ToClient::Using(ticks) => {
+                self.using = ticks.map(|(t, _)| (t as f32, t as f32));
+                self.using_off = ticks.is_some_and(|(_, off)| off);
+            }
             ToClient::Weather { raining, thunder } => self.weather = (raining, thunder),
             ToClient::Flash(id) => {
                 if let Some(e) = self.entities.get_mut(&id) {
                     e.flash = 0.1;
                 }
             }
-            ToClient::EntitySwing(id) => {
+            ToClient::EntitySwing { id, off } => {
                 if let Some(e) = self.entities.get_mut(&id) {
                     restart_swing(&mut e.arm_swing);
+                    e.swing_off = off;
                 }
             }
             ToClient::Cracks(list) => self.others_mining = list,
@@ -225,12 +230,12 @@ impl Client {
                 }
             }
             ToClient::Skin { entity, png } => self.entity_render.skin_pending.push((entity, png)),
-            ToClient::Animate(list) => {
+            ToClient::PlayAction(list) => {
                 for (id, name, looping) in list {
                     if id == self.player_id {
-                        self.self_anim = (!name.is_empty()).then(|| (name, self.start.elapsed().as_secs_f32(), looping));
+                        self.self_action = (!name.is_empty()).then(|| (name, self.start.elapsed().as_secs_f32(), looping));
                     } else if let Some(e) = self.entities.get_mut(&id) {
-                        e.anim = (!name.is_empty()).then(|| (name, e.age, looping));
+                        e.action = (!name.is_empty()).then(|| (name, e.age, looping));
                     }
                 }
             }
@@ -287,6 +292,12 @@ impl Client {
                     hurt: 0.0,
                     worn: Vec::new(),
                     held: 0,
+                    off_held: 0,
+                    using: None,
+                    use_ticks: 0.0,
+                    crouched: 0.0,
+                    swaps: Vec::new(),
+                    swing_off: false,
                     walk: 0.0,
                     walked: 0.0,
                     swing: 0.0,
@@ -294,7 +305,7 @@ impl Client {
                     burning: false,
                     dying: None,
                     next_step: 0.0,
-                    anim: None,
+                    action: None,
                     pose: Pose::Stand,
                     track: Default::default(),
                     pulled: None,

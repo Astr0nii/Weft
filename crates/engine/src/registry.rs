@@ -181,7 +181,7 @@ impl GroupDef {
     pub fn span(&self, layout: &PlayerLayout) -> (u32, u32, u32) {
         use weft_abi::slot_owner as so;
         match self.owner {
-            so::PLAYER_MAIN => (layout.hotbar, layout.slots - layout.hotbar - layout.worn.len() as u32, layout.hotbar.max(1)),
+            so::PLAYER_MAIN => (layout.hotbar, layout.main().count() as u32, layout.hotbar.max(1)),
             so::PLAYER_HOTBAR => (0, layout.hotbar, layout.hotbar.max(1)),
             _ => (self.start, self.cols * self.rows, self.cols.max(1)),
         }
@@ -190,14 +190,7 @@ impl GroupDef {
     /// Owner inventory index of the group's `i`-th slot (the main inventory skips worn slots).
     pub fn index(&self, layout: &PlayerLayout, i: u32) -> u32 {
         let (start, _, _) = self.span(layout);
-        if self.owner == weft_abi::slot_owner::PLAYER_MAIN {
-            (start..layout.slots)
-                .filter(|s| !layout.worn.contains(s))
-                .nth(i as usize)
-                .unwrap_or(u32::MAX)
-        } else {
-            start + i
-        }
+        if self.owner == weft_abi::slot_owner::PLAYER_MAIN { layout.main().nth(i as usize).unwrap_or(u32::MAX) } else { start + i }
     }
 }
 
@@ -359,8 +352,8 @@ pub struct Game {
     pub world_ticks: Vec<(ModId, Callback)>,
     /// `abi::comp::NAME` as an entity component.
     pub name_comp: u32,
-    /// `HEALTH`, `BURNING`, `WORN`, `SHAPE`, `HELD`.
-    pub field_comps: [u32; 5],
+    /// `HEALTH`, `BURNING`, `WORN`, `SHAPE`, `HELD`, `OFF_HELD`, `USING`, `SWAPS`.
+    pub field_comps: [u32; 8],
     /// `SIMULATED`.
     pub simulated_comp: u32,
     /// Entity components with `SYNC_WATCHERS` / `SYNC_MENU`.
@@ -797,6 +790,8 @@ pub struct PlayerLayout {
     pub slots: u32,
     /// The first this many are the hotbar.
     pub hotbar: u32,
+    /// The slot of the second hand, past the equipment, if there is one.
+    pub off: Option<u32>,
     /// Equipment: never filled by pickups, worn on the model.
     pub worn: std::ops::Range<u32>,
     /// Named groups: the declared ones, each equipment slot, and `core:equipment` for all of them.
@@ -831,7 +826,10 @@ impl Default for PlayerLayout {
 
 impl PlayerLayout {
     /// The hotbar group first, then the other groups in order, then the equipment slots.
-    pub fn new(groups: &[(String, u32, u32, u32)], equipment: Vec<EquipmentSlot>) -> PlayerLayout {
+    pub fn new(groups: &[(String, u32, u32, u32)], mut equipment: Vec<EquipmentSlot>) -> PlayerLayout {
+        // The other hand shows among the equipment but isn't worn: last, past `worn`.
+        equipment.sort_by_key(|e| e.name == weft_abi::OFF_HAND_SLOT);
+        let off = equipment.iter().any(|e| e.name == weft_abi::OFF_HAND_SLOT) as u32;
         let mut ordered: Vec<&(String, u32, u32, u32)> = groups
             .iter()
             .filter(|g| g.3 & weft_abi::slot_flags::HOTBAR != 0)
@@ -852,12 +850,12 @@ impl PlayerLayout {
             out.push(PlayerGroup { name: name.clone(), start: at, count: cols * rows, cols: *cols });
             at += cols * rows;
         }
-        let worn = at..at + equipment.len() as u32;
+        let worn = at..at + equipment.len() as u32 - off;
         for (i, e) in equipment.iter().enumerate() {
             out.push(PlayerGroup { name: e.name.clone(), start: worn.start + i as u32, count: 1, cols: 1 });
         }
         out.push(PlayerGroup { name: EQUIPMENT_GROUP.into(), start: worn.start, count: worn.len() as u32, cols: 1 });
-        PlayerLayout { slots: worn.end, hotbar, worn, groups: out, equipment }
+        PlayerLayout { slots: worn.end + off, off: (off == 1).then_some(worn.end), hotbar, worn, groups: out, equipment }
     }
 
     pub fn group(&self, name: &str) -> Option<&PlayerGroup> {
@@ -868,7 +866,7 @@ impl PlayerLayout {
 impl PlayerLayout {
     /// Main inventory slots: neither hotbar nor equipment.
     pub fn main(&self) -> impl Iterator<Item = u32> + '_ {
-        (self.hotbar..self.slots).filter(|i| !self.worn.contains(i))
+        (self.hotbar..self.slots).filter(move |i| !self.worn.contains(i) && Some(*i) != self.off)
     }
 }
 
@@ -1193,6 +1191,9 @@ pub const BURNING: &str = "core:burning";
 pub const WORN: &str = "core:worn";
 pub const SHAPE: &str = "core:shape";
 pub const HELD: &str = "core:held";
+pub const OFF_HELD: &str = "core:off_held";
+pub const USING: &str = "core:using";
+pub const SWAPS: &str = "core:swaps";
 /// Entity component (`u64`, saved): the world time a system last simulated it to, so it can
 /// catch up on what it missed (`Dim::run_systems`).
 pub const SIMULATED: &str = "core:simulated";
@@ -1650,6 +1651,9 @@ pub fn freeze(
         (WORN, 0, shown, Vec::new()),
         (SHAPE, 16, own, shape),
         (HELD, 4, shown, vec![0; 4]),
+        (OFF_HELD, 4, shown, vec![0; 4]),
+        (USING, 4, shown, vec![0; 4]),
+        (SWAPS, 0, own | shown, Vec::new()),
         (SIMULATED, 8, save, vec![0; 8]),
     ] {
         components.push(RawComponent {
@@ -1673,7 +1677,7 @@ pub fn freeze(
     g.modifiers_comp = g.component_names[MODIFIERS];
     g.timers_comp = g.component_names[TIMERS];
     g.name_comp = g.component_names[abi::comp::NAME];
-    g.field_comps = [HEALTH, BURNING, WORN, SHAPE, HELD].map(|n| g.component_names[n]);
+    g.field_comps = [HEALTH, BURNING, WORN, SHAPE, HELD, OFF_HELD, USING, SWAPS].map(|n| g.component_names[n]);
     g.simulated_comp = g.component_names[SIMULATED];
     let with_flag = |f: u32| {
         g.components
@@ -1755,6 +1759,9 @@ pub fn freeze(
         };
         m.groups.remove(at);
         for (i, e) in layout.equipment.iter().enumerate().rev() {
+            let off = e.name == weft_abi::OFF_HAND_SLOT;
+            // The other hand shows with the equipment but is numbered last, as in vanilla.
+            let at = if off { m.groups.len() } else { at };
             m.groups.insert(
                 at,
                 GroupDef {
@@ -1763,9 +1770,9 @@ pub fn freeze(
                     start: layout.worn.start + i as u32,
                     cols: 1,
                     rows: 1,
-                    flags: 0,
-                    accepts: format!("worn/{}", e.name),
-                    limit: 1,
+                    flags: if off { weft_abi::slot_flags::OFF_HAND } else { 0 },
+                    accepts: if off { String::new() } else { format!("worn/{}", e.name) },
+                    limit: if off { 0 } else { 1 },
                     size: 18.0,
                     background: (!e.background.is_empty()).then(|| e.background.clone()),
                     tooltip: None,

@@ -223,7 +223,8 @@ pub async fn models(t: T) -> R {
     let f = t.feet();
     t.op(&format!("spawn testmod:orb {} {} {}", f[0], f[1] + 1, f[2] - 3))
         .await?;
-    t.op(&format!("spawn testmod:idol {} {} {}", f[0], f[1], f[2] + 3))
+    let idol = t
+        .op(&format!("spawn testmod:idol {} {} {}", f[0], f[1], f[2] + 3))
         .await?;
     t.check(t.count_near("orb", 8.0).await? == 1 && t.count_near("idol", 8.0).await? == 1, "an orb and an idol stand nearby");
     t.c().look(0.0, 0.0);
@@ -244,11 +245,20 @@ pub async fn models(t: T) -> R {
     let ground = |f: &[u8]| f[f.len() / 4 / 3 * 4..].to_vec();
     t.check(T::differ(&ground(&a), &ground(&b)) == 0.0, "the bow holds its last frame");
     t.shot("idol_bow").await?;
-    // The test mod gives the player a wave: it moves the first person hand by its `hand` bone.
+    // A mod has it play one action as another for a while.
+    t.op(&format!("action {idol}")).await?;
+    t.secs(0.2).await?;
+    let plain = t.grab().await?;
+    t.op(&format!("swap {idol} idle bow")).await?;
+    t.secs(1.0).await?;
+    let swapped = t.grab().await?;
+    t.check(T::differ(&ground(&plain), &ground(&swapped)) > 0.0005, "idle plays as the bow");
+    t.op(&format!("swap {idol} idle")).await?;
+    // The test mod gives the player a wave, seen from the first person like from anywhere.
     t.c().look(90.0, 0.0);
     t.frames(3).await?;
     let a = t.grab().await?;
-    t.op("animate me wave").await?;
+    t.op("action me wave").await?;
     t.secs(0.5).await?;
     let b = t.grab().await?;
     t.check(T::differ(&a, &b) > 0.002, "the first person hand waves");

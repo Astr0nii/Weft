@@ -259,6 +259,68 @@ pub fn use_ticks(c: &Content, item: u32) -> u32 {
     c.item_value::<u32>(item, c.ids.use_ticks).unwrap_or(0)
 }
 
+/// Needs both hands.
+pub fn two_handed(c: &Content, item: u32) -> bool {
+    item != 0
+        && c.ids
+            .two_handed
+            .is_some_and(|t| c.components.has(crate::components::ITEM, item, t))
+}
+
+/// The action a two-handed item plays held in one hand, if that may be done at all.
+pub fn one_handed_action(c: &Content, item: u32) -> Option<&str> {
+    c.ids
+        .one_handed
+        .and_then(|t| c.components.text(crate::components::ITEM, item, t))
+}
+
+/// May go in the other hand, or stay in the main one with something there.
+pub fn fits_one_hand(c: &Content, item: u32) -> bool {
+    !two_handed(c, item) || one_handed_action(c, item).is_some()
+}
+
+/// What is in the other hand.
+pub fn in_off_hand(c: &Content, inventory: &[weft_abi::ItemStack]) -> weft_abi::ItemStack {
+    c.game
+        .player_layout
+        .off
+        .and_then(|o| inventory.get(o as usize))
+        .copied()
+        .unwrap_or_default()
+}
+
+/// What the main hand really holds: an item that needs both hands does nothing while the other
+/// holds something, and shows as an empty hand. It stays in the hotbar.
+pub fn in_main_hand(c: &Content, inventory: &[weft_abi::ItemStack], selected: u32) -> weft_abi::ItemStack {
+    let main = inventory
+        .get(selected as usize)
+        .copied()
+        .unwrap_or_default();
+    if !main.is_empty() && !fits_one_hand(c, main.item) && !in_off_hand(c, inventory).is_empty() {
+        return weft_abi::ItemStack::EMPTY;
+    }
+    main
+}
+
+/// What goes first on a right click: the higher `use_priority`, the main hand when equal.
+pub fn hands_in_order(c: &Content, inventory: &[weft_abi::ItemStack], selected: u32) -> Vec<u32> {
+    let main = in_main_hand(c, inventory, selected);
+    let off = in_off_hand(c, inventory);
+    let prio = |item: u32| c.item_value::<i32>(item, c.ids.use_priority).unwrap_or(0);
+    let mut out = Vec::with_capacity(2);
+    if !main.is_empty() {
+        out.push(selected);
+    }
+    if let (Some(o), false) = (c.game.player_layout.off, off.is_empty()) {
+        if !main.is_empty() && prio(off.item) > prio(main.item) {
+            out.insert(0, o);
+        } else {
+            out.push(o);
+        }
+    }
+    out
+}
+
 /// Full swings per second with an item in hand.
 pub fn swings_per_second(c: &Content, item: u32) -> f32 {
     c.item_value::<f32>(item, c.ids.attack_speed).unwrap_or(4.0)
@@ -529,6 +591,9 @@ pub struct Ids {
     pub attack_damage: Option<u32>,
     pub mining_speed: Option<u32>,
     pub tool_level: Option<u32>,
+    pub use_priority: Option<u32>,
+    pub two_handed: Option<u32>,
+    pub one_handed: Option<u32>,
     pub harvest_level: Option<u32>,
     pub damage: Option<u32>,
     pub name: Option<u32>,
@@ -2374,6 +2439,9 @@ fn declare_components(
         (crate::registry::BURNING, "u8"),
         (crate::registry::WORN, "bytes"),
         (crate::registry::HELD, "u32"),
+        (crate::registry::OFF_HELD, "u32"),
+        (crate::registry::USING, "u32"),
+        (crate::registry::SWAPS, "bytes"),
         (crate::registry::SHAPE, "bytes"),
         (crate::registry::SIMULATED, "u64"),
     ] {
@@ -2583,6 +2651,9 @@ fn component_ids(components: &Components) -> Ids {
         attack_damage: id(abi::comp::ATTACK_DAMAGE),
         mining_speed: id(abi::comp::MINING_SPEED),
         tool_level: id(abi::comp::TOOL_LEVEL),
+        use_priority: id(abi::comp::USE_PRIORITY),
+        two_handed: id(abi::comp::TWO_HANDED),
+        one_handed: id(abi::comp::ONE_HANDED),
         harvest_level: id(abi::comp::HARVEST_LEVEL),
         damage: id(abi::comp::DAMAGE),
         name: id(abi::comp::NAME),

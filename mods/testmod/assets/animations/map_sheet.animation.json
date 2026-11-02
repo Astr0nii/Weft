@@ -1,0 +1,42 @@
+{
+ "format_version": "1.8.0",
+ "animations": {
+  "animation.map_sheet.hold": {
+   "loop": true,
+   "animation_length": 0.05,
+   "bones": {
+    "mainArm": {
+     "rotation": [
+      -78,
+      22,
+      0
+     ]
+    },
+    "offArm": {
+     "rotation": [
+      -78,
+      -22,
+      0
+     ]
+    }
+   },
+   "override_previous_animation": true,
+   "blend_weight": 0.5
+  },
+  "animation.map_sheet.hold_one": {
+   "loop": true,
+   "animation_length": 0.05,
+   "bones": {
+    "mainArm": {
+     "rotation": [
+      -70,
+      8,
+      0
+     ]
+    }
+   },
+   "override_previous_animation": true,
+   "blend_weight": 0.5
+  }
+ }
+}

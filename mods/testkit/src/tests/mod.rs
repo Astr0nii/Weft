@@ -70,6 +70,7 @@ pub fn all() -> Vec<TestDef> {
         gameplay::bucket,
         gameplay::advancements,
         gameplay::beds,
+        gameplay::second_hand,
         gameplay::beds_far,
         gameplay::dedicated_server,
         gameplay::base_alone,
@@ -152,7 +153,15 @@ pub fn all() -> Vec<TestDef> {
 
 /// Measurements without a verdict worth failing a run over; `--test bench`.
 pub fn bench() -> Vec<TestDef> {
-    crate::tests![redstone::redstone_bench, world::fly_load, world::load_benchmark, world::item_farm, looks::particle_crowd, world::crater]
+    crate::tests![
+        redstone::redstone_bench,
+        world::fly_load,
+        world::load_benchmark,
+        world::item_farm,
+        world::mob_crowd,
+        looks::particle_crowd,
+        world::crater
+    ]
 }
 
 /// A process's first world is slow to open and to settle, which timings shouldn't be measuring.

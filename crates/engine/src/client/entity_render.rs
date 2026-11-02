@@ -7,6 +7,11 @@ use super::models::{MAX_LAYERS, Posed};
 use crate::gpu_layout::box_mode;
 use glam::{DVec3, IVec3, Mat4, Quat, Vec3, Vec4};
 use rustc_hash::FxHashMap;
+
+use super::models::{Act, Clips, Play};
+use crate::block_model::Display;
+use crate::gpu_layout::rows;
+use crate::model::{Drive, role};
 use weft_render::*;
 
 use super::ClientEntity;
@@ -29,18 +34,12 @@ pub struct Crack {
 }
 
 pub struct Hand {
-    pub stack: weft_abi::ItemStack,
-    pub swing: Option<f32>,
-    /// How far it is lowered, 0..1: while changing items and just after a use.
+    /// How far it is lowered, 0..1: while changing items and just after a swing.
     pub lowered: f32,
     /// Radians the hand lags behind a turning camera: pitch, yaw.
     pub lag: (f32, f32),
-    /// Holding the use button on it: ticks left, ticks in all.
-    pub using: Option<(f32, f32)>,
-    /// The local player's animation started by the server and the player's age, for the `hand`
-    /// bone of its keyframes.
-    pub anim: Option<(String, f32, bool)>,
-    pub age: f32,
+    /// The body shows too, not only what the clips bring up.
+    pub body: bool,
 }
 
 /// Opaque pixels of a sprite, for drawing it as a 1/16 thick solid like vanilla's held items.
@@ -51,11 +50,14 @@ struct Sprite {
 }
 
 pub struct EntityRenderer {
-    hand_pipe: PipelineId,
+    /// What the head's move in an action does to the camera: offset in view space, roll, pitch.
+    pub camera_kick: (Vec3, f32, f32),
     pipeline: PipelineId,
     overlay: PipelineId,
     /// Model pipelines for the screen and for the inventory figure's image.
     model_pipe: PipelineId,
+    /// The first person's arms: fixed field of view, depth squeezed so they never sink into walls.
+    model_hand_pipe: PipelineId,
     preview_pipe: PipelineId,
     pub models: Models,
     buffers: Vec<(BufferId, u32)>,
@@ -124,7 +126,7 @@ fn light_boxes(boxes: &mut [GpuBox], from: usize, light: u32) {
 impl EntityRenderer {
     pub fn new(gpu: &mut dyn Backend, assets: &Assets) -> Result<EntityRenderer, String> {
         let (pipeline, overlay) = Self::pipelines(gpu, assets)?;
-        let ([model_pipe, preview_pipe], kind_shaders) = Self::model_pipelines(gpu, assets)?;
+        let ([model_pipe, preview_pipe, model_hand_pipe], kind_shaders) = Self::model_pipelines(gpu, assets)?;
         let models = Models::new(gpu, assets);
         let frames = gpu.frames_in_flight();
         let hand_views = (0..frames)
@@ -133,7 +135,6 @@ impl EntityRenderer {
         let preview = (0..frames)
             .map(|_| gpu.create_buffer(size_of::<Scene>() as u64, usage::STORAGE | usage::HOST, "preview scene"))
             .collect();
-        let hand_pipe = Self::hand_pipeline(gpu, assets)?;
         let (item_pipe, hand_item_pipe) = Self::item_pipelines(gpu, assets)?;
         Ok(EntityRenderer {
             item_pipe,
@@ -146,8 +147,9 @@ impl EntityRenderer {
             seen_items: Vec::new(),
             pipeline,
             overlay,
-            hand_pipe,
+            camera_kick: (Vec3::ZERO, 0.0, 0.0),
             model_pipe,
+            model_hand_pipe,
             models,
             buffers: Vec::new(),
             hand_views,
@@ -164,24 +166,6 @@ impl EntityRenderer {
             posed: Vec::new(),
             seen_kinds: Vec::new(),
         })
-    }
-
-    /// The first person hand: drawn last with its depth squeezed to the front, so it never sinks
-    /// into walls.
-    fn hand_pipeline(gpu: &mut dyn Backend, assets: &Assets) -> Result<PipelineId, String> {
-        let s = shader(assets).map_err(|e| e.0)?;
-        gpu.create_pipeline(&PipelineDesc {
-            label: "hand",
-            shader: &s,
-            vertex: "vs_hand",
-            fragment: Some("fs"),
-            color: Some(Format::Surface),
-            depth: Some(DepthState { write: true, compare: Compare::GreaterEqual }),
-            blend: Blend::None,
-            cull_back: true,
-            topology: Topology::Triangles,
-        })
-        .map_err(|e| e.0)
     }
 
     /// Item models instanced in the world and in the hand.
@@ -237,7 +221,7 @@ impl EntityRenderer {
 
     /// The model pipelines (screen, inventory figure image) with every entity shader snippet,
     /// and each kind's slot.
-    fn model_pipelines(gpu: &mut dyn Backend, assets: &Assets) -> Result<([PipelineId; 2], Vec<u32>), String> {
+    fn model_pipelines(gpu: &mut dyn Backend, assets: &Assets) -> Result<([PipelineId; 3], Vec<u32>), String> {
         let snippets = crate::shaders::snippets(assets, &HOOK);
         let (s, mut slots) = crate::packs::compose(assets, "model.wgsl", &[(&HOOK, &snippets)]).map_err(|e| e.0)?;
         let slots = slots.pop().unwrap_or_default();
@@ -253,11 +237,11 @@ impl EntityRenderer {
                 slot
             })
             .collect();
-        let mut make = |label: &str, color: Format| {
+        let mut make = |label: &str, vertex: &str, color: Format| {
             gpu.create_pipeline(&PipelineDesc {
                 label,
                 shader: &s,
-                vertex: "vs",
+                vertex,
                 fragment: Some("fs"),
                 color: Some(color),
                 depth: Some(DepthState { write: true, compare: Compare::GreaterEqual }),
@@ -267,15 +251,19 @@ impl EntityRenderer {
             })
             .map_err(|e| e.0)
         };
-        Ok(([make("models", Format::Surface)?, make("entity preview", Format::Rgba8Srgb)?], kinds))
+        let (world, preview) = (make("models", "vs", Format::Surface)?, make("entity preview", "vs", Format::Rgba8Srgb)?);
+        // A shader pack's older copy of the file has no `vs_hand`.
+        let hand = make("model hand", "vs_hand", Format::Surface).or_else(|_| make("model hand", "vs", Format::Surface))?;
+        Ok(([world, preview, hand], kinds))
     }
 
     pub fn reload(&mut self, gpu: &mut dyn Backend, assets: &Assets) {
         match Self::model_pipelines(gpu, assets) {
-            Ok(([p, q], kinds)) => {
+            Ok(([p, q, h], kinds)) => {
                 gpu.destroy_pipeline(self.model_pipe);
+                gpu.destroy_pipeline(self.model_hand_pipe);
                 gpu.destroy_pipeline(self.preview_pipe);
-                (self.model_pipe, self.preview_pipe) = (p, q);
+                (self.model_pipe, self.preview_pipe, self.model_hand_pipe) = (p, q, h);
                 self.kind_shaders = kinds;
             }
             Err(e) => log::error!("model shader: {e}"),
@@ -290,10 +278,6 @@ impl EntityRenderer {
             .chain(self.glows.drain().map(|(_, g)| g.0))
         {
             gpu.destroy_texture(t);
-        }
-        if let Ok(h) = Self::hand_pipeline(gpu, assets) {
-            gpu.destroy_pipeline(self.hand_pipe);
-            self.hand_pipe = h;
         }
         if let Ok((a, b)) = Self::item_pipelines(gpu, assets) {
             gpu.destroy_pipeline(self.item_pipe);
@@ -340,7 +324,7 @@ impl EntityRenderer {
         }
         self.models.destroy(gpu);
         gpu.destroy_pipeline(self.model_pipe);
-        gpu.destroy_pipeline(self.hand_pipe);
+        gpu.destroy_pipeline(self.model_hand_pipe);
         gpu.destroy_pipeline(self.preview_pipe);
         if let Some((c, d, ..)) = self.preview_target.take() {
             gpu.destroy_texture(c);
@@ -370,9 +354,11 @@ impl EntityRenderer {
 
     /// Loads skins and worn textures the first time something visible uses them; `worn` is what
     /// the local player wears.
-    pub fn preload(&mut self, gpu: &mut dyn Backend, assets: &Assets, entities: &FxHashMap<u64, ClientEntity>, worn: &[u32], held: u32) {
+    pub fn preload(&mut self, gpu: &mut dyn Backend, assets: &Assets, entities: &FxHashMap<u64, ClientEntity>, worn: &[u32], held: &[u32]) {
         let c = content();
-        self.load_sprite(assets, held);
+        for &i in held {
+            self.load_held(gpu, assets, i);
+        }
         // Each kind and item looked at once per frame, without listing thousands of entities.
         let mut seen = std::mem::take(&mut self.seen_kinds);
         seen.clear();
@@ -393,9 +379,11 @@ impl EntityRenderer {
                     self.load(gpu, assets, t);
                 }
             }
-            if e.held != 0 && seen_items.get(e.held as usize).is_some_and(|s| !s) {
-                seen_items[e.held as usize] = true;
-                self.load_sprite(assets, e.held);
+            for i in [e.held, e.off_held] {
+                if i != 0 && seen_items.get(i as usize).is_some_and(|s| !s) {
+                    seen_items[i as usize] = true;
+                    self.load_held(gpu, assets, i);
+                }
             }
         }
         self.seen_kinds = seen;
@@ -405,6 +393,14 @@ impl EntityRenderer {
             if let Some((_, t)) = c.worn(i) {
                 self.load(gpu, assets, t);
             }
+        }
+    }
+
+    /// What drawing an item in a hand takes.
+    fn load_held(&mut self, gpu: &mut dyn Backend, assets: &Assets, item: u32) {
+        self.load_sprite(assets, item);
+        if let Some(skin) = self.models.item_kinds.get(&item).map(|k| k.1.clone()) {
+            self.load(gpu, assets, &skin);
         }
     }
 
@@ -665,7 +661,7 @@ impl EntityRenderer {
         self.models.add(
             c.game.player_kind,
             root,
-            &crate::model::Motion { pitch, head_yaw: 0.0, swing: 0.0, swim: None, holding: false, attack: 0.0, anims: &[], crouch: false },
+            &crate::model::Motion { pitch, head_yaw: 0.0, aim_root: None, clips: &[] },
             layers.0[..layers.1].iter().copied(),
         );
         let vb = self.preview[frame.slot];
@@ -688,7 +684,6 @@ impl EntityRenderer {
         cam: &Camera,
         entities: &FxHashMap<u64, ClientEntity>,
         me: Option<&ClientEntity>,
-        show_body: bool,
         hand: Option<Hand>,
         textures: &GameTextures,
         light: &impl Fn(IVec3) -> u32,
@@ -719,8 +714,17 @@ impl EntityRenderer {
         // Models: bones posed here (in parallel when many), drawn instanced per kind.
         let mut posed = std::mem::take(&mut self.posed);
         posed.clear();
-        // Who holds something: its place in `posed`, the item and its light.
-        let mut holders: Vec<(usize, u32, u32)> = Vec::new();
+        self.models.begin();
+        let steady = Camera { bob: (Vec3::ZERO, 0.0, 0.0), ..*cam }.view();
+        let mut aim_root = None;
+        if hand.is_none() {
+            self.camera_kick = (Vec3::ZERO, 0.0, 0.0);
+        }
+        // Who holds something: its place in `posed`, the item, its light, in the other hand, its age.
+        let mut holders: Vec<(usize, u32, u32, bool, f32)> = Vec::new();
+        // The first person: its place in `posed`, its layers before the arms were left out of
+        // them and which arms the clips bring up.
+        let mut own_hand: Option<(usize, [Instance; super::models::MAX_LAYERS], usize, u32)> = None;
         for (id, e) in entities
             .iter()
             .map(|(i, e)| (*i, e))
@@ -740,51 +744,22 @@ impl EntityRenderer {
                 continue;
             }
             let kind = e.look();
-            let (mut layers, layer_count) = self.layers(kind, id, &e.worn, lit, hurt);
+            let own_view = id == self.local && hand.is_some();
+            // With its body showing the player sees its real arms, moving as anyone else sees them.
+            // Without it there is nothing for them to be attached to: they are held in the view.
+            let body = own_view && hand.as_ref().is_some_and(|h| h.body);
+            let in_view = own_view && !body;
+            let hurt = if own_view { 0.0 } else { hurt };
+            let (mut layers, mut layer_count) = self.layers(kind, id, &e.worn, lit, hurt);
             if layer_count == 0 {
                 continue;
             }
-            if show_body && id == self.local {
-                let hidden = 1 << crate::model::role::HEAD;
-                for l in &mut layers[..layer_count] {
-                    l.roles &= !hidden;
-                }
-            }
-            if e.burning {
+            if e.burning && !own_view {
                 let (hw, h, _) = e.dims();
                 let from = boxes.len();
                 fire_boxes(&mut boxes, textures, base, hw as f32 * 2.0, h as f32, cam.yaw, e.age);
                 light_boxes(&mut boxes, from, FULL_LIGHT);
             }
-            // Vanilla's limb swing: 0.6662 rad per tick of limbSwing, which grows 4 per block;
-            // models with their own walk animation use that instead.
-            let mut swing = (e.walk * 2.66).sin() * 1.2 * e.swing;
-            let (mut anims, mut anim_count) = ([(0, 0.0, 0.0); 2], 0);
-            let mut add = |a| {
-                anims[anim_count] = a;
-                anim_count += 1;
-            };
-            if let Some(m) = self.models.kinds.get(kind as usize) {
-                match m.playing(e.anim.as_ref(), e.age) {
-                    Some((i, t)) => {
-                        add((i, t, 1.0));
-                        swing = 0.0;
-                    }
-                    _ => {
-                        if let Some(i) = m.idle {
-                            add((i, m.anims[i].at(e.age, true), 1.0));
-                        }
-                        if let Some(i) = m.walk {
-                            add((i, m.anims[i].at(e.walk * 0.6, true), e.swing.min(1.0)));
-                            swing = 0.0;
-                        }
-                    }
-                }
-            }
-            // Vanilla: sqrt of the death time over a second, up to a quarter turn.
-            let roll = e
-                .dying
-                .map_or(0.0, |d| (d * 1.6).sqrt().min(1.0) * std::f32::consts::FRAC_PI_2);
             // Lying down in its low box: head first where it looks when swimming (vanilla's
             // setupRotations), flat when crawling, turned around the middle of the body.
             let lying = match e.pose {
@@ -801,13 +776,9 @@ impl EntityRenderer {
                     * Mat4::from_rotation_x(a)
                     * Mat4::from_translation(Vec3::new(0.0, -0.9, 0.0))
             });
-            let root = Mat4::from_translation(base)
-                * Mat4::from_rotation_y(body_yaw)
-                * Mat4::from_rotation_z(roll)
-                * swim
-                * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
-            // Its head up to look ahead, and limbs by the swimming stroke.
-            let swim_limbs = lying.filter(|_| !sleeping).map(|_| e.walk * 4.0);
+            let mut root =
+                Mat4::from_translation(base) * Mat4::from_rotation_y(body_yaw) * swim * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
+            // Its head up to look ahead when lying down.
             let (pitch, head_yaw) = if sleeping {
                 (0.0, 0.0)
             } else if lying.is_some() {
@@ -815,31 +786,204 @@ impl EntityRenderer {
             } else {
                 (e.pitch, e.yaw - e.body_yaw)
             };
-            posed.push(Posed {
-                kind,
-                root,
-                pitch,
-                head_yaw,
-                swing,
-                crouch: e.pose == crate::world::Pose::Crouch,
-                swim: swim_limbs,
-                attack: e.arm_swing.unwrap_or(0.0),
-                holding: e.held != 0 && !sleeping,
-                anims,
-                anim_count,
-                layers,
-                layer_count,
-            });
-            if e.held != 0 && !sleeping {
-                holders.push((posed.len() - 1, e.held, lit));
+            let (mut clips, mut standing) = (Clips::default(), 0);
+            if let Some(m) = self.models.kinds.get(kind as usize) {
+                let how = Play { clock: e.age, distance: e.walk * 0.6, speed: e.swing, ..Play::default() };
+                // Stands for what it says unless a mod swapped it for now, and has a clip for that.
+                let swapped = |item: u32, name: &'static str| -> &str {
+                    match e.swaps.iter().find(|s| s.0 == name) {
+                        Some(s) if !m.action_seen(item, &s.1, in_view).is_empty() => &s.1,
+                        _ => name,
+                    }
+                };
+                let act = |a: Act| if e.swaps.is_empty() { m.act(a) } else { m.action(0, swapped(0, a.name())) };
+                m.play(&mut clips, act(Act::Idle), &Play { looping: true, ..how });
+                if lying.is_none() {
+                    m.play(&mut clips, act(Act::Walk), &Play { drive: Drive::Distance, by_speed: true, ..how });
+                }
+                if e.crouched > 0.0 {
+                    m.play(&mut clips, act(Act::Sneak), &Play { looping: true, weight: e.crouched, ..how });
+                }
+                if !sleeping && lying.is_some() {
+                    let crawl = act(Act::Crawl);
+                    let limbs = if e.pose == crate::world::Pose::Crawl && !crawl.is_empty() { crawl } else { act(Act::Swim) };
+                    m.play(&mut clips, limbs, &Play { drive: Drive::Distance, ..how });
+                }
+                standing = clips.n;
+                // From the eyes it stays in view whatever the body does.
+                if lying.is_none() || (in_view && !sleeping) {
+                    // What it holds, and what it does with that. An item for both hands in the
+                    // other hand, or with something there, plays what it has for one.
+                    let hold_in = |item: u32, busy: bool| -> &str {
+                        match crate::content::one_handed_action(c, item).filter(|_| busy && crate::content::two_handed(c, item)) {
+                            Some(one) => one,
+                            None => swapped(item, hold_of(c, m, item)),
+                        }
+                    };
+                    let held_how = Play { looping: true, aim: true, ..how };
+                    if e.held != 0 {
+                        m.play(&mut clips, m.action_seen(e.held, hold_in(e.held, e.off_held != 0), in_view), &held_how);
+                    } else if in_view {
+                        m.play(&mut clips, m.action_seen(0, "hold_empty", true), &held_how);
+                    }
+                    if e.off_held != 0 {
+                        m.play(
+                            &mut clips,
+                            m.action_seen(e.off_held, hold_in(e.off_held, true), in_view),
+                            &Play { mirror: true, ..held_how },
+                        );
+                    }
+                    let progress = Play { drive: Drive::Progress, aim: in_view, ..how };
+                    if let Some(h) = hand.as_ref().filter(|_| in_view) {
+                        m.play(
+                            &mut clips,
+                            m.action_seen(e.held, swapped(e.held, "equip"), true),
+                            &Play { progress: h.lowered, ..progress },
+                        );
+                    }
+                    if let Some(p) = e.arm_swing {
+                        let item = if e.swing_off { e.off_held } else { e.held };
+                        let swing = if item == 0 && !in_view {
+                            act(Act::Swing)
+                        } else {
+                            m.action_seen(item, swapped(item, m.swing_of(item)), in_view)
+                        };
+                        m.play(&mut clips, swing, &Play { progress: p, mirror: e.swing_off, ..progress });
+                    }
+                    if let Some((p, off)) = e.using {
+                        let item = if off { e.off_held } else { e.held };
+                        m.play(
+                            &mut clips,
+                            m.action_seen(item, swapped(item, "use"), in_view),
+                            &Play { progress: p, mirror: off, ..progress },
+                        );
+                    }
+                }
+                if let Some(d) = e.dying {
+                    m.play(&mut clips, act(Act::Death), &Play { clock: d, ..how });
+                }
+                if let Some((name, start, looping)) = &e.action {
+                    let secs = e.age - start;
+                    let list = m.action_seen(e.held, name, in_view);
+                    let running = list
+                        .last()
+                        .and_then(|&i| m.anims.get(i as usize))
+                        .is_some_and(|b| !b.finished(secs, *looping));
+                    if running {
+                        m.play(&mut clips, list, &Play { clock: secs, looping: *looping, aim: in_view, ..how });
+                    }
+                }
+            }
+            if own_view {
+                // Its model goes where the camera is: the camera doesn't sit in the torso, whatever pose it's in.
+                let eye = c.game.entities[kind as usize].eye;
+                if let Some(at) = self
+                    .models
+                    .eye_point(kind, root, &clips.all()[..standing], eye)
+                {
+                    root = Mat4::from_translation(-at) * root;
+                }
+                aim_root = self
+                    .models
+                    .view_point(kind, eye)
+                    .filter(|_| in_view)
+                    .map(|p| {
+                        let view_root = Mat4::from_rotation_y(e.yaw)
+                            * Mat4::from_rotation_x(e.pitch)
+                            * Mat4::from_scale(Vec3::splat(1.0 / 16.0))
+                            * Mat4::from_translation(-p);
+                        (posed.len(), view_root)
+                    });
+                let acting = &clips.all()[standing..];
+                let mut arms_up = 0u32;
+                let mut kick = (Vec3::ZERO, 0.0, 0.0);
+                let mut head_moves = false;
+                if let Some(m) = self.models.kinds.get(kind as usize) {
+                    let names = |i: usize| {
+                        acting.iter().any(|c| {
+                            m.anims
+                                .get(c.anim as usize)
+                                .is_some_and(|b| b.names(i, c.mirror))
+                        })
+                    };
+                    for (i, p) in m.parts.iter().enumerate() {
+                        if in_view && (p.role == role::ARM_LEFT || p.role == role::ARM_RIGHT) && names(i) {
+                            arms_up |= 1 << p.role;
+                        }
+                    }
+                    for c in acting {
+                        let Some((pos, rot)) = m
+                            .anims
+                            .get(c.anim as usize)
+                            .and_then(|b| b.anim.free_bone("camera", c.t))
+                        else {
+                            continue;
+                        };
+                        kick.0 -= steady.transform_vector3(root.transform_vector3(pos * c.w));
+                        kick.1 -= rot.z * c.w;
+                        kick.2 -= rot.x * c.w;
+                    }
+                    head_moves = m
+                        .parts
+                        .iter()
+                        .position(|p| p.role == role::HEAD)
+                        .is_some_and(names);
+                }
+                if head_moves {
+                    // The pose has its eyes at the camera; what the action does on top of it, the camera does too.
+                    if let Some(at) = self.models.eye_point(kind, root, clips.all(), eye) {
+                        kick.0 -= steady.transform_vector3(at);
+                    }
+                }
+                self.camera_kick = kick;
+                own_hand = in_view.then_some((posed.len(), layers, layer_count, arms_up));
+                for l in &mut layers[..layer_count] {
+                    l.roles &= !(1 << role::HEAD | arms_up);
+                }
+                if !body {
+                    layer_count = 0;
+                }
+            }
+            let from = self.models.clips.len() as u32;
+            self.models.clips.extend_from_slice(clips.all());
+            posed.push(Posed { kind, root, pitch, head_yaw, clips: (from, self.models.clips.len() as u32), layers, layer_count });
+            if !sleeping {
+                let age = e.age;
+                if e.held != 0 {
+                    holders.push((posed.len() - 1, e.held, lit, false, age));
+                }
+                if e.off_held != 0 {
+                    holders.push((posed.len() - 1, e.off_held, lit, true, age));
+                }
             }
         }
         let vb = scene_buf;
-        self.models.begin();
         let first_bone = self.models.bones_so_far();
-        self.models.add_many(&posed);
+        self.models.add_many(&posed, aim_root);
+        // The first person's arms lag behind a turning camera. Its bones are the last ones.
+        let mut own_first = 0;
+        if let (Some((i, ..)), Some(h)) = (&own_hand, &hand) {
+            let parts = self
+                .models
+                .kinds
+                .get(posed[*i].kind as usize)
+                .map_or(&[][..], |m| m.parts.as_slice());
+            own_first = self.models.bones_so_far() - parts.len();
+            let arms: Vec<usize> = parts
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.role == role::ARM_LEFT || p.role == role::ARM_RIGHT)
+                .map(|(i, _)| i)
+                .collect();
+            let lag = steady.inverse() * Mat4::from_rotation_x(-h.lag.0 * 0.1) * Mat4::from_rotation_y(-h.lag.1 * 0.1) * steady;
+            for a in arms {
+                self.models.move_bone(own_first + a, lag);
+            }
+        }
+        let mut hand_items: Vec<(GpuBox, u32)> = Vec::new();
+        let mut own_items: Vec<(u32, u32, Instance)> = Vec::new();
         let (mut at, mut next) = (first_bone, 0);
-        for (holder, item, lit) in holders {
+        for (holder, item, lit, off, age) in holders {
             at += posed[next..holder]
                 .iter()
                 .filter_map(|p| self.models.kinds.get(p.kind as usize))
@@ -852,15 +996,48 @@ impl EntityRenderer {
                 .get(posed[holder].kind as usize)
                 .map(|m| m.parts.as_slice())
                 .unwrap_or_default();
-            let Some(i) = parts
-                .iter()
-                .position(|p| p.role == crate::model::role::ARM_RIGHT)
-            else {
+            let side = if off { role::ARM_LEFT } else { role::ARM_RIGHT };
+            let Some(i) = parts.iter().position(|p| p.role == side) else {
                 continue;
             };
             let arm = self.models.bone(at + i) * Mat4::from_translation(Vec3::from_array(parts[i].pivot));
-            if let Some(m) = self.item_model(textures, item) {
-                instances.push((item, item_instance(held_transform(arm, item), m.0, 0.0, lit)));
+            let own = own_hand.as_ref().is_some_and(|o| o.0 == holder);
+            // Made of bones: posed by the holder's clips of the same names, from the palm.
+            if let Some(&(kind, ref skin)) = self.models.item_kinds.get(&item) {
+                let layer = self
+                    .skins
+                    .get(skin)
+                    .and_then(|s| s.as_ref())
+                    .map(|(_, tex, size)| Instance {
+                        color: [1.0; 3],
+                        light: lit,
+                        tex: *tex,
+                        tex_size: [size[0] as f32, size[1] as f32],
+                        roles: u32::MAX,
+                        glow: u32::MAX,
+                        ..Default::default()
+                    });
+                let root = palm(arm) * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
+                let (from, to) = posed[holder].clips;
+                let clips = self
+                    .models
+                    .clips_along(kind, posed[holder].kind, &self.models.clips[from as usize..to as usize], age, off);
+                let bones = self.models.pose_clips(kind, root, clips.all());
+                if let Some(l) = layer {
+                    if own {
+                        own_items.push((kind, bones, l));
+                    } else {
+                        self.models.queue(kind, bones, [l]);
+                    }
+                }
+            } else if let Some(m) = self.item_model(textures, item) {
+                let display = self.models.displays.get(&item).copied();
+                let inst = item_instance(held_transform(arm, item, off, display), m.0, 0.0, lit);
+                if own {
+                    hand_items.push((inst, m.1));
+                } else {
+                    instances.push((item, inst));
+                }
             }
         }
         self.posed = posed;
@@ -959,60 +1136,16 @@ impl EntityRenderer {
                 }
             }
         }
-        let hand_start = boxes.len();
-        let mut hand_item: Option<(GpuBox, u32)> = None;
-        if let Some(h) = hand {
-            let k = &c.game.entities[c.game.player_kind as usize];
-            let player_skin = match (self.player_skins.get(&self.local), self.skins.get(&k.texture)) {
-                (Some((_, idx, size)), _) => Some((*idx, [size[0] as f32, size[1] as f32])),
-                (None, Some(Some((_, idx, _)))) => Some((*idx, [k.texture_size[0] as f32, k.texture_size[1] as f32])),
-                _ => None,
-            };
-            // Keyframes may move the hand too: the `hand` bone of what plays (else of idle).
-            let pose = self
-                .models
-                .kinds
-                .get(c.game.player_kind as usize)
-                .and_then(|m| {
-                    let (i, t) = m
-                        .playing(h.anim.as_ref(), h.age)
-                        .or_else(|| m.idle.map(|i| (i, m.anims[i].at(h.age, true))))?;
-                    m.anims[i].anim.free_bone("hand", t)
-                });
-            let from = boxes.len();
-            match hand_transform(cam, &h, pose.unwrap_or(Mat4::IDENTITY)) {
-                Some(m) => {
-                    hand_item = self
-                        .item_model(textures, h.stack.item)
-                        .map(|(first, n)| (item_instance(m, first, 0.0, shade(cam.pos)), n))
-                }
-                None => {
-                    // The arm is the player model's own right arm bone.
-                    let parts = self
-                        .models
-                        .kinds
-                        .get(c.game.player_kind as usize)
-                        .map_or(&k.parts, |m| &m.parts);
-                    let arm = parts
-                        .iter()
-                        .find(|p| p.name.eq_ignore_ascii_case("rightArm"));
-                    hand_boxes(&mut boxes, cam, &h, player_skin, arm, pose.unwrap_or(Mat4::IDENTITY));
-                    light_boxes(&mut boxes, from, shade(cam.pos));
-                }
-            }
-        }
-        // Item instances after the hand, grouped by item: one instanced draw each.
-        let hand_end = boxes.len();
+        // Item instances after the rest, grouped by item: one instanced draw each.
+        let overlay_end = boxes.len();
         instances.sort_unstable_by_key(|i| i.0);
         boxes.extend(instances.iter().map(|i| i.1));
-        if let Some((inst, _)) = hand_item {
-            boxes.push(inst);
-        }
+        boxes.extend(hand_items.iter().map(|h| h.0));
+        // The buffer for them may not be empty, and arms alone have no boxes.
         if boxes.is_empty() {
-            self.instances = instances;
-            return;
+            boxes.push(GpuBox::default());
         }
-        if !instances.is_empty() || hand_item.is_some() {
+        if !instances.is_empty() || !hand_items.is_empty() {
             self.upload_items(gpu);
         }
 
@@ -1044,49 +1177,52 @@ impl EntityRenderer {
                     vertices: boxes_per * 36,
                     instances: run as u32,
                     first_vertex: 0,
-                    first_instance: (hand_end + i) as u32,
+                    first_instance: (overlay_end + i) as u32,
                 });
                 i += run;
             }
         }
-        // Cracks, filled gizmos and the hand come after translucent blocks.
+        // Cracks, filled gizmos and the own hands come after translucent blocks.
         let list = late;
-        if hand_start > overlay_start {
+        if overlay_end > overlay_start {
             list.pipeline(self.overlay);
             list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
             list.bind(crate::gpu_layout::bind::entity::SCENE, vb);
             list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
             list.push(Cmd::Draw {
-                vertices: (hand_start - overlay_start) as u32 * 36,
+                vertices: (overlay_end - overlay_start) as u32 * 36,
                 instances: 1,
                 first_vertex: overlay_start as u32 * 36,
                 first_instance: 0,
             });
         }
-        if hand_end > hand_start || hand_item.is_some() {
+        if let Some((i, own, count, arms_up)) = own_hand {
             let hand_cam = Camera { fov: 70.0, ..*cam };
             let hv = Scene { view_proj: (hand_cam.proj(aspect) * cam.view()).to_cols_array_2d(), ..*scene };
             let hb = self.hand_views[frame.slot];
             gpu.mapped(hb)[..size_of::<Scene>()].copy_from_slice(bytemuck::bytes_of(&hv));
-            if hand_end > hand_start {
-                list.pipeline(self.hand_pipe);
-                list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
-                list.bind(crate::gpu_layout::bind::entity::SCENE, hb);
-                list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
-                list.push(Cmd::Draw {
-                    vertices: (hand_end - hand_start) as u32 * 36,
-                    instances: 1,
-                    first_vertex: hand_start as u32 * 36,
-                    first_instance: 0,
-                });
+            self.models.begin_batch();
+            let kind = self.posed[i].kind;
+            let arms = own[..count].iter().copied().map(|mut l| {
+                l.roles &= arms_up;
+                l
+            });
+            self.models.queue(kind, own_first as u32, arms);
+            for (kind, first, l) in own_items {
+                self.models.queue(kind, first, [l]);
             }
-            if let (Some((_, n)), Some(ib)) = (hand_item, item_buf) {
+            self.models
+                .draw(gpu, list, frame, super::models::Batch::Hand, self.model_hand_pipe, hb);
+            if let Some(ib) = item_buf.filter(|_| !hand_items.is_empty()) {
                 list.pipeline(self.hand_item_pipe);
                 list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
                 list.bind(crate::gpu_layout::bind::entity::SCENE, hb);
                 list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
                 list.bind(crate::gpu_layout::bind::entity::ITEM_BOXES, ib);
-                list.push(Cmd::Draw { vertices: n * 36, instances: 1, first_vertex: 0, first_instance: boxes.len() as u32 - 1 });
+                let first = boxes.len() - hand_items.len();
+                for (k, (_, n)) in hand_items.iter().enumerate() {
+                    list.push(Cmd::Draw { vertices: n * 36, instances: 1, first_vertex: 0, first_instance: (first + k) as u32 });
+                }
             }
         }
         self.instances = instances;
@@ -1124,99 +1260,6 @@ fn sprite_name(item: u32) -> Option<String> {
         _ => return None,
     };
     looks.texture_name(c, t).map(str::to_string)
-}
-
-/// From view space to the camera-relative world for what the first person view holds: it bobs
-/// with the world and lags behind a turning camera.
-fn hand_space(cam: &Camera, h: &Hand, pose: Mat4) -> Mat4 {
-    cam.view().inverse() * cam.bobbing() * Mat4::from_rotation_x(-h.lag.0 * 0.1) * Mat4::from_rotation_y(-h.lag.1 * 0.1) * pose
-}
-
-/// Where the held item's model goes in front of the camera, posed like vanilla's
-/// ItemInHandRenderer: swing translation, arm offset, attack rotation, then the item model's
-/// first person display transform. `None` for the bare arm.
-fn hand_transform(cam: &Camera, h: &Hand, pose: Mat4) -> Option<Mat4> {
-    use std::f32::consts::PI;
-    let c = content();
-    c.items
-        .get(h.stack.item as usize)
-        .filter(|_| !h.stack.is_empty())?;
-    let p = h.swing.unwrap_or(0.0);
-    let (s, sr) = ((p * PI).sin(), (p.sqrt() * PI).sin());
-    let view = hand_space(cam, h, pose);
-    let deg = |d: f32| d.to_radians();
-    let swing_sin = (p * p * PI).sin();
-    // Vanilla's applyEatTransform: up to the mouth, bobbing once it is there.
-    let view = h.using.map_or(view, |(left, all)| {
-        let done = left / all;
-        let bob = if done < 0.8 { (left / 4.0 * PI).cos().abs() * 0.1 } else { 0.0 };
-        let up = 1.0 - done.powi(27);
-        view * Mat4::from_translation(Vec3::new(up * 0.6, bob - up * 0.5, 0.0))
-            * Mat4::from_rotation_y(deg(up * 90.0))
-            * Mat4::from_rotation_x(deg(up * 10.0))
-            * Mat4::from_rotation_z(deg(up * 30.0))
-    });
-    let arm = view
-        * Mat4::from_translation(Vec3::new(-0.4 * sr, 0.2 * (p.sqrt() * PI * 2.0).sin(), -0.2 * s))
-        * Mat4::from_translation(Vec3::new(0.56, -0.52 - h.lowered * 0.6, -0.72))
-        * Mat4::from_rotation_y(deg(45.0 - swing_sin * 20.0))
-        * Mat4::from_rotation_z(deg(-sr * 20.0))
-        * Mat4::from_rotation_x(deg(-sr * 80.0))
-        * Mat4::from_rotation_y(deg(-45.0));
-    Some(if shows_block(h.stack.item) {
-        // block.json: rotated 45 degrees, scale 0.4.
-        arm * Mat4::from_rotation_y(deg(45.0)) * Mat4::from_scale(Vec3::splat(0.4)) * Mat4::from_translation(Vec3::splat(-0.5))
-    } else {
-        // generated.json / handheld.json first person: rotation 0 -90 25, translation 1.13 3.2
-        // 1.13 (pixels), scale 0.68.
-        arm * Mat4::from_translation(Vec3::new(1.13, 3.2, 1.13) / 16.0)
-            * Mat4::from_rotation_y(deg(-90.0))
-            * Mat4::from_rotation_z(deg(25.0))
-            * Mat4::from_scale(Vec3::splat(0.68))
-            * Mat4::from_translation(Vec3::splat(-0.5))
-    })
-}
-
-/// The bare right arm (the model's `rightArm` bone) in front of the camera, with the numbers of
-/// vanilla's ItemInHandRenderer.renderPlayerArm.
-fn hand_boxes(
-    out: &mut Vec<GpuBox>,
-    cam: &Camera,
-    h: &Hand,
-    skin: Option<(u32, [f32; 2])>,
-    arm: Option<&crate::registry::Part>,
-    pose: Mat4,
-) {
-    use std::f32::consts::{PI, TAU};
-    let (Some((tex, size)), Some(arm)) = (skin, arm) else { return };
-    let p = h.swing.unwrap_or(0.0);
-    let (s, sr) = ((p * PI).sin(), (p.sqrt() * PI).sin());
-    let deg = |d: f32| d.to_radians();
-    let swing = Vec3::new(-0.3 * sr + 0.64, 0.4 * (p.sqrt() * TAU).sin() - 0.6 - h.lowered * 0.6, -0.4 * s - 0.72);
-    let shoulder = hand_space(cam, h, pose)
-        * Mat4::from_translation(swing)
-        * Mat4::from_rotation_y(deg(45.0 + sr * 70.0))
-        * Mat4::from_rotation_z(deg((p * p * PI).sin() * -20.0))
-        * Mat4::from_translation(Vec3::new(-1.0, 3.6, 3.5))
-        * Mat4::from_rotation_z(deg(120.0))
-        * Mat4::from_rotation_x(deg(200.0))
-        * Mat4::from_rotation_y(deg(-135.0))
-        * Mat4::from_translation(Vec3::new(5.6, 0.0, 0.0))
-        * Mat4::from_scale(Vec3::splat(1.0 / 16.0))
-        // Vanilla's model space hangs down from y 24 and faces -z; ours stands up and faces +z.
-        * Mat4::from_rotation_x(PI)
-        * Mat4::from_translation(Vec3::from_array(arm.pivot) - Vec3::Y * 24.0);
-    for c in &arm.cuboids {
-        let m = shoulder * Mat4::from_translation(Vec3::from_array(c.origin)) * Mat4::from_scale(Vec3::from_array(c.size));
-        out.push(GpuBox {
-            rows: rows(m),
-            dims: [c.size[0], c.size[1], c.size[2], 0.0],
-            uvo: [c.uv[0], c.uv[1], size[0], size[1]],
-            color: [1.0, 1.0, 1.0, 0.0],
-            ids: [tex, box_mode::SKIN, 0, 0],
-            ids2: [0; 4],
-        });
-    }
 }
 
 /// Model boxes (a block's, or an item's from its file) in the unit cube `m` maps, tinted like
@@ -1263,10 +1306,6 @@ fn boxes_shape(
     }
 }
 
-fn rows(m: Mat4) -> [[f32; 4]; 3] {
-    [m.row(0).to_array(), m.row(1).to_array(), m.row(2).to_array()]
-}
-
 /// An item model instance: `m` places the model's unit cube.
 fn item_instance(m: Mat4, first: u32, hurt: f32, light: u32) -> GpuBox {
     GpuBox { rows: rows(m), color: [1.0, 1.0, 1.0, hurt], ids: [0, 0, first, 0], ids2: [0, light, 0, 0], ..Default::default() }
@@ -1288,7 +1327,7 @@ fn shows_block(item: u32) -> bool {
 /// Where an item goes in the hand of a model, from its arm at the shoulder (pixels): vanilla's
 /// ItemInHandLayer, then the item model's third person display transform. Vanilla's model space is
 /// ours turned around z, and it measures from a shoulder one pixel closer to the body.
-fn held_transform(arm: Mat4, item: u32) -> Mat4 {
+fn held_transform(arm: Mat4, item: u32, off: bool, display: Option<Display>) -> Mat4 {
     use std::f32::consts::{FRAC_PI_2, PI};
     let deg = |d: f32| d.to_radians();
     let hand = arm
@@ -1297,24 +1336,48 @@ fn held_transform(arm: Mat4, item: u32) -> Mat4 {
         * Mat4::from_rotation_x(-FRAC_PI_2)
         * Mat4::from_rotation_y(PI)
         * Mat4::from_translation(Vec3::new(0.0, 0.125, -0.625));
-    // block.json, handheld.json and generated.json: rotation, translation, scale.
-    let ([rx, ry, rz], move_by, scale) = if shows_block(item) {
-        ([75.0, 45.0, 0.0], [0.0, 2.5, 0.0], 0.375)
-    } else if content()
-        .items
-        .get(item as usize)
-        .is_some_and(|d| d.handheld)
-    {
-        ([0.0, -90.0, 55.0], [0.0, 4.0, 0.5], 0.85)
-    } else {
-        ([0.0, 0.0, 0.0], [0.0, 3.0, 1.0], 0.55)
-    };
-    hand * Mat4::from_translation(Vec3::from_array(move_by) / 16.0)
+    // The model file's, as Blockbench's Display tab has it, else a block straight in the hand,
+    // handheld.json or generated.json.
+    let plain = |rotation, translation, scale| Display { rotation, translation, scale: [scale; 3] };
+    let d = display.unwrap_or_else(|| {
+        if shows_block(item) {
+            plain([0.0, 0.0, 0.0], [0.0, 2.5, 0.0], 0.375)
+        } else if content()
+            .items
+            .get(item as usize)
+            .is_some_and(|d| d.handheld)
+        {
+            plain([0.0, -90.0, 55.0], [0.0, 4.0, 0.5], 0.85)
+        } else {
+            plain([0.0, 0.0, 0.0], [0.0, 3.0, 1.0], 0.55)
+        }
+    });
+    // The other hand's display transforms are these turned the other way.
+    let side = if off { -1.0 } else { 1.0 };
+    let [rx, ry, rz] = d.rotation;
+    let [tx, ty, tz] = d.translation;
+    hand * Mat4::from_translation(Vec3::new(tx * side, ty, tz) / 16.0)
         * Mat4::from_rotation_x(deg(rx))
-        * Mat4::from_rotation_y(deg(ry))
-        * Mat4::from_rotation_z(deg(rz))
-        * Mat4::from_scale(Vec3::splat(scale))
+        * Mat4::from_rotation_y(deg(ry * side))
+        * Mat4::from_rotation_z(deg(rz * side))
+        * Mat4::from_scale(Vec3::from_array(d.scale))
+        // Seen from behind, a flat item is its mirror image, without turning its faces inside out.
+        * Mat4::from_rotation_y(if off { PI } else { 0.0 })
         * Mat4::from_translation(Vec3::splat(-0.5))
+}
+
+/// How an item is held unless it says: a long tool lower down.
+fn hold_of(c: &crate::content::Content, m: &super::models::KindModel, item: u32) -> &'static str {
+    let tool = c.items.get(item as usize).is_some_and(|d| d.handheld);
+    if tool && !m.has_own(item, "hold") { "hold_tool" } else { "hold" }
+}
+
+/// Where a model of bones held in the hand has its origin: on the palm, its front (-Z) along the
+/// arm, so an arm held out points it ahead with its top (+Y) up.
+fn palm(arm: Mat4) -> Mat4 {
+    arm * Mat4::from_scale(Vec3::splat(16.0))
+        * Mat4::from_translation(Vec3::new(0.0, -10.0 / 16.0, 0.0))
+        * Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2)
 }
 
 /// Dropped items spin and bob: a block a quarter of a block across, a sprite half a block

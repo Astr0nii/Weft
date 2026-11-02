@@ -9,8 +9,7 @@
 //! - an idol from a Blockbench model file (bones, a mesh pair of wings) that idles by keyframes
 //!   and bows when used, and an orb whose model is built in code (a sphere mesh and a ring of
 //!   stones on a child bone) but animated from a file,
-//! - the player waves when using the rune: keyframes for the player's model in third person and
-//!   for the first person hand.
+//! - the player waves when using the rune: keyframes for the player's model, seen from anywhere.
 
 use weft_sdk::*;
 
@@ -143,7 +142,7 @@ pub fn register(r: &mut Registry) {
             let id = e.entity();
             if let Some(i) = bowed.iter().position(|&b| b == id) {
                 bowed.swap_remove(i);
-                e.world().play_animation(id, "", false);
+                e.world().play_action(id, "", false);
             } else {
                 // Bows to whoever used it.
                 let w = e.world();
@@ -152,7 +151,7 @@ pub fn register(r: &mut Registry) {
                     w.set_entity(id, &me);
                 }
                 bowed.push(id);
-                w.play_animation(id, "bow", false);
+                w.play_action(id, "bow", false);
             }
             true
         });
@@ -171,9 +170,29 @@ pub fn register(r: &mut Registry) {
 
     r.set_text_on(Target::Entity("core:player"), &ANIMATIONS, "testmod:player");
     r.item(&TOTEM).max_stack(1);
+    // Goes before what the other hand holds, and leaves it its turn with nothing to shoot.
+    static LONG_BOW: Item = Item::named("long_bow");
+    r.item(&LONG_BOW)
+        .use_priority(10)
+        .on_use(|u| u.stack().count > 1);
+    // Both hands or nothing, swinging with its whole body.
+    static GREATSWORD: Item = Item::named("greatsword");
+    r.item(&GREATSWORD)
+        .max_stack(1)
+        .two_handed()
+        .on_use(|_| true);
+    // Both hands, or one if the other is busy.
+    static MAP_SHEET: Item = Item::named("map_sheet");
+    r.item(&MAP_SHEET)
+        .max_stack(1)
+        .one_handed_as("hold_one")
+        .on_use(|_| true);
+    // A model of bones in `models/item/`, its slide going back in the same clip as the arm.
+    static BLASTER: Item = Item::named("blaster");
+    r.item(&BLASTER).max_stack(1).handheld();
     r.item(&RUNE).max_stack(1).on_use(|u| {
         let w = u.world();
-        w.play_animation(u.player(), "wave", false);
+        w.play_action(u.player(), "wave", false);
         if let Some(st) = w.entity(u.player()) {
             w.spawn_particles(&SPARK, [st.pos[0], st.pos[1] + 1.2, st.pos[2]])
                 .count(40)

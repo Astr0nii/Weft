@@ -43,6 +43,7 @@ pub fn register(r: &mut Registry) {
     ] {
         r.equipment_slot(slot, parts, &format!("slot_{piece}"));
     }
+    r.equipment_slot(&OFF_HAND, 0, "slot_offhand");
     r.entity_component(
         &HUNGER,
         Hunger { food: 20.0, saturation: 5.0, exhaustion: 0.0, air: MAX_AIR, food_timer: 0 },
@@ -170,13 +171,15 @@ pub fn register(r: &mut Registry) {
                     ui.equipment();
                     ui.player_model(51.0, 72.0);
                     ui.spacer();
-                    ui.column(S::col().gap(2.0), |ui| {
+                    ui.column(S::col().gap(2.0).stretch(), |ui| {
                         ui.title();
                         ui.row(S::row().gap(4.0), |ui| {
                             ui.group("grid");
                             ui.recipe_arrow();
                             ui.group("result");
                         });
+                        ui.spacer();
+                        ui.group(OFF_HAND.name());
                     });
                 });
                 ui.player_inventory(false);

@@ -16,8 +16,20 @@ pub static PLAYER: Entity = Entity::named("core:player");
 impl World {
     /// Entity `id` plays keyframe animation `name` for everyone who sees it (looping until
     /// another starts); an empty name goes back to idle and walk.
-    pub fn play_animation(&self, id: u64, name: &str, looping: bool) {
-        unsafe { (host().play_animation)(self.raw(), id, Str::new(name), looping as u32) }
+    pub fn play_action(&self, id: u64, name: &str, looping: bool) {
+        unsafe { (host().play_action)(self.raw(), id, Str::new(name), looping as u32) }
+    }
+
+    /// While this holds, entity `id` plays action `to` wherever it would play `from`: a creeper
+    /// running from a cat plays its own run instead of `walk`. Everyone who sees it sees it, and
+    /// without a clip for `to` it goes on playing `from`.
+    pub fn swap_action(&self, id: u64, from: &str, to: &str) {
+        unsafe { (host().swap_action)(self.raw(), id, Str::new(from), Str::new(to)) }
+    }
+
+    /// Ends `swap_action`.
+    pub fn unswap_action(&self, id: u64, from: &str) {
+        unsafe { (host().swap_action)(self.raw(), id, Str::new(from), Str::new("")) }
     }
 
     pub fn light(&self, pos: [i32; 3]) -> u32 {
@@ -774,7 +786,7 @@ impl EntityBuilder<'_> {
         self
     }
     /// Keyframe animations from `animations/<name>.animation.json`: `idle` and `walk` play by
-    /// themselves, others with `World::play_animation`. A file named like the kind is used even
+    /// themselves, others with `World::play_action`. A file named like the kind is used even
     /// without this.
     pub fn animations(mut self, name: &str) -> Self {
         let name = crate::asset("", name);

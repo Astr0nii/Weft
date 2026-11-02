@@ -538,6 +538,7 @@ pub static USE_TICKS: Component<u32> = Component::named(abi::comp::USE_TICKS);
 pub static MINING_SPEED: Component<f32> = Component::named(abi::comp::MINING_SPEED);
 pub static TOOL_LEVEL: Component<u32> = Component::named(abi::comp::TOOL_LEVEL);
 pub static HARVEST_LEVEL: Component<u32> = Component::named(abi::comp::HARVEST_LEVEL);
+pub static USE_PRIORITY: Component<i32> = Component::named(abi::comp::USE_PRIORITY);
 pub static DAMAGE: Component<u32> = Component::named(abi::comp::DAMAGE);
 pub static LOOT_ROLLS: Component<u32> = Component::named(abi::comp::LOOT_ROLLS);
 pub static HARDNESS: Component<f32> = Component::named(abi::comp::HARDNESS);

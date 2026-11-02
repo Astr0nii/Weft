@@ -2185,7 +2185,7 @@ fn record_passes(r: &mut Running, info: &weft_render::FrameInfo, scale: f32) {
         let held = g.client.held().item;
         g.client
             .entity_render
-            .preload(&mut *r.gpu, &r.assets, &g.client.entities, &worn, held);
+            .preload(&mut *r.gpu, &r.assets, &g.client.entities, &worn, &[held, g.client.off_held().item]);
         g.client.render(&mut *r.gpu, &mut r.list, info, &r.textures);
     }
     r.list.push(Cmd::EndPass);

@@ -398,6 +398,88 @@ fn off_bed(t: &T, foot: [i32; 3]) -> f64 {
 /// any kind near) and, everybody asleep, the night is skipped; being hurt gets them up; dead, the
 /// player comes back at the bed. Breaking one half takes the other and drops one bed, and an
 /// explosion taking one half takes the other too.
+/// The second hand: what goes first on a right click, and what needs both hands.
+pub async fn second_hand(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let used = async |t: &T| -> Result<u32, String> {
+        let all = t.op("events").await?;
+        Ok(all
+            .split_whitespace()
+            .find_map(|e| e.strip_prefix("item_used="))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0))
+    };
+    const OFF: u32 = 40;
+    let id = |name: &str| Item::lookup(name).unwrap_or(u32::MAX);
+    let ground = add(f, [2, -1, 0]);
+    let above = add(ground, [0, 1, 0]);
+    t.look_at(ground);
+    t.frames(4).await?;
+    t.op(&format!("put me {OFF} torch 8")).await?;
+    // The bow goes before the torches, in the main hand or the other.
+    t.op("put me 0 testmod:long_bow 2").await?;
+    let before = used(&t).await?;
+    t.press("core:use");
+    t.secs(0.4).await?;
+    t.check_eq(used(&t).await?, before + 1, "the bow shoots");
+    t.check_eq(t.block(above).await?, "core:air".to_string(), "and no torch goes down");
+    // With nothing to shoot it does nothing, so the torch gets its turn.
+    t.op("put me 0 testmod:long_bow 1").await?;
+    t.press("core:use");
+    t.secs(0.4).await?;
+    t.check_eq(t.block(above).await?, "base:torch[facing=up]".to_string(), "a bow that can't shoot leaves it to the other hand");
+    t.set(above, "air").await?;
+    t.op(&format!("put me {OFF} testmod:long_bow 2")).await?;
+    t.op("put me 0 torch 8").await?;
+    let before = used(&t).await?;
+    t.secs(0.2).await?;
+    t.press("core:use");
+    t.secs(0.4).await?;
+    t.check_eq(used(&t).await?, before + 1, "the priority holds from the other hand too");
+    t.check_eq(t.block(above).await?, "core:air".to_string(), "no torch from the main hand");
+    // With equal priorities the main hand goes first.
+    t.op(&format!("put me {OFF} stone 8")).await?;
+    t.secs(0.2).await?;
+    t.press("core:use");
+    t.secs(0.4).await?;
+    t.check_eq(t.block(above).await?, "base:torch[facing=up]".to_string(), "the main hand goes first");
+    t.set(above, "air").await?;
+    // Two hands or nothing.
+    t.op("put me 0 testmod:greatsword 1").await?;
+    t.op(&format!("put me {OFF} torch 8")).await?;
+    let before = used(&t).await?;
+    t.secs(0.2).await?;
+    t.press("core:use");
+    t.secs(0.4).await?;
+    t.check_eq(used(&t).await?, before, "a two-handed sword does nothing with the other hand busy");
+    t.check_eq(t.block(above).await?, "base:torch[facing=up]".to_string(), "and the other hand still works");
+    t.set(above, "air").await?;
+    t.press("core:swap_hands");
+    t.secs(0.3).await?;
+    t.check_eq(t.c().inventory_slot(0).item, id("testmod:greatsword"), "it can't go to the other hand");
+    t.op(&format!("put me {OFF} stick 0")).await?;
+    let before = used(&t).await?;
+    t.secs(0.2).await?;
+    t.press("core:use");
+    t.secs(0.4).await?;
+    t.check_eq(used(&t).await?, before + 1, "both hands free, it works");
+    // What may be held in one hand can go to the other, and the key swaps them.
+    t.op("put me 0 testmod:map_sheet 1").await?;
+    t.op(&format!("put me {OFF} torch 8")).await?;
+    let before = used(&t).await?;
+    t.secs(0.2).await?;
+    t.press("core:use");
+    t.secs(0.4).await?;
+    t.check_eq(used(&t).await?, before + 1, "a map works with the other hand busy");
+    t.press("core:swap_hands");
+    t.until("the hands swapped", Duration::from_secs(2), |t| t.c().inventory_slot(0).item == id("base:torch"))
+        .await?;
+    t.check_eq(t.c().inventory_slot(OFF).item, id("testmod:map_sheet"), "it went to the other hand");
+    t.shot("map_in_other_hand").await?;
+    Ok(())
+}
+
 pub async fn beds(t: T) -> R {
     let spawn = bed_spawn;
     fn beds_held(t: &T) -> u32 {

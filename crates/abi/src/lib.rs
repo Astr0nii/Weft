@@ -254,6 +254,12 @@ pub mod comp {
     pub const TOOL_LEVEL: &str = "tool_level";
     /// The block drops its loot only to a fitting tool of at least this level (0 = any tier).
     pub const HARVEST_LEVEL: &str = "harvest_level";
+    /// Items: right click tries the hand whose item has the higher one first (default 0).
+    pub const USE_PRIORITY: &str = "use_priority";
+    /// Items, a tag: needs both hands.
+    pub const TWO_HANDED: &str = "two_handed";
+    /// Items: a two-handed item may be held in one hand after all, playing this action.
+    pub const ONE_HANDED: &str = "one_handed";
     /// How many times a block's loot is rolled when it breaks (two slabs in one block).
     pub const LOOT_ROLLS: &str = "loot_rolls";
     pub const DAMAGE: &str = "damage";
@@ -1384,7 +1390,12 @@ pub mod slot_flags {
     /// The player's hotbar (a group of `reg_player_inventory`): selected with the number keys,
     /// shown at the bottom of the screen.
     pub const HOTBAR: u32 = 4;
+    /// The other hand: takes any item that can be held in one hand.
+    pub const OFF_HAND: u32 = 8;
 }
+
+/// The equipment slot of the second hand. Without it, players have one.
+pub const OFF_HAND_SLOT: &str = "core:off_hand";
 
 /// Whose inventory a slot group shows.
 pub mod slot_owner {
@@ -2185,10 +2196,11 @@ pub struct Host {
     pub reg_sound: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SoundDesc),
     /// Background music, see `MusicDesc`.
     pub reg_music: unsafe extern "C" fn(reg: *mut Registrar, desc: *const MusicDesc),
-    /// Server: entity `id` plays keyframe animation `name` (from its kind's animation file) for
-    /// everyone who sees it; `looping` keeps it going until another one starts, empty `name`
-    /// goes back to idle/walk.
-    pub play_animation: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, name: Str, looping: u32),
+    /// Server: entity `id` plays action `name` for everyone who sees it; `looping` keeps it going
+    /// until another one starts, empty `name` ends it.
+    pub play_action: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, name: Str, looping: u32),
+    /// Entity `id` plays action `to` wherever it would play `from`; `to` empty ends that.
+    pub swap_action: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, from: Str, to: Str),
     /// Server: sound event `sound` (`find` with `entry_kind::SOUND`) at `pos` for every player in
     /// its range; `pitch` 0 picks one from the event's range.
     pub play_sound: unsafe extern "C" fn(world: *mut WorldCtx, sound: u32, pos: *const [f64; 3], volume: f32, pitch: f32),

@@ -51,6 +51,7 @@ pub enum DimEvent {
     },
     /// Its arm swings for those who see it.
     EntitySwing {
+        off: bool,
         id: u64,
     },
     /// A sprinting hit landed: the client stops sprinting.
@@ -97,7 +98,7 @@ pub enum DimEvent {
         volume: f32,
         pitch: f32,
     },
-    Animation {
+    PlayAction {
         id: u64,
         name: String,
         looping: bool,
@@ -570,7 +571,7 @@ impl Dim {
     /// Writes the fields clients show (`registry::HEALTH` ...) into their synced components when
     /// they differ, so they travel like mods' components. Absent ones stay absent while default.
     pub fn mirror_fields(&mut self, c: &Content) {
-        let [health, burning, worn, shape, held] = c.game.field_comps;
+        let [health, burning, worn, shape, held, off_held, using, _] = c.game.field_comps;
         let maxes: Vec<(u64, f32)> = self
             .entities
             .list
@@ -606,12 +607,15 @@ impl Dim {
             sh[12..].copy_from_slice(&e.look.unwrap_or(u32::MAX).to_le_bytes());
             put(comps, shape, &sh);
             if e.player {
-                let item = inventories
-                    .get(&e.id)
-                    .and_then(|i| i.get(e.selected as usize))
-                    .filter(|s| !s.is_empty())
-                    .map_or(0, |s| s.item);
+                let inv = inventories.get(&e.id).map_or(&[][..], |i| &i[..]);
+                let item = crate::content::in_main_hand(c, inv, e.selected);
+                let item = if item.is_empty() { 0 } else { item.item };
                 put(comps, held, &item.to_le_bytes());
+                let off = crate::content::in_off_hand(c, inv);
+                let off = if off.is_empty() { 0 } else { off.item };
+                put(comps, off_held, &off.to_le_bytes());
+                let use_value = e.using.0 | (e.using.1 as u32) << 31;
+                put(comps, using, &use_value.to_le_bytes());
             }
         }
     }
@@ -1309,7 +1313,8 @@ impl Dim {
                 e.attack_cooldown = (crate::world::TPS as f32 / per_second.max(0.05)) as _;
             }
         }
-        self.events.push(DimEvent::EntitySwing { id: attacker });
+        self.events
+            .push(DimEvent::EntitySwing { id: attacker, off: false });
         let dmg = self.compute(c, abi::chain::ATTACK_DAMAGE, base as f64, &q, false) as f32;
         if !player {
             return self.damage(c, target, dmg, attacker, damage::ATTACK);
@@ -1471,13 +1476,7 @@ impl Dim {
                     .entities
                     .get(source)
                     .filter(|s| s.player)
-                    .and_then(|s| {
-                        self.entities
-                            .inventories
-                            .get(&source)
-                            .and_then(|i| i.get(s.selected as usize))
-                            .copied()
-                    })
+                    .map(|_| self.entities.held(source))
                     .unwrap_or_default();
                 let ctx = crate::loot::Ctx {
                     tool,
@@ -2005,10 +2004,9 @@ impl Dim {
                 e.swing_ticks = e.swing_ticks.saturating_add(1);
                 e.attack_cooldown = e.attack_cooldown.saturating_sub(1);
                 if e.player {
-                    let held = inventories
-                        .get(&e.id)
-                        .and_then(|i| i.get(e.selected as usize));
-                    e.notice_hand(held.copied().unwrap_or_default());
+                    let inv = inventories.get(&e.id).map_or(&[][..], |i| &i[..]);
+                    let held = crate::content::in_main_hand(c, inv, e.selected);
+                    e.notice_hand(held);
                     // Mods saw it this tick; the next `Move` tells of the next.
                     e.jumped = false;
                 }
@@ -2504,7 +2502,8 @@ impl Dim {
         let Some((player, slot)) = self.entities.get(attacker).map(|e| (e.player, e.selected)) else { return false };
         let held = if player { self.entities.held(attacker) } else { ItemStack::EMPTY };
         let hit = self.attack(c, attacker, target, held);
-        if hit && player {
+        // Bare hands wear nothing, whatever sits in the slot doing nothing.
+        if hit && player && !held.is_empty() {
             super::actions::wear(
                 c,
                 self,

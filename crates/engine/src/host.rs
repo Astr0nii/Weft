@@ -195,7 +195,8 @@ pub static HOST: Host = Host {
     config_set_text,
     reg_sound,
     reg_music,
-    play_animation,
+    play_action,
+    swap_action,
     play_sound,
     client_play_sound: crate::app::api::client_play_sound,
     reg_spawn,
@@ -399,11 +400,47 @@ unsafe extern "C" fn reg_music(r: *mut abi::Registrar, d: *const abi::MusicDesc)
     }
 }
 
-unsafe extern "C" fn play_animation(w: *mut abi::WorldCtx, id: u64, name: Str, looping: u32) {
+unsafe extern "C" fn swap_action(w: *mut abi::WorldCtx, id: u64, from: Str, to: Str) {
+    unsafe {
+        let d = dim(w);
+        if d.entities.get(id).is_none() {
+            return;
+        }
+        let comp = content().game.field_comps[7];
+        let (from, to) = (from.as_str(), to.as_str());
+        let now = d
+            .entities
+            .comps
+            .get(&(id, comp))
+            .map_or(&[][..], |b| &b[..]);
+        let text = String::from_utf8_lossy(now);
+        let mut pairs = text.lines().filter_map(|l| l.split_once('='));
+        // A goal says it every tick: the same as before costs one look.
+        if pairs.clone().any(|p| p == (from, to)) || (to.is_empty() && !pairs.any(|p| p.0 == from)) {
+            return;
+        }
+        let mut next = String::new();
+        for (a, b) in text
+            .lines()
+            .filter_map(|l| l.split_once('='))
+            .filter(|p| p.0 != from)
+        {
+            next.push_str(&format!("{a}={b}\n"));
+        }
+        if !to.is_empty() {
+            next.push_str(&format!("{from}={to}\n"));
+        }
+        d.entities
+            .comps
+            .insert((id, comp), next.into_bytes().into_boxed_slice());
+    }
+}
+
+unsafe extern "C" fn play_action(w: *mut abi::WorldCtx, id: u64, name: Str, looping: u32) {
     unsafe {
         let d = dim(w);
         d.events
-            .push(crate::server::DimEvent::Animation { id, name: name.as_str().to_string(), looping: looping != 0 });
+            .push(crate::server::DimEvent::PlayAction { id, name: name.as_str().to_string(), looping: looping != 0 });
     }
 }
 
