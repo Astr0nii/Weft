@@ -22,7 +22,7 @@ pub static DISPENSER_MENU: Menu = Menu::named("dispenser");
 pub static SLIME_BLOCK: Block = Block::named("slime_block");
 pub static ANCHOR: Block = Block::named("anchor");
 pub static FLOATER: Block = Block::named("floater");
-pub static COPPER_LAMP: Block = Block::named("copper_lamp");
+pub static GOLDEN_LAMP: Block = Block::named("golden_lamp");
 
 const BUTTON_TICKS: u32 = 20;
 
@@ -300,11 +300,11 @@ pub fn register(r: &mut Registry) {
         .tab(&crate::tabs::REDSTONE);
 
     // Vanilla's copper bulb: each new pulse flips it, and a comparator reads which way it is.
-    r.block(&COPPER_LAMP)
+    r.block(&GOLDEN_LAMP)
         .signal_sink()
         .prop("power", ["off", "on"])
         .prop("lit", ["false", "true"])
-        .states(|p, s| if p.is("lit", "true") { s.texture("copper_lamp_lit").light(15) } else { s.texture("copper_lamp") })
+        .states(|p, s| if p.is("lit", "true") { s.texture("golden_lamp_lit").light(15) } else { s.texture("golden_lamp") })
         .on_signal(|e| {
             if e.rising() {
                 let (w, p) = (e.world(), e.pos());
@@ -398,7 +398,7 @@ pub fn register(r: &mut Registry) {
     r.shaped(C, "slime_block", 1, &["ccc", "cwc", "ccc"], &[('c', "clay"), ('w', "#crops/wheat")]);
     r.shaped(C, "sticky_piston", 1, &["s", "p"], &[('s', "slime_block"), ('p', "piston")]);
     r.shaped(C, "floater", 1, &["ipi", "iri", "ipi"], &[('i', "iron_ingot"), ('r', "redstone"), ('p', "piston")]);
-    r.shaped(C, "copper_lamp", 1, &[" c ", "crc", " c "], &[('c', "gold_ingot"), ('r', "redstone")]);
+    r.shaped(C, "golden_lamp", 1, &[" c ", "crc", " c "], &[('c', "gold_ingot"), ('r', "redstone")]);
     r.shaped(C, "anchor", 1, &["iii", "iri", "iii"], &[('i', "iron_ingot"), ('r', "redstone")]);
     r.shaped(C, "observer", 1, &["ccc", "rri", "ccc"], &[('c', "#cobblestone"), ('r', "redstone"), ('i', "iron_ingot")]);
     r.shaped(C, "dispenser", 1, &["ccc", "csc", "crc"], &[('c', "#cobblestone"), ('s', "#stick"), ('r', "redstone")]);

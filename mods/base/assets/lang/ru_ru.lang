@@ -242,6 +242,6 @@ block.base.observer = Наблюдатель
 block.base.dispenser = Раздатчик
 tab.base.redstone = Редстоун
 block.base.floater = Флоатер
-block.base.copper_lamp = Медная лампа
+block.base.golden_lamp = Золотая лампа
 block.base.anchor = Якорь
 block.base.slime_block = Блок слизи
