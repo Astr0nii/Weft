@@ -179,6 +179,9 @@ pub fn register(r: &mut Registry) {
     r.item(&GREATSWORD)
         .max_stack(1)
         .two_handed()
+        .no_creative_break()
+        .attack_damage(16f32)
+        .attack_speed(0.7)
         .on_use(|_| true);
     // A metre of katana in the hand, on the ground and in a slot; much less of one once damaged.
     r.set_model(&GREATSWORD, "katana");

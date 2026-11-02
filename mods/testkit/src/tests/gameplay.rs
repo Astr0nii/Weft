@@ -425,6 +425,15 @@ pub async fn model_bones(t: T) -> R {
     let back = at("tip").ok_or("the sword's tip")?;
     let again: f64 = (0..3).map(|i| (tip[i] - back[i]).powi(2)).sum();
     t.check(again < 0.01, format!("for as long as it said so: {tip:?} and {back:?}"));
+    // Put away, it goes down as the model it is, not as its sprite.
+    t.op("put me 0 base:apple").await?;
+    t.secs(1.0).await?;
+    t.check(at("fruit").is_some(), "an apple in hand is its model");
+    t.c().key("Digit2", 0.0);
+    t.frames(3).await?;
+    t.check(at("fruit").is_some(), "the apple going down is still its model");
+    t.secs(1.0).await?;
+    t.check(at("fruit").is_none(), "and then it is gone");
     Ok(())
 }
 
