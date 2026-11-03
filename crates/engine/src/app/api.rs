@@ -518,14 +518,15 @@ pub unsafe extern "C" fn client_light(c: *mut abi::ClientCtx, pos: *const [i32; 
 pub unsafe extern "C" fn client_slot(c: *mut abi::ClientCtx, container: u32, slot: u32) -> ItemStack {
     unsafe {
         let Some(cl) = client(c) else { return ItemStack::EMPTY };
+        use abi::slot_container as sc;
         let s = match container {
-            0 => cl.inventory.get(slot as usize).copied(),
-            1 => cl
+            sc::INVENTORY => cl.inventory.get(slot as usize).copied(),
+            sc::MENU => cl
                 .menu
                 .as_ref()
                 .and_then(|m| m.slots.get(slot as usize))
                 .copied(),
-            2 => cl.menu.as_ref().map(|m| m.cursor),
+            sc::CURSOR => cl.menu.as_ref().map(|m| m.cursor),
             _ => None,
         };
         s.unwrap_or_default()

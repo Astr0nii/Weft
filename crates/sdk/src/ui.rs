@@ -62,7 +62,7 @@ impl ClientView {
     /// Own inventory slot by index (the engine lays the inventory out from its groups; with the
     /// base game the hotbar comes first).
     pub fn inventory_slot(&self, slot: u32) -> ItemStack {
-        unsafe { (host().client_slot)(self.raw, 0, slot) }
+        unsafe { (host().client_slot)(self.raw, abi::slot_container::INVENTORY, slot) }
     }
     /// The stacks of a group of the own inventory (`hotbar`, `core:equipment`...).
     pub fn inventory_group(&self, name: &str) -> Vec<ItemStack> {

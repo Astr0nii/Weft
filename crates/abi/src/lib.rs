@@ -2188,6 +2188,16 @@ pub struct ScreenKeyArgs {
 
 // ---------------------------------------------------------------- host
 
+/// Whose stack `Host::client_slot` reads.
+pub mod slot_container {
+    /// The player's own inventory.
+    pub const INVENTORY: u32 = 0;
+    /// The open menu's slots.
+    pub const MENU: u32 = 1;
+    /// The stack held on the cursor in a menu (slot 0).
+    pub const CURSOR: u32 = 2;
+}
+
 pub mod log_level {
     pub const ERROR: u32 = 1;
     pub const WARN: u32 = 2;
@@ -2527,7 +2537,7 @@ pub struct Host {
     /// Group `name` of the player inventory (`reg_player_inventory`, equipment slots,
     /// `core:equipment`): first slot and count.
     pub player_inventory_group: unsafe extern "C" fn(name: Str, out: *mut SlotGroup) -> u32,
-    /// `container` 0 own inventory, 1 the open menu's slots, 2 the menu cursor.
+    /// `container` is a `slot_container`.
     pub client_slot: unsafe extern "C" fn(client: *mut ClientCtx, container: u32, slot: u32) -> ItemStack,
     /// Open menu as (kind, window, slot count); 0 if none.
     pub client_menu: unsafe extern "C" fn(client: *mut ClientCtx, out: *mut [u32; 3]) -> u32,

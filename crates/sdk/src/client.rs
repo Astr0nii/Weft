@@ -307,11 +307,11 @@ impl Client {
     }
 
     pub fn menu_slot(&self, slot: u32) -> ItemStack {
-        unsafe { (host().client_slot)(self.raw, 1, slot) }
+        unsafe { (host().client_slot)(self.raw, abi::slot_container::MENU, slot) }
     }
 
     pub fn cursor_stack(&self) -> ItemStack {
-        unsafe { (host().client_slot)(self.raw, 2, 0) }
+        unsafe { (host().client_slot)(self.raw, abi::slot_container::CURSOR, 0) }
     }
 
     /// The open menu as (kind, window, slot count).
