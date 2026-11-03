@@ -311,11 +311,7 @@ pub fn register(r: &mut Registry) {
         .prop("lit", ["false", "true"])
         .states(|p, s| {
             let power = p.is("lit", "true");
-            let (side, top) = if power {
-                ("golden_lamp_lit", "golden_lamp_top_lit")
-            } else {
-                ("golden_lamp", "golden_lamp_top")
-            };
+            let (side, top) = if power { ("golden_lamp_lit", "golden_lamp_top_lit") } else { ("golden_lamp", "golden_lamp_top") };
             let whole = [0.0, 0.0, 16.0, 16.0];
             let faces = [(side, whole), (side, whole), (side, whole), (side, whole), (top, whole), (top, whole)];
             s.frame(p.frame_front())
