@@ -267,7 +267,7 @@ pub fn grow_tree(w: World, p: [i32; 3]) {
     });
 }
 
-/// Plants, after the terrain and trees filled the cube.
+/// Plants and Clay after the terrain and trees filled the cube.
 fn decorate(g: &mut Gen) {
     let Some(&cols) = g.columns() else { return };
     let seed = g.seed();
@@ -279,6 +279,7 @@ fn decorate(g: &mut Gen) {
     if oy > max_h + 16 || oy + 15 < min_h - 1 {
         return;
     }
+    // Plant decorations
     for z in 0..16usize {
         for x in 0..16usize {
             let col = &cols[z * 16 + x];
@@ -335,8 +336,8 @@ fn decorate(g: &mut Gen) {
             }
         }
     }
-    // Clay patches in shallow water (rivers, lakes, ocean shores), replacing the top sand,
-    // dirt and gravel
+    // Clay patches in shallow water (rivers, lakes, ocean shores), replacing the top blocks in
+    // bodies of water
     for z in 0..16usize {
         for x in 0..16usize {
             let col = &cols[z * 16 + x];
@@ -356,8 +357,6 @@ fn decorate(g: &mut Gen) {
             if clay > ONE / 4 {
                 let surface = g.get(x, y, z);
                 if SAND.is(surface)
-                    || DIRT.is(surface)
-                    || GRASS.is(surface)
                     || GRAVEL.is(surface)
                 {
                     g.set(x, y, z, CLAY.id());
