@@ -49,21 +49,17 @@ struct Nights {
 }
 static NIGHTS: Mutex<BTreeMap<u32, Nights>> = Mutex::new(BTreeMap::new());
 
-/// Server to client: a message (`MESSAGES`), and lying down (1 + quarter turns of its yaw) or
-/// getting up (0).
-static MESSAGE: Channel<u32> = Channel::named("bed_message");
+/// Server to client: lying down (1 + quarter turns of its yaw) or getting up (0).
 static LYING: Channel<u32> = Channel::named("bed_lying");
 /// Client to server: the player got up (left the sleep screen).
 static GET_UP: Channel<()> = Channel::named("bed_get_up");
 
-const MESSAGES: [&str; 6] =
-    ["bed.base.spawn_set", "bed.base.not_night", "bed.base.monsters", "bed.base.occupied", "bed.base.missing", "bed.base.obstructed"];
-const SPAWN_SET: u32 = 0;
-const NOT_NIGHT: u32 = 1;
-const MONSTERS_NEAR: u32 = 2;
-const OCCUPIED: u32 = 3;
-const MISSING: u32 = 4;
-const OBSTRUCTED: u32 = 5;
+const SPAWN_SET: &str = "bed.base.spawn_set";
+const NOT_NIGHT: &str = "bed.base.not_night";
+const MONSTERS_NEAR: &str = "bed.base.monsters";
+const OCCUPIED: &str = "bed.base.occupied";
+const MISSING: &str = "bed.base.missing";
+const OBSTRUCTED: &str = "bed.base.obstructed";
 
 /// The other half of the bed half `state` at `pos`: the head lies away from where the bed faces
 /// (the player who placed it), the foot toward it.
@@ -218,7 +214,7 @@ pub fn register(r: &mut Registry) {
             // Its mod may be gone by now.
             let Some(dim) = dimension_of_key(spawn.dim_key).map(|d| name_of(abi::entry_kind::DIMENSION, d)) else {
                 spawn.set = 0;
-                w.send(e.player, &MESSAGE, &MISSING);
+                w.hint(e.player, MISSING, &[]);
                 continue;
             };
             *arriving = Arriving { from: st.pos, dim: w.dimension(), on_way: 1 };
@@ -247,7 +243,7 @@ fn use_bed(u: &mut Use) -> bool {
             && w.component(o, &SLEEP)
                 .is_some_and(|s| s.asleep != 0 && s.bed == foot)
     }) {
-        w.send(player, &MESSAGE, &OCCUPIED);
+        w.hint(player, OCCUPIED, &[]);
         return true;
     }
     // A player stays standing in bed, so as much room as that takes.
@@ -255,7 +251,7 @@ fn use_bed(u: &mut Use) -> bool {
         .iter()
         .any(|dy| w.flags([foot[0], foot[1] + dy, foot[2]]) & abi::block_flags::SOLID != 0)
     {
-        w.send(player, &MESSAGE, &OBSTRUCTED);
+        w.hint(player, OBSTRUCTED, &[]);
         return true;
     }
     let dim = w.dimension();
@@ -263,13 +259,13 @@ fn use_bed(u: &mut Use) -> bool {
     if let Some(spawn) = w.component_mut(player, &BED_SPAWN) {
         if spawn.set == 0 || spawn.bed != foot || spawn.dim_key != dim_key {
             *spawn = BedSpawn { bed: foot, set: 1, dim_key };
-            w.send(player, &MESSAGE, &SPAWN_SET);
+            w.hint(player, SPAWN_SET, &[]);
         }
     }
     if w.daylight() >= NIGHT {
-        w.send(player, &MESSAGE, &NOT_NIGHT);
+        w.hint(player, NOT_NIGHT, &[]);
     } else if monsters_near(&w, foot) {
-        w.send(player, &MESSAGE, &MONSTERS_NEAR);
+        w.hint(player, MONSTERS_NEAR, &[]);
     } else if let Some(s) = w.component_mut(player, &SLEEP) {
         let night = NIGHTS.lock().unwrap().get(&dim).map_or(0, |n| n.skipped);
         *s = Sleep { bed: foot, since: w.time(), night, asleep: 1 };
@@ -306,7 +302,7 @@ fn arrive(w: &World, id: u64) {
     a.on_way = 0;
     if !BED.is(state) {
         spawn.set = 0;
-        w.send(id, &MESSAGE, &MISSING);
+        w.hint(id, MISSING, &[]);
         w.teleport(id, Some(Dimension::generated(name_of(abi::entry_kind::DIMENSION, a.dim).to_string())), a.from);
     }
 }
@@ -370,12 +366,10 @@ static SLEEP_SCREEN: Screen = Screen::named("sleeping");
 /// Darkens the picture while lying in bed (`shaders/post/sleep.wgsl`).
 const SLEEP_EFFECT: &str = "sleep";
 
-/// The client's side: since when it lies in bed, and the last message with when it came.
+/// The client's side: since when it lies in bed.
 static LYING_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
-static SHOWN: Mutex<Option<(u32, Instant)>> = Mutex::new(None);
 
 fn client(r: &mut Registry) {
-    r.client_packet(&MESSAGE, |_, m| *SHOWN.lock().unwrap() = Some((m, Instant::now())));
     r.client_packet(&LYING, |c, lying| {
         if lying != 0 {
             *LYING_SINCE.lock().unwrap() = Some(Instant::now());
@@ -400,16 +394,6 @@ fn client(r: &mut Registry) {
     r.client_frame(|c| {
         if let Some(since) = *LYING_SINCE.lock().unwrap() {
             c.post_effect(SLEEP_EFFECT, (since.elapsed().as_secs_f32() / 2.5).clamp(0.01, 1.0));
-        }
-        let mut shown = SHOWN.lock().unwrap();
-        if let Some((m, at)) = *shown {
-            let t = at.elapsed().as_secs_f32();
-            if t > 3.0 {
-                *shown = None;
-            } else {
-                let alpha = ((3.0 - t) / 0.5).clamp(0.0, 1.0);
-                c.screen_text(0.5, 0.72, MESSAGES[m as usize % MESSAGES.len()], &[], 0xffffff00 | (alpha * 255.0) as u32, 1.0);
-            }
         }
     });
     r.screen(&SLEEP_SCREEN, |ui| {

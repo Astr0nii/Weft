@@ -70,6 +70,8 @@ pub struct ServerConfig {
 }
 
 pub struct Player {
+    /// What `/title times` set for the next ones.
+    title_times: Option<[f32; 3]>,
     pub name: String,
     /// The skin this player sent, passed on to everyone who joins.
     skin: Option<Arc<Vec<u8>>>,
@@ -342,7 +344,8 @@ impl Server {
                     .to_string();
                 let msg = Msg::new("chat.message", vec![Arg::Text("Server".into()), Arg::Text(text)]);
                 for p in &mut self.players {
-                    p.conn.send(ToClient::Chat(msg.clone()));
+                    p.conn
+                        .send(ToClient::Show(crate::net::Shown::chat(msg.clone())));
                 }
             }
             "op" | "deop" => match find(self) {
@@ -465,6 +468,7 @@ impl Server {
     fn accept(&mut self) {
         while let Ok(conn) = self.incoming.try_recv() {
             self.players.push(Player {
+                title_times: None,
                 skin: None,
                 avatar: None,
                 name: String::new(),
@@ -551,7 +555,8 @@ impl Server {
             if *left == 0 {
                 let note = Msg::new("command.tick.sprinted", vec![Arg::Int(*all as i64), Arg::Int(start.elapsed().as_millis() as i64)]);
                 for p in &mut self.players {
-                    p.conn.send(ToClient::Chat(note.clone()));
+                    p.conn
+                        .send(ToClient::Show(crate::net::Shown::chat(note.clone())));
                 }
                 self.sprint = None;
             }
@@ -651,6 +656,7 @@ impl Server {
         let mut sounds: Vec<Vec<(u32, DVec3, f32, f32)>> = vec![Vec::new(); self.players.len()];
         for ev in events {
             match ev {
+                DimEvent::Show { who, shown } => self.show(who, shown),
                 DimEvent::PlayAction { id, name, looping } => {
                     for p in self
                         .players
@@ -705,7 +711,8 @@ impl Server {
                         log::info!("{} died", p.name);
                         let line = death_message(c, cause, killer, p.name.clone());
                         for q in players.iter_mut().filter(|q| q.joined) {
-                            q.conn.send(ToClient::Chat(line.clone()));
+                            q.conn
+                                .send(ToClient::Show(crate::net::Shown::chat(line.clone())));
                         }
                     }
                 }
@@ -994,7 +1001,8 @@ impl Server {
         p.conn
             .send(ToClient::Weather { raining: dims[to as usize].raining, thunder: dims[to as usize].thunder });
         if to == c.void_dim && from != to as usize {
-            p.conn.send(ToClient::Chat(void_note(c)));
+            p.conn
+                .send(ToClient::Show(crate::net::Shown::chat(void_note(c))));
         }
     }
 
@@ -1129,6 +1137,29 @@ impl Server {
             .limit
             .unwrap_or(if matches!(s.base, 'p' | 'r' | 's') { 1 } else { usize::MAX });
         found.into_iter().take(limit).map(|f| (f.0, f.1)).collect()
+    }
+
+    /// Puts text on the screens of `who`.
+    pub fn show(&mut self, who: weft_abi::Who, shown: crate::net::Shown) {
+        use weft_abi::Who;
+        for pi in 0..self.players.len() {
+            let p = &self.players[pi];
+            let to_them = p.joined
+                && match who {
+                    Who::Player(id) => p.entity == id,
+                    Who::All => true,
+                    Who::Dimension(d) => p.dim == d,
+                    Who::Near(d, at, radius) => {
+                        p.dim == d
+                            && self.dims[d as usize]
+                                .entity(p.entity)
+                                .is_some_and(|e| (e.pos - DVec3::from_array(at)).length_squared() < radius * radius)
+                    }
+                };
+            if to_them {
+                self.players[pi].conn.send(ToClient::Show(shown.clone()));
+            }
+        }
     }
 
     fn player_index(&self, entity: u64) -> Option<usize> {

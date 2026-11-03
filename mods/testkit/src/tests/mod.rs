@@ -37,6 +37,7 @@ pub fn all() -> Vec<TestDef> {
         ui::creative_inventory,
         ui::chat,
         ui::chat_overflow,
+        ui::text_on_screen,
         ui::mod_settings,
         ui::recipe_viewer,
         ui::inventory_hotkeys,

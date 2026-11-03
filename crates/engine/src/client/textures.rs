@@ -252,13 +252,16 @@ impl GameTextures {
     /// animated -> (offset into `frames`, count | total ticks << 16 | interpolate << 31), then
     /// every texture's size. Shader packs are copies of that shader, also of older ones: new
     /// things go after what they read.
-    /// `frames`: animation frames (index | ticks << 16), then from `overlays` per block texture
-    /// its overlay id + 1 or 0.
+    /// `frames`: the number of texture ids (where `info`'s sizes start, over two), animation
+    /// frames (index | ticks << 16), then from `overlays` per block texture its overlay id + 1 or
+    /// 0. The count is there because `arrayLength` is not to be trusted: on macOS (MoltenVK, push
+    /// descriptors) it came back longer than the table, and sizes read past it drew every block
+    /// in one flat color.
     pub fn world_tables(&self) -> (Vec<u32>, Vec<u32>, u32) {
         let i = self.inner.borrow();
         let mut info: Vec<u32> = Vec::with_capacity(i.ids.len() * 3);
         let mut sizes: Vec<u32> = Vec::with_capacity(i.ids.len());
-        let mut frames: Vec<u32> = vec![0];
+        let mut frames: Vec<u32> = vec![i.ids.len() as u32];
         for &e in &i.ids {
             let en = &i.entries[e as usize];
             sizes.push(if en.frames.is_empty() { 16 } else { en.size.max(1) });

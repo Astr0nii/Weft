@@ -138,6 +138,78 @@ macro_rules! messages {
 pub const AVATAR_BYTES: usize = 512 * 1024;
 
 wire_struct! {
+    /// Text for the screen, however it ends up looking (`abi::ShowDesc`). Times below zero or a
+    /// scale of 0 are for the client to fill in (`settled`). `from`: what the chat's visibility
+    /// setting goes by.
+    #[derive(Clone, Debug)]
+    pub struct Shown {
+        pub place: u32,
+        pub msg: crate::ui::text::Msg,
+        pub id: String,
+        pub times: [f32; 3],
+        pub scale: f32,
+        pub at: Option<[f32; 2]>,
+        pub color: Option<u32>,
+        pub from: u8,
+    }
+}
+
+impl Shown {
+    pub const SYSTEM: u8 = 0;
+    pub const PLAYER: u8 = 1;
+    /// The answer to a command of whoever gets it.
+    pub const REPLY: u8 = 2;
+
+    pub fn new(place: u32, msg: crate::ui::text::Msg) -> Shown {
+        Shown { place, msg, id: String::new(), times: [-1.0; 3], scale: 0.0, at: None, color: None, from: Shown::SYSTEM }
+    }
+
+    /// A chat line.
+    pub fn chat(msg: crate::ui::text::Msg) -> Shown {
+        Shown::new(weft_abi::show_place::CHAT, msg)
+    }
+
+    /// What its place is (`hud::PLACES`).
+    pub fn look(&self) -> &'static crate::hud::Place {
+        crate::hud::PLACES
+            .get(self.place as usize)
+            .unwrap_or(&crate::hud::PLACES[0])
+    }
+
+    /// With what was left open as its place has it.
+    pub fn settled(mut self) -> Shown {
+        let look = self.look();
+        if self.times[1] < 0.0 {
+            self.times = look.times;
+        }
+        if self.scale <= 0.0 {
+            self.scale = look.scale;
+        }
+        self.at = self.at.or(look.own_at);
+        self
+    }
+
+    /// Asks for what its place and id show to go away.
+    pub fn clears(&self) -> bool {
+        self.msg.key.is_empty() && self.msg.args.is_empty()
+    }
+
+    /// How opaque it is `age` seconds in, 0 once over.
+    pub fn alpha(&self, age: f32) -> f32 {
+        let [fade_in, stay, fade_out] = self.times;
+        if age < fade_in {
+            age / fade_in
+        } else if age < fade_in + stay {
+            1.0
+        } else if age < fade_in + stay + fade_out {
+            (fade_in + stay + fade_out - age) / fade_out
+        } else {
+            0.0
+        }
+    }
+}
+
+wire_struct! {
     /// A player's own model: its files, which the server passes on unread.
     #[derive(Clone, Debug, Default)]
     pub struct AvatarData {
@@ -271,7 +343,7 @@ messages! {
         CloseMenu,
         Died,
         /// Formatted by the client in its own language.
-        Chat(crate::ui::text::Msg),
+        Show(Shown),
         /// The answer to `ToServer::Command` `id`, for whoever ran it rather than the chat.
         CommandReply { id: u32, lines: Vec<crate::ui::text::Msg> },
         Disconnect(String),

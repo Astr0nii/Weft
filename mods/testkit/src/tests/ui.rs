@@ -360,9 +360,113 @@ pub async fn chat_overflow(t: T) -> R {
     t.check(t.click_ui("text:Chat", 0), "a button for the chat's settings");
     t.screen("core:chat_settings").await?;
     t.frames(2).await?;
-    t.laid_out(&["text:Chat width: 320", "text:Open chat height: 180", "text:Dark behind the chat: 50%"]);
+    t.laid_out(&["text:Chat width: 320", "text:Open chat height: 180", "text:Dark behind the chat: 50%", "text:Chat: Shown"]);
     t.shot("settings").await?;
+    t.check(t.click_ui("text:Chat: Shown", 0), "a button for who shows in the chat");
+    t.until("the next choice on the button", Duration::from_secs(2), |t| t.c().ui_rect("text:Chat: Commands only").is_some())
+        .await?;
+    weft_sdk::settings::CHAT_VISIBILITY.set(0);
     t.c().close_screen();
+    Ok(())
+}
+
+/// One way of putting text on the screen: every place and audience, its place's defaults and what
+/// a mod can change of them, and the chat's hooks and setting on top.
+pub async fn text_on_screen(t: T) -> R {
+    t.world(3).await?;
+    let seen = |t: &T, query: &str| t.c().ui_rect(query);
+
+    t.op("show near hint a_hint").await?;
+    t.until("the hint", Duration::from_secs(5), |t| t.c().ui_rect("text:a_hint").is_some())
+        .await?;
+    let hint = seen(&t, "text:a_hint").unwrap_or_default();
+    t.check(hint[1] > 0.7, format!("a hint is above the hotbar, at {hint:?}"));
+    t.until("the hint to go", Duration::from_secs(6), |t| t.c().ui_rect("text:a_hint").is_none())
+        .await?;
+    t.op("show far hint not_here").await?;
+    t.secs(0.3).await?;
+    t.check(seen(&t, "text:not_here").is_none(), "no hint for who is far away");
+
+    t.op("show dim title a_title").await?;
+    t.op("show all subtitle a_subtitle").await?;
+    t.until("the title", Duration::from_secs(5), |t| t.c().ui_rect("text:a_title").is_some())
+        .await?;
+    t.frames(2).await?;
+    let (title, sub) = (seen(&t, "text:a_title").ok_or("no title text")?, seen(&t, "text:a_subtitle").ok_or("no subtitle text")?);
+    t.check(title[3] > sub[3], "a title is bigger than a subtitle");
+    t.check(title[1] + title[3] <= 0.5 && sub[1] >= 0.5, format!("the crosshair is between them: {title:?} {sub:?}"));
+    t.cmd("/title @a title {#ff5555}Red {#ffffff}and white")
+        .await?;
+    t.op("show me corner a_corner").await?;
+    t.op("show me hint a_hint").await?;
+    t.frames(30).await?;
+    t.shot("all").await?;
+    t.cmd("/title @a clear").await?;
+    t.frames(2).await?;
+    t.check(seen(&t, "text:a_title").is_none(), "cleared titles are gone");
+
+    t.op("show me corner a_corner").await?;
+    t.until("the free text", Duration::from_secs(5), |t| t.c().ui_rect("text:a_corner").is_some())
+        .await?;
+    let corner = seen(&t, "text:a_corner").unwrap_or_default();
+    t.check(corner[0] + corner[2] > 0.99 && corner[1] < 0.01, format!("at(1, 0) is the corner: {corner:?}"));
+
+    let line = |t: &T, i| t.c().chat_line(i);
+    t.c().chat_local("before", &[]);
+    t.c().chat_local("one", &[]).id("testkit:line");
+    t.c().chat_local("after", &[]);
+    t.c().chat_local("two", &[]).id("testkit:line");
+    t.frames(2).await?;
+    t.check_eq(
+        [line(&t, 2), line(&t, 1), line(&t, 0)],
+        ["before".to_string(), "two".to_string(), "after".to_string()],
+        "a line replaced where it stands",
+    );
+    t.c().hint("short", &[]).times(0.0, 0.2, 0.0);
+    t.frames(2).await?;
+    t.check(seen(&t, "text:short").is_some(), "the client's own hint");
+    t.secs(0.4).await?;
+    t.check(seen(&t, "text:short").is_none(), "times are kept");
+
+    t.c().chat_local("short_line", &[]).times(0.0, 0.2, 0.0);
+    t.frames(2).await?;
+    t.check(seen(&t, "text:short_line").is_some(), "a line with its own times");
+    t.secs(0.4).await?;
+    t.check(seen(&t, "text:short_line").is_none(), "the HUD follows a chat line's times");
+
+    t.cmd("/tellraw @a {#55ff55}green").await?;
+    t.check_eq(line(&t, 0), "green".to_string(), "/tellraw formats");
+    t.c().chat("{#55ff55}typed");
+    t.until("the typed line", Duration::from_secs(5), |t| t.c().chat_line(0).contains("typed"))
+        .await?;
+    t.check(line(&t, 0).contains("{#55ff55}typed"), "typing doesn't format");
+
+    t.cmd("/rule testkit:chat_hooks 1").await?;
+    t.c().chat("forbidden");
+    t.c().chat("allowed");
+    t.until("the allowed line", Duration::from_secs(5), |t| t.c().chat_line(0).contains("allowed"))
+        .await?;
+    t.check_eq(line(&t, 0), "allowed from a mod".to_string(), "chat_format writes the line");
+    t.check(!line(&t, 1).contains("forbidden"), "question::CHAT keeps a line out");
+    t.secs(0.2).await?;
+    t.check_eq(t.op("last_said").await?, "allowed".to_string(), "CHAT_MESSAGE tells what was said");
+    t.cmd("/rule testkit:chat_hooks 0").await?;
+
+    weft_sdk::settings::CHAT_VISIBILITY.set(1);
+    t.c().chat("no_players");
+    t.cmd("/tellraw @a system_line").await?;
+    let lines: Vec<String> = (0..3).map(|i| line(&t, i)).collect();
+    t.check(lines[0] == "system_line" && !lines.iter().any(|l| l.contains("no_players")), format!("only system lines: {lines:?}"));
+    weft_sdk::settings::CHAT_VISIBILITY.set(2);
+    let reply = t.cmd("/time query").await?;
+    t.check(reply.contains("time"), "one's commands still answer in a hidden chat");
+    t.c().chat("/tellraw @a hidden_system");
+    t.secs(0.3).await?;
+    t.check(!line(&t, 0).contains("hidden_system"), "a hidden chat shows no system lines");
+    t.c().chat("still_hidden");
+    t.secs(0.3).await?;
+    t.check(!line(&t, 0).contains("still_hidden"), "a hidden chat shows no one");
+    weft_sdk::settings::CHAT_VISIBILITY.set(0);
     Ok(())
 }
 

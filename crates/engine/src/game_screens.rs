@@ -190,7 +190,7 @@ pub fn chat_lines(ui: &mut Ui, client: &crate::client::Client, lang: &crate::ui:
     let said: Vec<_> = client
         .chat
         .iter()
-        .filter(|(_, at)| open || now.duration_since(*at).as_secs() < 10)
+        .filter(|(s, at)| open || s.alpha(now.duration_since(*at).as_secs_f32()) > 0.0)
         .collect();
     // Over the game, only what fits; a line is about this tall.
     let room = if open { usize::MAX } else { (look.closed_height / 11.0).max(1.0) as usize };
@@ -220,8 +220,10 @@ pub fn chat_lines(ui: &mut Ui, client: &crate::client::Client, lang: &crate::ui:
         shown.self_align(crate::ui::Align::Start)
     };
     let lines = ui.container(style, |ui| {
-        for (line, _) in said.iter().rev().take(room).rev() {
-            ui.text(line.spans(lang, Some(input)), "chat");
+        for (line, at) in said.iter().rev().take(room).rev() {
+            // Open it is the history, what is over included.
+            let alpha = if open { 1.0 } else { line.alpha(now.duration_since(*at).as_secs_f32()) };
+            crate::hud::shown_text(ui, line, alpha, lang, Some(input));
         }
     });
     ui.set_id(lines, "chat_lines");

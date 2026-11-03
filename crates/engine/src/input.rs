@@ -29,6 +29,7 @@ pub const ENGINE_KEYS: &[(&str, Key)] = {
         ("core:jump", Key::Code(Space)),
         ("core:sneak", Key::Code(ShiftLeft)),
         ("core:sprint", Key::Code(ControlLeft)),
+        ("core:crawl", Key::Code(KeyC)),
         ("core:fly", Key::Code(KeyF)),
         ("core:inventory", Key::Code(KeyE)),
         ("core:drop", Key::Code(KeyQ)),

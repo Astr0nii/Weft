@@ -38,6 +38,22 @@ pub struct ChatLook {
     pub dim: u8,
 }
 
+/// Which chat lines a player wants.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChatVisibility {
+    All,
+    System,
+    Hidden,
+}
+
+pub fn chat_visibility() -> ChatVisibility {
+    match number("core:chat_visibility") as u32 {
+        0 => ChatVisibility::All,
+        1 => ChatVisibility::System,
+        _ => ChatVisibility::Hidden,
+    }
+}
+
 pub fn chat_look() -> ChatLook {
     ChatLook {
         width: number("core:chat_width") as f32,

@@ -49,9 +49,17 @@ pub struct Msg {
     pub args: Vec<Arg>,
 }
 
+/// What a key starts with to be its own template: no translation to look for and warn about.
+const TEMPLATE: char = '\u{1}';
+
 impl Msg {
     pub fn new(key: &str, args: Vec<Arg>) -> Msg {
         Msg { key: key.to_string(), args }
+    }
+
+    /// `template` as it is, not a translation, formatting and all.
+    pub fn template(template: &str) -> Msg {
+        Msg { key: format!("{TEMPLATE}{template}"), args: Vec::new() }
     }
 
     pub fn spans(&self, lang: &Lang, input: Option<&Input>) -> Vec<Span> {
@@ -438,6 +446,8 @@ pub fn format(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>) {
 pub fn message(key: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>) {
     if key.is_empty() {
         format("{0}", args, cx, out);
+    } else if let Some(template) = key.strip_prefix(TEMPLATE) {
+        format(template, args, cx, out);
     } else {
         format(cx.lang.get(key), args, cx, out);
     }

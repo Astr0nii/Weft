@@ -103,6 +103,10 @@ pub enum DimEvent {
         name: String,
         looping: bool,
     },
+    Show {
+        who: abi::Who,
+        shown: crate::net::Shown,
+    },
 }
 
 /// Path searches a region does per tick at most (in parallel); more wait for the next tick (a

@@ -35,6 +35,10 @@ fn s(x: &str) -> Str {
 }
 
 impl Client {
+    pub(crate) fn ctx(&self) -> *mut abi::ClientCtx {
+        self.raw
+    }
+
     pub(crate) fn from_raw(raw: *mut abi::ClientCtx) -> Client {
         Client { raw }
     }
@@ -729,6 +733,7 @@ pub mod keys {
     pub static JUMP: Key = Key::named("core:jump");
     pub static SNEAK: Key = Key::named("core:sneak");
     pub static SPRINT: Key = Key::named("core:sprint");
+    pub static CRAWL: Key = Key::named("core:crawl");
     pub static FLY: Key = Key::named("core:fly");
     pub static INVENTORY: Key = Key::named("core:inventory");
     pub static DROP: Key = Key::named("core:drop");

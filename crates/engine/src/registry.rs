@@ -313,6 +313,7 @@ pub struct Game {
     /// Sound categories by `SoundDef::category`: the engine's six first.
     pub sound_categories: Vec<SoundCategory>,
     pub huds: Vec<HudElement>,
+    pub chat_format: Option<(ModId, Callback)>,
     pub player_menu: Option<u32>,
     pub player_layout: PlayerLayout,
     /// Mods' screens; of two with one name the mod loaded last comes last.
@@ -657,6 +658,7 @@ pub struct RawGame {
     pub sound_categories: Vec<SoundCategory>,
     pub menus: Vec<(usize, MenuDef)>,
     pub huds: Vec<HudElement>,
+    pub chat_format: Option<(ModId, Callback)>,
     /// (owner, name, usage, callback).
     pub commands: Vec<(ModId, String, String, Callback)>,
     /// Commands that run on the client: (owner, name, usage, callback).
@@ -933,6 +935,7 @@ pub const ENGINE_EVENTS: &[(&str, &str, u32)] = {
         (abi::event::PLAYER_JOINED, abi::PlayerEvent::SCHEMA, size_of::<abi::PlayerEvent>() as u32),
         (abi::event::PLAYER_RESPAWNED, abi::PlayerEvent::SCHEMA, size_of::<abi::PlayerEvent>() as u32),
         (abi::event::ITEM_PICKED_UP, abi::Pickup::SCHEMA, size_of::<abi::Pickup>() as u32),
+        (abi::event::CHAT_MESSAGE, abi::ChatMessage::SCHEMA, size_of::<abi::ChatMessage>() as u32),
         (abi::event::ENTITY_HURT, abi::Hurt::SCHEMA, size_of::<abi::Hurt>() as u32),
         (abi::event::ITEM_USED, abi::ItemUsed::SCHEMA, size_of::<abi::ItemUsed>() as u32),
     ]
@@ -1396,6 +1399,7 @@ pub fn freeze(
         sound_categories.extend(r.sound_categories);
         menus.extend(r.menus);
         g.huds.extend(r.huds);
+        g.chat_format = r.chat_format.or(g.chat_format);
         if let Some((owner, name)) = r.player_menu {
             if player_menu
                 .as_ref()
