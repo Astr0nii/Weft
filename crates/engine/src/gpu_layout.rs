@@ -119,33 +119,40 @@ pub mod terrain {
         /// Header words of the description (`terrain_gpu::describe`).
         d {
             STONE = 0, BASE = 1, HAS_SEA = 2, SEA = 3, WATER = 4, HAS_CAVES = 5, LAVA = 6,
-            LAVA_FROM = 7, LAVA_TO = 8, FEATURES = 9, RULES = 10, CAVE_BIOMES = 11,
+            LAVA_FROM = 7, LAVA_TO = 8, FIELDS = 9, FEATURES = 10, RULES = 11, CAVE_BIOMES = 12,
             /// The noise seeds, in `SEEDS` order.
-            SEEDS = 12,
-            FEAT_OFF = 26, RULE_OFF = 27, CAVE_OFF = 28,
+            SEEDS = 13,
+            FIELD_OFF = 18, FEAT_OFF = 19, RULE_OFF = 20, CAVE_OFF = 21,
             /// Distant terrain's scattered things (`describe_lod`).
-            SCATTER_OFF = 29,
+            SCATTER_OFF = 22,
             /// The header's length.
-            LEN = 30,
+            LEN = 23,
         }
-        /// Words per record of the description, per cube's mods' heights and per cube made.
+        /// Words per record of the description and per cube made. A rule is: biome, lowest and
+        /// highest surface height, the word where its conditions start and how many there
+        /// are, top block, filler block, depth, under block and layers, deep top block
+        /// and the height below which it applies, ice block, a flag for bare stone and the
+        /// height above which that is.
         words {
-            FEATURE = 8,
-            /// A mask step: kind, then five words.
-            MASK = 6,
-            RULE = 24,
+            /// An expression step: kind, the noise seed (made from its salt), then `a`, `b`, `c`.
+            STEP = 5,
+            /// A field: where its steps start (a word index in the description) and how many.
+            FIELD = 2,
+            /// A feature: start and count of its height's steps, and of its mask's (count 0: none).
+            FEATURE = 4,
+            RULE = 15,
+            /// A condition of a rule: the field, from, to.
+            COND = 3,
             CAVE = 5,
             /// Per scatter and biome: threshold (two words), canopy radius, top, block.
             SCATTER_BIOME = 5,
-            /// Per mod feature and cube: heights at the 256 columns and the 25 corners caves
-            /// measure from.
-            CUSTOM = 281,
             OUT = 2560,
         }
-        /// Sizes of the shader's own arrays.
+        /// Sizes of the shader's own arrays: the values of the fields at one column, and what an
+        /// expression keeps on its stack.
         limit {
-            FEATURES = 32,
-            MASK_DEPTH = 8,
+            FIELDS = 32,
+            DEPTH = 16,
         }
         /// Where things are in a cube made (`words::OUT`): blocks two per word from 0, then biomes
         /// (cave biomes included) two per word, column heights, column biomes two per word.
@@ -160,45 +167,30 @@ pub mod terrain {
             SIDE = 34,
             SAMPLES = 34 * 34,
         }
-        /// Mask step kinds.
-        mask {
-            NOISE = weft_abi::terrain_mask::NOISE,
-            CONTINENT = weft_abi::terrain_mask::CONTINENT,
-            TEMPERATURE = weft_abi::terrain_mask::TEMPERATURE,
-            HUMIDITY = weft_abi::terrain_mask::HUMIDITY,
-            ALL = weft_abi::terrain_mask::ALL,
-            NOT = weft_abi::terrain_mask::NOT,
-        }
-        /// Feature presets.
-        preset {
-            CONTINENTS = weft_abi::terrain_preset::CONTINENTS,
-            HILLS = weft_abi::terrain_preset::HILLS,
-            MOUNTAINS = weft_abi::terrain_preset::MOUNTAINS,
-            PLATEAUS = weft_abi::terrain_preset::PLATEAUS,
-            CANYONS = weft_abi::terrain_preset::CANYONS,
-            DUNES = weft_abi::terrain_preset::DUNES,
-            CRATERS = weft_abi::terrain_preset::CRATERS,
+        /// Expression step kinds.
+        expr {
+            CONST = weft_abi::expr::CONST,
+            X = weft_abi::expr::X,
+            Z = weft_abi::expr::Z,
+            FIELD = weft_abi::expr::FIELD,
+            ADD = weft_abi::expr::ADD,
+            SUB = weft_abi::expr::SUB,
+            MUL = weft_abi::expr::MUL,
+            DIV = weft_abi::expr::DIV,
+            REM = weft_abi::expr::REM,
+            MIN = weft_abi::expr::MIN,
+            MAX = weft_abi::expr::MAX,
+            ABS = weft_abi::expr::ABS,
+            RAMP = weft_abi::expr::RAMP,
+            NOISE = weft_abi::expr::NOISE,
+            SITE = weft_abi::expr::SITE,
         }
     }
 
     /// The noise seeds the description carries from `d::SEEDS` on, the shader's `S_<name>`:
     /// made from the salts the CPU uses.
-    pub const SEEDS: [(&str, u64); 14] = [
-        ("CONT", salt::CONTINENT),
-        ("TEMP", salt::TEMPERATURE),
-        ("HUM", salt::HUMIDITY),
-        ("HILLS", salt::HILLS),
-        ("MTN", salt::MOUNTAINS),
-        ("PLAT", salt::PLATEAUS),
-        ("CAN", salt::CANYONS),
-        ("DUNE", salt::DUNES),
-        ("CRAT", salt::CRATERS),
-        ("C1", salt::CAVE_A),
-        ("C2", salt::CAVE_B),
-        ("C3", salt::CAVERN),
-        ("C4", salt::CAVERN_ROOF),
-        ("LAKE", salt::LAVA),
-    ];
+    pub const SEEDS: [(&str, u64); 5] =
+        [("C1", salt::CAVE_A), ("C2", salt::CAVE_B), ("C3", salt::CAVERN), ("C4", salt::CAVERN_ROOF), ("LAKE", salt::LAVA)];
 
     /// What goes in front of `terrain.wgsl`: the constants, the seeds' indices, the bindings
     /// and the push constants.
@@ -220,7 +212,7 @@ pub mod terrain {
 ",
             "@group(1) @binding(0) var<storage, read> desc: array<i32>;
 ",
-            "// Per cube: x, y, z, unused, then per mod feature `WORDS_CUSTOM` heights.
+            "// Per cube: x, y, z, unused.
 ",
             "@group(1) @binding(1) var<storage, read> jobs: array<i32>;
 ",
@@ -230,7 +222,6 @@ pub mod terrain {
 ",
             "struct Params {
     cubes: u32,
-    custom: u32,
 }
 ",
             "var<immediate> params: Params;
@@ -1035,13 +1026,17 @@ mod tests {
             .expect("records validate");
     }
 
-    /// The terrain prelude parses, and the header has room for every seed.
+    /// The terrain shader with its prelude validates, and the header has room for every seed.
     #[test]
     fn terrain_prelude() {
         use terrain::*;
-        assert_eq!(d::SEEDS as usize + SEEDS.len(), d::FEAT_OFF as usize);
+        assert_eq!(d::SEEDS as usize + SEEDS.len(), d::FIELD_OFF as usize);
         assert!(d::SCATTER_OFF < d::LEN);
-        naga::front::wgsl::parse_str(&prelude()).expect("terrain prelude parses");
+        let src = prelude() + include_str!("../assets/shaders/terrain.wgsl");
+        let module = naga::front::wgsl::parse_str(&src).expect("terrain shader parses");
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+            .validate(&module)
+            .expect("terrain shader validates");
     }
 
     /// naga's layout of every generated struct matches the Rust one, so a field the WGSL rules

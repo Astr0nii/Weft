@@ -2,15 +2,18 @@
 //! rules that pick each column's biome and surface, water and caves. The dimension's mod
 //! describes it, other mods edit it, and the merged result is evaluated here, so structures,
 //! decorations and spawn search all read the same columns from one cache.
+//!
+//! Heights, masks and the fields rules look at are expressions (`abi::ExprStep`), run here and
+//! by `shaders/terrain.wgsl` with the same integer math.
 
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
-use weft_abi::{self as abi, Callback, ModId, TerrainColumn, rule_field as rf, terrain_op as op};
-use weft_noise::fixed::{Fields, ONE, div_floor, hash, perlin2, perlin3, q4, q12, ramp, salt, seed32, shape};
+use weft_abi::{self as abi, ModId, TerrainColumn, expr as ek, rule_field as rf, terrain_op as op};
+use weft_noise::fixed::{ONE, div_floor, fbm, hash, perlin2, perlin3, q4, q12, ramp, salt, seed32, site};
 
-use crate::host;
+use crate::gpu_layout::terrain::limit;
 
 /// One `TerrainDesc` as sent, owned.
 pub struct RawTerrain {
@@ -25,16 +28,35 @@ pub struct RawTerrain {
     pub size: f64,
     pub feature: RawFeature,
     pub rule: RawRule,
+    pub field: Vec<RawStep>,
+}
+
+/// One `ExprStep` as sent, owned.
+#[derive(Clone)]
+pub struct RawStep {
+    pub kind: u32,
+    pub salt: u64,
+    pub a: i32,
+    pub b: i32,
+    pub c: i32,
+    pub name: String,
+}
+
+impl RawStep {
+    fn new(kind: u32, a: i32) -> RawStep {
+        RawStep { kind, salt: 0, a, b: 0, c: 0, name: String::new() }
+    }
+
+    fn noise(salt: u64, size: i32, octaves: i32) -> RawStep {
+        RawStep { salt, b: octaves, ..RawStep::new(ek::NOISE, size) }
+    }
 }
 
 #[derive(Clone)]
 pub struct RawFeature {
-    pub owner: ModId,
     pub name: String,
-    pub preset: u32,
-    pub params: [f64; 4],
-    pub height: Callback,
-    pub mask: Vec<abi::MaskStep>,
+    pub height: Vec<RawStep>,
+    pub mask: Vec<RawStep>,
 }
 
 #[derive(Clone)]
@@ -42,11 +64,8 @@ pub struct RawRule {
     pub name: String,
     pub fields: u32,
     pub biome: String,
-    pub temperature: (f64, f64),
-    pub humidity: (f64, f64),
-    pub continent: (f64, f64),
+    pub ranges: Vec<(String, f64, f64)>,
     pub height: (i32, i32),
-    pub feature: (String, f64, f64),
     pub top: String,
     pub filler: String,
     pub depth: i32,
@@ -63,20 +82,16 @@ impl RawRule {
         if has(rf::BIOME) {
             self.biome = edit.biome.clone();
         }
-        if has(rf::TEMPERATURE) {
-            self.temperature = edit.temperature;
-        }
-        if has(rf::HUMIDITY) {
-            self.humidity = edit.humidity;
-        }
-        if has(rf::CONTINENT) {
-            self.continent = edit.continent;
+        if has(rf::RANGES) {
+            for r in &edit.ranges {
+                match self.ranges.iter_mut().find(|x| x.0 == r.0) {
+                    Some(x) => *x = r.clone(),
+                    None => self.ranges.push(r.clone()),
+                }
+            }
         }
         if has(rf::HEIGHT) {
             self.height = edit.height;
-        }
-        if has(rf::FEATURE) {
-            self.feature = edit.feature.clone();
         }
         if has(rf::SURFACE) {
             (self.top, self.filler, self.depth) = (edit.top.clone(), edit.filler.clone(), edit.depth);
@@ -105,11 +120,13 @@ pub unsafe fn copy_rule(r: &abi::BiomeRuleDesc) -> RawRule {
             name: s(r.name),
             fields: r.fields,
             biome: s(r.biome),
-            temperature: (r.temperature[0], r.temperature[1]),
-            humidity: (r.humidity[0], r.humidity[1]),
-            continent: (r.continent[0], r.continent[1]),
+            ranges: r
+                .ranges
+                .as_slice()
+                .iter()
+                .map(|f| (s(f.name), f.min, f.max))
+                .collect(),
             height: (r.height[0], r.height[1]),
-            feature: (s(r.feature), r.feature_range[0], r.feature_range[1]),
             top: s(r.top),
             filler: s(r.filler),
             depth: r.depth,
@@ -118,6 +135,18 @@ pub unsafe fn copy_rule(r: &abi::BiomeRuleDesc) -> RawRule {
             bare_above: r.bare_above,
             ice: s(r.ice),
         }
+    }
+}
+
+/// # Safety
+/// The strings in `steps` must be valid for the call.
+unsafe fn copy_steps(steps: abi::Slice<abi::ExprStep>) -> Vec<RawStep> {
+    unsafe {
+        steps
+            .as_slice()
+            .iter()
+            .map(|s| RawStep { kind: s.kind, salt: s.salt, a: s.a, b: s.b, c: s.c, name: s.name.as_str().to_string() })
+            .collect()
     }
 }
 
@@ -137,118 +166,145 @@ pub unsafe fn copy(owner: ModId, d: &abi::TerrainDesc) -> RawTerrain {
             to: d.to,
             value: d.value,
             size: d.size,
-            feature: RawFeature {
-                owner,
-                name: s(f.name),
-                preset: f.preset,
-                params: f.params,
-                height: f.height,
-                mask: f.mask.as_slice().to_vec(),
-            },
+            feature: RawFeature { name: s(f.name), height: copy_steps(f.height), mask: copy_steps(f.mask) },
             rule: copy_rule(&d.rule),
+            field: copy_steps(d.field),
         }
     }
 }
 
-/// Where a feature applies, 0..1 (Q12; scales Q4, see `weft_noise::fixed`).
-#[derive(Clone, Debug)]
-pub enum Mask {
-    Noise { salt: u64, scale: i32, octaves: u32, from: i32, to: i32 },
-    Continent(i32, i32),
-    Temperature(i32, i32),
-    Humidity(i32, i32),
-    All(Vec<Mask>),
-    Not(Box<Mask>),
+/// The most steps an expression may have.
+const MAX_STEPS: usize = 256;
+
+#[derive(Clone, Copy, Debug)]
+pub struct Step {
+    pub kind: u32,
+    pub salt: u64,
+    /// `ek::FIELD`: the field's index.
+    pub a: i32,
+    pub b: i32,
+    pub c: i32,
 }
 
-impl Mask {
-    /// From postfix steps; `None` for an empty or malformed list.
-    fn from_steps(steps: &[abi::MaskStep]) -> Option<Mask> {
-        use abi::terrain_mask as k;
-        let mut stack: Vec<Mask> = Vec::new();
-        for s in steps {
-            let m = match s.kind {
-                k::NOISE => Mask::Noise { salt: s.salt, scale: q4(s.scale), octaves: s.octaves, from: q12(s.from), to: q12(s.to) },
-                k::CONTINENT => Mask::Continent(q12(s.from), q12(s.to)),
-                k::TEMPERATURE => Mask::Temperature(q12(s.from), q12(s.to)),
-                k::HUMIDITY => Mask::Humidity(q12(s.from), q12(s.to)),
-                k::ALL => {
-                    let at = stack.len().checked_sub(s.count as usize)?;
-                    Mask::All(stack.split_off(at))
-                }
-                k::NOT => Mask::Not(Box::new(stack.pop()?)),
-                _ => return None,
+/// An expression checked and with its field names turned into indices; empty means 0.
+#[derive(Clone, Debug, Default)]
+pub struct Expr(pub Vec<Step>);
+
+/// The largest factor of a product, so it fits 32 bits.
+const MUL_LIMIT: i32 = 46340;
+
+impl Expr {
+    /// `raw` checked; `field` finds the fields it may use by name.
+    fn resolve(raw: &[RawStep], field: &dyn Fn(&str) -> Option<usize>) -> Result<Expr, String> {
+        if raw.len() > MAX_STEPS {
+            return Err(format!("{} steps, at most {MAX_STEPS}", raw.len()));
+        }
+        let (mut depth, mut deepest) = (0usize, 0usize);
+        let mut out = Vec::with_capacity(raw.len());
+        for (i, s) in raw.iter().enumerate() {
+            let pops = match s.kind {
+                ek::CONST | ek::X | ek::Z | ek::FIELD => 0,
+                ek::ABS | ek::RAMP => 1,
+                ek::ADD | ek::SUB | ek::MUL | ek::DIV | ek::REM | ek::MIN | ek::MAX | ek::NOISE | ek::SITE => 2,
+                kind => return Err(format!("step {i} is of unknown kind {kind}")),
             };
-            stack.push(m);
+            depth = depth
+                .checked_sub(pops)
+                .ok_or_else(|| format!("step {i} has too few values to work on"))?
+                + 1;
+            deepest = deepest.max(depth);
+            let a = match s.kind {
+                ek::FIELD => field(&s.name).ok_or_else(|| format!("no field named {}", s.name))? as i32,
+                _ => s.a,
+            };
+            out.push(Step { kind: s.kind, salt: s.salt, a, b: s.b, c: s.c });
         }
-        (stack.len() == 1).then(|| stack.pop()).flatten()
+        match depth {
+            1 if deepest <= limit::DEPTH as usize => Ok(Expr(out)),
+            1 => Err(format!("needs room for {deepest} values at once, at most {}", limit::DEPTH)),
+            0 => Err("has no steps".into()),
+            n => Err(format!("leaves {n} values instead of one")),
+        }
     }
 
-    /// At (`x`, `z`) in Q4.
-    pub fn value(&self, f: &Fields, x: i32, z: i32) -> i32 {
-        match self {
-            Mask::Noise { salt, scale, octaves, from, to } => ramp(f.fbm(*salt, x, z, *scale, *octaves), *from, *to),
-            Mask::Continent(a, b) => ramp(f.continent(x, z), *a, *b),
-            Mask::Temperature(a, b) => ramp(f.temperature(x, z), *a, *b),
-            Mask::Humidity(a, b) => ramp(f.humidity(x, z), *a, *b),
-            Mask::All(v) => v.iter().fold(ONE, |acc, m| (acc * m.value(f, x, z)) >> 12),
-            Mask::Not(m) => ONE - m.value(f, x, z),
+    /// Its value at (`x`, `z`) (Q4) given the values of the fields.
+    pub fn eval(&self, fields: &[i32], seed: u64, x: i32, z: i32) -> i32 {
+        let mut st = [0i32; limit::DEPTH as usize];
+        let mut sp = 0usize;
+        for s in &self.0 {
+            let v = match s.kind {
+                ek::CONST => s.a,
+                ek::X => x,
+                ek::Z => z,
+                ek::FIELD => fields[s.a as usize],
+                ek::ABS => {
+                    sp -= 1;
+                    st[sp].wrapping_abs()
+                }
+                ek::RAMP => {
+                    sp -= 1;
+                    ramp(st[sp], s.a, s.b)
+                }
+                ek::NOISE => {
+                    sp -= 2;
+                    fbm(seed32(seed, s.salt), st[sp], st[sp + 1], s.a, s.b as u32)
+                }
+                ek::SITE => {
+                    sp -= 2;
+                    site(seed32(seed, s.salt), st[sp], st[sp + 1], s.a, s.b, s.c)
+                }
+                kind => {
+                    sp -= 2;
+                    let (l, r) = (st[sp], st[sp + 1]);
+                    match kind {
+                        ek::ADD => l.wrapping_add(r),
+                        ek::SUB => l.wrapping_sub(r),
+                        ek::MUL => (l.clamp(-MUL_LIMIT, MUL_LIMIT) * r.clamp(-MUL_LIMIT, MUL_LIMIT)) >> 12,
+                        ek::DIV if r == 0 => 0,
+                        ek::DIV => l.wrapping_div(r),
+                        ek::REM => div_floor(l, r.max(1)).1,
+                        ek::MIN => l.min(r),
+                        _ => l.max(r),
+                    }
+                }
+            };
+            st[sp] = v;
+            sp += 1;
         }
+        if sp == 0 { 0 } else { st[0] }
+    }
+
+    /// Whether it uses the field with index `field`.
+    fn uses(&self, field: usize) -> bool {
+        self.0
+            .iter()
+            .any(|s| s.kind == ek::FIELD && s.a as usize == field)
     }
 }
 
-pub enum Height {
-    /// `abi::terrain_preset` and its parameters (Q4).
-    Preset(u32, [i32; 4]),
-    Custom(ModId, Callback),
+/// A named value over the world's columns that rules can ask for and expressions can use.
+pub struct Field {
+    pub name: String,
+    pub expr: Expr,
 }
+
+/// The height a feature adds is held to this (Q4, 16384 blocks) before its strength scales it.
+const HEIGHT_LIMIT: i32 = 1 << 18;
 
 pub struct Feature {
     pub name: String,
-    pub height: Height,
-    pub mask: Option<Mask>,
-}
-
-impl Feature {
-    /// Height (Q4) at (`x`, `z`) (Q4).
-    fn height(&self, f: &Fields, x: i32, z: i32) -> i32 {
-        use abi::terrain_preset as p;
-        match self.height {
-            Height::Preset(kind, [a, b, c, _]) => match kind {
-                p::CONTINENTS => shape::continents(f, x, z, a),
-                p::HILLS => shape::hills(f, x, z, a, b),
-                p::MOUNTAINS => shape::mountains(f, x, z, a, b),
-                p::PLATEAUS => shape::plateaus(f, x, z, a, b, c),
-                p::CANYONS => shape::canyons(f, x, z, a, b),
-                p::DUNES => shape::dunes(f, x, z, a, b),
-                p::CRATERS => shape::craters(f, x, z, a, b, c),
-                _ => 0,
-            },
-            Height::Custom(owner, cb) => {
-                let mut args = abi::FeatureArgs { seed: f.seed, x, z, height: 0 };
-                host::invoke(owner, cb, &mut args);
-                args.height
-            }
-        }
-    }
-
-    /// Its height (Q4) at (`x`, `z`) (Q4).
-    pub fn height_at(&self, f: &Fields, x: i32, z: i32) -> i32 {
-        self.height(f, x, z)
-    }
+    /// Q4.
+    pub height: Expr,
+    /// 0 to `ONE`; nothing is added where it isn't above 0. `None`: `ONE` everywhere.
+    pub mask: Option<Expr>,
 }
 
 /// A biome rule with names resolved: block states and biome ids.
 pub struct Rule {
     pub biome: u32,
-    /// Ranges in Q12.
-    pub temperature: (i32, i32),
-    pub humidity: (i32, i32),
-    pub continent: (i32, i32),
+    /// Index into `Terrain::fields`, then the range the field must be in (Q12).
+    pub ranges: Vec<(usize, i32, i32)>,
     pub height: (i32, i32),
-    /// Index into `Terrain::features`, `usize::MAX` for a feature that does not exist, and
-    /// the range of its strength (Q12).
-    pub feature: Option<(usize, i32, i32)>,
     pub top: Option<u32>,
     pub filler: Option<u32>,
     pub depth: i32,
@@ -283,6 +339,8 @@ pub struct Terrain {
     /// Q4.
     pub base: i32,
     pub sea: Option<(i32, u32)>,
+    /// Computed in this order, each only from those before it. Those nothing uses are empty.
+    pub fields: Vec<Field>,
     pub features: Vec<Feature>,
     pub rules: Vec<Rule>,
     pub caves: Option<Caves>,
@@ -301,9 +359,26 @@ struct Draft {
     base: f64,
     sea: Option<(i32, String)>,
     caves: Option<(String, i32, i32)>,
+    fields: Vec<(String, Vec<RawStep>)>,
     features: Vec<RawFeature>,
     rules: Vec<RawRule>,
     cave_biomes: Vec<(String, i32, f64, f64)>,
+}
+
+/// The fields every terrain has, climate and continentalness (about -1.4..1.4, Q12), which
+/// a terrain may declare again.
+fn standard_fields() -> Vec<(String, Vec<RawStep>)> {
+    let step = RawStep::new;
+    let of = |salt, size: i32, octaves, scale| {
+        vec![step(ek::X, 0), step(ek::Z, 0), RawStep::noise(salt, size * 16, octaves), step(ek::CONST, scale), step(ek::MUL, 0)]
+    };
+    let mut continent = of(salt::CONTINENT, 900, 4, 6554);
+    continent.extend([step(ek::CONST, 614), step(ek::ADD, 0)]);
+    vec![
+        ("temperature".into(), of(salt::TEMPERATURE, 1100, 3, 5734)),
+        ("humidity".into(), of(salt::HUMIDITY, 800, 3, 5734)),
+        ("continent".into(), continent),
+    ]
 }
 
 /// Looks up content by full name while terrains are built.
@@ -324,7 +399,16 @@ pub fn build(
     names: &Names,
     errors: &mut Vec<String>,
 ) -> Terrain {
-    let mut d = Draft { stone: None, base: 64.0, sea: None, caves: None, features: Vec::new(), rules: Vec::new(), cave_biomes: Vec::new() };
+    let mut d = Draft {
+        stone: None,
+        base: 64.0,
+        sea: None,
+        caves: None,
+        fields: standard_fields(),
+        features: Vec::new(),
+        rules: Vec::new(),
+        cave_biomes: Vec::new(),
+    };
     let rule_name = |r: &RawRule| if r.name.is_empty() { r.biome.clone() } else { r.name.clone() };
     for o in ops {
         let who = owner_name(o.owner);
@@ -345,6 +429,13 @@ pub fn build(
             op::BASE_HEIGHT => d.base = o.value,
             op::SEA => d.sea = Some((o.level, o.block)),
             op::CAVES => d.caves = Some((o.block, o.level, o.to)),
+            op::FIELD => match d.fields.iter_mut().find(|f| f.0 == o.anchor) {
+                Some(f) => {
+                    log::info!("{who}: the terrain of {dimension} gets another {} field", o.anchor);
+                    f.1 = o.field;
+                }
+                None => d.fields.push((o.anchor.clone(), o.field)),
+            },
             op::FEATURE => {
                 if !o.feature.name.is_empty() && d.features.iter().any(|f| f.name == o.feature.name) {
                     errors.push(format!("{who}: the terrain of {dimension} already has a feature named {}", o.feature.name));
@@ -360,8 +451,7 @@ pub fn build(
                 Some(f) if f.mask.is_empty() => f.mask = o.feature.mask,
                 Some(f) => {
                     f.mask.extend(o.feature.mask);
-                    f.mask
-                        .push(abi::MaskStep { kind: abi::terrain_mask::ALL, count: 2, ..abi::MaskStep::DEFAULT });
+                    f.mask.push(RawStep::new(ek::MUL, 0));
                 }
                 None => missing("feature"),
             },
@@ -431,19 +521,36 @@ pub fn build(
         .caves
         .as_ref()
         .and_then(|(lava, from, to)| Some(Caves { lava: block(lava, "lava", errors)?, lava_from: *from, lava_to: *to }));
-    let features: Vec<Feature> = d
-        .features
-        .iter()
-        .map(|f| Feature {
-            name: f.name.clone(),
-            height: if f.preset == abi::terrain_preset::CUSTOM {
-                Height::Custom(f.owner, f.height)
-            } else {
-                Height::Preset(f.preset, f.params.map(q4))
-            },
-            mask: Mask::from_steps(&f.mask),
-        })
-        .collect();
+    if d.fields.len() > limit::FIELDS as usize {
+        errors.push(format!("terrain of {dimension}: {} fields, at most {}", d.fields.len(), limit::FIELDS));
+        d.fields.truncate(limit::FIELDS as usize);
+    }
+    let mut fields: Vec<Field> = Vec::with_capacity(d.fields.len());
+    for (i, (name, steps)) in d.fields.iter().enumerate() {
+        let expr = Expr::resolve(steps, &|n| d.fields[..i].iter().position(|f| f.0 == n)).unwrap_or_else(|e| {
+            errors.push(format!("terrain of {dimension}: field {name}: {e}"));
+            Expr::default()
+        });
+        fields.push(Field { name: name.clone(), expr });
+    }
+    let field_at = |n: &str| d.fields.iter().position(|f| f.0 == n);
+    let mut features: Vec<Feature> = Vec::with_capacity(d.features.len());
+    for f in &d.features {
+        let what = format!("terrain of {dimension}: feature {}", f.name);
+        let height = Expr::resolve(&f.height, &field_at);
+        let mask = (!f.mask.is_empty())
+            .then(|| Expr::resolve(&f.mask, &field_at))
+            .transpose();
+        match (height, mask) {
+            (Ok(height), Ok(mask)) => features.push(Feature { name: f.name.clone(), height, mask }),
+            (h, m) => errors.extend(
+                h.err()
+                    .map(|e| format!("{what}: height {e}"))
+                    .into_iter()
+                    .chain(m.err().map(|e| format!("{what}: mask {e}"))),
+            ),
+        }
+    }
     let mut rules = Vec::with_capacity(d.rules.len());
     for own in &d.rules {
         let mut merged = (names.biome_rule)(&own.biome).cloned();
@@ -459,25 +566,23 @@ pub fn build(
             errors.push(format!("terrain of {dimension}: unknown biome {}", r.biome));
             0
         });
-        let feature = (!r.feature.0.is_empty()).then(|| {
-            let i = features.iter().position(|f| f.name == r.feature.0);
-            if i.is_none() {
-                errors.push(format!(
-                    "terrain of {dimension}: biome rule {} asks for feature {}, which it doesn't have",
-                    rule_name(r),
-                    r.feature.0
-                ));
-            }
-            (i.unwrap_or(usize::MAX), q12(r.feature.1), q12(r.feature.2))
-        });
+        let ranges = r
+            .ranges
+            .iter()
+            .filter_map(|(name, lo, hi)| {
+                let i = field_at(name);
+                if i.is_none() {
+                    errors
+                        .push(format!("terrain of {dimension}: biome rule {} asks for field {name}, which it doesn't have", rule_name(r)));
+                }
+                Some((i?, q12(*lo), q12(*hi)))
+            })
+            .collect();
         let what = format!("biome rule {}", rule_name(r));
         rules.push(Rule {
             biome,
-            temperature: (q12(r.temperature.0), q12(r.temperature.1)),
-            humidity: (q12(r.humidity.0), q12(r.humidity.1)),
-            continent: (q12(r.continent.0), q12(r.continent.1)),
+            ranges,
             height: r.height,
-            feature,
             top: block(&r.top, &what, errors),
             filler: block(&r.filler, &what, errors),
             depth: r.depth,
@@ -500,7 +605,26 @@ pub fn build(
             threshold: q12(*threshold),
         })
         .collect();
-    Terrain::new(stone, q4(d.base), sea, features, rules, caves, cave_biomes)
+    // What no feature or rule looks at, directly or through another field, is not computed.
+    let mut needed: Vec<bool> = (0..fields.len())
+        .map(|i| {
+            features
+                .iter()
+                .any(|f| f.height.uses(i) || f.mask.as_ref().is_some_and(|m| m.uses(i)))
+                || rules.iter().any(|r| r.ranges.iter().any(|x| x.0 == i))
+        })
+        .collect();
+    for i in (0..fields.len()).rev() {
+        for j in 0..i {
+            needed[j] |= needed[i] && fields[i].expr.uses(j);
+        }
+    }
+    for (f, needed) in fields.iter_mut().zip(needed) {
+        if !needed {
+            f.expr = Expr::default();
+        }
+    }
+    Terrain::new(stone, q4(d.base), sea, fields, features, rules, caves, cave_biomes)
 }
 
 impl Terrain {
@@ -508,12 +632,24 @@ impl Terrain {
         stone: u32,
         base: i32,
         sea: Option<(i32, u32)>,
+        fields: Vec<Field>,
         features: Vec<Feature>,
         rules: Vec<Rule>,
         caves: Option<Caves>,
         cave_biomes: Vec<CaveBiome>,
     ) -> Terrain {
-        Terrain { stone, base, sea, features, rules, caves, cave_biomes, cache: ColumnCache::new(32768), corners: ColumnCache::new(32768) }
+        Terrain {
+            stone,
+            base,
+            sea,
+            fields,
+            features,
+            rules,
+            caves,
+            cave_biomes,
+            cache: ColumnCache::new(32768),
+            corners: ColumnCache::new(32768),
+        }
     }
 
     pub fn sea_level(&self) -> Option<i32> {
@@ -522,37 +658,32 @@ impl Terrain {
 
     /// Height, biome and rule of column (`x`, `z`).
     fn compute(&self, seed: u64, x: i32, z: i32) -> (TerrainColumn, u32) {
-        let f = Fields { seed };
         let (fx, fz) = (x * 16, z * 16);
+        let mut v = [0i32; limit::FIELDS as usize];
+        for (i, f) in self.fields.iter().enumerate() {
+            v[i] = f.expr.eval(&v, seed, fx, fz);
+        }
         let mut h = self.base;
-        let mut strengths = [0i32; 16];
-        let mut more = Vec::new();
-        for (i, feat) in self.features.iter().enumerate() {
-            let w = feat.mask.as_ref().map_or(ONE, |m| m.value(&f, fx, fz));
-            match strengths.get_mut(i) {
-                Some(s) => *s = w,
-                None => more.push(w),
-            }
+        for feat in &self.features {
+            let w = feat
+                .mask
+                .as_ref()
+                .map_or(ONE, |m| m.eval(&v, seed, fx, fz).min(ONE));
             if w > 0 {
-                h += (w * feat.height(&f, fx, fz)) >> 12;
+                h = h.wrapping_add(
+                    (w * feat
+                        .height
+                        .eval(&v, seed, fx, fz)
+                        .clamp(-HEIGHT_LIMIT, HEIGHT_LIMIT))
+                        >> 12,
+                );
             }
         }
-        let strength = |i: usize| if i < 16 { Some(strengths[i]) } else { more.get(i - 16).copied() };
         let height = h >> 4;
-        let (temp, humid, cont) = (f.temperature(fx, fz), f.humidity(fx, fz), f.continent(fx, fz));
-        let inside = |v: i32, r: (i32, i32)| v >= r.0 && v < r.1;
         let rule = self
             .rules
             .iter()
-            .position(|b| {
-                height >= b.height.0
-                    && height <= b.height.1
-                    && inside(temp, b.temperature)
-                    && inside(humid, b.humidity)
-                    && inside(cont, b.continent)
-                    && b.feature
-                        .is_none_or(|(i, lo, hi)| strength(i).is_some_and(|s| s > lo && s <= hi))
-            })
+            .position(|b| height >= b.height.0 && height <= b.height.1 && b.ranges.iter().all(|&(f, lo, hi)| v[f] >= lo && v[f] < hi))
             .unwrap_or(self.rules.len().saturating_sub(1));
         (TerrainColumn { height, biome: self.rules.get(rule).map_or(0, |r| r.biome) }, rule as u32)
     }
@@ -863,21 +994,65 @@ impl<T> ColumnCache<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use abi::terrain_preset as p;
 
-    fn preset(kind: u32, params: [f64; 4]) -> Feature {
-        Feature { name: String::new(), height: Height::Preset(kind, params.map(q4)), mask: None }
+    fn step(kind: u32, a: i32) -> RawStep {
+        RawStep::new(kind, a)
+    }
+
+    fn expr(steps: Vec<RawStep>) -> Expr {
+        Expr::resolve(&steps, &|_| None).unwrap()
+    }
+
+    /// `noise * height`, Q4 sizes and heights from blocks.
+    fn hills(height: i32, size: i32) -> Feature {
+        let height = expr(vec![
+            step(ek::X, 0),
+            step(ek::Z, 0),
+            RawStep::noise(salt::HILLS, size * 16, 4),
+            step(ek::CONST, height * 16),
+            step(ek::MUL, 0),
+        ]);
+        Feature { name: String::new(), height, mask: None }
+    }
+
+    /// Ridge lines `width` blocks apart, squared, with rough detail on top.
+    fn mountains(height: i32, width: i32) -> Feature {
+        let ridge = |out: &mut Vec<RawStep>| {
+            out.extend([
+                step(ek::CONST, ONE),
+                step(ek::X, 0),
+                step(ek::Z, 0),
+                RawStep::noise(salt::MOUNTAINS, width * 16, 4),
+                step(ek::CONST, 2 * ONE),
+                step(ek::MUL, 0),
+                step(ek::ABS, 0),
+                step(ek::CONST, ONE),
+                step(ek::MIN, 0),
+                step(ek::SUB, 0),
+            ]);
+        };
+        let mut steps = Vec::new();
+        ridge(&mut steps);
+        ridge(&mut steps);
+        steps.extend([step(ek::MUL, 0), step(ek::CONST, height * 16), step(ek::MUL, 0)]);
+        steps.extend([
+            step(ek::X, 0),
+            step(ek::Z, 0),
+            RawStep::noise(salt::HILLS, 60 * 16, 4),
+            step(ek::CONST, height * 16),
+            step(ek::MUL, 0),
+            step(ek::CONST, 7),
+            step(ek::DIV, 0),
+            step(ek::ADD, 0),
+        ]);
+        Feature { name: String::new(), height: expr(steps), mask: None }
     }
 
     fn rule(biome: u32) -> Rule {
-        let any = (i32::MIN, i32::MAX);
         Rule {
             biome,
-            temperature: any,
-            humidity: any,
-            continent: any,
+            ranges: Vec::new(),
             height: (i32::MIN, i32::MAX),
-            feature: None,
             top: None,
             filler: None,
             depth: 3,
@@ -893,6 +1068,7 @@ mod tests {
             1,
             q4(base),
             None,
+            Vec::new(),
             features,
             rules,
             lava.map(|lava| Caves { lava, lava_from: if lava == 1 { 1 } else { i32::MIN }, lava_to: 11 }),
@@ -917,12 +1093,7 @@ mod tests {
     /// slabs hanging over open space).
     #[test]
     fn caverns_keep_a_roof() {
-        let t = terrain(
-            vec![preset(p::HILLS, [16.0, 110.0, 0.0, 0.0]), preset(p::MOUNTAINS, [150.0, 260.0, 0.0, 0.0])],
-            Vec::new(),
-            Some(1),
-            64.0,
-        );
+        let t = terrain(vec![hills(16, 110), mountains(150, 260)], Vec::new(), Some(1), 64.0);
         let (mut columns, mut breached) = (0, 0);
         for cx in -3..3 {
             for cz in -3..3 {
@@ -962,7 +1133,7 @@ mod tests {
     /// The point check trees use agrees with what generation carved.
     #[test]
     fn surface_carved_matches_generation() {
-        let t = terrain(vec![preset(p::HILLS, [16.0, 110.0, 0.0, 0.0])], Vec::new(), Some(1), 64.0);
+        let t = terrain(vec![hills(16, 110)], Vec::new(), Some(1), 64.0);
         let mut checked = 0;
         for cx in -4..4 {
             for cz in -4..4 {
@@ -981,7 +1152,7 @@ mod tests {
     /// The point check decorations use agrees with what generation put there.
     #[test]
     fn surface_block_matches_generation() {
-        let t = terrain(vec![preset(p::HILLS, [16.0, 110.0, 0.0, 0.0])], Vec::new(), Some(1), 64.0);
+        let t = terrain(vec![hills(16, 110)], Vec::new(), Some(1), 64.0);
         for cx in -2..2 {
             for cz in -2..2 {
                 for i in 0..256 {
@@ -998,7 +1169,7 @@ mod tests {
     /// over caves below).
     #[test]
     fn lava_lakes_rest_on_stone() {
-        let t = terrain(vec![preset(p::HILLS, [16.0, 110.0, 0.0, 0.0])], Vec::new(), Some(7), 64.0);
+        let t = terrain(vec![hills(16, 110)], Vec::new(), Some(7), 64.0);
         let (mut lava, mut hanging) = (0, 0);
         for cx in -3..3 {
             for cz in -3..3 {
@@ -1053,23 +1224,14 @@ mod tests {
             to: 0,
             value: 0.0,
             size: 0.0,
-            feature: RawFeature {
-                owner: ModId(owner),
-                name: String::new(),
-                preset: p::HILLS,
-                params: [0.0; 4],
-                height: Callback::NONE,
-                mask: Vec::new(),
-            },
+            feature: RawFeature { name: String::new(), height: Vec::new(), mask: Vec::new() },
+            field: Vec::new(),
             rule: RawRule {
                 name: r.0.into(),
                 fields: rf::BIOME,
                 biome: r.1.into(),
-                temperature: (f64::NEG_INFINITY, f64::INFINITY),
-                humidity: (f64::NEG_INFINITY, f64::INFINITY),
-                continent: (f64::NEG_INFINITY, f64::INFINITY),
+                ranges: Vec::new(),
                 height: (i32::MIN, i32::MAX),
-                feature: (String::new(), 0.0, 0.0),
                 top: String::new(),
                 filler: String::new(),
                 depth: 3,
@@ -1137,12 +1299,12 @@ mod tests {
     #[test]
     fn rules_inherit_the_biome() {
         let mut desert = raw(0, op::BIOME, "", Some(("", "a:desert"))).rule;
-        desert.fields = rf::TEMPERATURE | rf::SURFACE;
-        desert.temperature = (0.35, f64::INFINITY);
+        desert.fields = rf::RANGES | rf::SURFACE;
+        desert.ranges = vec![("temperature".into(), 0.35, f64::INFINITY)];
         (desert.top, desert.filler, desert.depth) = ("a:sand".into(), "a:sand".into(), 3);
         let mut coast = raw(0, op::BIOME, "", Some(("a:coast", "a:desert")));
-        coast.rule.fields |= rf::TEMPERATURE | rf::HEIGHT;
-        coast.rule.temperature = (0.0, 1.0);
+        coast.rule.fields |= rf::RANGES | rf::HEIGHT;
+        coast.rule.ranges = vec![("temperature".into(), 0.0, 1.0)];
         coast.rule.height = (0, 64);
         let ops = vec![raw(0, op::STONE, "", None), coast, raw(0, op::BIOME, "", Some(("", "a:desert")))];
         let names = Names {
@@ -1153,17 +1315,101 @@ mod tests {
         let mut errors = Vec::new();
         let t = build("a:dim", &|_| String::new(), ops, &names, &mut errors);
         assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!((t.rules[0].temperature, t.rules[0].height, t.rules[0].top), ((0, ONE), (0, 64), Some(2)));
-        assert_eq!((t.rules[1].temperature, t.rules[1].height, t.rules[1].top), ((q12(0.35), 1 << 18), (i32::MIN, i32::MAX), Some(2)));
+        assert_eq!((&t.rules[0].ranges[..], t.rules[0].height, t.rules[0].top), (&[(0, 0, ONE)][..], (0, 64), Some(2)));
+        assert_eq!(
+            (&t.rules[1].ranges[..], t.rules[1].height, t.rules[1].top),
+            (&[(0, q12(0.35), 1 << 18)][..], (i32::MIN, i32::MAX), Some(2))
+        );
     }
 
     #[test]
-    fn masks_from_steps() {
-        use abi::terrain_mask as k;
-        let step = |kind, count| abi::MaskStep { kind, count, ..abi::MaskStep::DEFAULT };
-        let m = Mask::from_steps(&[step(k::CONTINENT, 0), step(k::HUMIDITY, 0), step(k::NOT, 0), step(k::ALL, 2)]).unwrap();
-        assert!(matches!(&m, Mask::All(v) if v.len() == 2 && matches!(v[1], Mask::Not(_))));
-        assert!(Mask::from_steps(&[step(k::ALL, 2)]).is_none());
-        assert!(Mask::from_steps(&[]).is_none());
+    fn expressions_are_checked() {
+        let none = |_: &str| None;
+        let ok = |steps: Vec<RawStep>| Expr::resolve(&steps, &none).map(|_| ());
+        assert!(ok(vec![step(ek::X, 0), step(ek::Z, 0), step(ek::ADD, 0)]).is_ok());
+        assert!(ok(vec![step(ek::ADD, 0)]).is_err(), "nothing to add");
+        assert!(ok(vec![step(ek::X, 0), step(ek::Z, 0)]).is_err(), "two values left");
+        assert!(ok(vec![]).is_err());
+        assert!(ok(vec![step(99, 0)]).is_err(), "unknown step");
+        assert!(ok(vec![step(ek::NOISE, 0)]).is_err(), "noise needs x and z");
+        let deep = vec![step(ek::X, 0); limit::DEPTH as usize + 1];
+        let mut deep: Vec<RawStep> = deep;
+        deep.extend(vec![step(ek::ADD, 0); limit::DEPTH as usize]);
+        assert!(ok(deep).is_err(), "too deep");
+        let mut by_name = step(ek::FIELD, 0);
+        by_name.name = "wet".into();
+        assert!(ok(vec![by_name.clone()]).is_err(), "no such field");
+        assert_eq!(
+            Expr::resolve(&[by_name], &|n| (n == "wet").then_some(5))
+                .unwrap()
+                .0[0]
+                .a,
+            5
+        );
+    }
+
+    #[test]
+    fn expressions_compute() {
+        let at = |steps: Vec<RawStep>| expr(steps).eval(&[], 5, 160, -48);
+        assert_eq!(at(vec![step(ek::X, 0), step(ek::Z, 0), step(ek::SUB, 0)]), 208);
+        // Fixed point: 2.5 * 1.5, and the factors held where the product still fits.
+        assert_eq!(at(vec![step(ek::CONST, 10240), step(ek::CONST, 6144), step(ek::MUL, 0)]), 15360);
+        assert_eq!(at(vec![step(ek::CONST, i32::MAX), step(ek::CONST, i32::MAX), step(ek::MUL, 0)]), (MUL_LIMIT * MUL_LIMIT) >> 12);
+        // Integers round toward zero, a zero divisor gives 0, a remainder is never negative.
+        assert_eq!(at(vec![step(ek::CONST, -7), step(ek::CONST, 2), step(ek::DIV, 0)]), -3);
+        assert_eq!(at(vec![step(ek::CONST, 7), step(ek::CONST, 0), step(ek::DIV, 0)]), 0);
+        assert_eq!(at(vec![step(ek::CONST, -7), step(ek::CONST, 5), step(ek::REM, 0)]), 3);
+        assert_eq!(at(vec![step(ek::CONST, i32::MIN), step(ek::ABS, 0)]), i32::MIN);
+        let ramp = |from, to| RawStep { b: to, ..step(ek::RAMP, from) };
+        assert_eq!(at(vec![step(ek::CONST, 2048), ramp(0, ONE)]), 2048);
+        assert_eq!(at(vec![step(ek::CONST, -819), ramp(0, -1638)]), 2048);
+        // Noise takes the position from the stack, so it can be moved (a warp).
+        let noise = |x, z| expr(vec![step(ek::CONST, x), step(ek::CONST, z), RawStep::noise(7, 100 * 16, 3)]).eval(&[], 5, 0, 0);
+        assert_eq!(noise(160, -48), fbm(seed32(5, 7), 160, -48, 100 * 16, 3));
+        let hills = hills(16, 110).height.eval(&[], 5, 160, -48);
+        assert_eq!(hills, (fbm(seed32(5, salt::HILLS), 160, -48, 110 * 16, 4) * 16 * 16) >> 12);
+    }
+
+    /// Fields and features see the fields they name, later ones see earlier ones, and the standard
+    /// ones nothing asks for are never computed.
+    #[test]
+    fn fields_are_resolved_and_pruned() {
+        let field = |name: &str, steps: Vec<RawStep>| RawTerrain { anchor: name.into(), field: steps, ..raw(0, op::FIELD, name, None) };
+        let by_name = |n: &str| RawStep { name: n.into(), ..step(ek::FIELD, 0) };
+        let wet_range = |name: &str| {
+            let mut r = raw(0, op::BIOME, "", Some(("", "a:desert"))).rule;
+            r.fields |= rf::RANGES;
+            r.ranges = vec![(name.into(), 0.5, f64::INFINITY)];
+            RawTerrain { rule: r, ..raw(0, op::BIOME, "", None) }
+        };
+        let make = |ops: Vec<RawTerrain>| {
+            let names = Names { block: &|_| Some(1), biome: &|_| Some(0), biome_rule: &|_| None };
+            let mut errors = Vec::new();
+            let t = build("a:dim", &|_| String::new(), ops, &names, &mut errors);
+            (t, errors)
+        };
+        // `wet` is twice the humidity; `damp` uses `wet`; only `damp` is asked for.
+        let (t, errors) = make(vec![
+            raw(0, op::STONE, "", None),
+            field("wet", vec![by_name("humidity"), step(ek::CONST, 2 * ONE), step(ek::MUL, 0)]),
+            field("damp", vec![by_name("wet"), step(ek::CONST, 100), step(ek::ADD, 0)]),
+            wet_range("damp"),
+        ]);
+        assert!(errors.is_empty(), "{errors:?}");
+        let used: Vec<(&str, bool)> = t
+            .fields
+            .iter()
+            .map(|f| (f.name.as_str(), !f.expr.0.is_empty()))
+            .collect();
+        assert_eq!(used, [("temperature", false), ("humidity", true), ("continent", false), ("wet", true), ("damp", true)]);
+        // A field can't use one declared after it, and a rule can't ask for one that is not there.
+        let (_, errors) =
+            make(vec![raw(0, op::STONE, "", None), field("early", vec![by_name("late")]), field("late", vec![step(ek::X, 0)])]);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        let (_, errors) = make(vec![raw(0, op::STONE, "", None), wet_range("nothing")]);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        // Declared again, the standard temperature is replaced where it stands.
+        let (t, _) = make(vec![raw(0, op::STONE, "", None), field("temperature", vec![step(ek::CONST, 7)]), wet_range("temperature")]);
+        assert_eq!(t.fields[0].expr.eval(&[], 1, 0, 0), 7);
     }
 }

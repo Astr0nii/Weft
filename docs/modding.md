@@ -344,6 +344,7 @@ Every liquid is also an item of its name and tags, its count in millibuckets: wh
 
 The terrain has presets like hills, canyons, dunes, caves, lava lakes if you don't want to write noise by hand.\
 Mars in testmod is built from presets only.\
+Your own shapes are formulas (`Expr`) the GPU runs as fast as the presets, and `.field(..)` gives biome rules any value you make, not just temperature and humidity.\
 It works on other mods' dimensions too, so adding a biome to base's overworld is a `biome_before("base:desert", ..)` away.
 
 ### Recipes

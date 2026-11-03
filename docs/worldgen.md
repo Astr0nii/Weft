@@ -128,7 +128,7 @@ r.terrain(&MARS)
     .base_height(60.0)
     .feature(preset::hills(8.0, 220.0))
     .feature(preset::craters(32.0, 16.0, 150.0))
-    .feature(preset::dunes(3.0, 22.0).mask(Mask::noise(500.0, 0.15, 0.45)))
+    .feature(preset::dunes(3.0, 22.0).mask(Expr::noise(500.0).ramp(0.15, 0.45)))
     .biome(BiomeRule::new("dust"));
 ```
 `stone` is the block the ground is made of and `base_height` the ground height when nothing is added. Blocks and biomes are given by name, like everywhere else: yours without a prefix, other mods' as `base:sand`.
@@ -146,21 +146,45 @@ A feature adds height to every column. These come ready:
 | `dunes(height, wavelength)` | parallel sand waves |
 | `craters(radius, depth, spacing)` | bowls with a raised rim |
 
-Your own is `Feature::new(|fields, x, z| height)`. Terrain is integers only, so the GPU and every machine get exactly the same world: `x`, `z` and the height you return are in 1/16 block (`16` is one block), and noise values are in 1/4096 (`ONE` is 1.0). `fields` hands out noise (`fbm`, `ridge` for river-like lines) and the climate (`continent`, `temperature`, `humidity`). The easiest start is copying a preset from `shape` in `crates/noise/src/fixed.rs` and changing it. Testmod's needle is one, a column of rock 90 blocks high at one spot of base's overworld.
+Each preset is `Feature::new` of a formula from `shape`, and yours is the same: `Feature::new(expr)` with an `Expr` built from numbers, the position and noise. The engine runs it on the GPU and on the CPU with the same integer math, so your shape costs what a preset costs and every machine gets the same world.
 
-### Masks
-`.mask(..)` limits a feature to some places, with a strength from 0 to 1 that fades in between. `Mask::noise(scale, from, to)` makes patches about `scale` blocks across, and `Mask::Temperature`, `Humidity` and `Continent` take a `(from, to)` range of the climate (swap the two to turn the ramp around). Masks combine with `.and(..)` and flip with `.not()`.
+- `Expr::blocks(12.0)` is a length, `Expr::value(0.5)` a plain number; a length times a number is a length
+- `Expr::x()`, `Expr::z()`: where the column is
+- `Expr::fbm(salt, scale, octaves)` and `Expr::noise(scale)`: noise about -1 to 1 in patches about `scale` blocks across; `Expr::ridge(salt, scale)` is 1 along winding lines
+- `Expr::sites(salt, spacing, chance, radius)`: points scattered one per `spacing` square, how far the nearest is in units of its radius (below 1 inside it), what craters are made of
+- `+`, `-`, `*`, `abs`, `min`, `max`, `clamp`, `idiv`, `modulo` (repeats along the world: terraces, waves)
+- `ramp(from, to)`: 0 at `from`, 1 at `to`, straight between; `from == to` is a step
+- `e.at(x, z)`: the same formula somewhere else, `noise.at(Expr::x() + warp, Expr::z())` bends it
+
+Testmod's needle, a column of rock 90 blocks high at one spot of base's overworld, is 1 within 3 blocks of it times 90:
 
 ```rust
-preset::mountains(150.0, 260.0).mask(Mask::noise(700.0, -0.1, 0.3).salt(0x44).and(Mask::Continent(0.0, 0.2))).named("mountains")
+let far = (Expr::x() - Expr::blocks(1000.0)).abs().max((Expr::z() - Expr::blocks(1000.0)).abs());
+Feature::new(far.ramp_blocks(3.0, 3.0).not() * Expr::blocks(90.0)).named("needle")
 ```
-`salt` gives a noise its own pattern, so two masks of the same size don't line up, and `named` lets a biome rule ask how strong the feature is (and other mods find it by that name).
+The presets' own formulas in `crates/sdk/src/terrain.rs` are the easiest start: copy one and change it.
+
+### Masks
+`.mask(expr)` limits a feature to some places with a strength from 0 to 1 that fades in between; where it is 0 the height isn't even worked out. A mask is an expression like any other, usually a `ramp` of noise or of the climate (swap `from` and `to` to turn it around). Masks combine with `.and(..)` and flip with `.not()`.
+
+```rust
+preset::hills(16.0, 110.0).mask(Expr::temperature().ramp(-0.35, -0.6).not())
+```
+
+### Fields
+A field is a named value over the whole terrain. `temperature`, `humidity` and `continent` come with every terrain (all about -1.4 to 1.4, continentalness below 0 is sea); `.field(name, expr)` declares your own. Masks and other fields use one with `Expr::field(name)`, and biome rules ask for it. It's worked out once per column however many things use it, so one mask shared by a feature and a biome goes here. Base's mountains:
+
+```rust
+.field("base:mountains", Expr::fbm(0x44, 700.0, 3).ramp(-0.1, 0.3).and(Expr::continent().ramp(0.0, 0.2)))
+.feature(preset::mountains(150.0, 260.0).mask(Expr::field("base:mountains")).named("mountains"))
+.biome(BiomeRule::new("mountains").field("base:mountains", 0.45..))
+```
+The name is used as written, so give yours your mod's prefix. A field can only use fields declared before it. Declaring one that exists, `temperature` included, replaces it for everything that uses it, which is how a mod gives the whole overworld another climate.
 
 ### Biome rules
 A rule puts a biome into a terrain. It starts from the biome's climate and surface, so `BiomeRule::new("desert")` is a whole rule. Rules are tried in order and the **first one that fits wins**, so specific ones go first and a plain catch-all goes last. What a rule adds is where else it must hold:
-- `continent(..)`: continentalness, below 0 is sea and coasts are about `0.0..0.1`
 - `height(..)`: the surface height, like `..=SEA + 1`
-- `feature("mountains", 0.45..)`: where the named feature is strong
+- `field(name, range)`: where a field is in a range like `0.45..` (from inclusive, to exclusive); `temperature(..)`, `humidity(..)` and `continent(..)` are the same for those three
 
 Any of the biome's own settings (`temperature`, `surface`, `frozen`...) can also be given on a rule, and then that rule uses its own.
 
@@ -209,7 +233,7 @@ for z in 0..16usize { for x in 0..16usize {
 ```rust
 r.terrain(&OVERWORLD)
     .biome_before("base:desert", BiomeRule::new("scorched"))
-    .feature(Feature::new(|_, x, z| if (x - 1000 * 16).abs().max((z - 1000 * 16).abs()) < 3 * 16 { 90 * 16 } else { 0 }).named("needle"));
+    .feature(Feature::new(needle).named("needle"));
 r.decoration(boulders).dimension(&OVERWORLD);
 ```
 Because rules are tried in order, a new biome goes in next to the rule it takes space from: `biome_before` takes the place where both would fit, `biome_after` only what the other leaves. The rest of the edits:
@@ -221,6 +245,7 @@ Because rules are tried in order, a new biome goes in next to the rule it takes 
 | `biome_edit(rule, \|r\| r.temperature(0.5..))` | changes only what the closure sets, the rest of the rule stays |
 | `feature(f)`, `feature_remove(name)` | adds a feature or takes a named one out |
 | `feature_mask(name, mask)` | limits a named feature further, its mask is multiplied by yours |
+| `field(name, expr)` | adds a field, or replaces the one of that name |
 | `cave_biome(..)`, `cave_biome_remove(biome)` | the same for underground biomes |
 
 | `sea`, `caves`, `stone`, `base_height` | replace the owner's setting, the last mod in load order wins |

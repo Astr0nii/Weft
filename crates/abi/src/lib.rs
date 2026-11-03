@@ -4120,88 +4120,95 @@ pub struct TerrainColumn {
     pub biome: u32,
 }
 
-/// One step of a terrain mask, the steps of a whole mask in postfix order: `ALL` and `NOT` take
-/// the masks just before them.
+/// One step of a terrain expression, the steps of a whole expression in postfix order: a step
+/// takes its operands from the stack the steps before it left and pushes its result. Everything
+/// is a 32-bit integer so every machine and the GPU get the same bits: positions and lengths are
+/// in 1/16 block (Q4), noise values, strengths and factors in 1/4096 (Q12, 4096 is 1.0).
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct MaskStep {
-    /// `terrain_mask`.
+pub struct ExprStep {
+    /// `expr`.
     pub kind: u32,
-    /// `ALL`: how many masks it combines.
-    pub count: u32,
+    /// `expr::NOISE`, `expr::SITE`: names the noise, so two with the same salt and size line up.
     pub salt: u64,
-    pub scale: f64,
-    pub octaves: u32,
-    pub from: f64,
-    pub to: f64,
+    pub a: i32,
+    pub b: i32,
+    pub c: i32,
+    /// `expr::FIELD`: the field's name.
+    pub name: Str,
 }
-defaults!(MaskStep { kind: 0, count: 0, salt: 0, scale: 1.0, octaves: 3, from: 0.0, to: 1.0 });
+defaults!(ExprStep { kind: 0, salt: 0, a: 0, b: 0, c: 0, name: Str::EMPTY });
 
-pub mod terrain_mask {
-    /// Its own noise (`salt`, `scale`, `octaves`), ramping from `from` to `to`.
-    pub const NOISE: u32 = 0;
-    pub const CONTINENT: u32 = 1;
-    pub const TEMPERATURE: u32 = 2;
-    pub const HUMIDITY: u32 = 3;
-    /// The product of the `count` masks before it.
-    pub const ALL: u32 = 4;
-    /// 1 minus the mask before it.
-    pub const NOT: u32 = 5;
+/// What an `ExprStep` does. In a binary step `rhs` is the value pushed last. Sums and
+/// differences wrap around at 32 bits, nothing traps.
+pub mod expr {
+    /// Pushes `a`.
+    pub const CONST: u32 = 0;
+    /// Push the column's position, Q4.
+    pub const X: u32 = 1;
+    pub const Z: u32 = 2;
+    /// Pushes the value of the field named `name` at this position; a field is an expression
+    /// of its own (`TerrainDesc` op `terrain_op::FIELD`) and may only use fields declared before it.
+    pub const FIELD: u32 = 3;
+    pub const ADD: u32 = 4;
+    pub const SUB: u32 = 5;
+    /// `lhs * rhs / 4096`, each of them held to +-46340 so the product fits 32 bits.
+    pub const MUL: u32 = 6;
+    /// Integer division, rounded toward zero; 0 where `rhs` is 0.
+    pub const DIV: u32 = 7;
+    /// `lhs` modulo `rhs` (at least 1), always 0 or above.
+    pub const REM: u32 = 8;
+    pub const MIN: u32 = 9;
+    pub const MAX: u32 = 10;
+    pub const ABS: u32 = 11;
+    /// The value just pushed, 0 at `a`, 4096 at `b` and straight between them (`a > b`
+    /// turns it around); both a step when `a == b`.
+    pub const RAMP: u32 = 12;
+    /// Pops z then x, pushes noise of those coordinates in Q12 (about -4096..4096): `a`
+    /// is the size of its patches (Q4), `b` the octaves (each twice as fine and half as strong).
+    pub const NOISE: u32 = 13;
+    /// Pops z then x, pushes how far they are from the nearest of the points scattered one
+    /// per `a` (Q4) square at most (each there with chance `b`, Q12), as the square of the
+    /// distance in units of that point's radius (`c`, Q4, times 0.5 to 1.5 per point), Q12:
+    /// below 4096 is inside it, 8192 or more is out of reach of every one.
+    pub const SITE: u32 = 14;
 }
 
-/// The engine's terrain presets; `params` in the order of `weft_noise::shape`.
-pub mod terrain_preset {
-    /// `height` is a callback (`FeatureArgs`).
-    pub const CUSTOM: u32 = 0;
-    pub const CONTINENTS: u32 = 1;
-    pub const HILLS: u32 = 2;
-    pub const MOUNTAINS: u32 = 3;
-    pub const PLATEAUS: u32 = 4;
-    pub const CANYONS: u32 = 5;
-    pub const DUNES: u32 = 6;
-    pub const CRATERS: u32 = 7;
+/// A biome rule's condition: the field is in `min <= value < max`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FieldRange {
+    pub name: Str,
+    pub min: f64,
+    pub max: f64,
 }
 
 /// Adds height to every column of a terrain, scaled by its mask.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct FeatureDesc {
-    /// Full name, empty for none: biome rules and other mods' edits find it by this.
+    /// Full name, empty for none: other mods' edits find it by this.
     pub name: Str,
-    /// `terrain_preset`.
-    pub preset: u32,
-    pub params: [f64; 4],
-    /// `FeatureArgs`, for `terrain_preset::CUSTOM`. Called from worker threads, pure.
-    pub height: Callback,
-    /// Empty: everywhere at full strength.
-    pub mask: Slice<MaskStep>,
+    /// The height added at full strength (Q4).
+    pub height: Slice<ExprStep>,
+    /// Its strength (0 to 4096); nothing is added where it isn't above 0. Empty: everywhere at
+    /// full strength.
+    pub mask: Slice<ExprStep>,
 }
-defaults!(FeatureDesc { name: Str::EMPTY, preset: 0, params: [0.0; 4], height: Callback::NONE, mask: Slice::EMPTY });
-
-/// Positions and the height in 1/16 block: terrain is integers only (`weft_noise::fixed`).
-#[repr(C)]
-pub struct FeatureArgs {
-    pub seed: u64,
-    pub x: i32,
-    pub z: i32,
-    /// Output: the height added at (x, z) at full strength.
-    pub height: i32,
-}
+defaults!(FeatureDesc { name: Str::EMPTY, height: Slice::EMPTY, mask: Slice::EMPTY });
 
 /// Which fields of a `BiomeRuleDesc` are given (all of them count for a new rule; an edit
 /// changes only these).
 pub mod rule_field {
     pub const BIOME: u32 = 1;
-    pub const TEMPERATURE: u32 = 2;
-    pub const HUMIDITY: u32 = 4;
-    pub const CONTINENT: u32 = 8;
-    pub const HEIGHT: u32 = 16;
-    pub const FEATURE: u32 = 32;
-    pub const SURFACE: u32 = 64;
-    pub const UNDER: u32 = 128;
-    pub const DEEP_TOP: u32 = 256;
-    pub const BARE_ABOVE: u32 = 512;
-    pub const FROZEN: u32 = 1024;
+    /// `ranges`: in an edit each one replaces the rule's range of that field, or adds one.
+    pub const RANGES: u32 = 2;
+    pub const HEIGHT: u32 = 4;
+    pub const SURFACE: u32 = 8;
+    pub const UNDER: u32 = 16;
+    pub const DEEP_TOP: u32 = 32;
+    pub const BARE_ABOVE: u32 = 64;
+    pub const FROZEN: u32 = 128;
 }
 
 /// Picks a biome and its surface where its conditions hold. Rules are tried in order; the first
@@ -4215,15 +4222,11 @@ pub struct BiomeRuleDesc {
     /// `rule_field`.
     pub fields: u32,
     pub biome: Str,
-    /// `min <= v < max`.
-    pub temperature: [f64; 2],
-    pub humidity: [f64; 2],
-    pub continent: [f64; 2],
+    /// Where these fields (`temperature`, `humidity`, `continent`, or ones a terrain declares)
+    /// are in range.
+    pub ranges: Slice<FieldRange>,
     /// Surface height, inclusive.
     pub height: [i32; 2],
-    /// Where the named feature's mask is in `min < v <= max`.
-    pub feature: Str,
-    pub feature_range: [f64; 2],
     /// Top block, `depth` blocks of filler, then stone. Empty: stone.
     pub top: Str,
     pub filler: Str,
@@ -4243,12 +4246,8 @@ defaults!(BiomeRuleDesc {
     name: Str::EMPTY,
     fields: 0,
     biome: Str::EMPTY,
-    temperature: [f64::NEG_INFINITY, f64::INFINITY],
-    humidity: [f64::NEG_INFINITY, f64::INFINITY],
-    continent: [f64::NEG_INFINITY, f64::INFINITY],
+    ranges: Slice::EMPTY,
     height: [i32::MIN, i32::MAX],
-    feature: Str::EMPTY,
-    feature_range: [0.0, 0.0],
     top: Str::EMPTY,
     filler: Str::EMPTY,
     depth: 3,
@@ -4287,6 +4286,10 @@ pub mod terrain_op {
     pub const CAVE_BIOME: u32 = 13;
     /// The cave biome `anchor` goes away.
     pub const CAVE_BIOME_REMOVE: u32 = 14;
+    /// `field` is the expression of the field named `anchor` (used as written, no mod prefix
+    /// is added): `temperature`, `humidity` and `continent` are the engine's, and one declared
+    /// again takes the place of the earlier one.
+    pub const FIELD: u32 = 15;
 }
 
 /// One part of a dimension's terrain (`Host::reg_terrain`). The mod that owns the dimension
@@ -4307,6 +4310,8 @@ pub struct TerrainDesc {
     pub size: f64,
     pub feature: FeatureDesc,
     pub rule: BiomeRuleDesc,
+    /// `terrain_op::FIELD`.
+    pub field: Slice<ExprStep>,
 }
 defaults!(TerrainDesc {
     dimension: Str::EMPTY,
@@ -4318,7 +4323,8 @@ defaults!(TerrainDesc {
     value: 0.0,
     size: 0.0,
     feature: FeatureDesc::DEFAULT,
-    rule: BiomeRuleDesc::DEFAULT
+    rule: BiomeRuleDesc::DEFAULT,
+    field: Slice::EMPTY
 });
 
 /// One command argument; kinds in `command_value`.

@@ -10,19 +10,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crossbeam_channel::{Receiver, Sender};
 use glam::IVec3;
-use weft_abi::TerrainColumn;
-use weft_noise::fixed::{Fields, seed32};
+use weft_abi::{TerrainColumn, expr as ek};
+use weft_noise::fixed::seed32;
 use weft_render::{Backend, BufferId, Cmd, CommandList, ComputeDesc, PipelineId, usage};
 
 use crate::content::{Content, content};
 use crate::server::area::{self, AreaFill};
-use crate::server::terrain::{Height, Mask};
+use crate::server::terrain::Expr;
 use crate::world::Cube;
 
-use crate::gpu_layout::terrain::{self as layout, binding, d, limit, mask, words};
+use crate::gpu_layout::terrain::{self as layout, binding, d, words};
 
 const OUT_WORDS: usize = words::OUT as usize;
-const CUSTOM_WORDS: usize = words::CUSTOM as usize;
+/// Words per job: the cube's position and one unused.
+const JOB_WORDS: usize = 4;
 /// Cubes per frame at most.
 const BATCH: usize = 4096;
 /// Distant terrain tiles per frame at most (`lod`).
@@ -31,23 +32,21 @@ const LOD_BATCH: usize = 64;
 pub static GPU_CUBES: AtomicU64 = AtomicU64::new(0);
 pub static GPU_MISMATCHES: AtomicU64 = AtomicU64::new(0);
 
-/// A cube for the GPU, with the heights of mods' own features (their code runs here).
+/// A cube for the GPU to make.
 pub struct Job {
     pub epoch: u64,
     pub dim: u32,
     pub seed: u64,
     pub pos: IVec3,
-    pub custom: Arc<Vec<i32>>,
     pub edits: Arc<Vec<AreaFill>>,
     pub done: Sender<super::terrain::Made>,
 }
 
-/// What `terrain.wgsl` reads for dimension `dim`, and the indices of the features that run
-/// mods' code (their heights go up with each cube); `None` when the GPU cannot make it.
-pub fn describe(c: &Content, dim: u32, seed: u64) -> Option<(Vec<i32>, Vec<usize>)> {
+/// What `terrain.wgsl` reads for dimension `dim`; `None` when the GPU cannot make it.
+pub fn describe(c: &Content, dim: u32, seed: u64) -> Option<Vec<i32>> {
     let def = &c.dims[dim as usize];
     let t = def.terrain.as_ref().filter(|_| def.builtin.is_none())?;
-    if t.features.len() > limit::FEATURES as usize || c.states.len() > 65536 {
+    if c.states.len() > 65536 {
         return None;
     }
     let mut w = vec![0i32; d::LEN as usize];
@@ -65,61 +64,61 @@ pub fn describe(c: &Content, dim: u32, seed: u64) -> Option<(Vec<i32>, Vec<usize
         put(d::LAVA_FROM, caves.lava_from);
         put(d::LAVA_TO, caves.lava_to);
     }
+    put(d::FIELDS, t.fields.len() as i32);
     put(d::FEATURES, t.features.len() as i32);
     put(d::RULES, t.rules.len() as i32);
     put(d::CAVE_BIOMES, t.cave_biomes.len() as i32);
     for (i, (_, salt)) in layout::SEEDS.iter().enumerate() {
         put(d::SEEDS + i as u32, seed32(seed, *salt) as i32);
     }
-    // Features, their masks after them.
+    // The records of fields, features and rules; their steps and conditions go after them.
+    w[d::FIELD_OFF as usize] = w.len() as i32;
+    let at = w.len();
+    let fw = words::FIELD as usize;
+    w.resize(at + t.fields.len() * fw, 0);
+    for (i, f) in t.fields.iter().enumerate() {
+        let (start, len) = steps(&mut w, &f.expr, seed);
+        w[at + i * fw..at + (i + 1) * fw].copy_from_slice(&[start, len]);
+    }
     w[d::FEAT_OFF as usize] = w.len() as i32;
     let at = w.len();
     let fw = words::FEATURE as usize;
     w.resize(at + t.features.len() * fw, 0);
-    let mut custom = Vec::new();
     for (i, f) in t.features.iter().enumerate() {
-        let r = at + i * fw;
-        match f.height {
-            Height::Preset(kind, p) => {
-                w[r] = kind as i32;
-                w[r + 1..r + 5].copy_from_slice(&p);
-                w[r + 5] = -1;
-            }
-            Height::Custom(..) => {
-                w[r + 5] = custom.len() as i32;
-                custom.push(i);
-            }
-        }
-        if let Some(m) = &f.mask {
-            let start = w.len();
-            if postfix(m, seed, &mut w, 0)? > limit::MASK_DEPTH as usize {
-                return None;
-            }
-            w[r + 6] = start as i32;
-            w[r + 7] = ((w.len() - start) / words::MASK as usize) as i32;
-        }
+        let (height, mask) = (steps(&mut w, &f.height, seed), f.mask.as_ref().map_or((0, 0), |m| steps(&mut w, m, seed)));
+        w[at + i * fw..at + (i + 1) * fw].copy_from_slice(&[height.0, height.1, mask.0, mask.1]);
     }
     w[d::RULE_OFF as usize] = w.len() as i32;
+    let at = w.len();
+    let rw = words::RULE as usize;
+    w.resize(at + t.rules.len() * rw, 0);
     let opt = |v: Option<u32>| v.map_or(-1, |v| v as i32);
-    for r in &t.rules {
-        let mut rule = [0i32; words::RULE as usize];
-        rule[0] = r.biome as i32;
-        (rule[1], rule[2]) = r.temperature;
-        (rule[3], rule[4]) = r.humidity;
-        (rule[5], rule[6]) = r.continent;
-        (rule[7], rule[8]) = r.height;
-        (rule[9], rule[10], rule[11]) = match r.feature {
-            None => (-1, 0, 0),
-            Some((i, lo, hi)) => (if i < 32 { i as i32 } else { -2 }, lo, hi),
-        };
-        rule[12] = opt(r.top);
-        rule[13] = opt(r.filler);
-        rule[14] = r.depth;
-        (rule[15], rule[16]) = r.under.map_or((-1, 0), |(b, n)| (b as i32, n));
-        (rule[17], rule[18]) = r.deep_top.map_or((-1, 0), |(b, y)| (b as i32, y));
-        rule[19] = opt(r.ice);
-        (rule[22], rule[23]) = r.bare_above.map_or((0, 0), |y| (1, y));
-        w.extend_from_slice(&rule);
+    for (i, r) in t.rules.iter().enumerate() {
+        let conditions = w.len() as i32;
+        for &(field, from, to) in &r.ranges {
+            w.extend_from_slice(&[field as i32, from, to]);
+        }
+        let under = r.under.map_or((-1, 0), |(b, n)| (b as i32, n));
+        let deep = r.deep_top.map_or((-1, 0), |(b, y)| (b as i32, y));
+        let bare = r.bare_above.map_or((0, 0), |y| (1, y));
+        let rule: [i32; words::RULE as usize] = [
+            r.biome as i32,
+            r.height.0,
+            r.height.1,
+            conditions,
+            r.ranges.len() as i32,
+            opt(r.top),
+            opt(r.filler),
+            r.depth,
+            under.0,
+            under.1,
+            deep.0,
+            deep.1,
+            opt(r.ice),
+            bare.0,
+            bare.1,
+        ];
+        w[at + i * rw..at + (i + 1) * rw].copy_from_slice(&rule);
     }
     w[d::CAVE_OFF as usize] = w.len() as i32;
     for (k, b) in t.cave_biomes.iter().enumerate() {
@@ -127,15 +126,25 @@ pub fn describe(c: &Content, dim: u32, seed: u64) -> Option<(Vec<i32>, Vec<usize
             [b.biome as i32, b.depth, b.size, b.threshold, seed32(seed, weft_noise::fixed::salt::CAVE_BIOME ^ k as u64) as i32];
         w.extend_from_slice(&cave);
     }
-    Some((w, custom))
+    Some(w)
+}
+
+/// Appends the steps of `e` (the noise seeds made from `seed`); returns where they start and how many.
+fn steps(w: &mut Vec<i32>, e: &Expr, seed: u64) -> (i32, i32) {
+    let start = w.len() as i32;
+    for s in &e.0 {
+        let noisy = matches!(s.kind, ek::NOISE | ek::SITE);
+        w.extend_from_slice(&[s.kind as i32, if noisy { seed32(seed, s.salt) as i32 } else { 0 }, s.a, s.b, s.c]);
+    }
+    (start, e.0.len() as i32)
 }
 
 /// `describe` for distant terrain, with the dimension's scattered things (trees) after it
 /// (`d::SCATTER_OFF` points there): per scatter its cell, reach and hash seed, then per biome the chance
 /// as a threshold on the site's bits (`dim::scatter_site`'s test, exactly), and the canopy its
 /// shape callback makes there (radius, top above the site, block), from a few sample runs.
-pub fn describe_lod(c: &Content, dim: u32, seed: u64) -> Option<(Vec<i32>, Vec<usize>)> {
-    let (mut w, custom) = describe(c, dim, seed)?;
+pub fn describe_lod(c: &Content, dim: u32, seed: u64) -> Option<Vec<i32>> {
+    let mut w = describe(c, dim, seed)?;
     let def = &c.dims[dim as usize];
     w[d::SCATTER_OFF as usize] = w.len() as i32;
     w.push(def.scatters.len() as i32);
@@ -192,61 +201,7 @@ pub fn describe_lod(c: &Content, dim: u32, seed: u64) -> Option<(Vec<i32>, Vec<u
             w.extend_from_slice(&entry);
         }
     }
-    Some((w, custom))
-}
-
-/// Writes a mask as postfix steps (`words::MASK` each); returns the stack depth it needs.
-fn postfix(m: &Mask, seed: u64, w: &mut Vec<i32>, depth: usize) -> Option<usize> {
-    Some(match m {
-        Mask::Noise { salt, scale, octaves, from, to } => {
-            w.extend_from_slice(&[mask::NOISE as i32, seed32(seed, *salt) as i32, *scale, *octaves as i32, *from, *to]);
-            depth + 1
-        }
-        Mask::Continent(a, b) => {
-            w.extend_from_slice(&[mask::CONTINENT as i32, 0, 0, 0, *a, *b]);
-            depth + 1
-        }
-        Mask::Temperature(a, b) => {
-            w.extend_from_slice(&[mask::TEMPERATURE as i32, 0, 0, 0, *a, *b]);
-            depth + 1
-        }
-        Mask::Humidity(a, b) => {
-            w.extend_from_slice(&[mask::HUMIDITY as i32, 0, 0, 0, *a, *b]);
-            depth + 1
-        }
-        Mask::All(v) => {
-            let mut most = depth;
-            for (i, m) in v.iter().enumerate() {
-                most = most.max(postfix(m, seed, w, depth + i)?);
-            }
-            w.extend_from_slice(&[mask::ALL as i32, v.len() as i32, 0, 0, 0, 0]);
-            most.max(depth + 1)
-        }
-        Mask::Not(m) => {
-            let most = postfix(m, seed, w, depth)?;
-            w.extend_from_slice(&[mask::NOT as i32, 0, 0, 0, 0, 0]);
-            most
-        }
-    })
-}
-
-/// Heights of the mod features `custom` at the columns and corners of cube column (`x`, `z`),
-/// for its jobs.
-pub fn custom_heights(c: &Content, dim: u32, seed: u64, x: i32, z: i32, custom: &[usize]) -> Arc<Vec<i32>> {
-    let def = &c.dims[dim as usize];
-    def.custom_cache.get(seed, x, z, || {
-        let Some(t) = def.terrain.as_ref() else { return Vec::new() };
-        let f = Fields { seed };
-        let (ox, oz) = (x * 16, z * 16);
-        let mut out = Vec::with_capacity(custom.len() * CUSTOM_WORDS);
-        for &i in custom {
-            for ci in 0..CUSTOM_WORDS as i32 {
-                let (x, z) = if ci < 256 { (ox + ci % 16, oz + ci / 16) } else { (ox + (ci - 256) % 5 * 4, oz + (ci - 256) / 5 * 4) };
-                out.push(t.features[i].height_at(&f, x * 16, z * 16));
-            }
-        }
-        out
-    })
+    Some(w)
 }
 
 #[derive(Default)]
@@ -295,9 +250,9 @@ pub struct GpuTerrain {
     lod_rx: Receiver<super::lod::LodJob>,
     lod_queue: VecDeque<super::lod::LodJob>,
     slots: Vec<Slot>,
-    /// (dim, seed) and its description and mod features, for cubes and for tiles.
-    desc: Option<((u32, u64), Vec<i32>, usize)>,
-    lod_desc: Option<((u32, u64), Vec<i32>, usize)>,
+    /// (dim, seed) and its description, for cubes and for tiles.
+    desc: Option<((u32, u64), Vec<i32>)>,
+    lod_desc: Option<((u32, u64), Vec<i32>)>,
     /// Set once the pipeline works: the terrain thread sends jobs here instead of to the CPU.
     pub on: Arc<AtomicBool>,
 }
@@ -374,7 +329,7 @@ impl GpuTerrain {
 
     /// Distant terrain tiles: what came back goes to the workers to mesh, the next ones go up.
     fn tiles(&mut self, gpu: &mut dyn Backend, list: &mut CommandList, slot: usize) {
-        use super::lod::{LOD_WORDS_PER_TILE, SAMPLES};
+        use super::lod::LOD_WORDS_PER_TILE;
         let Some(pipeline) = self.lod_pipeline else { return };
         let s = &mut self.slots[slot];
         if !s.lod_flight.is_empty() {
@@ -388,13 +343,13 @@ impl GpuTerrain {
         let Some(first) = self.lod_queue.front() else { return };
         let key = (first.dim, first.seed);
         if self.lod_desc.as_ref().is_none_or(|d| d.0 != key) {
-            let Some((words, custom)) = describe_lod(content(), key.0, key.1) else {
+            let Some(words) = describe_lod(content(), key.0, key.1) else {
                 self.lod_queue.clear();
                 return;
             };
-            self.lod_desc = Some((key, words, custom.len()));
+            self.lod_desc = Some((key, words));
         }
-        let (_, words, custom) = self.lod_desc.as_ref().unwrap();
+        let (_, words) = self.lod_desc.as_ref().unwrap();
         let mut batch = Vec::new();
         while batch.len() < LOD_BATCH
             && self
@@ -404,29 +359,24 @@ impl GpuTerrain {
         {
             batch.push(self.lod_queue.pop_front().unwrap());
         }
-        let stride = 4 + custom * SAMPLES;
-        let mut jobs = vec![0i32; batch.len() * stride];
+        let mut jobs = vec![0i32; batch.len() * JOB_WORDS];
         for (i, j) in batch.iter().enumerate() {
-            let r = i * stride;
             let o = j.key.origin();
-            jobs[r..r + 3].copy_from_slice(&[o.x, o.y, j.key.level as i32]);
-            if j.custom.len() == custom * SAMPLES {
-                jobs[r + 4..r + stride].copy_from_slice(&j.custom);
-            }
+            jobs[i * JOB_WORDS..i * JOB_WORDS + 3].copy_from_slice(&[o.x, o.y, j.key.level as i32]);
         }
         let desc = sized(gpu, &mut s.lod_desc, words.len() * 4, usage::STORAGE | usage::HOST, "terrain lod desc");
         if s.lod_desc_key != Some(key) {
             gpu.mapped(desc)[..words.len() * 4].copy_from_slice(bytemuck::cast_slice(words));
             s.lod_desc_key = Some(key);
         }
-        let jobs_buf = sized(gpu, &mut s.lod_jobs, LOD_BATCH * stride * 4, usage::STORAGE | usage::HOST, "terrain lod jobs");
+        let jobs_buf = sized(gpu, &mut s.lod_jobs, LOD_BATCH * JOB_WORDS * 4, usage::STORAGE | usage::HOST, "terrain lod jobs");
         gpu.mapped(jobs_buf)[..jobs.len() * 4].copy_from_slice(bytemuck::cast_slice(&jobs));
         let out = sized(gpu, &mut s.lod_out, LOD_BATCH * LOD_WORDS_PER_TILE * 4, usage::STORAGE | usage::READBACK, "terrain lod out");
         list.push(Cmd::SetPipeline(pipeline));
         list.bind(binding::DESC, desc);
         list.bind(binding::JOBS, jobs_buf);
         list.bind(binding::OUT, out);
-        list.push_constants(&[batch.len() as u32, *custom as u32]);
+        list.push_constants(&[batch.len() as u32]);
         list.push(Cmd::Dispatch { x: batch.len() as u32, y: 1, z: 1 });
         list.push(Cmd::Barrier);
         s.lod_flight = batch;
@@ -475,35 +425,30 @@ impl GpuTerrain {
         let Some(first) = self.queue.front() else { return };
         let key = (first.dim, first.seed);
         if self.desc.as_ref().is_none_or(|d| d.0 != key) {
-            let Some((words, custom)) = describe(content(), key.0, key.1) else {
+            let Some(words) = describe(content(), key.0, key.1) else {
                 // The terrain thread asked for a dimension the GPU cannot make: done by the CPU.
                 for job in self.queue.drain(..) {
                     crate::background().spawn(move || cpu(job));
                 }
                 return;
             };
-            self.desc = Some((key, words, custom.len()));
+            self.desc = Some((key, words));
         }
-        let (_, words, custom) = self.desc.as_ref().unwrap();
+        let (_, words) = self.desc.as_ref().unwrap();
         let mut batch = Vec::new();
         while batch.len() < BATCH && self.queue.front().is_some_and(|j| (j.dim, j.seed) == key) {
             batch.push(self.queue.pop_front().unwrap());
         }
-        let stride = 4 + custom * CUSTOM_WORDS;
-        let mut jobs = vec![0i32; batch.len() * stride];
+        let mut jobs = vec![0i32; batch.len() * JOB_WORDS];
         for (i, j) in batch.iter().enumerate() {
-            let r = i * stride;
-            jobs[r..r + 3].copy_from_slice(&j.pos.to_array());
-            if j.custom.len() == custom * CUSTOM_WORDS {
-                jobs[r + 4..r + stride].copy_from_slice(&j.custom);
-            }
+            jobs[i * JOB_WORDS..i * JOB_WORDS + 3].copy_from_slice(&j.pos.to_array());
         }
         let desc = sized(gpu, &mut s.desc, words.len() * 4, usage::STORAGE | usage::HOST, "terrain desc");
         if s.desc_key != Some(key) {
             gpu.mapped(desc)[..words.len() * 4].copy_from_slice(bytemuck::cast_slice(words));
             s.desc_key = Some(key);
         }
-        let jobs_buf = sized(gpu, &mut s.jobs, BATCH * stride * 4, usage::STORAGE | usage::HOST, "terrain jobs");
+        let jobs_buf = sized(gpu, &mut s.jobs, BATCH * JOB_WORDS * 4, usage::STORAGE | usage::HOST, "terrain jobs");
         gpu.mapped(jobs_buf)[..jobs.len() * 4].copy_from_slice(bytemuck::cast_slice(&jobs));
         let out = sized(gpu, &mut s.out[next], BATCH * OUT_WORDS * 4, usage::STORAGE | usage::READBACK, "terrain out");
         s.flight_out = next;
@@ -511,7 +456,7 @@ impl GpuTerrain {
         list.bind(binding::DESC, desc);
         list.bind(binding::JOBS, jobs_buf);
         list.bind(binding::OUT, out);
-        list.push_constants(&[batch.len() as u32, *custom as u32]);
+        list.push_constants(&[batch.len() as u32]);
         list.push(Cmd::Dispatch { x: batch.len() as u32, y: 1, z: 1 });
         crate::diag::TERRAIN_GPU.add(batch.len() as u64);
         list.push(Cmd::Barrier);

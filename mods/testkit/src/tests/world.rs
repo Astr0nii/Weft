@@ -1045,19 +1045,26 @@ async fn edit_while_loading_once(t: &T) -> Result<f64, String> {
 }
 
 /// Terrain the GPU makes is the CPU's to the bit (integer math on both sides): every cube of a
-/// fresh world is made again on the CPU and compared.
+/// fresh world is made again on the CPU and compared, in the overworld and on Mars, whose
+/// presets use the rest of the expression steps.
 pub async fn gpu_terrain(t: T) -> R {
     static CHECK: Config<i32> = Config::named("core:terrain_check");
+    static MARS: Dimension = Dimension::named("testmod:mars");
     let before = CHECK.get();
     CHECK.set(1);
-    let start = t.state().gpu_cubes;
     let out = async {
+        let start = t.state().gpu_cubes;
         t.world(5).await?;
         t.idle().await?;
+        let overworld = t.state().gpu_cubes - start;
+        t.cmd("/dim testmod:mars").await?;
+        t.until("on Mars", Duration::from_secs(20), |t| t.state().dim == MARS.id())
+            .await?;
+        t.idle().await?;
         let s = t.state();
-        let made = s.gpu_cubes - start;
-        t.note(format!("{made} cubes made on the GPU, {} differing", s.gpu_mismatches));
-        t.check(made > 1000, format!("the GPU made the terrain ({made} cubes)"));
+        let mars = s.gpu_cubes - start - overworld;
+        t.note(format!("{overworld} cubes made on the GPU in the overworld, {mars} on Mars, {} differing", s.gpu_mismatches));
+        t.check(overworld > 1000 && mars > 1000, format!("the GPU made the terrain ({overworld} and {mars} cubes)"));
         t.check_eq(s.gpu_mismatches, 0, "cubes the GPU made differently from the CPU");
         Ok(())
     }

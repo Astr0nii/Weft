@@ -337,8 +337,15 @@ fn init(r: &mut Registry) {
     r.terrain(&OVERWORLD)
         .biome_before("base:desert", BiomeRule::new("scorched"))
         .feature(
-            Feature::new(|_, x, z| if (x - NEEDLE[0] * 16).abs().max((z - NEEDLE[1] * 16).abs()) < 3 * 16 { 90 * 16 } else { 0 })
-                .named("needle"),
+            // 90 blocks up within 3 of the spot: a step where the distance passes 3.
+            Feature::new(
+                ((Expr::x() - Expr::blocks(NEEDLE[0] as f64)).abs())
+                    .max((Expr::z() - Expr::blocks(NEEDLE[1] as f64)).abs())
+                    .ramp_blocks(3.0, 3.0)
+                    .not()
+                    * Expr::blocks(90.0),
+            )
+            .named("needle"),
         );
     r.decoration(boulders).dimension(&OVERWORLD);
     // One ore for every dimension: base's stone and Mars' basalt both take it.
@@ -351,10 +358,10 @@ fn init(r: &mut Registry) {
         .stone("basalt")
         .base_height(60.0)
         .feature(preset::hills(8.0, 220.0))
-        .feature(preset::plateaus(24.0, 320.0, 6.0).mask(Mask::noise(900.0, 0.1, 0.4)))
-        .feature(preset::canyons(26.0, 9.0).mask(Mask::noise(1200.0, -0.2, 0.1)))
+        .feature(preset::plateaus(24.0, 320.0, 6.0).mask(Expr::noise(900.0).ramp(0.1, 0.4)))
+        .feature(preset::canyons(26.0, 9.0).mask(Expr::noise(1200.0).ramp(-0.2, 0.1)))
         .feature(preset::craters(32.0, 16.0, 150.0))
-        .feature(preset::dunes(3.0, 22.0).mask(Mask::noise(500.0, 0.15, 0.45)))
+        .feature(preset::dunes(3.0, 22.0).mask(Expr::noise(500.0).ramp(0.15, 0.45)))
         // Base's forest in the cold parts of Mars (any humidity, unlike at home): it brings its
         // grass, and the engine grows its trees here like in base's overworld.
         .biome(

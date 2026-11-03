@@ -145,15 +145,24 @@ pub fn register(r: &mut Registry) {
         .feature(preset::continents(18.0))
         // Biomes shape the land through their climate, not their borders, so nothing seams:
         // the cold flattens hills into tundra, deserts get dunes.
-        .feature(preset::hills(16.0, 110.0).mask(Mask::Temperature(-0.35, -0.6).not()))
-        .feature(preset::dunes(4.0, 26.0).mask(Mask::Temperature(0.25, 0.45).and(Mask::Humidity(0.1, -0.05))))
+        .feature(preset::hills(16.0, 110.0).mask(Expr::temperature().ramp(-0.35, -0.6).not()))
+        .feature(
+            preset::dunes(4.0, 26.0).mask(
+                Expr::temperature()
+                    .ramp(0.25, 0.45)
+                    .and(Expr::humidity().ramp(0.1, -0.05)),
+            ),
+        )
+        // How mountainous a place is: the mountains' strength, and where the mountains biome goes.
+        .field(
+            "base:mountains",
+            Expr::fbm(0x44, 700.0, 3)
+                .ramp(-0.1, 0.3)
+                .and(Expr::continent().ramp(0.0, 0.2)),
+        )
         .feature(
             preset::mountains(150.0, 260.0)
-                .mask(
-                    Mask::noise(700.0, -0.1, 0.3)
-                        .salt(0x44)
-                        .and(Mask::Continent(0.0, 0.2)),
-                )
+                .mask(Expr::field("base:mountains"))
                 .named("mountains"),
         )
         // Biomes bring their climate and surface; rules only add where else they must hold.
@@ -165,7 +174,7 @@ pub fn register(r: &mut Registry) {
                 .continent(..0.1),
         )
         .biome(BiomeRule::new("beach").height(..=SEA + 1).continent(..0.1))
-        .biome(BiomeRule::new("mountains").feature("mountains", 0.45..))
+        .biome(BiomeRule::new("mountains").field("base:mountains", 0.45..))
         .biome(BiomeRule::new("snowy_plains"))
         .biome(BiomeRule::new("taiga"))
         .biome(BiomeRule::new("desert"))

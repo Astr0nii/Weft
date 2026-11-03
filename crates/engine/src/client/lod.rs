@@ -8,8 +8,6 @@
 //! shows its ground the tiles' pixels are dropped (`fs_lod`, `Lod::mask`), so they fill in for
 //! cubes not made or meshed yet (flying fast), and nowhere stand through them.
 
-use std::sync::Arc;
-
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use glam::{DVec3, IVec2};
 use rustc_hash::FxHashSet;
@@ -70,12 +68,11 @@ impl TileKey {
     }
 }
 
-/// A tile for the GPU to make, with the heights of mods' own features at its columns.
+/// A tile for the GPU to make.
 pub struct LodJob {
     pub dim: u32,
     pub seed: u64,
     pub key: TileKey,
-    pub custom: Vec<i32>,
     pub done: Sender<LodMesh>,
 }
 
@@ -201,9 +198,9 @@ pub struct Lod {
     done: (Sender<LodMesh>, Receiver<LodMesh>),
     dim: u32,
     seed: u64,
-    /// Indices of the dimension's features whose heights run mods' code (`terrain_gpu`);
-    /// `None`: no distant terrain here.
-    custom: Option<Arc<Vec<usize>>>,
+    /// Whether the GPU makes this dimension's terrain (`terrain_gpu`); if not, there is no
+    /// distant terrain here.
+    able: bool,
     ready: FxHashSet<TileKey>,
     pending: FxHashSet<TileKey>,
     /// Tiles wanted, nearest first, and where the camera was then.
@@ -229,7 +226,7 @@ impl Lod {
             done: unbounded(),
             dim: u32::MAX,
             seed: 0,
-            custom: None,
+            able: false,
             ready: FxHashSet::default(),
             pending: FxHashSet::default(),
             wanted: Vec::new(),
@@ -282,7 +279,7 @@ impl Lod {
         }
         if (dim, seed) != (self.dim, self.seed) {
             (self.dim, self.seed) = (dim, seed);
-            self.custom = super::terrain_gpu::describe(c, dim, seed).map(|(_, custom)| Arc::new(custom));
+            self.able = super::terrain_gpu::describe(c, dim, seed).is_some();
         }
         // Tiles stand in for cubes not shown yet; the inner half of the view is shown long
         // before the edge, where flying outruns the cubes.
@@ -302,7 +299,7 @@ impl Lod {
             render.upload_lod(gpu, textures, m.key, &m.quads, m.y);
             self.ready.insert(m.key);
         }
-        if reach == 0 || self.custom.is_none() {
+        if reach == 0 || !self.able {
             render.lod_draw.clear();
             return;
         }
@@ -465,8 +462,6 @@ impl Lod {
 
     /// Asks for the nearest wanted tiles not made yet.
     fn request(&mut self) {
-        let c = content();
-        let custom = self.custom.clone().unwrap();
         for &key in &self.wanted {
             if self.pending.len() >= IN_FLIGHT {
                 break;
@@ -475,32 +470,9 @@ impl Lod {
                 continue;
             }
             self.pending.insert(key);
-            let (dim, seed, done, jobs) = (self.dim, self.seed, self.done.0.clone(), self.jobs.clone());
-            if custom.is_empty() {
-                let _ = jobs.send(LodJob { dim, seed, key, custom: Vec::new(), done });
-                continue;
-            }
-            let custom = custom.clone();
-            // Mods' features run their code: on a worker.
-            crate::background().spawn(move || {
-                let heights = custom_heights(c, dim, seed, key, &custom);
-                let _ = jobs.send(LodJob { dim, seed, key, custom: heights, done });
-            });
+            let _ = self
+                .jobs
+                .send(LodJob { dim: self.dim, seed: self.seed, key, done: self.done.0.clone() });
         }
     }
-}
-
-/// Heights of the mod features `custom` at the tile's columns, for its job.
-fn custom_heights(c: &Content, dim: u32, seed: u64, key: TileKey, custom: &[usize]) -> Vec<i32> {
-    let Some(t) = c.dims[dim as usize].terrain.as_ref() else { return Vec::new() };
-    let f = weft_noise::fixed::Fields { seed };
-    let (o, s) = (key.origin(), 1 << key.level);
-    let mut out = Vec::with_capacity(custom.len() * SAMPLES);
-    for &i in custom {
-        for k in 0..SAMPLES as i32 {
-            let (x, z) = (o.x + (k % SIDE - 1) * s + s / 2, o.y + (k / SIDE - 1) * s + s / 2);
-            out.push(t.features[i].height_at(&f, x * 16, z * 16));
-        }
-    }
-    out
 }
