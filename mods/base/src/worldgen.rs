@@ -335,6 +335,36 @@ fn decorate(g: &mut Gen) {
             }
         }
     }
+    // Clay patches in shallow water (rivers, lakes, ocean shores), replacing the top sand,
+    // dirt and gravel
+    for z in 0..16usize {
+        for x in 0..16usize {
+            let col = &cols[z * 16 + x];
+            // Make sure we only generate clay patches in shallower waters
+            if col.height >= SEA || col.height < SEA - 6 {
+                continue;
+            }
+            let y = col.height - oy;
+            if !(0..16).contains(&y) {
+                continue;
+            }
+            let y = y as usize;
+            let (wx, wz) = (ox + x as i32, oz + z as i32);
+            // Clay patch size based on noise scale
+            let clay = Fields { seed }.fbm(0xC1A7, wx * 16, wz * 16, 18 * 16, 3);
+            // Threshold for clay generation
+            if clay > ONE / 4 {
+                let surface = g.get(x, y, z);
+                if SAND.is(surface)
+                    || DIRT.is(surface)
+                    || GRASS.is(surface)
+                    || GRAVEL.is(surface)
+                {
+                    g.set(x, y, z, CLAY.id());
+                }
+            }
+        }
+    }
 }
 
 /// The test dimension: flat, bounded in height, nothing else.
