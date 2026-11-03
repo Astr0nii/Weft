@@ -56,7 +56,7 @@ pub async fn vetoes_and_timers(t: T) -> R {
     t.cmd("/rule testkit:no_hurt 1").await?;
     t.cmd("/kill").await?;
     t.secs(0.3).await?;
-    t.check(!t.flag(weft_sdk::client::client_flags::DEAD), "question::HURT denied, the player lives");
+    t.check(!t.flag(weft_sdk::client::client_flags::DEAD), "actions::HURT denied, the player lives");
     t.cmd("/rule testkit:no_hurt 0").await?;
     t.cmd("/feed 10").await?;
     t.op("put me 1 bread 2").await?;
@@ -65,7 +65,7 @@ pub async fn vetoes_and_timers(t: T) -> R {
     t.secs(0.3).await?;
     t.press("core:use");
     t.secs(0.5).await?;
-    t.check_eq(t.c().inventory_slot(1).count, 2, "question::USE_ITEM denied, the bread stays");
+    t.check_eq(t.c().inventory_slot(1).count, 2, "actions::USE_ITEM denied, the bread stays");
     t.cmd("/rule testkit:no_use 0").await?;
     t.hold("core:use", 2.0);
     t.until("ate", Duration::from_secs(5), |t| t.c().inventory_slot(1).count == 1)

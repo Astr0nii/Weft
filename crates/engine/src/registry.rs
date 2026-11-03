@@ -226,8 +226,6 @@ pub enum Ingredient {
     Tag(u32),
     /// Any of these items (a tag pattern, `#ingots/*`).
     Any(Vec<u32>),
-    /// A liquid by name, in millibuckets.
-    Fluid(String),
 }
 
 impl Ingredient {
@@ -238,7 +236,6 @@ impl Ingredient {
             Ingredient::Item(i) => *i == item,
             Ingredient::Tag(t) => item != 0 && c.has(comps::ITEM, item, *t),
             Ingredient::Any(list) => list.contains(&item),
-            Ingredient::Fluid(_) => false,
         }
     }
 }
@@ -446,11 +443,20 @@ pub struct MusicDef {
     pub when_names: Vec<String>,
 }
 
-/// A condition: the engine answers its own (`cb` none), a mod's callback the rest.
+/// A condition and who answers it.
 #[derive(Clone)]
 pub struct ConditionDef {
     pub name: String,
-    pub cb: Option<(ModId, Callback)>,
+    pub answer: Answer,
+}
+
+#[derive(Clone, Copy)]
+pub enum Answer {
+    /// One of `abi::condition`.
+    Engine,
+    /// Every game mode is a condition of its name: the entity, or the client's player, is in it.
+    Mode(crate::world::GameMode),
+    Mod(ModId, Callback),
 }
 
 pub struct ParticleDef {
@@ -675,7 +681,7 @@ pub struct RawRecipe {
     pub output: String,
     pub count: u32,
     pub time: u32,
-    /// (item or `fluid:..`, count, chance) after the main output.
+    /// (item, count, chance) after the main output; a liquid is its item.
     pub outputs: Vec<(String, u32, f32)>,
     pub values: Vec<crate::components::RawValue>,
     pub flags: u32,
@@ -875,9 +881,9 @@ pub struct PlayerGroup {
 #[derive(Clone, Debug)]
 pub struct EquipmentSlot {
     pub name: String,
-    /// `worn_parts` of the model it covers, and bones it covers by name.
-    pub parts: u32,
+    /// Bones it covers by name, and the roles (`1 << role`) of the names that have one.
     pub bones: Vec<String>,
+    pub roles: u32,
     pub background: String,
 }
 
@@ -1003,39 +1009,41 @@ fn engine_damage_causes() -> Vec<(usize, DamageCauseDef)> {
 #[derive(Clone, Debug)]
 pub struct WeatherDef {
     pub name: String,
-    pub falls: bool,
-    pub lightning: bool,
-    pub darkness: f32,
+    /// `abi::weather_flags`.
+    pub flags: u32,
+    pub look: abi::WeatherLook,
+    pub sound_name: String,
+    /// `sound_name` resolved at freeze.
+    pub sound: Option<u32>,
     pub duration: [u64; 2],
     pub weight: u32,
-    /// Dimension names, resolved into `dims` at freeze; empty: any with weather.
-    pub dimension_names: Vec<String>,
-    pub dims: Vec<u32>,
+}
+
+impl WeatherDef {
+    pub fn falls(&self) -> bool {
+        self.flags & abi::weather_flags::FALLS != 0
+    }
+    pub fn lightning(&self) -> bool {
+        self.flags & abi::weather_flags::LIGHTNING != 0
+    }
+    pub fn shelters(&self) -> bool {
+        self.flags & abi::weather_flags::SHELTERS != 0
+    }
 }
 
 fn engine_weathers() -> Vec<(usize, WeatherDef)> {
-    let w = |name: &str, falls: bool, lightning: bool, duration: [u64; 2], weight: u32| {
-        let darkness = if falls { 0.3125 } else { 0.0 };
-        (
-            0,
-            WeatherDef {
-                name: format!("core:{name}"),
-                falls,
-                lightning,
-                darkness,
-                duration,
-                weight,
-                dimension_names: Vec::new(),
-                dims: Vec::new(),
-            },
-        )
+    let w = |name: &str, flags: u32, look: abi::WeatherLook, duration: [u64; 2], weight: u32| {
+        (0, WeatherDef { name: format!("core:{name}"), flags, look, sound_name: String::new(), sound: None, duration, weight })
     };
     // Vanilla's timing: clear for 10 minutes to 2.5 hours, rain for 10 to 20 minutes, a quarter
     // of it with thunder.
+    use abi::weather_flags as f;
+    let rain = abi::WeatherDesc::DEFAULT.look;
+    let thunder = abi::WeatherLook { cloud_dark: 0.95, ..rain };
     vec![
-        w("clear", false, false, [12000, 180000], 0),
-        w("rain", true, false, [12000, 24000], 3),
-        w("thunder", true, true, [12000, 24000], 1),
+        w("clear", 0, abi::WeatherLook::default(), [12000, 180000], 0),
+        w("rain", f::FALLS | f::SHELTERS, rain, [12000, 24000], 3),
+        w("thunder", f::FALLS | f::SHELTERS | f::LIGHTNING, thunder, [12000, 24000], 1),
     ]
 }
 
@@ -1149,19 +1157,20 @@ pub struct AttrDef {
 pub const ENGINE_EVENTS: &[(&str, &str, u32)] = {
     use abi::Schema;
     &[
-        (abi::event::BLOCK_BROKEN, abi::BlockChange::SCHEMA, size_of::<abi::BlockChange>() as u32),
-        (abi::event::BLOCK_PLACED, abi::BlockChange::SCHEMA, size_of::<abi::BlockChange>() as u32),
-        (abi::event::ENTITY_DIED, abi::Death::SCHEMA, size_of::<abi::Death>() as u32),
+        (abi::action::BREAK_BLOCK, abi::BlockChange::SCHEMA, size_of::<abi::BlockChange>() as u32),
+        (abi::action::PLACE_BLOCK, abi::BlockChange::SCHEMA, size_of::<abi::BlockChange>() as u32),
+        (abi::action::DIE, abi::Death::SCHEMA, size_of::<abi::Death>() as u32),
         (abi::event::PLAYER_JOINED, abi::PlayerEvent::SCHEMA, size_of::<abi::PlayerEvent>() as u32),
         (abi::event::PLAYER_RESPAWNED, abi::PlayerEvent::SCHEMA, size_of::<abi::PlayerEvent>() as u32),
-        (abi::event::ITEM_PICKED_UP, abi::Pickup::SCHEMA, size_of::<abi::Pickup>() as u32),
-        (abi::event::CHAT_MESSAGE, abi::ChatMessage::SCHEMA, size_of::<abi::ChatMessage>() as u32),
-        (abi::event::ENTITY_HURT, abi::Hurt::SCHEMA, size_of::<abi::Hurt>() as u32),
-        (abi::event::ITEM_USED, abi::ItemUsed::SCHEMA, size_of::<abi::ItemUsed>() as u32),
+        (abi::action::PICKUP_ITEM, abi::Pickup::SCHEMA, size_of::<abi::Pickup>() as u32),
+        (abi::action::CHAT, abi::ChatMessage::SCHEMA, size_of::<abi::ChatMessage>() as u32),
+        (abi::action::HURT, abi::Hurt::SCHEMA, size_of::<abi::Hurt>() as u32),
+        (abi::action::USE_ITEM, abi::ItemUsed::SCHEMA, size_of::<abi::ItemUsed>() as u32),
         (abi::event::ENTITY_HEALED, abi::Hurt::SCHEMA, size_of::<abi::Hurt>() as u32),
-        (abi::event::BLOCK_USED, abi::BlockChange::SCHEMA, size_of::<abi::BlockChange>() as u32),
-        (abi::event::ENTITY_INTERACTED, abi::Interaction::SCHEMA, size_of::<abi::Interaction>() as u32),
-        (abi::event::DIMENSION_CHANGED, abi::DimensionChange::SCHEMA, size_of::<abi::DimensionChange>() as u32),
+        (abi::event::WEATHER_TICK, abi::WeatherTick::SCHEMA, size_of::<abi::WeatherTick>() as u32),
+        (abi::action::USE_BLOCK, abi::BlockChange::SCHEMA, size_of::<abi::BlockChange>() as u32),
+        (abi::action::INTERACT_ENTITY, abi::Interaction::SCHEMA, size_of::<abi::Interaction>() as u32),
+        (abi::action::ENTER_DIMENSION, abi::DimensionChange::SCHEMA, size_of::<abi::DimensionChange>() as u32),
     ]
 };
 
@@ -1442,7 +1451,7 @@ pub const SWAPS: &str = "core:swaps";
 pub const LOOPING_ACTION: &str = "core:looping_action";
 /// The shader effect on it: effect id, strength (`f32`), the tick it ends (`u64`).
 pub const EFFECT: &str = "core:effect";
-/// A pose a mod holds it in (`u32` pose id), empty: as it moves.
+/// A pose a mod holds it in (`u32` pose id, `f32` yaw or NaN), empty: as it moves.
 pub const FORCED_POSE: &str = "core:forced_pose";
 /// Entity component (`u64`, saved): the world time a system last simulated it to, so it can
 /// catch up on what it missed (`Dim::run_systems`).
@@ -1544,7 +1553,6 @@ pub fn freeze(
     dim_names: &FxHashMap<String, u32>,
     c: &Components,
     tag_items: &FxHashMap<u32, Vec<u32>>,
-    block_of_tag: &dyn Fn(&str) -> Option<String>,
     order: &dyn Fn(ModId) -> u32,
     errors: &mut Vec<String>,
 ) -> Game {
@@ -1595,7 +1603,7 @@ pub fn freeze(
     let mut poses = engine_poses();
     let mut conditions: Vec<(usize, ConditionDef)> = abi::condition::NAMES
         .iter()
-        .map(|n| (0, ConditionDef { name: n.to_string(), cb: None }))
+        .map(|n| (0, ConditionDef { name: n.to_string(), answer: Answer::Engine }))
         .collect();
     let mut weathers = engine_weathers();
     let mut precipitations: Vec<(usize, PrecipitationDef)> = vec![
@@ -1813,6 +1821,17 @@ pub fn freeze(
         g.damage_cause_names.insert(d.name.clone(), id);
         g.damage_causes.push(d);
     }
+    for (cell, d) in game_modes {
+        if g.game_mode_names.contains_key(&d.name) {
+            errors.push(format!("game mode {} registered twice", d.name));
+            continue;
+        }
+        let id = g.game_modes.len() as u32;
+        write_cell(cell, id);
+        g.game_mode_names.insert(d.name.clone(), id);
+        conditions.push((0, ConditionDef { name: d.name.clone(), answer: Answer::Mode(crate::world::GameMode(id as u16)) }));
+        g.game_modes.push(d);
+    }
     for (cell, d) in conditions {
         if g.condition_names.contains_key(&d.name) {
             errors.push(format!("condition {} registered twice", d.name));
@@ -1836,10 +1855,10 @@ pub fn freeze(
             errors.push(format!("weather {} registered twice", d.name));
             continue;
         }
-        for n in &d.dimension_names {
-            match dim_names.get(n) {
-                Some(&i) => d.dims.push(i),
-                None => errors.push(format!("weather {}: no dimension {n}", d.name)),
+        if !d.sound_name.is_empty() {
+            d.sound = g.sound_names.get(&d.sound_name).copied();
+            if d.sound.is_none() {
+                errors.push(format!("weather {}: no sound {}", d.name, d.sound_name));
             }
         }
         let id = g.weathers.len() as u32;
@@ -1866,16 +1885,6 @@ pub fn freeze(
         write_cell(cell, id);
         g.pose_names.insert(d.name.clone(), id);
         g.poses.push(d);
-    }
-    for (cell, d) in game_modes {
-        if g.game_mode_names.contains_key(&d.name) {
-            errors.push(format!("game mode {} registered twice", d.name));
-            continue;
-        }
-        let id = g.game_modes.len() as u32;
-        write_cell(cell, id);
-        g.game_mode_names.insert(d.name.clone(), id);
-        g.game_modes.push(d);
     }
     for (cell, d) in text_places {
         if g.text_place_names.contains_key(&d.name) {
@@ -2026,18 +2035,6 @@ pub fn freeze(
             size: energy,
             flags: weft_abi::component_flags::SAVE | weft_abi::component_flags::SYNC_MENU,
             default: vec![0; energy as usize],
-            runtime: true,
-        },
-        schema: String::new(),
-    });
-    let tank = size_of::<weft_abi::Tank>() as u32;
-    components.push(RawComponent {
-        owner: ENGINE,
-        def: ComponentDef {
-            name: abi::comp::TANK.into(),
-            size: tank,
-            flags: weft_abi::component_flags::SAVE | weft_abi::component_flags::SYNC_MENU,
-            default: vec![0; tank as usize],
             runtime: true,
         },
         schema: String::new(),
@@ -2250,16 +2247,6 @@ pub fn freeze(
         }
     }
     let ing = |s: &str, errors: &mut Vec<String>| -> Ingredient {
-        if let Some(f) = s.strip_prefix("fluid:") {
-            let Some(tag) = f.strip_prefix('#') else { return Ingredient::Fluid(f.to_string()) };
-            return match block_of_tag(tag) {
-                Some(name) => Ingredient::Fluid(name),
-                None => {
-                    errors.push(format!("recipe: no block has the tag {f}"));
-                    Ingredient::Empty
-                }
-            };
-        }
         if s.is_empty() {
             return Ingredient::Empty;
         }
@@ -2333,8 +2320,7 @@ pub fn freeze(
             .collect();
         let mut outputs = vec![RecipeOutput { what: Ingredient::Item(output), count: r.count, chance: 1.0 }];
         for (name, count, chance) in &r.outputs {
-            let what = if name.starts_with("fluid:") { Ok(ing(name, errors)) } else { one(name).map(Ingredient::Item) };
-            match what {
+            match one(name).map(Ingredient::Item) {
                 Ok(w) => outputs.push(RecipeOutput { what: w, count: *count, chance: chance.clamp(0.0, 1.0) }),
                 Err(e) => errors.push(format!("recipe for {}: output: {e}", r.output)),
             }

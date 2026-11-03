@@ -350,8 +350,7 @@ impl Sky {
         time: f64,
         eye_y: f64,
         in_liquid: bool,
-        rain: f32,
-        thunder: f32,
+        look: &weft_abi::WeatherLook,
         overlays: &[Overlay],
     ) {
         self.overlay = None;
@@ -391,7 +390,7 @@ impl Sky {
         self.list.push(GpuSky {
             axes: axes(Mat3::from_cols(px - o, py - o, o)),
             uv: [below as u32 as f32, 0.0, 0.0, 0.0],
-            color: rained(rgb(d.sky_color) * if d.sky_light { light } else { 1.0 }, rain, 0.75)
+            color: rained(rgb(d.sky_color) * if d.sky_light { light } else { 1.0 }, 1.0, look.sky_gray)
                 .powf(2.2)
                 .extend(1.0)
                 .to_array(),
@@ -403,8 +402,9 @@ impl Sky {
         let objects = c.game.sky.get(dim).map_or(&[][..], |l| &l[..]);
         let mut clouds = None;
         for (i, s) in objects.iter().enumerate() {
-            // Rain hides what is up there, domes aside: those are the sky.
-            let opacity = (s.opacity[0] + (s.opacity[1] - s.opacity[0]) * night) * if s.kind == sky_kind::DOME { 1.0 } else { 1.0 - rain };
+            // Weather hides what is up there, domes aside: those are the sky.
+            let opacity =
+                (s.opacity[0] + (s.opacity[1] - s.opacity[0]) * night) * if s.kind == sky_kind::DOME { 1.0 } else { 1.0 - look.sky_cover };
             if s.kind == sky_kind::CLOUDS {
                 let Some((index, [w, h])) = self.picture(gpu, &s.texture) else { continue };
                 const CELL: f64 = 12.0;
@@ -423,8 +423,8 @@ impl Sky {
                 let (x, z) = ((cam.pos.x + time * s.drift as f64) / CELL, cam.pos.z / CELL);
                 // Vanilla's: rain grays them, the time of day colors them, thunder darkens the rest.
                 let day = if d.sky_light { (height * 2.0 + 0.5).clamp(0.0, 1.0) } else { 1.0 };
-                let color = rained(rgb(s.color), rain, 0.95) * Vec3::new(day * 0.9 + 0.1, day * 0.9 + 0.1, day * 0.85 + 0.15);
-                let color = color.lerp(Vec3::splat((color.x * 0.3 + color.y * 0.59 + color.z * 0.11) * 0.2), thunder * 0.95);
+                let color = rained(rgb(s.color), 1.0, look.cloud_gray) * Vec3::new(day * 0.9 + 0.1, day * 0.9 + 0.1, day * 0.85 + 0.15);
+                let color = color.lerp(Vec3::splat((color.x * 0.3 + color.y * 0.59 + color.z * 0.11) * 0.2), look.cloud_dark);
                 clouds = Some(self.list.len() as u32);
                 self.list.push(GpuSky {
                     axes: [[0.0; 4]; 3],

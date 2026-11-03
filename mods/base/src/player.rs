@@ -35,15 +35,15 @@ pub fn register(r: &mut Registry) {
     r.player_inventory()
         .group("hotbar", Slots::row(9).hotbar())
         .group("main", Slots::grid(9, 3));
-    for (slot, parts, piece) in [
-        (&HEAD, worn_parts::HEAD, "helmet"),
-        (&base_api::CHEST, worn_parts::BODY | worn_parts::ARMS, "chestplate"),
-        (&LEGS, worn_parts::BODY | worn_parts::LEGS, "leggings"),
-        (&FEET, worn_parts::LEGS, "boots"),
+    for (slot, covers, piece) in [
+        (&HEAD, worn::HEAD, "helmet"),
+        (&base_api::CHEST, worn::CHEST, "chestplate"),
+        (&LEGS, worn::LEGS, "leggings"),
+        (&FEET, worn::FEET, "boots"),
     ] {
-        r.equipment_slot(slot, parts, &format!("slot_{piece}"));
+        r.equipment_slot(slot, covers, &format!("slot_{piece}"));
     }
-    r.equipment_slot(&OFF_HAND, 0, "slot_offhand");
+    r.equipment_slot(&OFF_HAND, &[], "slot_offhand");
     r.entity_component(
         &HUNGER,
         Hunger { food: 20.0, saturation: 5.0, exhaustion: 0.0, air: MAX_AIR, food_timer: 0 },
@@ -52,7 +52,7 @@ pub fn register(r: &mut Registry) {
     r.attach(&PLAYER, &HUNGER);
     r.world_tick(tick_players);
     // Not hungry, it doesn't start eating; the other way round it would only find out at the end.
-    r.intercept(&question::USE_ITEM, |q| {
+    r.intercept(&actions::USE_ITEM, |q| {
         let full = FOOD.on_item(q.item()).is_some()
             && q.world()
                 .component(q.entity(), &HUNGER)
@@ -60,13 +60,13 @@ pub fn register(r: &mut Registry) {
         if full { Verdict::Deny } else { Verdict::Abstain }
     });
     // Modern's exhaustion, by what the player does.
-    r.on(&BLOCK_BROKEN, |b| {
+    r.on(&actions::BREAK_BLOCK, |b| {
         let w = b.world();
         for e in b.iter() {
             tire(&w, e.player, 0.005);
         }
     });
-    r.on(&ENTITY_HURT, |b| {
+    r.on(&actions::HURT, |b| {
         let w = b.world();
         for e in b.iter() {
             tire(&w, e.source, 0.1);
@@ -88,7 +88,7 @@ pub fn register(r: &mut Registry) {
         let through = m.value / (2.0 + toughness as f64 / 4.0);
         m.value *= 1.0 - (points - through).clamp(points * 0.2, 20.0) / 25.0;
     });
-    r.on(&ENTITY_HURT, |b| {
+    r.on(&actions::HURT, |b| {
         let w = b.world();
         for h in b.iter().filter(|h| armor_applies(h.cause)) {
             let Some(worn) = w.inventory(h.entity).find_group(EQUIPMENT_GROUP) else { continue };

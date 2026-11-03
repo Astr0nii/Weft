@@ -276,6 +276,17 @@ pub type Weather = Handle<kind::Weather>;
 /// What falls from the sky in a biome (`Registry::precipitation`, `BiomeBuilder::precipitation`).
 pub type Precipitation = Handle<kind::Precipitation>;
 
+impl Weather {
+    /// `abi::weather_flags` of the weather with this id (`w.weather()`).
+    pub fn flags_of(weather: u32) -> u32 {
+        unsafe { (crate::host().weather_flags)(weather) }
+    }
+}
+
+fn set_flag(flags: u32, flag: u32, on: bool) -> u32 {
+    if on { flags | flag } else { flags & !flag }
+}
+
 pub mod weathers {
     use super::Weather;
     pub static CLEAR: Weather = Weather::named("core:clear");
@@ -299,13 +310,13 @@ pub mod precipitations {
 pub struct WeatherBuilder<'a> {
     reg: &'a mut crate::Registry,
     handle: &'static Weather,
-    dims: String,
+    sound: String,
     desc: abi::WeatherDesc,
 }
 
 impl crate::Registry {
     pub fn weather<'a>(&'a mut self, weather: &'static Weather) -> WeatherBuilder<'a> {
-        WeatherBuilder { reg: self, handle: weather, dims: String::new(), desc: abi::WeatherDesc::DEFAULT }
+        WeatherBuilder { reg: self, handle: weather, sound: String::new(), desc: abi::WeatherDesc::DEFAULT }
     }
 
     /// Something to fall from the sky: `textures/<texture>.png` as a strip of drops, `speed`
@@ -318,18 +329,38 @@ impl crate::Registry {
 }
 
 impl WeatherBuilder<'_> {
-    /// Whether something falls (rain, snow, each biome's own) and shelters from the sun.
+    /// Whether something falls (rain, snow, each biome's own).
     pub fn falls(mut self, yes: bool) -> Self {
-        self.desc.falls = yes as u32;
+        self.desc.flags = set_flag(self.desc.flags, abi::weather_flags::FALLS, yes);
         self
     }
     pub fn lightning(mut self, yes: bool) -> Self {
-        self.desc.lightning = yes as u32;
+        self.desc.flags = set_flag(self.desc.flags, abi::weather_flags::LIGHTNING, yes);
+        self
+    }
+    /// Under it nothing burns in the sun (rain does; a sandstorm need not).
+    pub fn shelters_from_sun(mut self, yes: bool) -> Self {
+        self.desc.flags = set_flag(self.desc.flags, abi::weather_flags::SHELTERS, yes);
+        self
+    }
+    /// How it looks: `abi::WeatherLook`, rain's by default (`WeatherDesc::DEFAULT.look`).
+    pub fn look(mut self, look: abi::WeatherLook) -> Self {
+        self.desc.look = look;
         self
     }
     /// Share of daylight it takes away (rain 0.3125).
     pub fn darkness(mut self, share: f32) -> Self {
-        self.desc.darkness = share;
+        self.desc.look.darkness = share;
+        self
+    }
+    /// How far the sky (rain 0.75), the fog (0.5) and the clouds (0.95) go gray.
+    pub fn gray(mut self, sky: f32, fog: f32, clouds: f32) -> Self {
+        (self.desc.look.sky_gray, self.desc.look.fog_gray, self.desc.look.cloud_gray) = (sky, fog, clouds);
+        self
+    }
+    /// A sound event played now and then around players under the open sky while it falls.
+    pub fn sound(mut self, sound: &str) -> Self {
+        self.sound = crate::full_name(sound);
         self
     }
     /// Ticks it lasts, at least and at most.
@@ -343,11 +374,6 @@ impl WeatherBuilder<'_> {
         self.desc.weight = w;
         self
     }
-    /// Only in this dimension (call again for more).
-    pub fn dimension(mut self, d: &Dimension) -> Self {
-        self.dims = format!("{} {}", self.dims, d.name());
-        self
-    }
 }
 
 impl Drop for WeatherBuilder<'_> {
@@ -355,12 +381,8 @@ impl Drop for WeatherBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
-        let d = abi::WeatherDesc {
-            name: Str::new(self.handle.name()),
-            cell: self.handle.id_cell(),
-            dimensions: Str::new(&self.dims),
-            ..self.desc
-        };
+        let d =
+            abi::WeatherDesc { name: Str::new(self.handle.name()), cell: self.handle.id_cell(), sound: Str::new(&self.sound), ..self.desc };
         unsafe { (host().reg_weather)(self.reg.raw, &d) }
     }
 }
@@ -384,7 +406,7 @@ pub mod poses {
 /// ```ignore
 /// static SIT: Pose = Pose::named("sit");
 /// r.pose(&SIT).height(0.7).eye(0.62).speed(0.0).action("sit");
-/// w.set_pose(pet, Some(&SIT));
+/// w.set_pose(pet, Some(&SIT), None);
 /// ```
 pub struct PoseBuilder<'a> {
     reg: &'a mut crate::Registry,
@@ -685,8 +707,6 @@ pub type Attribute = Handle<kind::Attribute>;
 pub static SPAWN_EGGS: CreativeTab = CreativeTab::named("core:spawn_eggs");
 pub type RecipeKind = Handle<kind::RecipeKind>;
 pub type LootTable = Handle<kind::LootTable>;
-/// What `{if:..}` asks: a condition answered on the client.
-pub type TextCondition = Condition;
 /// A predicate music, text, loot and spawning share (`Registry::condition`); the engine's are in
 /// `conditions`.
 pub type Condition = Handle<kind::Condition>;
@@ -698,7 +718,6 @@ pub mod conditions {
     /// No sky over it.
     pub static UNDERGROUND: Condition = Condition::named("core:underground");
     pub static SURFACE: Condition = Condition::named("core:surface");
-    pub static CREATIVE: Condition = Condition::named("core:creative");
 }
 pub type Music = Handle<kind::Music>;
 pub type EquipmentSlot = Handle<kind::EquipmentSlot>;
@@ -795,6 +814,9 @@ impl Pending {
     }
     fn tag(name: &str) -> Pending {
         Pending { name: name.to_string(), schema: String::new(), bytes: Vec::new(), text: None }
+    }
+    fn is_tag(&self) -> bool {
+        self.schema.is_empty() && self.text.is_none() && self.bytes.is_empty()
     }
 }
 
@@ -949,6 +971,7 @@ impl Registry {
             desc: abi::DimensionDesc::DEFAULT,
             components: Vec::new(),
             daylight: Vec::new(),
+            weathers: String::new(),
             _p: PhantomData,
         }
     }
@@ -1168,14 +1191,15 @@ struct SignalSpec {
     attach: u32,
     front: u32,
     delay: u32,
-    mode: u32,
+    flags: u32,
+    inputs: u32,
     head: &'static str,
 }
 
 impl Default for SignalSpec {
     fn default() -> Self {
         let d = abi::SignalDesc::DEFAULT;
-        SignalSpec { kind: d.kind, attach: d.attach, front: d.front, delay: d.delay, mode: d.mode, head: "" }
+        SignalSpec { kind: d.kind, attach: d.attach, front: d.front, delay: d.delay, flags: d.flags, inputs: d.inputs, head: "" }
     }
 }
 
@@ -1242,7 +1266,7 @@ struct BlockCallbacks {
     merge: Option<abi::Callback>,
     on_grow: Option<abi::Callback>,
     on_signal: Option<abi::Callback>,
-    signal_logic: Option<abi::Callback>,
+    signal_gate: Option<abi::Callback>,
 }
 
 /// Per-state settings, used directly and through `BlockBuilder::states`.
@@ -1858,10 +1882,10 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// One of these was placed: `BLOCK_PLACED` for this block, at the end of the tick.
+    /// One of these was placed: `actions::PLACE_BLOCK` for this block, at the end of the tick.
     pub fn on_placed(self, f: impl Fn(&World, &crate::BlockChange) + Send + Sync + 'static) -> Self {
         let Some(block) = self.handle else { return self };
-        self.reg.on(&crate::BLOCK_PLACED, move |b| {
+        self.reg.on(&crate::actions::PLACE_BLOCK, move |b| {
             let w = b.world();
             for p in b.iter().filter(|p| block.is(p.state)) {
                 f(&w, p);
@@ -1873,7 +1897,7 @@ impl<'a> BlockBuilder<'a> {
     /// One of these was broken, by a player (`player`) or by losing its support (0).
     pub fn on_broken(self, f: impl Fn(&World, &crate::BlockChange) + Send + Sync + 'static) -> Self {
         let Some(block) = self.handle else { return self };
-        self.reg.on(&crate::BLOCK_BROKEN, move |b| {
+        self.reg.on(&crate::actions::BREAK_BLOCK, move |b| {
             let w = b.world();
             for p in b.iter().filter(|p| block.is(p.state)) {
                 f(&w, p);
@@ -1959,7 +1983,7 @@ impl<'a> BlockBuilder<'a> {
             return self;
         };
         let other = move |pos: [i32; 3], state: u32| crate::other_part(pos, state, prop, parts[1], way);
-        self.reg.intercept(&crate::question::PLACE_BLOCK, move |q| {
+        self.reg.intercept(&crate::actions::PLACE_BLOCK, move |q| {
             if !block.is(q.state()) {
                 return crate::Verdict::Abstain;
             }
@@ -2113,14 +2137,16 @@ impl<'a> BlockBuilder<'a> {
     /// Without power, or against what it can't go through, it all lands on a whole block.
     /// `power`: 0 idle, 1 going, 2 stuck. `breaks`: it breaks what is in its way instead.
     pub fn signal_floater(mut self, breaks: bool) -> Self {
-        self.signal = Some(SignalBuild { mode: breaks as u32, ..SignalBuild::default() });
+        let flags = if breaks { abi::signal_flags::BREAKS } else { 0 };
+        self.signal = Some(SignalBuild { flags, ..SignalBuild::default() });
         self.signal_props(abi::signal_kind::FLOATER, 3, false, false)
     }
     /// Pushes blocks at its `facing` with power from any other side, the `power` property saying
     /// it is out (after `facing`). `head`: the block it pushes out, with a `facing` property.
     /// `sticky` brings a block back.
     pub fn signal_piston(mut self, head: &'static str, sticky: bool) -> Self {
-        self.signal = Some(SignalBuild { head, mode: sticky as u32, ..SignalBuild::default() });
+        let flags = if sticky { abi::signal_flags::STICKY } else { 0 };
+        self.signal = Some(SignalBuild { head, flags, ..SignalBuild::default() });
         self.signal_props(abi::signal_kind::PISTON, 2, false, false)
     }
     /// The moving part of a piston (after `facing`): it goes when the piston does.
@@ -2128,15 +2154,16 @@ impl<'a> BlockBuilder<'a> {
         self.each(|s, _| s.flags |= bf::NOT_STOOD_ON);
         self.signal_props(abi::signal_kind::PISTON_HEAD, 0, false, false)
     }
-    /// A gate with logic of your own, on the clicked face: what comes out of the front `delay`
-    /// game ticks after what goes in calls for it. Runs only when something around it changes.
-    pub fn signal_logic(mut self, delay: u32, f: impl Fn(&SignalLogic) -> u8 + Send + Sync + 'static) -> Self {
-        self.callbacks.signal_logic = Some(callback(move |a: &mut abi::LogicArgs| {
-            a.output = f(SignalLogic::wrap(a)) as u32;
+    /// A gate with logic of your own, on the clicked face: what comes out of the front a
+    /// `gate`'s delay after what goes in at its inputs calls for it. Runs only when something
+    /// around it changes.
+    pub fn signal_gate(mut self, gate: Gate, f: impl Fn(&GateInputs) -> u8 + Send + Sync + 'static) -> Self {
+        self.callbacks.signal_gate = Some(callback(move |a: &mut abi::GateArgs| {
+            a.output = f(GateInputs::wrap(a)) as u32;
         }));
         // In redstone ticks, like a repeater's: two game ticks each.
-        self.signal = Some(SignalBuild { delay: Some(delay * 2), ..self.signal.unwrap_or_default() });
-        self.signal_props(abi::signal_kind::LOGIC, 16, true, true)
+        self.signal = Some(SignalBuild { delay: Some(gate.delay * 2), inputs: gate.inputs, ..self.signal.unwrap_or_default() });
+        self.signal_props(abi::signal_kind::GATE, 16, true, true)
     }
     /// Called when the power around a `signal_sink` changes.
     pub fn on_signal(mut self, f: impl Fn(&SignalEvent) + Send + Sync + 'static) -> Self {
@@ -2304,7 +2331,8 @@ impl Drop for BlockBuilder<'_> {
                     attach: s.signal.attach,
                     front: s.signal.front,
                     delay: s.signal.delay,
-                    mode: s.signal.mode,
+                    flags: s.signal.flags,
+                    inputs: s.signal.inputs,
                     head: Str::new(s.signal.head),
                 },
                 ..abi::StateDesc::DEFAULT
@@ -2347,7 +2375,7 @@ impl Drop for BlockBuilder<'_> {
             replacing: self.replace as u32,
             on_grow: cb.on_grow.unwrap_or(abi::Callback::NONE),
             on_signal: cb.on_signal.unwrap_or(abi::Callback::NONE),
-            signal_logic: cb.signal_logic.unwrap_or(abi::Callback::NONE),
+            signal_gate: cb.signal_gate.unwrap_or(abi::Callback::NONE),
             own_states: (self.own_states || !self.replace) as u32,
             retexture: Slice::new(&retexture),
             opens: Str::new(&self.opens),
@@ -2474,7 +2502,7 @@ impl ItemBuilder<'_> {
         self.tag(abi::comp::SWEEPS)
     }
     /// For fighting: in creative it doesn't break blocks, as a sword in modern. Client and server
-    /// both know, so nothing flickers. A rule that depends on more is `question::BREAK_BLOCK`.
+    /// both know, so nothing flickers. A rule that depends on more is `actions::BREAK_BLOCK`.
     pub fn no_creative_break(self) -> Self {
         self.tag(abi::comp::NO_CREATIVE_BREAK)
     }
@@ -2498,7 +2526,7 @@ impl ItemBuilder<'_> {
     pub fn wearable_model(self, slot: &EquipmentSlot, model: &str, bone: &str) -> Self {
         let model = format!("{}@{bone}", crate::asset("", model));
         self.tag(&format!("worn/{}", slot.name()))
-            .set(&c::WORN, abi::Worn { roles: 0, inflate: 0.0 })
+            .set(&c::WORN, abi::Worn { inflate: 0.0 })
             .set_text(&c::WORN_MODEL, &model)
     }
 
@@ -2513,7 +2541,7 @@ impl ItemBuilder<'_> {
     pub fn wearable(self, slot: &EquipmentSlot, inflate: f32, texture: &str) -> Self {
         let tex = crate::asset("entity", texture);
         self.tag(&format!("worn/{}", slot.name()))
-            .set(&c::WORN, abi::Worn { roles: 0, inflate })
+            .set(&c::WORN, abi::Worn { inflate })
             .set_text(&c::WORN_TEXTURE, &tex)
     }
 
@@ -2616,9 +2644,9 @@ impl BiomeBuilder<'_> {
     pub fn frozen(self, block: &str) -> Self {
         self.edit(|r| r.frozen(block)).tag("frozen")
     }
-    /// Rain falls as snow here.
+    /// Rain falls as snow here: `precipitation(&precipitations::SNOW)`.
     pub fn snows(self) -> Self {
-        self.tag(abi::comp::SNOWY)
+        self.precipitation(&precipitations::SNOW)
     }
     /// What falls here when a weather brings rain: `precipitations::SNOW`, or a mod's own.
     pub fn precipitation(self, p: &'static Precipitation) -> Self {
@@ -2660,6 +2688,7 @@ pub struct DimensionBuilder<'a> {
     desc: abi::DimensionDesc,
     components: Vec<Pending>,
     daylight: Vec<[f32; 2]>,
+    weathers: String,
     _p: PhantomData<&'a mut Registry>,
 }
 
@@ -2712,9 +2741,10 @@ impl DimensionBuilder<'_> {
         self.desc.sky_cube_y = cube_y;
         self
     }
-    /// It rains and thunders here now and then, by vanilla's timing.
-    pub fn weather(mut self) -> Self {
-        self.desc.flags |= abi::dim_flags::WEATHER;
+    /// The weathers that come here now and then after clear weather, each by its weight and
+    /// duration (`&[&weathers::RAIN, &weathers::THUNDER]` is vanilla's). Without, always clear.
+    pub fn weathers(mut self, list: &[&Weather]) -> Self {
+        self.weathers = list.iter().map(|w| w.name()).collect::<Vec<_>>().join(" ");
         self
     }
     pub fn no_sky_light(mut self) -> Self {
@@ -2766,6 +2796,7 @@ impl Drop for DimensionBuilder<'_> {
             cell: cell(self.handle),
             components: Slice::new(&values),
             daylight: Slice::new(&self.daylight),
+            weathers: Str::new(&self.weathers),
             ..self.desc
         };
         unsafe { (host().reg_dimension)(self.raw, &desc) }
@@ -3064,7 +3095,8 @@ struct SignalBuild {
     kind: u32,
     attaches: bool,
     delay: Option<u32>,
-    mode: u32,
+    flags: u32,
+    inputs: u32,
     head: &'static str,
 }
 
@@ -3072,7 +3104,7 @@ impl SignalBuild {
     fn apply(&self, p: &Props, d: &mut StateDef, ns: &'static str) {
         let dir = |name: &str| crate::Dir::from_name(p.get(name));
         let front = dir("front").or(dir("facing"));
-        let mut s = SignalSpec { kind: self.kind, mode: self.mode, head: self.head, ..SignalSpec::default() };
+        let mut s = SignalSpec { kind: self.kind, flags: self.flags, inputs: self.inputs, head: self.head, ..SignalSpec::default() };
         if let Some(a) = dir("attach") {
             s.attach = a.face();
             if self.attaches {
@@ -3094,7 +3126,7 @@ impl SignalBuild {
             s.delay = p.int("delay") * 2;
         }
         if p.is("mode", "subtract") {
-            s.mode = 1;
+            s.flags |= abi::signal_flags::SUBTRACT;
         }
         d.signal = s;
         if self.kind == abi::signal_kind::WIRE {
@@ -3143,22 +3175,72 @@ impl SignalEvent {
     }
     /// What it was.
     pub fn level_before(&self) -> u8 {
-        self.args.was as u8
+        self.args.before as u8
     }
     /// It just got power.
     pub fn rising(&self) -> bool {
-        self.args.was == 0 && self.args.level > 0
+        self.args.before == 0 && self.args.level > 0
     }
 }
 
-/// What came in on each side of a `BlockBuilder::signal_logic` block.
-pub struct SignalLogic {
-    args: abi::LogicArgs,
+/// A gate's faces, from where it looks (`Gate::inputs`, `GateInputs::side`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Front = 0,
+    Rear = 1,
+    Left = 2,
+    Right = 3,
+    /// Away from what it is on.
+    Top = 4,
+    Bottom = 5,
 }
 
-impl SignalLogic {
-    fn wrap(a: &mut abi::LogicArgs) -> &mut SignalLogic {
-        unsafe { &mut *(a as *mut abi::LogicArgs as *mut SignalLogic) }
+/// Which faces of a `BlockBuilder::signal_gate` read power, and its delay.
+///
+/// ```ignore
+/// // a repeater-like AND of the sides, two redstone ticks late
+/// .signal_gate(Gate::new().inputs(&[Side::Left, Side::Right]).delay(2), |g| if g.side(Side::Left) > 0 && g.side(Side::Right) > 0 { 15 } else { 0 })
+/// ```
+#[derive(Clone, Copy, Debug)]
+pub struct Gate {
+    inputs: u32,
+    delay: u32,
+}
+
+impl Gate {
+    /// Reads behind it and both sides, one redstone tick late.
+    pub fn new() -> Gate {
+        Gate { inputs: 1 << abi::gate_side::REAR | 1 << abi::gate_side::LEFT | 1 << abi::gate_side::RIGHT, delay: 1 }
+    }
+    /// The faces it reads. The front is its output, never an input.
+    pub fn inputs(mut self, sides: &[Side]) -> Gate {
+        self.inputs = sides
+            .iter()
+            .filter(|s| **s != Side::Front)
+            .fold(0, |m, s| m | 1 << *s as u32);
+        self
+    }
+    /// In redstone ticks, two game ticks each.
+    pub fn delay(mut self, ticks: u32) -> Gate {
+        self.delay = ticks;
+        self
+    }
+}
+
+impl Default for Gate {
+    fn default() -> Gate {
+        Gate::new()
+    }
+}
+
+/// What comes in at a `BlockBuilder::signal_gate`'s faces.
+pub struct GateInputs {
+    args: abi::GateArgs,
+}
+
+impl GateInputs {
+    fn wrap(a: &mut abi::GateArgs) -> &mut GateInputs {
+        unsafe { &mut *(a as *mut abi::GateArgs as *mut GateInputs) }
     }
     pub fn world(&self) -> World {
         World::from_raw(self.args.world)
@@ -3166,11 +3248,9 @@ impl SignalLogic {
     pub fn pos(&self) -> [i32; 3] {
         self.args.pos
     }
-    pub fn rear(&self) -> u8 {
-        self.args.rear as u8
-    }
-    pub fn sides(&self) -> [u8; 2] {
-        [self.args.sides[0] as u8, self.args.sides[1] as u8]
+    /// Power coming in at `side`, 0 for a face it doesn't read.
+    pub fn side(&self, side: Side) -> u8 {
+        self.args.inputs[side as usize] as u8
     }
     /// What it gives now.
     pub fn output(&self) -> u8 {
@@ -3445,8 +3525,25 @@ impl Drop for LiquidBuilder<'_> {
         if self.translucent {
             b = b.translucent();
         }
+        // The same tags on its item: `#water` in a recipe is the liquid too.
+        let tags: Vec<String> = self
+            .components
+            .iter()
+            .filter(|p| p.is_tag())
+            .map(|p| p.name.clone())
+            .collect();
         b.components = std::mem::take(&mut self.components);
         drop(b);
+        let mut it = self
+            .reg
+            .item(&Item::generated(self.name.clone()))
+            .set_text(&c::FLUID, &self.name)
+            .max_stack(u32::MAX);
+        it.texture = crate::asset("block", &tex);
+        for t in &tags {
+            it = it.tag(t);
+        }
+        drop(it);
         let desc = abi::LiquidDesc { name: Str::new(&self.name), overlay: Str::new(&self.overlay), ..self.desc };
         unsafe { (host().reg_liquid)(self.reg.raw, &desc) };
         if let Some((item, empty, tab)) = self.bucket.take() {

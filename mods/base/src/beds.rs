@@ -49,7 +49,7 @@ struct Nights {
 }
 static NIGHTS: Mutex<BTreeMap<u32, Nights>> = Mutex::new(BTreeMap::new());
 
-/// Server to client: lying down (1 + quarter turns of its yaw) or getting up (0).
+/// Server to client: lying down in bed (1) or getting up (0), for the sleeping screen.
 static LYING: Channel<u32> = Channel::named("bed_lying");
 /// Client to server: the player got up (left the sleep screen).
 static GET_UP: Channel<()> = Channel::named("bed_get_up");
@@ -81,7 +81,7 @@ fn lying_on_bed(foot: [i32; 3], state: u32) -> [f64; 3] {
     [(foot[0] + head[0]) as f64 / 2.0 + 0.5, foot[1] as f64 + 0.39, (foot[2] + head[2]) as f64 / 2.0 + 0.5]
 }
 
-/// The yaw looking from the head of the bed to its foot, as quarter turns (`LYING`).
+/// The yaw looking from the head of the bed to its foot, as quarter turns.
 fn lying_quarters(state: u32) -> u32 {
     match state_prop(state, "facing").and_then(Dir::from_name) {
         Some(Dir::West) => 1,
@@ -221,7 +221,7 @@ pub fn register(r: &mut Registry) {
             w.teleport(e.player, Some(Dimension::generated(dim.to_string())), on_bed(spawn.bed));
         }
     });
-    r.on(&ENTITY_HURT, |b| {
+    r.on(&actions::HURT, |b| {
         let w = b.world();
         for e in b.iter() {
             get_up(&w, e.entity);
@@ -271,7 +271,8 @@ fn use_bed(u: &mut Use) -> bool {
         *s = Sleep { bed: foot, since: w.game_time(), night, asleep: 1 };
         let state = w.block(foot);
         w.teleport(player, None, lying_on_bed(foot, state));
-        w.send(player, &LYING, &(1 + lying_quarters(state)));
+        w.set_pose(player, Some(&poses::SLEEP), Some(lying_quarters(state) as f32 * 90.0));
+        w.send(player, &LYING, &1);
     }
     true
 }
@@ -310,6 +311,7 @@ fn arrive(w: &World, id: u64) {
 fn get_up(w: &World, player: u64) {
     if let Some(s) = w.component_mut(player, &SLEEP).filter(|s| s.asleep != 0) {
         s.asleep = 0;
+        w.set_pose(player, None, None);
         w.send(player, &LYING, &0);
         if BED.is(w.block(s.bed)) {
             w.teleport(player, None, on_bed(s.bed));
@@ -326,7 +328,7 @@ fn watch_sleepers(w: &World) {
     let mut seen = Vec::new();
     for id in w.players() {
         arrive(w, id);
-        let Some(s) = w.component(id, &SLEEP).copied() else { continue };
+        let Some(s) = w.component(id, &SLEEP) else { continue };
         let mut ready = false;
         if s.asleep != 0 {
             let left = w.entity(id).is_none_or(|e| {
@@ -373,10 +375,8 @@ fn client(r: &mut Registry) {
     r.client_packet(&LYING, |c, lying| {
         if lying != 0 {
             *LYING_SINCE.lock().unwrap() = Some(Instant::now());
-            c.lie_down(Some((lying - 1) as f32 * 90.0));
             c.screen_open(&SLEEP_SCREEN);
         } else if LYING_SINCE.lock().unwrap().take().is_some() {
-            c.lie_down(None);
             c.post_effect(SLEEP_EFFECT, 0.0);
             if c.screen() == SLEEP_SCREEN.name() {
                 c.screen_close();
@@ -386,7 +386,6 @@ fn client(r: &mut Registry) {
     // Leaving the screen (Escape, the button) gets the player up.
     r.client_screen(|c, screen| {
         if screen != SLEEP_SCREEN.name() && LYING_SINCE.lock().unwrap().take().is_some() {
-            c.lie_down(None);
             c.post_effect(SLEEP_EFFECT, 0.0);
             c.send(&GET_UP, &());
         }

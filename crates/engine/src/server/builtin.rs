@@ -349,7 +349,7 @@ fn game_mode(s: &mut Server, x: &Ctx) -> Vec<Msg> {
 
 fn weather(s: &mut Server, x: &Ctx) -> Vec<Msg> {
     let d = &mut s.dims[x.me.0 as usize];
-    if !x.c.dims[d.id as usize].weather {
+    if !x.c.dims[d.id as usize].has_weather() {
         return say("weather.none", Vec::new());
     }
     let named = x.a.text("weather").unwrap_or("");

@@ -447,9 +447,9 @@ pub async fn text_on_screen(t: T) -> R {
     t.until("the allowed line", Duration::from_secs(5), |t| t.c().chat_line(0).contains("allowed"))
         .await?;
     t.check_eq(line(&t, 0), "allowed from a mod".to_string(), "chat_format writes the line");
-    t.check(!line(&t, 1).contains("forbidden"), "question::CHAT keeps a line out");
+    t.check(!line(&t, 1).contains("forbidden"), "actions::CHAT keeps a line out");
     t.secs(0.2).await?;
-    t.check_eq(t.op("last_said").await?, "allowed".to_string(), "CHAT_MESSAGE tells what was said");
+    t.check_eq(t.op("last_said").await?, "allowed".to_string(), "actions::CHAT tells what was said");
     t.cmd("/rule testkit:chat_hooks 0").await?;
 
     weft_sdk::settings::CHAT_VISIBILITY.set(1);

@@ -180,16 +180,6 @@ impl Client {
         self.control(&abi::PlayerControl { mask: abi::control_mask::FLYING, flying: on as u32, ..abi::PlayerControl::DEFAULT });
     }
 
-    /// Lies down with its feet toward `yaw` (degrees) and stays there, or gets up with `None`. Other
-    /// players see it. Where it lies is the server's to say (`World::teleport`).
-    pub fn lie_down(&self, yaw: Option<f32>) {
-        self.control(&abi::PlayerControl {
-            mask: abi::control_mask::LYING,
-            lying: yaw.map_or(f32::NAN, f32::to_radians),
-            ..abi::PlayerControl::DEFAULT
-        });
-    }
-
     pub fn set_fly_speed(&self, mul: f32) {
         self.control(&abi::PlayerControl { mask: abi::control_mask::FLY_SPEED, fly_speed: mul, ..abi::PlayerControl::DEFAULT });
     }
@@ -590,14 +580,6 @@ impl World {
     /// The weather's id now (`weathers::RAIN.id()`).
     pub fn weather(&self) -> u32 {
         unsafe { (host().weather_now)(self.raw()) }
-    }
-
-    pub fn raining(&self) -> bool {
-        unsafe { (host().raining)(self.raw()) != 0 }
-    }
-
-    pub fn thundering(&self) -> bool {
-        unsafe { (host().thundering)(self.raw()) != 0 }
     }
 
     /// Shader effect `effect` on an entity for everyone who sees it, at `strength` (0..1) for

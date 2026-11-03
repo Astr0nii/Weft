@@ -116,7 +116,7 @@ impl Server {
         let (pos, face) = target.unwrap_or((IVec3::ZERO, 0));
         let state = target.and_then(|_| r.get(pos)).unwrap_or(0);
         let mut q = abi::Query { entity, item: held.item, pos: pos.to_array(), state, ..abi::Query::DEFAULT };
-        if !r.ask(c, abi::question::USE_ITEM, &mut q) {
+        if !r.ask(c, abi::action::USE_ITEM, &mut q) {
             return false;
         }
         // An item that takes time starts here, and comes back through this when it is done.
@@ -160,7 +160,7 @@ impl Server {
         if used {
             r.emit_engine(
                 c,
-                abi::event::ITEM_USED,
+                abi::action::USE_ITEM,
                 &abi::ItemUsed { player: entity, stack: held, pos: pos.to_array(), has_target: target.is_some() as u32 },
             );
             r.events
@@ -446,12 +446,12 @@ impl Server {
                 }
                 let held = r.entities.held(entity);
                 let mut q = abi::Query { entity: target, other: entity, item: held.item, ..abi::Query::DEFAULT };
-                if !r.ask(c, abi::question::INTERACT_ENTITY, &mut q) {
+                if !r.ask(c, abi::action::INTERACT_ENTITY, &mut q) {
                     return;
                 }
                 r.emit_engine(
                     c,
-                    abi::event::ENTITY_INTERACTED,
+                    abi::action::INTERACT_ENTITY,
                     &abi::Interaction { player: entity, entity: target, item: held.item, pad: 0 },
                 );
                 let mut handled = false;
@@ -566,14 +566,14 @@ impl Server {
                     let mut line = None;
                     if let Some((r, player)) = self.region(pi) {
                         let mut q = abi::Query { entity: player, text: abi::Str::new(&text), ..abi::Query::DEFAULT };
-                        if !r.ask(c, abi::question::CHAT, &mut q) {
+                        if !r.ask(c, abi::action::CHAT, &mut q) {
                             return;
                         }
                         if let Some((owner, cb)) = c.game.chat_format {
                             let out = &raw mut line as *mut std::ffi::c_void;
                             r.call(owner, cb, |world| abi::ChatFormatArgs { world, player, text: abi::Str::new(&text), out });
                         }
-                        r.emit_engine(c, abi::event::CHAT_MESSAGE, &abi::ChatMessage::new(player, &text));
+                        r.emit_engine(c, abi::action::CHAT, &abi::ChatMessage::new(player, &text));
                     }
                     log::info!("<{name}> {text}");
                     let line = line.unwrap_or_else(|| Msg::new("chat.message", vec![Arg::Text(name), Arg::Text(text)]));

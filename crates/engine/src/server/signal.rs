@@ -122,10 +122,10 @@ enum Effect {
         p: IVec3,
         extend: bool,
     },
-    /// Mods run with the rest of the world in place: rear, sides.
-    Logic {
+    /// Mods run with the rest of the world in place: what came in at each face (`gate_side`).
+    Gate {
         p: IVec3,
-        inputs: [u8; 3],
+        inputs: [u8; 6],
     },
     /// A comparator reading a block that has its own idea of it, and what is at its sides.
     Compare {
@@ -235,7 +235,7 @@ fn direct(s: &Signal, dir: u8) -> u8 {
 fn strong(s: &Signal, dir: u8) -> u8 {
     let reaches = match s.kind {
         sk::SWITCH => dir == s.attach,
-        sk::TORCH | sk::REPEATER | sk::COMPARATOR | sk::LOGIC => dir == s.front,
+        sk::TORCH | sk::REPEATER | sk::COMPARATOR | sk::GATE => dir == s.front,
         sk::OBSERVER => dir ^ 1 == s.front,
         _ => false,
     };
@@ -243,14 +243,14 @@ fn strong(s: &Signal, dir: u8) -> u8 {
 }
 
 fn can_give(s: &Signal) -> bool {
-    matches!(s.kind, sk::SWITCH | sk::TORCH | sk::REPEATER | sk::COMPARATOR | sk::LOGIC | sk::OBSERVER)
+    matches!(s.kind, sk::SWITCH | sk::TORCH | sk::REPEATER | sk::COMPARATOR | sk::GATE | sk::OBSERVER)
 }
 
 use wire::is_device;
 
 /// What a comparator with `mode` makes of what is behind it and at its sides.
-fn compared(mode: u8, rear: u8, side: u8) -> u8 {
-    if mode == 1 {
+fn compared(flags: u8, rear: u8, side: u8) -> u8 {
+    if flags as u32 & abi::signal_flags::SUBTRACT != 0 {
         rear.saturating_sub(side)
     } else if rear >= side {
         rear
@@ -546,7 +546,7 @@ impl Signals {
                 if d.input == u8::MAX {
                     return None;
                 }
-                out.push((s.front, d.input, s.mode == 1));
+                out.push((s.front, d.input, s.flags as u32 & abi::signal_flags::BREAKS != 0));
             }
         }
         Some(out)
@@ -1166,7 +1166,7 @@ impl Signals {
                     Some(v) => v,
                     None => read!(s.front ^ 1),
                 };
-                let want = compared(s.mode, rear, side);
+                let want = compared(s.flags, rear, side);
                 if want != s.level {
                     self.schedule(p, want, s.delay, now);
                 }
@@ -1179,10 +1179,12 @@ impl Signals {
                     self.schedule(p, 15, s.delay, now);
                 }
             }
-            sk::LOGIC => {
-                let [a, b] = wire::sides(&s);
-                // Not the front: that is where its own output goes.
-                effects.push(Effect::Logic { p, inputs: [read!(s.front ^ 1), read!(a), read!(b)] });
+            sk::GATE => {
+                let mut inputs = [0u8; 6];
+                for i in (0..6u32).filter(|i| s.inputs & (1 << i) != 0) {
+                    inputs[i as usize] = read!(wire::gate_dir(&s, i));
+                }
+                effects.push(Effect::Gate { p, inputs });
             }
             sk::SINK => {
                 let mut most = 0;
@@ -1392,7 +1394,7 @@ impl Dim {
                             pos: p.to_array(),
                             state: new,
                             level: level as u32,
-                            was: was as u32,
+                            before: was as u32,
                         });
                     }
                 }
@@ -1418,7 +1420,7 @@ impl Dim {
                     let Some(cb) = block.cb.signal_read else { continue };
                     let out =
                         self.call(block.owner, cb, |w| abi::SignalReadArgs { world: w, pos: behind.to_array(), state: there, output: 0 });
-                    let want = compared(info.mode, out.output.min(15) as u8, side);
+                    let want = compared(info.flags, out.output.min(15) as u8, side);
                     if want != info.level {
                         self.space.signals.schedule(p, want, info.delay, self.time);
                     }
@@ -1435,18 +1437,16 @@ impl Dim {
                         self.floater_shows(c, p, FLOATER_IDLE);
                     }
                 }
-                Effect::Logic { p, inputs } => {
+                Effect::Gate { p, inputs } => {
                     let Some(state) = self.space.signals.devices.get(&p).map(|d| d.state) else { continue };
                     let info = c.states[state as usize].signal;
                     let block = c.block_of(state);
-                    let Some(cb) = block.cb.signal_logic else { continue };
-                    let [rear, left, right] = inputs.map(|v| v as u32);
-                    let out = self.call(block.owner, cb, |w| abi::LogicArgs {
+                    let Some(cb) = block.cb.signal_gate else { continue };
+                    let out = self.call(block.owner, cb, |w| abi::GateArgs {
                         world: w,
                         pos: p.to_array(),
                         state,
-                        rear,
-                        sides: [left, right],
+                        inputs: inputs.map(|v| v as u32),
                         output: info.level as u32,
                     });
                     let want = out.output.min(15) as u8;
@@ -1657,7 +1657,7 @@ impl Dim {
                 .devices
                 .get(&p)
                 .is_some_and(|d| self.time > d.pushed_at + MOVE_TICKS as u64);
-            if s.mode == 1 && held_on {
+            if s.flags as u32 & abi::signal_flags::STICKY != 0 && held_on {
                 let beyond = head + step;
                 let here = self.get(beyond)?;
                 if here != AIR && c.states[here as usize].flags & bf::SOLID != 0 && self.movable(c, here) {

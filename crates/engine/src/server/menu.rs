@@ -133,7 +133,11 @@ fn call(
 ) {
     let def = &c.game.menus[m.kind as usize];
     let Some(cb) = pick(def) else { return };
-    let owner = m.owner;
+    let owner = match (m.owner, m.held) {
+        (0, _) => abi::Holder::NONE,
+        (id, Some((slot, _))) => abi::Holder::held(id, slot),
+        (id, None) => abi::Holder::entity(id),
+    };
     let mut call = MenuCall { menu: m as *mut OpenMenu, dim: dim as *mut Dim, player };
     let mut ctx = host::CallCtx { dim: dim as *mut Dim };
     let mut args = abi::MenuArgs { world: ctx.raw(), menu: &mut call as *mut MenuCall as *mut abi::MenuCtx, player, owner, slot };
@@ -246,6 +250,10 @@ fn fits(c: &Content, s: &SlotRef, item: u32) -> bool {
     if s.flags & sf::LOCKED != 0 || (s.flags & sf::OFF_HAND != 0 && !crate::content::fits_one_hand(c, item)) {
         return false;
     }
+    // Liquids by the millibucket go into liquid slots only, and nothing else does.
+    if item != 0 && (s.flags & sf::LIQUID != 0) != c.item_fluid.contains_key(&item) {
+        return false;
+    }
     // A stack holding items doesn't go into another one.
     if matches!(s.owner, Owner::Held { .. }) && holder::item_slots(c, item) > 0 {
         return false;
@@ -261,7 +269,61 @@ fn cap(c: &Content, s: &SlotRef, item: u32) -> u32 {
 
 /// Whether a player may take items out of `s` by hand.
 fn takeable(s: &SlotRef) -> bool {
-    s.flags & (sf::INPUT | sf::LOCKED) == 0
+    s.flags & (sf::INPUT | sf::LOCKED | sf::LIQUID) == 0
+}
+
+/// What a bucket holds.
+const CONTAINER_MB: u32 = 1000;
+
+/// A click on a liquid slot with a container on the cursor: a full one pours into it, an empty
+/// one fills from it, a bucket at a time.
+fn liquid_click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, slot: u32) {
+    let (Some(s), cursor) = (m.slots.get(slot as usize).copied(), m.cursor) else { return };
+    if cursor.is_empty() || s.flags & sf::LOCKED != 0 {
+        return;
+    }
+    let here = get(m, dim, player, slot);
+    let capacity = if s.limit > 0 { s.limit } else { CONTAINER_MB };
+    let (new_slot, new_cursor) = if let Some(&(l, empty)) = c.item_liquid.get(&cursor.item) {
+        // Full containers don't stack; one at a time.
+        if cursor.count != 1 || s.flags & sf::OUTPUT != 0 {
+            return;
+        }
+        let fluid = c.fluid_items.get(l as usize).copied().unwrap_or(0);
+        if fluid == 0 || !fits(c, &s, fluid) || (!here.is_empty() && here.item != fluid) || here.count + CONTAINER_MB > capacity {
+            return;
+        }
+        let poured = ItemStack { item: fluid, count: here.count + CONTAINER_MB, ..here };
+        (poured, if empty == 0 { ItemStack::EMPTY } else { ItemStack::new(empty, 1) })
+    } else {
+        let Some(&l) = c.item_fluid.get(&here.item) else { return };
+        let Some(&filled) = c.containers.get(&(cursor.item, l)) else { return };
+        if here.count < CONTAINER_MB {
+            return;
+        }
+        let left = here.count - CONTAINER_MB;
+        let rest = if left == 0 { ItemStack::EMPTY } else { ItemStack { count: left, ..here } };
+        if cursor.count == 1 {
+            (rest, ItemStack::new(filled, 1))
+        } else {
+            // One of a stack of empty ones: the full one goes into the inventory.
+            if !dim
+                .entities
+                .insert_item(c, player, ItemStack::new(filled, 1))
+                .is_empty()
+            {
+                return;
+            }
+            (rest, ItemStack { count: cursor.count - 1, ..cursor })
+        }
+    };
+    let taken = new_slot.count < here.count;
+    set(m, dim, player, slot, new_slot);
+    m.cursor = new_cursor;
+    if taken && s.flags & sf::OUTPUT != 0 {
+        call(m, dim, c, player, slot, |d| d.on_take);
+    }
+    call(m, dim, c, player, slot, |d| d.on_change);
 }
 
 /// `button` 2..=10 over a slot: number key 1..9, swaps it with that hotbar slot (vanilla).
@@ -274,6 +336,15 @@ pub const CLONE: u8 = 12;
 /// `button`: 0 left, 1 right, or `HOTBAR_SWAP + n`, `GATHER`, `CLONE`. `slot == u32::MAX` means outside
 /// the window (drop the cursor).
 pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, slot: u32, button: u8, shift: bool) {
+    if m.slots
+        .get(slot as usize)
+        .is_some_and(|s| s.flags & sf::LIQUID != 0)
+    {
+        if button <= 1 && !shift {
+            liquid_click(m, dim, c, player, slot);
+        }
+        return;
+    }
     if (HOTBAR_SWAP..HOTBAR_SWAP + 9).contains(&button) {
         let hot = (button - HOTBAR_SWAP) as u32;
         if hot >= c.game.player_layout.hotbar {

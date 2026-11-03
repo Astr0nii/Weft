@@ -1460,22 +1460,22 @@ impl Running {
     }
 }
 
-/// `{if:name}`: the engine's conditions, then mods' (`Host::reg_condition`); unknown ones
-/// are false.
+/// `{if:name}`: `debug` and `dev`, else a registered condition (`Host::reg_condition`, game
+/// modes by name); unknown ones are false.
 fn text_condition(name: &str, client: Option<&Client>, debug: bool, dev: bool) -> bool {
-    let mode = client.map(|c| c.mode);
-    // A game mode's name holds while the player is in it.
-    if let Some(m) = crate::world::GameMode::parse(name) {
-        return mode == Some(m);
-    }
     match name {
         "debug" => debug,
         "dev" => dev,
-        _ => content()
-            .game
-            .condition_names
-            .get(name)
-            .is_some_and(|&id| crate::conditions::on_client(client, id)),
+        _ => {
+            // The engine's go without their namespace: `{if:creative}`.
+            let names = &content().game.condition_names;
+            let id = names.get(name).or_else(|| {
+                (!name.contains(':'))
+                    .then(|| names.get(&format!("core:{name}")))
+                    .flatten()
+            });
+            id.is_some_and(|&id| crate::conditions::on_client(client, id))
+        }
     }
 }
 

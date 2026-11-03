@@ -50,7 +50,7 @@ fn init(r: &mut Registry) {
         .player_spawn()
         .sky_above(16)
         .day_length(24000)
-        .weather();
+        .weathers(&[&weathers::RAIN, &weathers::THUNDER]);
     // Second dimension on purpose: nothing in the engine may assume there is only one world.
     r.dimension(&FLATLANDS)
         .generator(worldgen::flat)

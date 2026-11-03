@@ -127,10 +127,8 @@ pub struct Dim {
     pub time: u64,
     /// What `/time` moved the time of day by, from `time`.
     pub day_offset: i64,
-    /// The weather (`registry::WeatherDef`) `raining` and `thunder` come from.
+    /// The weather now (`registry::WeatherDef`).
     pub weather: u16,
-    pub raining: bool,
-    pub thunder: bool,
     rng: Rng,
     /// Cubes whose copy on disk holds entities or ticks, written again even if nothing else
     /// changed: what left them must not come back from there.
@@ -691,8 +689,6 @@ impl Dim {
             time: 1000,
             day_offset: 0,
             weather: 0,
-            raining: false,
-            thunder: false,
             on_disk: Default::default(),
             rng: Rng(weft_noise::mix(seed ^ id as u64)),
             players: None,
@@ -1346,7 +1342,8 @@ impl Dim {
     }
 
     pub fn spawn_item(&mut self, c: &Content, pos: DVec3, stack: ItemStack) -> u64 {
-        if stack.is_empty() {
+        // A liquid by the millibucket spills away instead: it only lives in liquid slots.
+        if stack.is_empty() || c.item_fluid.contains_key(&stack.item) {
             return 0;
         }
         let id = self.new_id();
@@ -1535,7 +1532,7 @@ impl Dim {
         let recovering = e.hurt_cooldown > 0 && !def.has(df::IGNORES_COOLDOWN);
         // One path: the `HURT` veto, the `DAMAGE` chain, then the `ENTITY_HURT` event.
         let mut q = abi::Query { entity: id, other: source, cause, amount: amount as f64, ..abi::Query::DEFAULT };
-        if !self.ask(c, abi::question::HURT, &mut q) {
+        if !self.ask(c, abi::action::HURT, &mut q) {
             return false;
         }
         let amount =
@@ -1551,7 +1548,7 @@ impl Dim {
             return false;
         }
         let amount = landing;
-        self.emit_engine(c, abi::event::ENTITY_HURT, &abi::Hurt { entity: id, source, amount, cause });
+        self.emit_engine(c, abi::action::HURT, &abi::Hurt { entity: id, source, amount, cause });
         let knock = self
             .entities
             .get(source)
@@ -1564,7 +1561,7 @@ impl Dim {
             .is_some_and(|e| e.health - amount <= 0.0);
         let spared = dying && {
             let mut q = abi::Query { entity: id, other: source, cause, amount: amount as f64, ..abi::Query::DEFAULT };
-            !self.ask(c, abi::question::DIE, &mut q)
+            !self.ask(c, abi::action::DIE, &mut q)
         };
         let Some(e) = self.entities.get_mut(id) else { return false };
         e.health = if spared { 1.0 } else { (e.health - amount).max(0.0) };
@@ -1602,7 +1599,7 @@ impl Dim {
             self.entities.killed.push(id);
         }
         if health <= 0.0 {
-            self.emit_engine(c, abi::event::ENTITY_DIED, &abi::Death { entity: id, source: source, kind, cause, pos: pos.to_array() });
+            self.emit_engine(c, abi::action::DIE, &abi::Death { entity: id, source: source, kind, cause, pos: pos.to_array() });
             if !player {
                 let by_player = self.entities.get(source).is_some_and(|s| s.player);
                 let tool = self
@@ -2133,7 +2130,7 @@ impl Dim {
 
         let gravity = c.dims[self.id as usize].gravity as f64;
         let day = self.daylight(c);
-        let raining = self.raining;
+        let sheltered = c.game.weathers[self.weather as usize].shelters();
         let players: Vec<DVec3> = self
             .entities
             .list
@@ -2225,7 +2222,7 @@ impl Dim {
                     e.fire = e.fire.max(300);
                 }
                 // Sunlight sets them on fire for 8 seconds; burning hurts once a second, water puts it out.
-                if k.is(ef::BURNS_IN_SUN) && day > 0.5 && !raining && e.age % crate::world::TPS as u64 == 0 && !e.in_liquid {
+                if k.is(ef::BURNS_IN_SUN) && day > 0.5 && !sheltered && e.age % crate::world::TPS as u64 == 0 && !e.in_liquid {
                     let head = (e.pos + DVec3::Y * e.eye(c)).floor().as_ivec3();
                     let sky = cubes
                         .get(&cube_of(head))
@@ -2456,7 +2453,7 @@ impl Dim {
                 })
             {
                 let mut q = abi::Query { entity: pid, other: id, item: stack.item, amount: stack.count as f64, ..abi::Query::DEFAULT };
-                if !self.ask(c, abi::question::PICKUP_ITEM, &mut q) {
+                if !self.ask(c, abi::action::PICKUP_ITEM, &mut q) {
                     continue;
                 }
                 let rest = self.entities.insert_item(c, pid, stack);
@@ -2469,11 +2466,7 @@ impl Dim {
                         .copied()
                         .unwrap_or(u32::MAX);
                     self.sound(pickup, pos, 1.0, 0.0);
-                    self.emit_engine(
-                        c,
-                        abi::event::ITEM_PICKED_UP,
-                        &abi::Pickup { player: pid, stack: ItemStack { count: taken, ..stack } },
-                    );
+                    self.emit_engine(c, abi::action::PICKUP_ITEM, &abi::Pickup { player: pid, stack: ItemStack { count: taken, ..stack } });
                 }
                 if let Some(e) = self.entities.get_mut(id) {
                     if rest.is_empty() {
@@ -2595,7 +2588,7 @@ impl Dim {
         self.replace_part(c, p, state, AIR);
         self.block_dust(c, p, state);
         self.drop_block_loot(c, p, state, ItemStack::EMPTY, false, 0);
-        self.emit_engine(c, abi::event::BLOCK_BROKEN, &abi::BlockChange { player: 0, pos: p.to_array(), state, item: 0 });
+        self.emit_engine(c, abi::action::BREAK_BLOCK, &abi::BlockChange { player: 0, pos: p.to_array(), state, item: 0 });
     }
 
     /// What happened since the last settling takes effect: neighbor updates, then events.
@@ -2649,10 +2642,10 @@ impl Dim {
         }
     }
 
-    /// What `question::BREAK_BLOCK` says about it.
+    /// What `action::BREAK_BLOCK` says about it.
     pub fn may_break(&mut self, c: &'static Content, p: IVec3, state: u32, item: u32, player: u64) -> bool {
         let mut q = abi::Query { entity: player, pos: p.to_array(), state, item, ..abi::Query::DEFAULT };
-        self.ask(c, abi::question::BREAK_BLOCK, &mut q)
+        self.ask(c, abi::action::BREAK_BLOCK, &mut q)
     }
 
     /// The surface of a liquid counts, not only the block it is in.
@@ -2722,7 +2715,7 @@ impl Dim {
         if drops {
             self.drop_block_loot(c, p, state, tool, true, 0);
         }
-        self.emit_engine(c, abi::event::BLOCK_BROKEN, &abi::BlockChange { player, pos: p.to_array(), state, item: tool.item });
+        self.emit_engine(c, abi::action::BREAK_BLOCK, &abi::BlockChange { player, pos: p.to_array(), state, item: tool.item });
         true
     }
 
@@ -2796,7 +2789,7 @@ impl Dim {
         if drops {
             self.drop_block_loot(c, p, state, tool, true, carried);
         }
-        self.emit_engine(c, abi::event::BLOCK_BROKEN, &abi::BlockChange { player, pos: p.to_array(), state, item: tool.item });
+        self.emit_engine(c, abi::action::BREAK_BLOCK, &abi::BlockChange { player, pos: p.to_array(), state, item: tool.item });
         true
     }
 
@@ -2945,7 +2938,7 @@ impl Dim {
             return false;
         }
         let mut q = abi::Query { entity: player, pos: p.to_array(), state: chosen, item, ..abi::Query::DEFAULT };
-        if !self.ask(c, abi::question::PLACE_BLOCK, &mut q) {
+        if !self.ask(c, abi::action::PLACE_BLOCK, &mut q) {
             return false;
         }
         // What it replaces (a flower, tall grass) drops what it would when broken, unlike vanilla,
@@ -2974,7 +2967,7 @@ impl Dim {
         }
         self.drain_if_no_room(c, p);
         self.sound(c.states[chosen as usize].sounds[crate::content::block_sound::PLACE], p.as_dvec3() + DVec3::splat(0.5), 1.0, 0.0);
-        self.emit_engine(c, abi::event::BLOCK_PLACED, &abi::BlockChange { player, pos: p.to_array(), state: chosen, item });
+        self.emit_engine(c, abi::action::PLACE_BLOCK, &abi::BlockChange { player, pos: p.to_array(), state: chosen, item });
         true
     }
 
@@ -2987,12 +2980,12 @@ impl Dim {
         let opens = c.block_of(state).opens;
         if c.block_of(state).cb.on_use.is_some() || opens.is_some() {
             let mut q = abi::Query { entity: player, pos: p.to_array(), state, ..abi::Query::DEFAULT };
-            if !self.ask(c, abi::question::USE_BLOCK, &mut q) {
+            if !self.ask(c, abi::action::USE_BLOCK, &mut q) {
                 // Refused uses are consumed: no item use or placement behind them.
                 return true;
             }
             let item = self.entities.held(player).item;
-            self.emit_engine(c, abi::event::BLOCK_USED, &abi::BlockChange { player, pos: p.to_array(), state, item });
+            self.emit_engine(c, abi::action::USE_BLOCK, &abi::BlockChange { player, pos: p.to_array(), state, item });
         }
         if let Some(menu) = opens {
             // Its block entity's menu, or one of its own (a crafting table).

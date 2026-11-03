@@ -185,9 +185,7 @@ impl Client {
                 self.using_off = ticks.is_some_and(|(_, off)| off);
             }
             ToClient::Weather(w) => {
-                let def = &content().game.weathers[(w as usize).min(content().game.weathers.len() - 1)];
-                self.weather = (def.falls, def.lightning);
-                self.weather_id = w as u16;
+                self.weather_id = (w as usize).min(content().game.weathers.len() - 1) as u16;
             }
 
             ToClient::EntitySwing { id, off } => {

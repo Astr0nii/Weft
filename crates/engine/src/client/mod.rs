@@ -67,10 +67,8 @@ pub struct LocalPlayer {
     pub fov_mul: f32,
     /// Lower box and eyes. Stays on under a low ceiling until there is room for more.
     pub pose: Pose,
-    /// Lying in a bed, its head toward the back of this yaw: stays put, whatever the keys say.
-    pub lying: Option<f32>,
-    /// A pose a mod holds it in, where it fits.
-    pub forced: Option<Pose>,
+    /// A pose a mod holds it in, where it fits, and with a facing it stays put that way (a bed).
+    pub forced: Option<(Pose, Option<f32>)>,
     /// Actually sprinting, after the conditions: moving forward, not sneaking, not wading.
     pub sprinting: bool,
     /// Holding the use button on an item that takes time.
@@ -444,13 +442,11 @@ pub struct Client {
     next_step: f32,
     rng: weft_noise::Rng,
     pub dead: bool,
-    /// Raining, and thundering, as the server says.
-    weather: (bool, bool),
-    /// Which weather that is (`registry::WeatherDef`).
+    /// The weather the server says it is (`registry::WeatherDef`).
     pub weather_id: u16,
     /// How much of it there is by now, 0..1 over about five seconds.
-    rain: f32,
-    thunder: f32,
+    /// The weather's look as it is by now, going over to the weather's own (`weather_effects`).
+    look: weft_abi::WeatherLook,
     frame_dt: f32,
     /// Seconds left of a lightning's flash.
     lightning: f32,
@@ -637,7 +633,6 @@ impl Client {
                 eye: 1.62,
                 fov_mul: 1.0,
                 pose: Pose::STAND,
-                lying: None,
                 forced: None,
                 sprinting: false,
                 using: false,
@@ -750,10 +745,8 @@ impl Client {
             moved_over: 0.0,
             dead: false,
             permission: 0,
-            weather: (false, false),
             weather_id: 0,
-            rain: 0.0,
-            thunder: 0.0,
+            look: Default::default(),
             lightning: 0.0,
             using: None,
             burning: false,
@@ -1943,7 +1936,10 @@ impl Client {
         };
         if id == self.player_id {
             if comp == forced {
-                self.player.forced = (bytes.len() >= 4).then(|| Pose::from_id(u32::from_le_bytes(bytes[..4].try_into().unwrap())));
+                self.player.forced = (bytes.len() >= 8).then(|| {
+                    let yaw = f32::from_le_bytes(bytes[4..8].try_into().unwrap());
+                    (Pose::from_id(u32::from_le_bytes(bytes[..4].try_into().unwrap())), (!yaw.is_nan()).then_some(yaw))
+                });
             }
             if comp == burning {
                 self.burning = bytes.first().is_some_and(|&b| b != 0);
@@ -2076,11 +2072,13 @@ impl Client {
     pub fn camera(&self) -> Camera {
         // From inside a liquid everything looks closer, vanilla's 60 degrees for 70.
         let inside = if self.eye_liquid().is_some() { 6.0 / 7.0 } else { 1.0 };
-        // From the bed, the head is on the pillow, behind the middle of the body.
-        let pillow = self
-            .player
-            .lying
-            .map_or(DVec3::ZERO, |yaw| DVec3::new(yaw.sin() as f64, 0.0, yaw.cos() as f64) * 0.75);
+        // Lying on its back the head is behind the middle of the body (on a bed's pillow).
+        let pillow = match self.player.forced {
+            Some((pose, Some(yaw))) if pose.def().tilt == weft_abi::pose_tilt::ON_BACK => {
+                DVec3::new(yaw.sin() as f64, 0.0, yaw.cos() as f64) * 0.75
+            }
+            _ => DVec3::ZERO,
+        };
         Camera {
             pos: self.smooth_pos() + DVec3::Y * self.player.eye + pillow,
             yaw: self.player.yaw,
@@ -2217,24 +2215,37 @@ impl Client {
     /// Fraction of full daylight for the current dimension and time.
     pub fn daylight(&self) -> f32 {
         // Rain takes away a third of the day, a lightning brings it back for a moment.
-        let darkness = content()
-            .game
-            .weathers
-            .get(self.weather_id as usize)
-            .map_or(0.0, |w| w.darkness);
-        let day = content().dims[self.world.dim as usize].daylight(self.world.time) * (1.0 - self.rain * darkness);
+        let day = content().dims[self.world.dim as usize].daylight(self.world.time) * (1.0 - self.look.darkness);
         if self.lightning > 0.0 { (day + 0.5).min(1.0) } else { day }
     }
 
-    /// How much rain there is, and now and then a lightning's flash (`weather` draws it).
+    /// The weather's look going over to the current one's, its sound now and then, and a
+    /// lightning's flash (`weather` draws the precipitation).
     fn weather_effects(&mut self, dt: f32) {
-        let target = if self.weather.0 { 1.0 } else { 0.0 };
-        self.rain += (target - self.rain).clamp(-dt / 5.0, dt / 5.0);
-        let target = if self.weather.0 && self.weather.1 { 1.0 } else { 0.0 };
-        self.thunder += (target - self.thunder).clamp(-dt / 5.0, dt / 5.0);
+        let weather = &content().game.weathers[self.weather_id as usize];
+        let (to, step) = (weather.look, dt / 5.0);
+        let go = |v: &mut f32, t: f32| *v += (t - *v).clamp(-step, step);
+        let l = &mut self.look;
+        go(&mut l.falls, if weather.falls() { to.falls } else { 0.0 });
+        go(&mut l.sky_gray, to.sky_gray);
+        go(&mut l.sky_cover, to.sky_cover);
+        go(&mut l.fog_gray, to.fog_gray);
+        go(&mut l.cloud_gray, to.cloud_gray);
+        go(&mut l.cloud_dark, to.cloud_dark);
+        go(&mut l.darkness, to.darkness);
         self.lightning = (self.lightning - dt).max(0.0);
-        if self.weather.1 && self.chance() < dt / 12.0 {
+        if weather.lightning() && self.chance() < dt / 12.0 {
             self.lightning = 0.15;
+        }
+        if let Some(sound) = weather
+            .sound
+            .filter(|_| self.look.falls > 0.5 && !self.enclosed())
+        {
+            if self.chance() < dt {
+                let volume = self.look.falls;
+                self.sounds
+                    .push(crate::audio::Play { sound, pos: None, volume, pitch: 0.0 });
+            }
         }
     }
 
@@ -2252,7 +2263,7 @@ impl Client {
         }
         let d = &content().dims[self.world.dim as usize];
         let l = self.daylight();
-        let c = sky::rained(sky::rgb(d.fog_color) * Vec3::new(l * 0.94 + 0.06, l * 0.94 + 0.06, l * 0.91 + 0.09), self.rain, 0.5);
+        let c = sky::rained(sky::rgb(d.fog_color) * Vec3::new(l * 0.94 + 0.06, l * 0.94 + 0.06, l * 0.91 + 0.09), 1.0, self.look.fog_gray);
         let forward = self.camera().forward();
         sky::warmed_by_glows(self.world.dim as usize, d, self.smooth_time(), c, forward).powf(2.2)
     }
@@ -2368,8 +2379,7 @@ impl Client {
             self.smooth_time(),
             self.camera().pos.y,
             self.eye_liquid().is_some(),
-            self.rain,
-            self.thunder,
+            &self.look,
             &overlays,
         );
         self.render.draw_translucent(&mut late);
@@ -2422,7 +2432,7 @@ impl Client {
         self.particles.draw(list, &mut late, scene_buf);
         let ticks = self.smooth_time();
         self.weather_render
-            .draw(gpu, &mut late, frame, &cam, scene_buf, &self.world, self.rain, ticks, self.frame_dt);
+            .draw(gpu, &mut late, frame, &cam, scene_buf, &self.world, self.look.falls, ticks, self.frame_dt);
         self.sky.draw_overlay(&mut hand_late, scene_buf);
         list.append(&mut late);
         list.append(&mut hand_late);
@@ -2479,8 +2489,9 @@ fn angle_diff(a: f32, b: f32) -> f32 {
 /// so jumps, sprint-jumps and parkur distances match.
 fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl physics::Cells, gravity: f64, bodies: &[physics::Body]) {
     let c = content();
-    if let Some(yaw) = p.lying {
-        (p.yaw, p.pitch, p.vel, p.pose) = (yaw, 0.0, DVec3::ZERO, Pose::SLEEP);
+    // Held facing one way it stays put: in a bed.
+    if let Some((pose, Some(yaw))) = p.forced {
+        (p.yaw, p.pitch, p.vel, p.pose) = (yaw, 0.0, DVec3::ZERO, pose);
         p.eye = p.dims().2;
         return;
     }
@@ -2523,7 +2534,7 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl physics::Cells, 
     let sprint = sprint && (swimming || !feet_wet);
     p.sprinting = sprint;
     // A pose where it fits, and if nothing else fits it crawls (a swimming box under a trapdoor).
-    let want = if let Some(held) = p.forced {
+    let want = if let Some((held, _)) = p.forced {
         held
     } else if swimming {
         Pose::SWIM

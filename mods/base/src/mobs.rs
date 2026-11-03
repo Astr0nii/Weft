@@ -440,7 +440,7 @@ fn shoot(w: &World, id: u64, from: &EntityState, at: &EntityState) {
 
 /// An arrow in flight: gone when it hits something or has flown for five seconds.
 fn arrow_flies(w: &World, id: u64, st: &EntityState) -> bool {
-    let shooter = w.component(id, &SHOOTER).copied().unwrap_or(0);
+    let shooter = w.component(id, &SHOOTER).unwrap_or(0);
     // Its own box against theirs: a tall mob is hit in the head too.
     let tip = Shape::cuboid([st.pos[0] - 0.25, st.pos[1], st.pos[2] - 0.25], [st.pos[0] + 0.25, st.pos[1] + 0.5, st.pos[2] + 0.25]);
     let hit = w

@@ -58,6 +58,8 @@ pub struct Entity {
     pub look: Option<u32>,
     /// Crouching players: a 1.5 high box with lower eyes.
     pub pose: crate::world::Pose,
+    /// Held facing this way with its pose (`entity_set_pose`), not turning.
+    pub facing: Option<f32>,
     /// Sprinting, as its client says (players).
     pub sprinting: bool,
     /// What a player may do (`abi::permission`).
@@ -131,6 +133,7 @@ impl Entity {
             size: None,
             look: None,
             pose: Default::default(),
+            facing: None,
             sprinting: false,
             permission: 0,
             flying: false,
@@ -339,6 +342,9 @@ impl Entities {
             }
         }
         self.comps.remove(&(id, c.game.modifiers_comp));
+        if let Some(e) = self.get_mut(id) {
+            e.facing = None;
+        }
     }
 
     /// `insert` with the inventory and components it had (loaded, or moved from another region).
@@ -591,6 +597,9 @@ pub fn track_fall(fall: &mut f32, dy: f64, on_ground: bool, safe: bool) -> Optio
 }
 
 pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl physics::Cells, bodies: &[physics::Body]) -> Stepped {
+    if let Some(y) = e.facing {
+        e.yaw = y;
+    }
     const DT: f64 = crate::world::TICK;
     let k = &c.game.entities[e.kind as usize];
     let mut out = Stepped { land: None, crushed: false };

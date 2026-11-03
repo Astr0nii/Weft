@@ -541,8 +541,8 @@ impl Server {
                 r.gizmo_groups = groups.clone();
             }
             d.time += 1;
-            if c.dims[d.id as usize].weather {
-                d.tick_weather();
+            if c.dims[d.id as usize].has_weather() {
+                d.tick_weather(c);
             }
         }
         if runs {
@@ -1169,13 +1169,13 @@ impl Server {
         if dim != to_dim {
             let Some(r) = self.dims[dim as usize].entity_region(id) else { return };
             let mut q = abi::Query { entity: id, dim: to_dim, ..abi::Query::DEFAULT };
-            if !r.ask(c, abi::question::ENTER_DIMENSION, &mut q) {
+            if !r.ask(c, abi::action::ENTER_DIMENSION, &mut q) {
                 return;
             }
         }
         if dim != to_dim {
             if let Some(r) = self.dims[dim as usize].entity_region(id) {
-                r.emit_engine(c, abi::event::DIMENSION_CHANGED, &abi::DimensionChange { entity: id, from: dim, to: to_dim });
+                r.emit_engine(c, abi::action::ENTER_DIMENSION, &abi::DimensionChange { entity: id, from: dim, to: to_dim });
             }
         }
         if let Some(pi) = self.player_index(id) {

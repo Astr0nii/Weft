@@ -318,7 +318,7 @@ messages! {
         /// The player's walking speed and jump multipliers.
         /// The player's attributes that changed, by id.
         Attributes(Vec<(u32, f32)>),
-        /// Mining that block is not allowed (`question::BREAK_BLOCK`).
+        /// Mining that block is not allowed (`action::BREAK_BLOCK`).
         BreakRefused { frame: u64, pos: IVec3 },
         /// Holding the use button started on an item that takes this many ticks, or it ended.
         /// Ticks it takes, and whether in the other hand.

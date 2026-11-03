@@ -110,25 +110,25 @@ pub fn register(r: &mut Registry) {
         .category(&sound_categories::UI);
 
     r.world_tick(check_players);
-    r.on(&BLOCK_BROKEN, |b| {
+    r.on(&actions::BREAK_BLOCK, |b| {
         let w = b.world();
         for c in b.iter() {
             grant_where(&w, c.player, |rule| matches!(rule, Rule::Break(t) if t.on_block(c.state)));
         }
     });
-    r.on(&BLOCK_PLACED, |b| {
+    r.on(&actions::PLACE_BLOCK, |b| {
         let w = b.world();
         for c in b.iter() {
             grant_where(&w, c.player, |rule| matches!(rule, Rule::Place(t) if t.on_block(c.state)));
         }
     });
-    r.on(&ENTITY_DIED, |b| {
+    r.on(&actions::DIE, |b| {
         let w = b.world();
         for d in b.iter() {
             grant_where(&w, d.source, |rule| matches!(rule, Rule::Kill(t) if t.on_entity(d.kind)));
         }
     });
-    r.on(&ITEM_USED, |b| {
+    r.on(&actions::USE_ITEM, |b| {
         let w = b.world();
         for u in b.iter() {
             grant_where(&w, u.player, |rule| matches!(rule, Rule::Eat(t) if t.on_item(u.stack.item)));

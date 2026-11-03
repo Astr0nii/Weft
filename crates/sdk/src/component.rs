@@ -58,12 +58,6 @@ unsafe impl Value for abi::Energy {
     }
 }
 
-unsafe impl Value for abi::Tank {
-    fn schema() -> String {
-        <abi::Tank as abi::Schema>::SCHEMA.into()
-    }
-}
-
 /// Text owned by the engine (`str` schema). Set it with the builders' `set_text`.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
@@ -545,8 +539,8 @@ pub static ATTACK_SPEED: Component<f32> = Component::named(abi::comp::ATTACK_SPE
 pub static USE_TICKS: Component<u32> = Component::named(abi::comp::USE_TICKS);
 pub static INVENTORY_SLOTS: Component<u32> = Component::named(abi::comp::INVENTORY);
 pub static PRECIPITATION: Component<Text> = Component::named(abi::comp::PRECIPITATION);
-/// A tank of a liquid on an entity or a stack (`World::liquid_move`).
-pub static TANK: Component<abi::Tank> = Component::named(abi::comp::TANK);
+/// What liquid an item is, by the millibucket (`str`): every liquid's own item has it.
+pub static FLUID: Component<Text> = Component::named(abi::comp::FLUID);
 pub static MINING_SPEED: Component<f32> = Component::named(abi::comp::MINING_SPEED);
 pub static TOOL_LEVEL: Component<u32> = Component::named(abi::comp::TOOL_LEVEL);
 pub static HARVEST_LEVEL: Component<u32> = Component::named(abi::comp::HARVEST_LEVEL);

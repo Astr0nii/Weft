@@ -26,12 +26,12 @@ pub static PEACE: Config<bool> = Config::named("peace");
 static DRILL: Block = Block::named("drill");
 /// How many cells of the world a drill on a moving body has come to.
 static PASSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-/// Players can't be hurt (`question::HURT`) or use items (`question::USE_ITEM`) while on.
+/// Players can't be hurt (`actions::HURT`) or use items (`actions::USE_ITEM`) while on.
 pub static NO_HURT: Config<bool> = Config::named("no_hurt");
 pub static NO_USE: Config<bool> = Config::named("no_use");
 /// `chat_hooks`: "forbidden" stays unsaid, lines are written by this mod.
 pub static CHAT_HOOKS: Config<bool> = Config::named("chat_hooks");
-/// What the last `CHAT_MESSAGE` said.
+/// What the last `actions::CHAT` said.
 static LAST_SAID: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 /// Fired by `after` timers; counted.
 static RANG: Event<u64> = Event::named("rang");
@@ -104,37 +104,37 @@ pub fn register(r: &mut Registry) {
     r.config(&NO_HURT).bool(false).world();
     r.config(&NO_USE).bool(false).world();
     r.config(&CHAT_HOOKS).bool(false).world();
-    r.intercept(&question::CHAT, |q| if CHAT_HOOKS.get() && q.text() == "forbidden" { Verdict::Deny } else { Verdict::Abstain });
+    r.intercept(&actions::CHAT, |q| if CHAT_HOOKS.get() && q.text() == "forbidden" { Verdict::Deny } else { Verdict::Abstain });
     r.chat_format(|f| {
         if CHAT_HOOKS.get() {
             f.set("{0} from a mod", &[Arg::Text(f.text())]);
         }
     });
-    r.on(&CHAT_MESSAGE, |b| {
+    r.on(&actions::CHAT, |b| {
         for m in b.iter() {
             *LAST_SAID.lock().unwrap() = m.text().to_string();
         }
     });
     let player = |w: &World, id: u64| w.players_iter().any(|p| p == id);
-    r.intercept(&question::HURT, move |q| if player(&q.world(), q.entity()) && NO_HURT.get() { Verdict::Deny } else { Verdict::Abstain });
-    r.intercept(&question::USE_ITEM, |_| if NO_USE.get() { Verdict::Deny } else { Verdict::Abstain });
+    r.intercept(&actions::HURT, move |q| if player(&q.world(), q.entity()) && NO_HURT.get() { Verdict::Deny } else { Verdict::Abstain });
+    r.intercept(&actions::USE_ITEM, |_| if NO_USE.get() { Verdict::Deny } else { Verdict::Abstain });
     r.on(&RANG, |b| {
         RINGS.fetch_add(b.len() as u32, Ordering::Relaxed);
     });
     r.config(&HALF_DAMAGE).bool(false).world();
-    r.intercept(&question::BREAK_BLOCK, |q| if GOLD.is(q.state()) && PROTECT_GOLD.get() { Verdict::Deny } else { Verdict::Abstain });
+    r.intercept(&actions::BREAK_BLOCK, |q| if GOLD.is(q.state()) && PROTECT_GOLD.get() { Verdict::Deny } else { Verdict::Abstain });
     r.modify(&chain::DAMAGE, stage::FINAL, |m| {
         if HALF_DAMAGE.get() {
             m.value *= 0.5;
         }
     });
-    r.on(&BLOCK_BROKEN, |b| count(0, b.len()));
-    r.on(&BLOCK_PLACED, |b| count(1, b.len()));
-    r.on(&ITEM_PICKED_UP, |b| count(2, b.len()));
-    r.on(&ENTITY_DIED, |b| count(3, b.len()));
-    r.on(&ENTITY_HURT, |b| count(4, b.len()));
+    r.on(&actions::BREAK_BLOCK, |b| count(0, b.len()));
+    r.on(&actions::PLACE_BLOCK, |b| count(1, b.len()));
+    r.on(&actions::PICKUP_ITEM, |b| count(2, b.len()));
+    r.on(&actions::DIE, |b| count(3, b.len()));
+    r.on(&actions::HURT, |b| count(4, b.len()));
     r.on(&PLAYER_JOINED, |b| count(5, b.len()));
-    r.on(&ITEM_USED, |b| count(6, b.len()));
+    r.on(&actions::USE_ITEM, |b| count(6, b.len()));
     r.on(&SMELTED, |b| count(7, b.len()));
     // A mob walks where a test says for a while, after its own AI had its say.
     r.world_tick(|w| {

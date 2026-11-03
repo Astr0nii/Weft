@@ -254,7 +254,6 @@ recipes.all = Recettes
 recipes.page = {0} / {1}
 recipes.tags = Marqué
 recipes.show = Recettes
-recipes.fluid_amount = {0} mB
 recipes.chance = {color:key}{0}%{/} chance
 key.core.recipes = Affiché les recettes
 key.core.uses = Affiché les utilisations

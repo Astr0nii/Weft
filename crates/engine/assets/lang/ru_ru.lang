@@ -218,7 +218,6 @@ recipes.all = Рецепты
 recipes.page = {0} / {1}
 recipes.tags = Теги
 recipes.show = Рецепты
-recipes.fluid_amount = {0} мВ
 recipes.chance = Шанс {color:key}{0}%
 key.core.recipes = Показать рецепты
 key.core.uses = Показать применение

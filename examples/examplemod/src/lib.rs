@@ -91,7 +91,7 @@ fn blocks(_r: &mut Registry) {
     // r.block(&CRYSTAL).signal_constant();                        // always on
     // r.block(&ALARM).signal_sink().on_signal(|e| { e.rising(); e.world(); });
     // r.block(&AND_GATE)
-    //     .signal_logic(1, |s| if s.rear() > 0 && s.sides().iter().any(|v| *v > 0) { 15 } else { 0 })
+    //     .signal_gate(Gate::new(), |s| if s.side(Side::Rear) > 0 && (s.side(Side::Left) > 0 || s.side(Side::Right) > 0) { 15 } else { 0 })
     //     .model_box([0.0, 0.0, 0.0], [16.0, 2.0, 16.0])
     //     .not_solid();
     //
@@ -164,8 +164,8 @@ fn events(r: &mut Registry) {
             info!("gave player {} an example item", joined.player);
         }
     });
-    // r.on(&BLOCK_BROKEN, |b| for e in b.iter() { /* e.player, e.pos, e.state */ });
-    // r.intercept(&question::BREAK_BLOCK, |q| if q.pos()[1] < -60 { Verdict::Deny } else { Verdict::Abstain });
+    // r.on(&actions::BREAK_BLOCK, |b| for e in b.iter() { /* e.player, e.pos, e.state */ });
+    // r.intercept(&actions::BREAK_BLOCK, |q| if q.pos()[1] < -60 { Verdict::Deny } else { Verdict::Abstain });
     // r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.9);
 }
 

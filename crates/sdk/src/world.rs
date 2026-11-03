@@ -23,7 +23,7 @@ impl World {
     /// `block` that tells air from what isn't loaded here: `None` for that. A callback sees the
     /// region it runs in, so that is also anything far from the players around it.
     pub fn block_loaded(&self, pos: [i32; 3]) -> Option<u32> {
-        let s = unsafe { (host().block_in)(self.raw, 0, &pos) };
+        let s = unsafe { (host().block_get)(self.raw, &pos) };
         (s != u32::MAX).then_some(s)
     }
 
@@ -34,7 +34,7 @@ impl World {
 
     /// False if the position is not loaded.
     pub fn set_block(&self, pos: [i32; 3], state: u32) -> bool {
-        unsafe { (host().set_block_in)(self.raw, 0, &pos, state) != 0 }
+        unsafe { (host().block_set)(self.raw, &pos, state) != 0 }
     }
 
     /// The same world for the blocks of moving body `body`, in its own coordinates (block

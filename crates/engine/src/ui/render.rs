@@ -692,7 +692,13 @@ impl UiRenderer {
                 u: [size, 0.0],
                 v: [0.0, size],
                 uv: [0.0, 0.0, 1.0, 1.0],
-                color: 0xFFFFFFFF,
+                // A liquid's item is its texture, tinted as the liquid is (water is gray).
+                color: c
+                    .item_fluid
+                    .get(&item)
+                    .and_then(|&l| c.states.get(c.liquids[l as usize].first_state as usize))
+                    .filter(|s| s.tint != 0)
+                    .map_or(0xFFFFFFFF, |s| crate::content::item_tint(s.tint) << 8 | 0xFF),
                 tex: tex.texture(icon),
                 mode: ui_mode::ICON,
                 ..Default::default()
@@ -875,9 +881,19 @@ impl UiRenderer {
             let g = (f * 255.0) as u32;
             self.rect(Rect { w: 13.0 * scale * f, h: scale, ..bar }, ((255 - g) << 24) | (g << 16) | 0xFF);
         }
-        if stack.count > 1 {
+        let liquid = c.item_fluid.contains_key(&stack.item);
+        if stack.count > 1 || liquid {
             let px = scale * text_unit;
-            let layout = super::text::layout(&super::text::plain(&stack.count.to_string()), &self.font, None);
+            let shown = if !liquid {
+                stack.count.to_string()
+            } else if stack.count % 1000 == 0 {
+                format!("{}B", stack.count / 1000)
+            } else if stack.count >= 1000 {
+                format!("{:.1}B", stack.count as f32 / 1000.0)
+            } else {
+                format!("{}mB", stack.count)
+            };
+            let layout = super::text::layout(&super::text::plain(&shown), &self.font, None);
             let mut none = Vec::new();
             self.glyph_run(
                 &layout.items,

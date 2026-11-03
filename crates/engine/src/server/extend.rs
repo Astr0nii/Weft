@@ -127,7 +127,7 @@ impl Dim {
 
     /// Whether the interceptors of `question` let it happen: any deny wins.
     pub fn ask(&mut self, c: &'static Content, question: &str, q: &mut abi::Query) -> bool {
-        if !c.dims[self.id as usize].editable && (question == abi::question::BREAK_BLOCK || question == abi::question::PLACE_BLOCK) {
+        if !c.dims[self.id as usize].editable && (question == abi::action::BREAK_BLOCK || question == abi::action::PLACE_BLOCK) {
             q.verdict = verdict::DENY;
             return false;
         }

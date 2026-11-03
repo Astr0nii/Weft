@@ -6,7 +6,7 @@ use crate::content::{
 use crate::ui::{Ui, ui_cb};
 use crate::{Id, Registry, World, callback, host, qualify};
 
-pub use abi::{EYE_SHARE, Energy, EntityState, Tank, component_flags, damage_cause, damage_flags, entity_flags, slot_flags};
+pub use abi::{EYE_SHARE, Energy, EntityState, component_flags, damage_cause, damage_flags, entity_flags, slot_flags};
 
 /// The engine's player kind, for hooks and components on players.
 pub static PLAYER: EntityKind = EntityKind::named("core:player");
@@ -211,7 +211,7 @@ impl World {
         self.damage(id, -amount.max(0.0), 0, &crate::damage_causes::HEAL)
     }
     /// Hurts `id` (`source`: the entity that did it, 0 for none): the `HURT` question, the
-    /// `DAMAGE` chain, the `ENTITY_HURT` event, armor and death as the cause says. A negative
+    /// `DAMAGE` chain, the `actions::HURT` event, armor and death as the cause says. A negative
     /// `amount` heals instead, through the `HEAL` chain and the `ENTITY_HEALED` event, with none
     /// of damage's consequences. True if health changed.
     pub fn damage(&self, id: u64, amount: f32, source: u64, cause: impl Into<Id<crate::DamageCause>>) -> bool {
@@ -239,30 +239,28 @@ impl World {
         unsafe { (host().entity_swing_strength)(self.raw(), player) }
     }
     /// The value of `c` on any holder: an entity, a block's entity, a stack in a slot.
-    pub fn component_get<T: Value>(&self, h: impl Into<Holder>, c: &Component<T>) -> Option<T> {
+    pub fn component<T: Value>(&self, h: impl Into<Holder>, c: &Component<T>) -> Option<T> {
         let mut buf = vec![0u8; size_of::<T>()];
         let n = unsafe { (host().component_get)(self.raw(), &h.into(), c.id(), buf.as_mut_ptr(), buf.len() as u32) };
         (n as usize == buf.len()).then(|| unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const T) })
     }
     /// Sets `c` on any holder. An entity has it only if its kind attaches it; a stack takes any.
-    pub fn component_set<T: Value>(&self, h: impl Into<Holder>, c: &Component<T>, v: T) -> bool {
+    pub fn set_component<T: Value>(&self, h: impl Into<Holder>, c: &Component<T>, v: T) -> bool {
         let bytes = crate::component::value_bytes(&v);
         unsafe { (host().component_set)(self.raw(), &h.into(), c.id(), Slice::new(&bytes)) != 0 }
     }
-    /// An entity's component, read only (`component_mut` to change it).
-    pub fn component<T: Value>(&self, id: u64, c: &Component<T>) -> Option<&T> {
-        let p = unsafe { (host().component)(self.raw(), id, c.id()) };
-        (!p.is_null()).then(|| unsafe { &*(p as *const T) })
-    }
-    /// The component to write; changes are saved and synced like any other.
+    /// An entity's component changed in place (a stack's is a value: `set_component`); changes
+    /// are saved and synced like any other.
     pub fn component_mut<T: Value>(&self, id: u64, c: &Component<T>) -> Option<&mut T> {
         let p = unsafe { (host().component)(self.raw(), id, c.id()) };
         (!p.is_null()).then(|| unsafe { &mut *(p as *mut T) })
     }
     /// Holds `id` in `pose` (a pet sitting, a zombie crawling, a player in a chair; its client
     /// follows), or with `None` gives it back to what its movement makes.
-    pub fn set_pose(&self, id: u64, pose: Option<&crate::Pose>) {
-        unsafe { (host().entity_set_pose)(self.raw(), id, pose.map_or(u32::MAX, |p| p.id())) }
+    /// With `facing` (degrees, feet that way when lying) it also stays still and turned so: in a bed.
+    pub fn set_pose(&self, id: u64, pose: Option<&crate::Pose>, facing: Option<f32>) {
+        let yaw = facing.map_or(f32::NAN, f32::to_radians);
+        unsafe { (host().entity_set_pose)(self.raw(), id, pose.map_or(u32::MAX, |p| p.id()), yaw) }
     }
     /// A player in creative mode.
     pub fn creative(&self, id: u64) -> bool {
@@ -276,28 +274,10 @@ impl World {
     pub fn game_mode(&self, id: u64) -> u32 {
         unsafe { (host().game_mode)(self.raw(), id) }
     }
-    /// The holder's `energy` state, if it takes part in the energy contract: an entity, a
-    /// block's entity, or a stack (`Holder::held(player, slot)`, a battery in hand).
-    pub fn energy(&self, h: impl Into<Holder>) -> Option<Energy> {
-        let mut out = Energy::default();
-        (unsafe { (host().energy_get)(self.raw(), &h.into(), &mut out) } != 0).then_some(out)
-    }
-    /// Replaces the holder's `energy` state, if it has one.
-    pub fn energy_set(&self, h: impl Into<Holder>, value: Energy) {
-        unsafe { (host().energy_set)(self.raw(), &h.into(), &value) }
-    }
-    /// Moves `amount` in (positive) or out (negative) within capacity and rate limits; returns
+    /// Energy (the `ENERGY` component, read and set like any other) moves `amount` in (positive) or out (negative) within capacity and rate limits; returns
     /// what moved (or would, with `simulate`), with the same sign.
     pub fn energy_move(&self, h: impl Into<Holder>, amount: i64, simulate: bool) -> i64 {
         unsafe { (host().energy_move)(self.raw(), &h.into(), amount, simulate as u32) }
-    }
-    /// Accepts up to `amount`. Returns what was accepted.
-    pub fn energy_insert(&self, h: impl Into<Holder>, amount: i64, simulate: bool) -> i64 {
-        self.energy_move(h, amount.max(0), simulate)
-    }
-    /// Gives up to `amount`. Returns what was taken.
-    pub fn energy_extract(&self, h: impl Into<Holder>, amount: i64, simulate: bool) -> i64 {
-        -self.energy_move(h, -amount.max(0), simulate)
     }
 
     pub fn players(&self) -> Vec<u64> {
@@ -393,41 +373,73 @@ impl Inventory {
     }
     /// A machine's slot group (`MachineBuilder::group`) in this inventory; a name it doesn't
     /// have is logged as a mistake and gives no slots.
-    pub fn group(&self, name: &str) -> InventoryGroup {
+    pub fn group(&self, name: &str) -> SlotGroup<'static> {
         self.find_group(name).unwrap_or_else(|| {
             crate::error!("the inventory of {:?} has no group {name}", self.holder);
-            InventoryGroup { inv: *self, start: 0, len: 0 }
+            SlotGroup::empty(GroupIn::Inventory(*self))
         })
     }
 
     /// The group if this inventory has it: a player's equipment, which mobs don't have.
-    pub fn find_group(&self, name: &str) -> Option<InventoryGroup> {
+    pub fn find_group(&self, name: &str) -> Option<SlotGroup<'static>> {
         let mut out = abi::SlotGroup::default();
         let found = unsafe { (host().inventory_group)(self.world.raw(), &self.holder, Str::new(name), &mut out) } != 0;
-        found.then(|| InventoryGroup { inv: *self, start: out.start, len: out.len })
+        found.then(|| SlotGroup::of(GroupIn::Inventory(*self), out))
     }
 }
 
-/// Slots of one group in an inventory, numbered from 0.
-pub struct InventoryGroup {
-    inv: Inventory,
-    start: u32,
-    len: u32,
+#[derive(Clone, Copy)]
+enum GroupIn {
+    Inventory(Inventory),
+    Menu(*mut abi::MenuCtx),
 }
 
-impl InventoryGroup {
+/// Slots of one group, numbered from 0: of an inventory (`w.inventory(h).group(..)`) or of an
+/// open menu (`m.group(..)`, whoever's inventory they show), valid while the menu callback runs.
+pub struct SlotGroup<'a> {
+    of: GroupIn,
+    start: u32,
+    len: u32,
+    cols: u32,
+    _p: std::marker::PhantomData<&'a MenuCtx>,
+}
+
+impl SlotGroup<'_> {
+    fn of(of: GroupIn, g: abi::SlotGroup) -> Self {
+        SlotGroup { of, start: g.start, len: g.len, cols: g.cols, _p: std::marker::PhantomData }
+    }
+    fn empty(of: GroupIn) -> Self {
+        SlotGroup { of, start: 0, len: 0, cols: 0, _p: std::marker::PhantomData }
+    }
     pub fn len(&self) -> u32 {
         self.len
     }
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+    /// Its width as laid out (a 3 x 3 grid has 3).
+    pub fn cols(&self) -> u32 {
+        self.cols
+    }
+    pub fn rows(&self) -> u32 {
+        self.len.div_ceil(self.cols.max(1))
+    }
     pub fn get(&self, i: u32) -> ItemStack {
-        if i < self.len { self.inv.get(self.start + i) } else { ItemStack::EMPTY }
+        if i >= self.len {
+            return ItemStack::EMPTY;
+        }
+        match self.of {
+            GroupIn::Inventory(inv) => inv.get(self.start + i),
+            GroupIn::Menu(m) => unsafe { (host().menu_get)(m, self.start + i) },
+        }
     }
     pub fn set(&self, i: u32, stack: ItemStack) {
-        if i < self.len {
-            self.inv.set(self.start + i, stack)
+        if i >= self.len {
+            return;
+        }
+        match self.of {
+            GroupIn::Inventory(inv) => inv.set(self.start + i, stack),
+            GroupIn::Menu(m) => unsafe { (host().menu_set)(m, self.start + i, stack) },
         }
     }
 }
@@ -936,12 +948,12 @@ impl EntityBuilder<'_> {
         self.attach(&crate::ai::ANGER)
             .on_hurt(crate::ai::provoke_on_hurt)
     }
-    /// One of these was hurt: `ENTITY_HURT` for this kind, after the damage, with the other
+    /// One of these was hurt: `actions::HURT` for this kind, after the damage, with the other
     /// events at the end of the tick. Changing the damage is `r.modify(&chain::DAMAGE, ..)`,
-    /// preventing it `r.intercept(&question::HURT, ..)`.
+    /// preventing it `r.intercept(&actions::HURT, ..)`.
     pub fn on_hurt(self, f: impl Fn(&World, &crate::Hurt) + Send + Sync + 'static) -> Self {
         let Some(kind) = self.handle else { return self };
-        self.reg.on(&crate::ENTITY_HURT, move |b| {
+        self.reg.on(&crate::actions::HURT, move |b| {
             let w = b.world();
             for h in b
                 .iter()
@@ -952,10 +964,10 @@ impl EntityBuilder<'_> {
         });
         self
     }
-    /// One of these died: `ENTITY_DIED` for this kind.
+    /// One of these died: `actions::DIE` for this kind.
     pub fn on_died(self, f: impl Fn(&World, &crate::Death) + Send + Sync + 'static) -> Self {
         let Some(kind) = self.handle else { return self };
-        self.reg.on(&crate::ENTITY_DIED, move |b| {
+        self.reg.on(&crate::actions::DIE, move |b| {
             let w = b.world();
             for d in b.iter().filter(|d| d.kind == kind.id()) {
                 f(&w, d);
@@ -963,7 +975,7 @@ impl EntityBuilder<'_> {
         });
         self
     }
-    /// A player right clicked one, and `question::INTERACT_ENTITY` let it; true if it did something,
+    /// A player right clicked one, and `actions::INTERACT_ENTITY` let it; true if it did something,
     /// which swings the player's arm.
     pub fn on_interact(mut self, f: impl Fn(&mut EntityEvent) -> bool + Send + Sync + 'static) -> Self {
         self.on_interact = event_cb(f);
@@ -1047,55 +1059,24 @@ impl MenuCtx {
     pub fn player(&self) -> u64 {
         self.args.player
     }
-    /// Block entity the menu belongs to, 0 for player menus.
-    pub fn owner(&self) -> u64 {
-        self.args.owner
+    /// What the menu was opened on (a machine's block entity, a pouch in a slot); `None` for
+    /// the player's own and a crafting table's.
+    pub fn owner(&self) -> Option<Holder> {
+        (self.args.owner.kind != abi::holder::NONE).then_some(self.args.owner)
     }
     /// Slot group `name` of this menu; asking for one it doesn't have is a mistake that gets
     /// logged, and the group is empty.
-    pub fn group(&self, name: &str) -> MenuGroup<'_> {
+    pub fn group(&self, name: &str) -> SlotGroup<'_> {
         self.find_group(name).unwrap_or_else(|| {
             crate::reg_mistake(&format!("the menu has no group {name}"));
-            MenuGroup { m: self, start: 0, len: 0, cols: 0 }
+            SlotGroup::empty(GroupIn::Menu(self.args.menu))
         })
     }
     /// `group`, when not having it is fine.
-    pub fn find_group(&self, name: &str) -> Option<MenuGroup<'_>> {
+    pub fn find_group(&self, name: &str) -> Option<SlotGroup<'_>> {
         let mut out = abi::SlotGroup::default();
         let found = unsafe { (host().menu_group)(self.args.menu, Str::new(name), &mut out) } != 0;
-        found.then_some(MenuGroup { m: self, start: out.start, len: out.len, cols: out.cols })
-    }
-}
-
-/// Slots of one group of an open menu, numbered from 0, whoever's inventory they show.
-pub struct MenuGroup<'a> {
-    m: &'a MenuCtx,
-    start: u32,
-    len: u32,
-    cols: u32,
-}
-
-impl MenuGroup<'_> {
-    pub fn len(&self) -> u32 {
-        self.len
-    }
-    /// Its width as laid out (a 3 x 3 grid has 3).
-    pub fn cols(&self) -> u32 {
-        self.cols
-    }
-    pub fn rows(&self) -> u32 {
-        self.len.div_ceil(self.cols.max(1))
-    }
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-    pub fn get(&self, i: u32) -> ItemStack {
-        if i < self.len { unsafe { (host().menu_get)(self.m.args.menu, self.start + i) } } else { ItemStack::EMPTY }
-    }
-    pub fn set(&self, i: u32, stack: ItemStack) {
-        if i < self.len {
-            unsafe { (host().menu_set)(self.m.args.menu, self.start + i, stack) }
-        }
+        found.then(|| SlotGroup::of(GroupIn::Menu(self.args.menu), out))
     }
 }
 
@@ -1182,6 +1163,13 @@ impl Slots {
     /// Items only go in (a machine uses them up).
     pub fn input(mut self) -> Self {
         self.flags |= abi::slot_flags::INPUT;
+        self
+    }
+    /// Holds `capacity` millibuckets of one liquid: its item (`Item::named` the liquid's
+    /// name), poured in and taken out with buckets by hand, read and set like any slot.
+    pub fn liquid(mut self, capacity: u32) -> Self {
+        self.flags |= abi::slot_flags::LIQUID;
+        self.limit = capacity;
         self
     }
     /// Items only come out (results).
@@ -1411,7 +1399,7 @@ impl Registry {
 
     /// Logic that is nobody's own (players' hunger, a mod's weather): once per tick in every
     /// region of every dimension, where `w.players()` are the players in that region. Another
-    /// mod's entities are reached through events (`r.on(&ENTITY_HURT, ..)`) and questions.
+    /// mod's entities are reached through events (`r.on(&actions::HURT, ..)`) and questions.
     pub fn world_tick(&mut self, f: impl Fn(&World) + Send + Sync + 'static) {
         let cb = crate::callback(move |a: &mut abi::WorldTickArgs| f(&World::from_raw(a.world)));
         unsafe { (host().reg_world_tick)(self.raw, cb) }
@@ -1438,15 +1426,15 @@ impl Registry {
         PlayerInventoryBuilder { raw: self.raw, groups: GroupList::new(), _p: std::marker::PhantomData }
     }
 
-    /// An equipment slot of players (head, chest...): what is worn there covers parts of the
-    /// model, regions (`worn_parts::BODY`) or bones by name (`Covers::bones(&["leftWing",
-    /// "rightWing"])`), `background` (from `gui/`) shows while it is empty. Items go there with
-    /// `.wearable(&SLOT, ..)`; menus show the slots with `.equipment()`.
-    pub fn equipment_slot(&mut self, slot: &EquipmentSlot, covers: impl Into<Covers>, background: &str) {
+    /// An equipment slot of players (head, chest...): what is worn there covers the bones named
+    /// in `covers` (`worn::CHEST`, `&["leftWing", "rightWing"]`); a name with a role (`head`,
+    /// `leftArm`, `leg0`) covers every bone of that role. `background` (from `gui/`) shows while
+    /// it is empty. Items go there with `.wearable(&SLOT, ..)`; menus show the slots with
+    /// `.equipment()`.
+    pub fn equipment_slot(&mut self, slot: &EquipmentSlot, covers: &[&str], background: &str) {
         let bg = crate::asset("gui", background);
-        let c = covers.into();
-        let bones = c.bones.join(" ");
-        unsafe { (host().reg_equipment_slot)(self.raw, Str::new(slot.name()), c.regions, Str::new(&bones), Str::new(&bg)) }
+        let bones = covers.join(" ");
+        unsafe { (host().reg_equipment_slot)(self.raw, Str::new(slot.name()), Str::new(&bones), Str::new(&bg)) }
     }
 
     /// The menu the inventory key opens.
@@ -1610,7 +1598,7 @@ impl Registry {
     }
 
     /// Shapeless recipe or a processing recipe (inputs used up over `time` ticks). Inputs are
-    /// items, `#tags` or `fluid:<liquid>`.
+    /// items or `#tags`; a liquid is its item, named like it, counted in millibuckets.
     pub fn shapeless<'a>(&'a mut self, kind: &RecipeKind, output: &str, count: u32, inputs: &[&str], time: u32) -> RecipeBuilder<'a> {
         let inputs = inputs.iter().map(|n| self.ingredient(n)).collect();
         let output = self.ingredient(output);
@@ -1631,11 +1619,7 @@ impl Registry {
     }
 
     fn ingredient(&self, n: &str) -> String {
-        match n.strip_prefix("fluid:") {
-            Some(f) => format!("fluid:{}", qualify(self.ns, f)),
-            None if n.starts_with('#') => n.to_string(),
-            None => qualify(self.ns, n),
-        }
+        if n.starts_with('#') { n.to_string() } else { qualify(self.ns, n) }
     }
 }
 
@@ -1656,12 +1640,12 @@ pub struct RecipeBuilder<'a> {
 }
 
 impl RecipeBuilder<'_> {
-    /// How many of each input it takes, in the order of the inputs (millibuckets for fluids).
+    /// How many of each input it takes, in the order of the inputs (millibuckets for liquids).
     pub fn input_amounts(mut self, counts: &[u32]) -> Self {
         self.counts = counts.to_vec();
         self
     }
-    /// Another result (an item or `fluid:<liquid>`).
+    /// Another result (an item, or a liquid by its name and millibuckets).
     pub fn output(self, item: &str, count: u32) -> Self {
         self.output_chance(item, count, 1.0)
     }
@@ -1786,35 +1770,6 @@ pub struct Recipe {
     index: u32,
 }
 
-/// So much of something: a stack, or millibuckets of a liquid (its block's first state, so
-/// `WATER.is(liquid)` asks which).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Amount {
-    Item(ItemStack),
-    Liquid { liquid: u32, mb: u32 },
-}
-
-impl World {
-    /// The holder's tank (`Tank`: liquid, millibuckets, capacity, rates), if it has one.
-    pub fn tank(&self, h: impl Into<Holder>) -> Option<abi::Tank> {
-        self.component_get(h, &crate::component::TANK)
-    }
-    /// Moves `mb` of `liquid` (`LAVA.id()`) in (positive) or out (negative; `liquid` 0 takes
-    /// whatever it holds) within the tank's limits: one liquid at a time. Returns what moved
-    /// (or would, with `simulate`), with the same sign.
-    pub fn liquid_move(&self, h: impl Into<Holder>, liquid: u32, mb: i64, simulate: bool) -> i64 {
-        unsafe { (host().liquid_move)(self.raw(), &h.into(), liquid, mb, simulate as u32) }
-    }
-    /// Fills up to `mb`; returns what went in.
-    pub fn liquid_insert(&self, h: impl Into<Holder>, liquid: u32, mb: i64, simulate: bool) -> i64 {
-        self.liquid_move(h, liquid, mb.max(0), simulate)
-    }
-    /// Drains up to `mb` of whatever it holds; returns what came out.
-    pub fn liquid_extract(&self, h: impl Into<Holder>, mb: i64, simulate: bool) -> i64 {
-        -self.liquid_move(h, 0, -mb.max(0), simulate)
-    }
-}
-
 /// The first recipe of `kind` whose inputs, with their counts, are all among `stacks`.
 pub fn recipe_find(kind: &RecipeKind, stacks: &[ItemStack]) -> Option<Recipe> {
     let n = unsafe { (host().recipe_find)(Str::new(kind.name()), stacks.as_ptr(), stacks.len() as u32) };
@@ -1831,14 +1786,13 @@ impl Recipe {
     pub fn time(&self) -> u32 {
         self.info().time
     }
-    /// Its results with their chances: stacks, and liquids by the millibucket.
-    pub fn outputs(&self) -> Vec<(Amount, f32)> {
+    /// Its results with their chances; a liquid's is its item by the millibucket.
+    pub fn outputs(&self) -> Vec<(ItemStack, f32)> {
         (0..self.info().outputs)
             .map(|i| {
-                let (mut s, mut liquid, mut chance) = (ItemStack::EMPTY, [0u32; 2], 1.0);
-                unsafe { (host().recipe_output)(Str::new(&self.kind), self.index, i, &mut s, &mut liquid, &mut chance) };
-                let out = if liquid[0] != 0 { Amount::Liquid { liquid: liquid[0], mb: liquid[1] } } else { Amount::Item(s) };
-                (out, chance)
+                let (mut s, mut chance) = (ItemStack::EMPTY, 1.0);
+                unsafe { (host().recipe_output)(Str::new(&self.kind), self.index, i, &mut s, &mut chance) };
+                (s, chance)
             })
             .collect()
     }
@@ -1882,30 +1836,13 @@ impl Drop for CategoryBuilder<'_> {
     }
 }
 
-/// What an equipment slot's items cover on the wearer's model (`Registry::equipment_slot`):
-/// regions by `worn_parts`, bones by name, or both.
-#[derive(Clone, Debug, Default)]
-pub struct Covers {
-    regions: u32,
-    bones: Vec<String>,
-}
-
-impl Covers {
-    /// Bones by name, whatever model wears it: a saddle's `body` and `leg0`..`leg3`, wings.
-    pub fn bones(names: &[&str]) -> Covers {
-        Covers { regions: 0, bones: names.iter().map(|n| n.to_string()).collect() }
-    }
-    /// These regions (`worn_parts`) too.
-    pub fn and_regions(mut self, regions: u32) -> Covers {
-        self.regions |= regions;
-        self
-    }
-}
-
-impl From<u32> for Covers {
-    fn from(regions: u32) -> Covers {
-        Covers { regions, bones: Vec::new() }
-    }
+/// What the base game's armor slots cover (`Registry::equipment_slot`): bones by role, so they fit
+/// any model with bones of those names.
+pub mod worn {
+    pub const HEAD: &[&str] = &["head"];
+    pub const CHEST: &[&str] = &["body", "leftArm", "rightArm"];
+    pub const LEGS: &[&str] = &["body", "leftLeg", "rightLeg", "leg2", "leg3"];
+    pub const FEET: &[&str] = &["leftLeg", "rightLeg", "leg2", "leg3"];
 }
 
 /// Where a natural spawn stands (`SpawnBuilder::place`).

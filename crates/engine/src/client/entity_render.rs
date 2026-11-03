@@ -877,7 +877,7 @@ impl EntityRenderer {
                     out.0[out.1] = Instance {
                         tex: *idx,
                         tex_size: [size[0] as f32, size[1] as f32],
-                        roles: crate::model::role_mask(w.roles),
+                        roles: c.worn_roles(i),
                         bone_mask,
                         inflate: w.inflate,
                         glow: glow(t),

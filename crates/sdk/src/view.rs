@@ -15,7 +15,15 @@ use crate::component::{Component, Value};
 use crate::{ClientView, World};
 
 pub trait View {
-    fn raining(&self) -> bool;
+    /// The weather's id now (`weathers::RAIN.id()`).
+    fn weather(&self) -> u32;
+    /// Something falls from the sky (`weather_flags::FALLS`): rain, snow.
+    fn raining(&self) -> bool {
+        crate::Weather::flags_of(self.weather()) & crate::abi::weather_flags::FALLS != 0
+    }
+    fn thundering(&self) -> bool {
+        crate::Weather::flags_of(self.weather()) & crate::abi::weather_flags::LIGHTNING != 0
+    }
     fn day_time(&self) -> u64;
     /// The block at `pos`, `None` where it isn't loaded.
     fn block(&self, pos: [i32; 3]) -> Option<u32>;
@@ -29,8 +37,8 @@ pub trait View {
 }
 
 impl View for World {
-    fn raining(&self) -> bool {
-        World::raining(self)
+    fn weather(&self) -> u32 {
+        World::weather(self)
     }
     fn day_time(&self) -> u64 {
         World::day_time(self)
@@ -45,7 +53,7 @@ impl View for World {
         World::entity(self, id)
     }
     fn component_of<T: Value>(&self, id: u64, c: &Component<T>) -> Option<T> {
-        self.component(id, c).copied()
+        self.component(id, c)
     }
     fn game_mode_of(&self, id: u64) -> u32 {
         self.game_mode(id)
@@ -56,8 +64,8 @@ impl View for World {
 }
 
 impl View for ClientView {
-    fn raining(&self) -> bool {
-        ClientView::raining(self)
+    fn weather(&self) -> u32 {
+        ClientView::weather(self)
     }
     fn day_time(&self) -> u64 {
         ClientView::day_time(self)

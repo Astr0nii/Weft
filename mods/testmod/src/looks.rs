@@ -27,7 +27,7 @@ static SNOW_LAYER: Block = Block::named("snow_layer");
 static GLOW_CRYSTAL: Block = Block::named("glow_crystal");
 static GLOW: TintKind = TintKind::named("glow");
 static SPIRITS: EntityCategory = EntityCategory::named("spirits");
-static HURT: TextCondition = TextCondition::named("hurt");
+static HURT: Condition = Condition::named("hurt");
 static DREAM_KEY: Key = Key::named("dream");
 static RUNE: Item = Item::named("rune");
 /// Drawn from `models/item/totem.json`: a stone base and a crystal, no icon of its own.
@@ -225,7 +225,11 @@ pub fn register(r: &mut Registry) {
         }
         true
     });
-    r.text_condition(&HURT, |v| v.player_state().is_some_and(|m| m.health < m.max_health));
+    r.condition(&HURT, |c| {
+        c.client()
+            .and_then(|v| v.player_state())
+            .is_some_and(|m| m.health < m.max_health)
+    });
 
     r.key(&DREAM_KEY, "N").on_press_client(|c| {
         let on = DREAM.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);

@@ -77,8 +77,10 @@ r.block(&ALARM).signal_sink().on_signal(|e| {
 
 // A gate with your own logic, on the clicked face. Runs only when something around it changes,
 // and what it returns comes out of the front after the delay (in redstone ticks, like a repeater's).
+// `Gate::new()` reads behind it and both sides; `.inputs(&[Side::Left, Side::Right, Side::Top])`
+// names other faces, `.delay(4)` waits longer.
 r.block(&AND_GATE)
-    .signal_logic(1, |s| if s.rear() > 0 && s.sides().iter().any(|v| *v > 0) { 15 } else { 0 })
+    .signal_gate(Gate::new(), |s| if s.side(Side::Rear) > 0 && (s.side(Side::Left) > 0 || s.side(Side::Right) > 0) { 15 } else { 0 })
     .model_box([0.0, 0.0, 0.0], [16.0, 2.0, 16.0])
     .not_solid();
 
@@ -100,7 +102,7 @@ The rest of the set, each with the properties it needs added for you:
 - `w.body_from_blocks(center, &cells)` takes blocks out of the world into a moving body, with chests and what is in them, circuits going on. Move it with `set_entity` (a speed) or `w.body_move_to(id, pos, ticks)`, and `w.body_to_blocks(id)` makes it blocks again, on the nearest whole block. Its blocks are reached the way the world's are, through `w.on_body(id)`: `w.on_body(ship)?.prop_set(pos, "lit", "true")` in the body's own coordinates, with parts, scheduled ticks and signals as in the world. `w.push_blocks(pos, dir)` moves blocks the way a piston does, without one: what would be pushed goes one block that way, slime and all, so a machine can open a drawbridge. `w.body_fall(id)` lets it drop instead, like sand: each block lands where it comes down, or drops if it can't stand there, so a felled tree or a collapsing roof is a lift and a fall.
 - `.signal_observer()` and `.signal_piston(head, sticky)`, `.signal_piston_head()`: after `.facing(..)`.
 
-**A model on any face:** those blocks have `attach` and `front` properties. Write the model once for a floor with the front to the north, and `frame` turns it, pictures included:
+**A model on any face:** those blocks have `attach` and `front` properties. Write the model once for a floor with the front to the north, and `oriented` turns it, pictures included:
 
 ```rust
 r.block(&GATE).signal_repeater().states(|p, s| {

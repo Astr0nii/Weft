@@ -6,7 +6,7 @@
 //! r.on(&EATEN, |b| for e in b.iter() { b.world().damage(..) });
 //! w.emit(&EATEN, Eaten { .. });
 //! // May it happen? Any deny wins:
-//! r.intercept(&question::BREAK_BLOCK, |q| if q.pos()[1] < 0 { Verdict::Deny } else { Verdict::Abstain });
+//! r.intercept(&actions::BREAK_BLOCK, |q| if q.pos()[1] < 0 { Verdict::Deny } else { Verdict::Abstain });
 //! // Computed values in stages, explainable:
 //! r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.5);
 //! // Loot tables any mod can change:
@@ -25,31 +25,12 @@ pub use abi::{
     BlockChange, ChatMessage, Death, DimensionChange, Hurt, Interaction, ItemUsed, Pickup, PlayerEvent, attr_op, permission, stage,
 };
 
-/// The engine's questions (`Registry::intercept`, `World::ask`).
+/// The engine's questions with no event after them (`Registry::intercept`, `World::ask`); the
+/// others are `actions`.
 pub mod question {
     use crate::Question;
-    use crate::abi::question as q;
-    /// `entity` the player (0 for `break_block` without one), `pos`, `state`, `item` the tool.
-    pub static BREAK_BLOCK: Question = Question::named(q::BREAK_BLOCK);
-    /// `entity`, `pos`, `state` to be placed, `item` used.
-    pub static PLACE_BLOCK: Question = Question::named(q::PLACE_BLOCK);
-    /// Right click on a block: `entity`, `pos`, `state`.
-    pub static USE_BLOCK: Question = Question::named(q::USE_BLOCK);
-    /// `entity` about to change dimension to `dim`.
-    pub static ENTER_DIMENSION: Question = Question::named(q::ENTER_DIMENSION);
-    /// `entity` (a player) picking up `item` (count in `amount`), `other` the item entity.
-    pub static PICKUP_ITEM: Question = Question::named(q::PICKUP_ITEM);
     /// `entity` attacking `other` with `item`.
-    pub static ATTACK: Question = Question::named(q::ATTACK);
-    /// `entity` about to be hurt by `other` for `amount` of `cause`: deny to prevent it.
-    pub static HURT: Question = Question::named(q::HURT);
-    /// A player (`other`) right clicking `entity` holding `item`.
-    pub static INTERACT_ENTITY: Question = Question::named(q::INTERACT_ENTITY);
-    /// A player (`entity`) about to use the held `item`, on block `pos` when `state` isn't 0.
-    pub static USE_ITEM: Question = Question::named(q::USE_ITEM);
-    /// A player (`entity`) about to say `text()` in the chat. Commands don't ask.
-    pub static CHAT: Question = Question::named(q::CHAT);
-    pub static DIE: Question = Question::named(q::DIE);
+    pub static ATTACK: Question = Question::named(crate::abi::question::ATTACK);
 }
 
 /// The engine's value chains (`Registry::modify`, `World::chain_compute`).
@@ -137,48 +118,60 @@ schema_values!(
     abi::Pickup,
     abi::ItemUsed,
     abi::Interaction,
-    abi::DimensionChange
+    abi::DimensionChange,
+    abi::WeatherTick
 );
 
-/// The engine's events.
-pub static BLOCK_BROKEN: Event<abi::BlockChange> = Event::named(abi::event::BLOCK_BROKEN);
-pub static BLOCK_PLACED: Event<abi::BlockChange> = Event::named(abi::event::BLOCK_PLACED);
-pub static ENTITY_DIED: Event<abi::Death> = Event::named(abi::event::ENTITY_DIED);
+/// The engine's events with no question before them; the others are `actions`.
 pub static PLAYER_JOINED: Event<abi::PlayerEvent> = Event::named(abi::event::PLAYER_JOINED);
-/// A dead player came back at the spawn point, components reset but the `KEEP` ones; moving
-/// them on from here (a bed) happens before anyone saw them there.
+/// A dead player came back at the spawn point, components reset but the `KEEP_ON_RESPAWN` ones;
+/// moving them on from here (a bed) happens before anyone saw them there.
 pub static PLAYER_RESPAWNED: Event<abi::PlayerEvent> = Event::named(abi::event::PLAYER_RESPAWNED);
-pub static ITEM_PICKED_UP: Event<abi::Pickup> = Event::named(abi::event::ITEM_PICKED_UP);
-/// A player said something, no mod denying it.
-pub static CHAT_MESSAGE: Event<abi::ChatMessage> = Event::named(abi::event::CHAT_MESSAGE);
-pub static ENTITY_HURT: Event<abi::Hurt> = Event::named(abi::event::ENTITY_HURT);
-/// A player used the held item and something happened (`stack` as it was before): eating,
-/// emptying a bucket. Another mod reacts to food here, by the item's components.
-pub static ITEM_USED: Event<abi::ItemUsed> = Event::named(abi::event::ITEM_USED);
 pub static ENTITY_HEALED: Event<abi::Hurt> = Event::named(abi::event::ENTITY_HEALED);
-pub static BLOCK_USED: Event<abi::BlockChange> = Event::named(abi::event::BLOCK_USED);
-pub static ENTITY_INTERACTED: Event<abi::Interaction> = Event::named(abi::event::ENTITY_INTERACTED);
-pub static DIMENSION_CHANGED: Event<abi::DimensionChange> = Event::named(abi::event::DIMENSION_CHANGED);
+/// Every tick in each dimension with weather: which it is.
+pub static WEATHER_TICK: Event<abi::WeatherTick> = Event::named(abi::event::WEATHER_TICK);
 
-/// Something that happens, as one name: the question asked before it (`r.intercept(&A.ask, ..)`,
-/// any deny wins) and the event after (`r.on(&A.done, ..)`). The engine's are in `actions`; a
-/// mod's own goes through `w.act(&WRENCH, &mut query, value)`.
+/// Something that happens, as one name: the question asked before it (`r.intercept(&A, ..)`,
+/// any deny wins) and the event after (`r.on(&A, ..)`). The engine's are in `actions`; a mod's
+/// own goes through `w.act(&WRENCH, &mut query, value)`.
 ///
 /// ```ignore
 /// static WRENCH: Action<Wrenched> = Action::named("wrench");
-/// r.intercept(&actions::DIE.ask, |a| if has_totem(a) { Verdict::Deny } else { Verdict::Abstain });
+/// r.intercept(&actions::DIE, |a| if has_totem(a) { Verdict::Deny } else { Verdict::Abstain });
+/// r.on(&actions::BREAK_BLOCK, |b| for c in b.iter() { /* .. */ });
 /// ```
 pub struct Action<T: Value> {
-    pub ask: Question,
-    pub done: Event<T>,
+    ask: Question,
+    done: Event<T>,
 }
 
 impl<T: Value> Action<T> {
     pub const fn named(name: &'static str) -> Self {
         Action { ask: Question::named(name), done: Event::named(name) }
     }
-    const fn engine(ask: &'static str, done: &'static str) -> Self {
-        Action { ask: Question::named(ask), done: Event::named(done) }
+}
+
+impl<T: Value> AsRef<Question> for Action<T> {
+    fn as_ref(&self) -> &Question {
+        &self.ask
+    }
+}
+
+impl<T: Value> AsRef<Event<T>> for Action<T> {
+    fn as_ref(&self) -> &Event<T> {
+        &self.done
+    }
+}
+
+impl AsRef<Question> for Question {
+    fn as_ref(&self) -> &Question {
+        self
+    }
+}
+
+impl<T: Value> AsRef<Event<T>> for Event<T> {
+    fn as_ref(&self) -> &Event<T> {
+        self
     }
 }
 
@@ -186,28 +179,31 @@ impl World {
     /// Asks `action`'s question with `q`, and when nobody refuses sends its event with `value`.
     /// True if it may happen.
     pub fn act<T: Value>(&self, action: &Action<T>, q: &mut abi::Query, value: T) -> bool {
-        let ok = self.ask(&action.ask, q);
+        let ok = self.ask(action, q);
         if ok {
-            self.emit(&action.done, value);
+            self.emit(action, value);
         }
         ok
     }
 }
 
-/// The engine's actions: what may be refused and what is told after, for each.
+/// The engine's actions (`abi::action`): what may be refused and what is told after, for each.
 pub mod actions {
     use super::Action;
-    use crate::abi::{self, event as e, question as q};
-    pub static BREAK_BLOCK: Action<abi::BlockChange> = Action::engine(q::BREAK_BLOCK, e::BLOCK_BROKEN);
-    pub static PLACE_BLOCK: Action<abi::BlockChange> = Action::engine(q::PLACE_BLOCK, e::BLOCK_PLACED);
-    pub static USE_BLOCK: Action<abi::BlockChange> = Action::engine(q::USE_BLOCK, e::BLOCK_USED);
-    pub static USE_ITEM: Action<abi::ItemUsed> = Action::engine(q::USE_ITEM, e::ITEM_USED);
-    pub static INTERACT_ENTITY: Action<abi::Interaction> = Action::engine(q::INTERACT_ENTITY, e::ENTITY_INTERACTED);
-    pub static HURT: Action<abi::Hurt> = Action::engine(q::HURT, e::ENTITY_HURT);
-    pub static DIE: Action<abi::Death> = Action::engine(q::DIE, e::ENTITY_DIED);
-    pub static PICKUP_ITEM: Action<abi::Pickup> = Action::engine(q::PICKUP_ITEM, e::ITEM_PICKED_UP);
-    pub static ENTER_DIMENSION: Action<abi::DimensionChange> = Action::engine(q::ENTER_DIMENSION, e::DIMENSION_CHANGED);
-    pub static CHAT: Action<abi::ChatMessage> = Action::engine(q::CHAT, e::CHAT_MESSAGE);
+    use crate::abi::{self, action as a};
+    pub static BREAK_BLOCK: Action<abi::BlockChange> = Action::named(a::BREAK_BLOCK);
+    pub static PLACE_BLOCK: Action<abi::BlockChange> = Action::named(a::PLACE_BLOCK);
+    pub static USE_BLOCK: Action<abi::BlockChange> = Action::named(a::USE_BLOCK);
+    /// Sent when using the item did something (`stack` as it was before): eating, emptying a
+    /// bucket. Another mod reacts to food here, by the item's components.
+    pub static USE_ITEM: Action<abi::ItemUsed> = Action::named(a::USE_ITEM);
+    pub static INTERACT_ENTITY: Action<abi::Interaction> = Action::named(a::INTERACT_ENTITY);
+    /// Asked before the damage chain, sent after armor and every modifier.
+    pub static HURT: Action<abi::Hurt> = Action::named(a::HURT);
+    pub static DIE: Action<abi::Death> = Action::named(a::DIE);
+    pub static PICKUP_ITEM: Action<abi::Pickup> = Action::named(a::PICKUP_ITEM);
+    pub static ENTER_DIMENSION: Action<abi::DimensionChange> = Action::named(a::ENTER_DIMENSION);
+    pub static CHAT: Action<abi::ChatMessage> = Action::named(a::CHAT);
 }
 
 /// Every value of one event queued during a tick, in the order they happened.
@@ -264,7 +260,7 @@ impl Ask {
     pub fn state(&self) -> u32 {
         self.query().state
     }
-    /// What a player is about to say (`question::CHAT`).
+    /// What a player is about to say (`actions::CHAT`).
     pub fn text(&self) -> &str {
         unsafe { self.query().text.as_str() }
     }
@@ -613,7 +609,7 @@ impl Registry {
     }
 
     /// Handles every value of `event` once per tick (and region), in one call.
-    pub fn on<T: Value>(&mut self, event: &Event<T>, f: impl Fn(&EventBatch<T>) + Send + Sync + 'static) {
+    pub fn on<T: Value>(&mut self, event: &impl AsRef<Event<T>>, f: impl Fn(&EventBatch<T>) + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::EventArgs| {
             let stride = a.stride as usize;
             if stride != size_of::<T>() {
@@ -624,11 +620,11 @@ impl Registry {
                 .collect();
             f(&EventBatch { world: World::from_raw(a.world), values });
         });
-        unsafe { (host().reg_event_handler)(self.raw, Str::new(event.name()), Str::new(&T::schema()), cb) }
+        unsafe { (host().reg_event_handler)(self.raw, Str::new(event.as_ref().name()), Str::new(&T::schema()), cb) }
     }
 
     /// Answers `question` (`question::*` or a mod's own) before it happens.
-    pub fn intercept(&mut self, question: &Question, f: impl Fn(&Ask) -> Verdict + Send + Sync + 'static) {
+    pub fn intercept(&mut self, question: &impl AsRef<Question>, f: impl Fn(&Ask) -> Verdict + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::InterceptArgs| {
             let ask = Ask {
                 world: World::from_raw(a.world),
@@ -644,7 +640,7 @@ impl Registry {
                 }
             }
         });
-        unsafe { (host().reg_interceptor)(self.raw, Str::new(question.name()), cb) }
+        unsafe { (host().reg_interceptor)(self.raw, Str::new(question.as_ref().name()), cb) }
     }
 
     /// A step on value `chain` (`chain::*` or a mod's own) at `stage` (`stage::*`).
@@ -691,8 +687,8 @@ impl World {
         unsafe { (host().emit_after)(self.raw(), entity, ticks, id, Slice::new(b)) }
     }
 
-    pub fn emit<T: Value>(&self, event: &Event<T>, value: T) {
-        let id = event.id();
+    pub fn emit<T: Value>(&self, event: &impl AsRef<Event<T>>, value: T) {
+        let id = event.as_ref().id();
         if id == u32::MAX {
             return;
         }
@@ -701,8 +697,8 @@ impl World {
     }
 
     /// Asks the interceptors of `question`; true if allowed.
-    pub fn ask(&self, question: &Question, q: &mut abi::Query) -> bool {
-        unsafe { (host().ask)(self.raw(), Str::new(question.name()), q) != 0 }
+    pub fn ask(&self, question: &impl AsRef<Question>, q: &mut abi::Query) -> bool {
+        unsafe { (host().ask)(self.raw(), Str::new(question.as_ref().name()), q) != 0 }
     }
 
     pub fn chain_compute(&self, chain: &Chain, base: f64, q: &abi::Query) -> f64 {

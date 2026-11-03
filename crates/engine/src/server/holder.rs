@@ -167,40 +167,6 @@ pub fn merge_into(c: &Content, list: &mut [ItemStack], mut stack: ItemStack, all
     if stack.count == 0 { ItemStack::EMPTY } else { stack }
 }
 
-/// Moves `mb` of `liquid` in (positive) or out (negative, `liquid` 0 for whatever it holds)
-/// within the tank's limits; returns what moved, with the same sign.
-pub fn move_liquid(d: &mut Dim, c: &Content, at: At, liquid: u32, mb: i64, simulate: bool) -> i64 {
-    let Some(comp) = c.ids.tank else { return 0 };
-    let Some(b) = component(d, at, comp).filter(|b| b.len() >= size_of::<abi::Tank>()) else { return 0 };
-    let mut t = unsafe { std::ptr::read_unaligned(b.as_ptr() as *const abi::Tank) };
-    let same = t.liquid == 0 || t.stored <= 0 || liquid == 0 || t.liquid == liquid;
-    if !same {
-        return 0;
-    }
-    let n = if mb >= 0 {
-        if liquid == 0 {
-            return 0;
-        }
-        mb.min(t.max_in.max(0)).min((t.capacity - t.stored).max(0))
-    } else {
-        -(mb.saturating_neg())
-            .min(t.max_out.max(0))
-            .min(t.stored.max(0))
-    };
-    if !simulate && n != 0 {
-        if n > 0 {
-            t.liquid = liquid;
-        }
-        t.stored += n;
-        if t.stored <= 0 {
-            t.liquid = 0;
-        }
-        let bytes = unsafe { std::slice::from_raw_parts(&t as *const abi::Tank as *const u8, size_of::<abi::Tank>()) };
-        set_component(d, c, at, comp, Some(bytes));
-    }
-    n
-}
-
 /// The holder's `comp`, as bytes.
 pub fn component(d: &Dim, at: At, comp: u32) -> Option<Box<[u8]>> {
     match at {
@@ -239,48 +205,37 @@ pub fn set_component(d: &mut Dim, c: &Content, at: At, comp: u32, v: Option<&[u8
     }
 }
 
-pub fn energy(d: &Dim, c: &Content, at: At) -> Option<abi::Energy> {
-    match at {
-        At::Entity(id) => super::energy::read(&d.entities, c, id),
-        At::Stack { entity, slot } => {
-            let b = stack::value(stack_at(d, entity, slot).data, c.ids.energy?)?;
-            (b.len() >= size_of::<abi::Energy>()).then(|| unsafe { std::ptr::read_unaligned(b.as_ptr() as *const abi::Energy) })
-        }
+/// What of `amount` (in positive, out negative) a store of `stored` out of `capacity` takes or
+/// gives within its rate limits, with the same sign.
+fn bounded(amount: i64, stored: i64, capacity: i64, max_in: i64, max_out: i64) -> i64 {
+    if amount >= 0 {
+        amount.min(max_in.max(0)).min((capacity - stored).max(0))
+    } else {
+        -(amount.saturating_neg())
+            .min(max_out.max(0))
+            .min(stored.max(0))
     }
 }
 
-pub fn set_energy(d: &mut Dim, c: &Content, at: At, v: abi::Energy) {
-    match at {
-        At::Entity(id) => super::energy::write(&mut d.entities, c, id, v),
-        At::Stack { entity, slot } => {
-            let Some(comp) = c.ids.energy else { return };
-            let s = stack_at(d, entity, slot);
-            if stack::value(s.data, comp).is_none() {
-                return;
-            }
-            let bytes = unsafe { std::slice::from_raw_parts(&v as *const abi::Energy as *const u8, size_of::<abi::Energy>()) };
-            d.entities
-                .set_slot(entity, slot, ItemStack { data: stack::with(s.data, comp, Some(bytes)), ..s });
-        }
-    }
+fn read<T: Copy>(d: &Dim, at: At, comp: u32) -> Option<T> {
+    let b = component(d, at, comp).filter(|b| b.len() >= size_of::<T>())?;
+    Some(unsafe { std::ptr::read_unaligned(b.as_ptr() as *const T) })
+}
+
+fn write<T: Copy>(d: &mut Dim, c: &Content, at: At, comp: u32, v: &T) {
+    let bytes = unsafe { std::slice::from_raw_parts(v as *const T as *const u8, size_of::<T>()) };
+    set_component(d, c, at, comp, Some(bytes));
 }
 
 /// Moves `amount` in (positive) or out (negative) within the holder's limits; returns what
 /// moved, with the same sign.
 pub fn move_energy(d: &mut Dim, c: &Content, at: At, amount: i64, simulate: bool) -> i64 {
-    let Some(mut v) = energy(d, c, at) else { return 0 };
-    let n = if amount >= 0 {
-        amount
-            .min(v.max_in.max(0))
-            .min((v.capacity - v.stored).max(0))
-    } else {
-        -(amount.saturating_neg())
-            .min(v.max_out.max(0))
-            .min(v.stored.max(0))
-    };
+    let Some(comp) = c.ids.energy else { return 0 };
+    let Some(mut v) = read::<abi::Energy>(d, at, comp) else { return 0 };
+    let n = bounded(amount, v.stored, v.capacity, v.max_in, v.max_out);
     if !simulate && n != 0 {
         v.stored += n;
-        set_energy(d, c, at, v);
+        write(d, c, at, comp, &v);
     }
     n
 }

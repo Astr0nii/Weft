@@ -23,7 +23,7 @@ mod ui;
 mod view;
 mod world;
 
-pub use abi::{Holder, ItemStack, UV_FROM_BOX, UV_NO_FACE, Who, hud_anchor, tool_tier, worn_parts};
+pub use abi::{Holder, ItemStack, UV_FROM_BOX, UV_NO_FACE, Who, hud_anchor, tool_tier};
 pub use cache::ColumnCache;
 pub use client::{Channel, Client, Packet, Payload, keys, launch_option, screens};
 pub use command::{ClientCommand, Command, CommandOptions, ServerCommand};

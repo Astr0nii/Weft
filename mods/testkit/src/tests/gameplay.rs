@@ -252,6 +252,52 @@ pub async fn slot_accepts(t: T) -> R {
     t.no_screen().await
 }
 
+/// A liquid slot takes a bucket's water and gives it back, and holds no item.
+pub async fn liquid_slot(t: T) -> R {
+    t.flat().await?;
+    let p = add(t.feet(), [0, 0, -2]);
+    t.set(p, "testmod:tank").await?;
+    t.op("put me 0 water_bucket 1").await?;
+    t.op("put me 1 dirt 1").await?;
+    t.op(&format!("menu testmod:tank {} {} {}", p[0], p[1], p[2]))
+        .await?;
+    t.screen("core:menu").await?;
+    let at = format!("{} {} {}", p[0], p[1], p[2]);
+    // A click held a moment, as a hand does: with something on the cursor a press starts a drag.
+    let click = |slot: u32| -> Result<(), String> {
+        let [x, y, w, h] = t
+            .c()
+            .ui_rect(&format!("slot:{slot}"))
+            .ok_or(format!("no slot {slot}"))?;
+        t.c().input_cursor(x + w / 2.0, y + h / 2.0);
+        t.c().input_click(0, 0.1);
+        Ok(())
+    };
+    // Menu slots: 0 the tank's, 1-27 main inventory, 28-36 hotbar.
+    click(28)?;
+    t.secs(0.4).await?;
+    click(0)?;
+    t.secs(0.4).await?;
+    t.check_eq(t.slot(&at, 0).await?, ("base:water".into(), 1000, 0), "a bucket poured in");
+    t.check_eq(item_name(t.c().cursor_stack().item), "base:bucket", "the empty bucket on the cursor");
+    t.c().input_cursor(0.2, 0.2);
+    t.frames(3).await?;
+    t.shot("poured").await?;
+    click(0)?;
+    t.secs(0.4).await?;
+    t.check(t.slot(&at, 0).await?.1 == 0, "scooped out again");
+    t.check_eq(item_name(t.c().cursor_stack().item), "base:water_bucket", "a full bucket back");
+    click(28)?;
+    t.secs(0.4).await?;
+    click(29)?;
+    t.secs(0.4).await?;
+    click(0)?;
+    t.secs(0.4).await?;
+    t.check(t.slot(&at, 0).await?.1 == 0, "dirt stays out");
+    t.c().screen_close();
+    t.no_screen().await
+}
+
 /// Pouring and scooping water.
 pub async fn bucket(t: T) -> R {
     t.flat().await?;

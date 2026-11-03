@@ -40,7 +40,10 @@ pub struct Signal {
     pub attach: u8,
     pub front: u8,
     pub delay: u8,
-    pub mode: u8,
+    /// `abi::signal_flags`.
+    pub flags: u8,
+    /// A gate's input faces (`1 << abi::gate_side::*`).
+    pub inputs: u8,
     /// How many values its `power` property has (0: none), and states between them.
     pub levels: u8,
     pub stride: u32,
@@ -117,7 +120,7 @@ pub struct BlockCallbacks {
     pub on_grow: Option<Callback>,
     /// Growth over time: (mean ticks per step, light needed).
     pub on_signal: Option<Callback>,
-    pub signal_logic: Option<Callback>,
+    pub signal_gate: Option<Callback>,
 }
 
 pub struct BlockDef {
@@ -449,8 +452,9 @@ pub struct DimensionDef {
     pub terrain: Option<Box<crate::server::terrain::Terrain>>,
     /// `dim_flags::BARE`: only ores, scatters and decorations that name it.
     pub bare: bool,
-    /// `dim_flags::WEATHER`.
-    pub weather: bool,
+    /// The weathers that come here after clear (`DimensionDesc::weathers`), resolved at freeze.
+    pub weathers: Vec<u32>,
+    weather_names: Vec<String>,
     /// (turn, level) points sorted by turn, empty for vanilla's curve.
     pub daylight: Vec<[f32; 2]>,
     /// In name order, placed after `generator`.
@@ -480,6 +484,11 @@ pub struct ScatterDef {
 }
 
 impl DimensionDef {
+    /// Weather comes and goes here.
+    pub fn has_weather(&self) -> bool {
+        !self.weathers.is_empty()
+    }
+
     /// The 256 columns of cube column (`cx`, `cz`), index z * 16 + x: its terrain's or its
     /// `column` callback's. None for a dimension with neither.
     pub fn columns(&self, seed: u64, cx: i32, cz: i32) -> Option<std::sync::Arc<[abi::TerrainColumn; 256]>> {
@@ -683,11 +692,9 @@ pub struct Ids {
     pub use_ticks: Option<u32>,
     pub sweeps: Option<u32>,
     pub no_creative_break: Option<u32>,
-    pub snowy: Option<u32>,
     pub inventory: Option<u32>,
     pub contents: Option<u32>,
     pub energy: Option<u32>,
-    pub tank: Option<u32>,
 }
 
 /// What lighting and meshing read of a state for every block they pass, packed tight: a
@@ -758,6 +765,10 @@ pub struct Content {
     pub item_liquid: FxHashMap<u32, (u16, u32)>,
     /// (empty container, liquid) -> filled item.
     pub containers: FxHashMap<(u32, u16), u32>,
+    /// Each liquid's item (`comp::FLUID`), by liquid; 0 for one without.
+    pub fluid_items: Vec<u32>,
+    /// Item -> the liquid it is.
+    pub item_fluid: FxHashMap<u32, u16>,
     pub loot: FxHashMap<String, crate::loot::Table>,
     /// `abi::stack_flags` of stack components by component id.
     pub stack_flags: FxHashMap<u32, u32>,
@@ -909,12 +920,9 @@ impl Content {
         }
     }
 
-    /// Worn look of an item: the parts its equipment slot covers, inflation and texture.
+    /// Worn look of an item: inflation and texture.
     pub fn worn(&self, item: u32) -> Option<(abi::Worn, &str)> {
-        let mut w = self.item_value::<abi::Worn>(item, self.ids.worn)?;
-        if let Some(e) = self.items.get(item as usize).and_then(|d| d.equip) {
-            w.roles = self.game.player_layout.equipment[e as usize].parts;
-        }
+        let w = self.item_value::<abi::Worn>(item, self.ids.worn)?;
         Some((
             w,
             self.components
@@ -922,7 +930,15 @@ impl Content {
         ))
     }
 
-    /// Bones an item's equipment slot covers by name, on top of its regions.
+    /// The roles (`1 << role`) of the wearer's bones an item covers, from its equipment slot.
+    pub fn worn_roles(&self, item: u32) -> u32 {
+        self.items
+            .get(item as usize)
+            .and_then(|d| d.equip)
+            .map_or(0, |e| self.game.player_layout.equipment[e as usize].roles)
+    }
+
+    /// Bones an item's equipment slot covers by name, on top of their roles.
     pub fn worn_bones(&self, item: u32) -> &[String] {
         self.items
             .get(item as usize)
@@ -1037,7 +1053,8 @@ pub struct RawSignal {
     pub attach: u8,
     pub front: u8,
     pub delay: u8,
-    pub mode: u8,
+    pub flags: u8,
+    pub inputs: u8,
     pub head: String,
 }
 
@@ -1140,7 +1157,7 @@ fn inherit_states(b: &mut RawBlock, old: &RawBlock) {
         (&mut n.on_carried, o.on_carried),
         (&mut n.signal_read, o.signal_read),
         (&mut n.on_signal, o.on_signal),
-        (&mut n.signal_logic, o.signal_logic),
+        (&mut n.signal_gate, o.signal_gate),
         (&mut n.on_use, o.on_use),
         (&mut n.on_neighbor, o.on_neighbor),
         (&mut n.on_scheduled, o.on_scheduled),
@@ -1370,7 +1387,8 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                     attach: s.signal.attach as u8,
                     front: s.signal.front as u8,
                     delay: s.signal.delay.min(31) as u8,
-                    mode: s.signal.mode as u8,
+                    flags: s.signal.flags as u8,
+                    inputs: s.signal.inputs as u8,
                     head: s.signal.head.as_str().to_string(),
                 },
                 components: RawValue::list(s.components),
@@ -1413,7 +1431,7 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 placement: cb(d.placement),
                 on_grow: cb(d.on_grow),
                 on_signal: cb(d.on_signal),
-                signal_logic: cb(d.signal_logic),
+                signal_gate: cb(d.signal_gate),
             },
             replace: d.replacing != 0,
             own_states: d.own_states != 0,
@@ -1472,7 +1490,13 @@ pub(crate) unsafe fn copy_dimension(owner: ModId, d: &abi::DimensionDesc) -> (Di
                 structures: Vec::new(),
                 terrain: None,
                 bare: d.flags & abi::dim_flags::BARE != 0,
-                weather: d.flags & abi::dim_flags::WEATHER != 0,
+                weathers: Vec::new(),
+                weather_names: d
+                    .weathers
+                    .as_str()
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect(),
                 daylight: {
                     let mut v: Vec<[f32; 2]> = d
                         .daylight
@@ -1525,7 +1549,8 @@ fn void_dimension() -> DimensionDef {
         structures: Vec::new(),
         terrain: None,
         bare: true,
-        weather: false,
+        weathers: Vec::new(),
+        weather_names: Vec::new(),
         daylight: Vec::new(),
         scatters: Vec::new(),
         decorations: Vec::new(),
@@ -1644,7 +1669,11 @@ fn creative_tabs(
         .enumerate()
         .filter_map(|(i, t)| c.id(&format!("tab/{}", t.name)).map(|id| (id, i)))
         .collect();
-    let mut ordered: Vec<u32> = (1..items.len() as u32).collect();
+    // Liquids by the millibucket only live in liquid slots.
+    let fluid = c.id(abi::comp::FLUID);
+    let mut ordered: Vec<u32> = (1..items.len() as u32)
+        .filter(|&i| fluid.is_none_or(|f| !c.has(comps::ITEM, i, f)))
+        .collect();
     ordered.sort_by_key(|&i| items[i as usize].order);
     let mut leftover: Vec<(usize, Vec<u32>)> = Vec::new();
     for i in ordered {
@@ -1879,24 +1908,14 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         shares_cell.insert(block, Match(all.into_iter().collect()));
     }
     let (item_liquid, containers) = item_containers(&item_defs, &liquids, &components, &mut errors);
+    let (fluid_items, item_fluid) = fluid_items(&item_defs, &liquids, &components, &mut errors);
     let creative_tabs = creative_tabs(&mods, &games, &item_defs, &item_names, &components, &mut errors);
     let mut ordered_items: Vec<u32> = (1..item_defs.len() as u32).collect();
     ordered_items.sort_by_key(|&i| item_defs[i as usize].order);
     let tag_items = crate::refs::tag_items(&components, &ordered_items);
     let loot = freeze_loot(&mut games, &item_defs, &item_names, &tag_items, look, &mut errors);
     let stack_flags = collect_stack_flags(&games, &components);
-    // The first block with a tag, for `fluid:#tag` in recipes.
     let order_of = |m: ModId| mods.get(m.0 as usize).map_or(u32::MAX, |m| m.order);
-    let block_of_tag = |tag: &str| {
-        components
-            .id(tag)
-            .and_then(|t| {
-                block_defs[1..]
-                    .iter()
-                    .find(|b| components.has(crate::components::BLOCK, b.first_state, t))
-            })
-            .map(|b| b.name.clone())
-    };
     let mut game = crate::registry::freeze(
         games,
         entities,
@@ -1906,7 +1925,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         &dim_names,
         &components,
         &tag_items,
-        &block_of_tag,
         &order_of,
         &mut errors,
     );
@@ -1914,6 +1932,14 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     check_ambient_particles(&game, &components, states.len() as u32, &mut errors);
     link_entity_templates(&mut game, &templates, &template_names, &mut errors);
     link_equipment(&game, &mut item_defs, &components);
+    for d in &mut dim_defs {
+        for n in std::mem::take(&mut d.weather_names) {
+            match game.weather_names.get(&n) {
+                Some(&w) => d.weathers.push(w),
+                None => errors.push(format!("dimension {}: no weather {n}", d.name)),
+            }
+        }
+    }
     // `immune/fall`, `immune/mymod:radiation`: the engine's causes go without their namespace.
     let damage_immune = game
         .damage_causes
@@ -1935,12 +1961,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
                         errors.push(format!("biome {}: no precipitation {name}", biome_defs[b as usize].name));
                         0
                     }) as u16,
-                None if ids
-                    .snowy
-                    .is_some_and(|t| components.has(comps::BIOME, b, t)) =>
-                {
-                    1
-                }
                 None => 0,
             }
         })
@@ -2020,6 +2040,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         liquids,
         reactions,
         item_liquid,
+        fluid_items,
+        item_fluid,
         containers,
         loot,
         stack_flags,
@@ -2301,7 +2323,8 @@ fn number_blocks(mods: &[ModMeta], blocks: Vec<(ModId, RawBlock)>, textures: &mu
                     attach: s.signal.attach,
                     front: s.signal.front,
                     delay: s.signal.delay,
-                    mode: s.signal.mode,
+                    flags: s.signal.flags,
+                    inputs: s.signal.inputs,
                     ..Signal::default()
                 },
                 textures: if s.model == BlockModel::None { [0; 6] } else { std::array::from_fn(|i| tex(&s.textures[i])) },
@@ -2592,7 +2615,6 @@ fn declare_components(
     cb.declare(abi::comp::NAME, "bytes", None, &|| "the engine".into(), errors);
     cb.declare(abi::comp::CONTENTS, "bytes", None, &|| "the engine".into(), errors);
     cb.declare(abi::comp::ENERGY, <abi::Energy as abi::Schema>::SCHEMA, None, &|| "the engine".into(), errors);
-    cb.declare(abi::comp::TANK, <abi::Tank as abi::Schema>::SCHEMA, None, &|| "the engine".into(), errors);
     for (name, schema) in [
         (crate::registry::HEALTH, "[f32;2]"),
         (crate::registry::BURNING, "u8"),
@@ -2832,11 +2854,9 @@ fn component_ids(components: &Components) -> Ids {
         use_ticks: id(abi::comp::USE_TICKS),
         sweeps: id(abi::comp::SWEEPS),
         no_creative_break: id(abi::comp::NO_CREATIVE_BREAK),
-        snowy: id(abi::comp::SNOWY),
         inventory: id(abi::comp::INVENTORY),
         contents: id(abi::comp::CONTENTS),
         energy: id(abi::comp::ENERGY),
-        tank: id(abi::comp::TANK),
     }
 }
 
@@ -3307,6 +3327,29 @@ fn freeze_commands(mods: &[ModMeta], games: &mut [crate::registry::RawGame], err
         }
     }
     commands
+}
+
+/// The item of each liquid (`comp::FLUID`), and back.
+fn fluid_items(
+    item_defs: &[ItemDef],
+    liquids: &[LiquidDef],
+    components: &Components,
+    errors: &mut Vec<String>,
+) -> (Vec<u32>, FxHashMap<u32, u16>) {
+    let (mut by_liquid, mut of_item) = (vec![0; liquids.len()], FxHashMap::default());
+    if let Some(fc) = components.id(abi::comp::FLUID) {
+        for i in 1..item_defs.len() as u32 {
+            let Some(liquid) = components.text(comps::ITEM, i, fc) else { continue };
+            match liquids.iter().position(|d| d.name == liquid) {
+                Some(l) => {
+                    by_liquid[l] = i;
+                    of_item.insert(i, l as u16);
+                }
+                None => errors.push(format!("item {} is unknown liquid {liquid}", item_defs[i as usize].name)),
+            }
+        }
+    }
+    (by_liquid, of_item)
 }
 
 fn item_containers(

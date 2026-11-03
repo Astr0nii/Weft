@@ -262,7 +262,7 @@ impl ChatFormat {
 
 impl Registry {
     /// Writes players' chat lines. There is one line, so one writer: the last mod loaded wins. To
-    /// keep a message out of the chat use `question::CHAT`, to read them `CHAT_MESSAGE`.
+    /// keep a message out of the chat intercept `actions::CHAT`, to read them listen to it.
     pub fn chat_format(&mut self, f: impl Fn(&mut ChatFormat) + Send + Sync + 'static) {
         let cb = callback(move |args: &mut abi::ChatFormatArgs| f(&mut ChatFormat(args)));
         unsafe { (host().reg_chat_format)(self.raw, cb) }

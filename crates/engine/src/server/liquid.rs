@@ -299,7 +299,7 @@ impl Dim {
                     item: held.item,
                     ..weft_abi::Query::DEFAULT
                 };
-                if !self.ask(c, weft_abi::question::PLACE_BLOCK, &mut q) || !self.add_part(c, hit.block, source) {
+                if !self.ask(c, weft_abi::action::PLACE_BLOCK, &mut q) || !self.add_part(c, hit.block, source) {
                     return None;
                 }
                 return Some(if creative || empty == 0 { held } else { ItemStack::new(empty, 1) });
@@ -313,7 +313,7 @@ impl Dim {
             }
             let mut q =
                 weft_abi::Query { entity: player, pos: target.to_array(), state: source, item: held.item, ..weft_abi::Query::DEFAULT };
-            if !self.ask(c, weft_abi::question::PLACE_BLOCK, &mut q) {
+            if !self.ask(c, weft_abi::action::PLACE_BLOCK, &mut q) {
                 return None;
             }
             if c.states[old as usize].liquid.is_some() {
@@ -330,7 +330,7 @@ impl Dim {
         let filled = *c.containers.get(&(held.item, f.id))?;
         let mut q =
             weft_abi::Query { entity: player, pos: hit.block.to_array(), state: hit.state, item: held.item, ..weft_abi::Query::DEFAULT };
-        if !self.ask(c, weft_abi::question::BREAK_BLOCK, &mut q) {
+        if !self.ask(c, weft_abi::action::BREAK_BLOCK, &mut q) {
             return None;
         }
         self.replace_part(c, hit.block, hit.state, AIR);

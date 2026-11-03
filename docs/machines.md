@@ -30,7 +30,7 @@ r.machine(&FURNACE, &FURNACE_MENU)
     .screen(|ui| { /* see below */ });
 r.system(&SMELTING, tick_furnaces);
 ```
-`block` is the same builder as `r.block`, so everything from the blocks part of the [cheat sheet](modding.md) applies to it. A machine that should keep its state when broken (a charged battery, a half-done job) declares that state with `r.instance_component(&C, default, flags | component_flags::CARRIED)`: the broken block's item takes the value along, and placing the item puts it back on the new block entity, the way a renamed chest keeps its name. `w.component_get(h, &C)` and `w.component_set(h, &C, v)` read and write such a value on any holder, the stack in a player's slot included. The block entity is named like the block, so `EntityKind::named("furnace")` finds it if your code needs to.
+`block` is the same builder as `r.block`, so everything from the blocks part of the [cheat sheet](modding.md) applies to it. A machine that should keep its state when broken (a charged battery, a half-done job) declares that state with `r.instance_component(&C, default, flags | component_flags::CARRIED)`: the broken block's item takes the value along, and placing the item puts it back on the new block entity, the way a renamed chest keeps its name. `w.component(h, &C)` and `w.set_component(h, &C, v)` read and write such a value on any holder, the stack in a player's slot included. The block entity is named like the block, so `EntityKind::named("furnace")` finds it if your code needs to.
 
 Slots come in named groups. The machine's inventory holds all of its groups, the engine works out how big it is and which slot is which, and the tick and the screen ask for a group by its name. A group starts from a shape and adds rules:
 
@@ -40,6 +40,7 @@ Slots come in named groups. The machine's inventory holds all of its groups, the
 | `output()` | items only come out (results) |
 | `input()` | items only go in, nothing comes back out by hand (fuel a machine burns) |
 | `accepts("fuel")` | only items with that tag or component, any mod's |
+| `liquid(capacity)` | a liquid slot of that many millibuckets |
 | `limit(16)` | at most this many items per slot |
 | `large()`, `size(px)` | a bigger slot, 18 GUI pixels by default |
 | `background("flame_slot")` | a texture from `gui/` shown while the slot is empty, like the armor silhouettes |
@@ -48,7 +49,7 @@ Slots come in named groups. The machine's inventory holds all of its groups, the
 
 Without `input()` or `output()` a slot takes and gives like a chest's. Shift-clicking an item in the player's inventory puts it into the first group that takes it, groups with an `accepts` rule before plain ones, so ore goes into the input and coal into the fuel slot without you saying anything.
 
-The machine's state is a component, a `value!` struct of plain numbers like any other. Slots hold items, so anything else a machine keeps (heat, a liquid level) goes into a component like this one:
+The machine's state is a component, a `value!` struct of plain numbers like any other. Slots hold items and liquids, so anything else a machine keeps (heat, progress) goes into a component like this one:
 ```rust
 value! {
     pub struct Smelting { pub burn: u32, pub burn_max: u32, pub cook: u32, pub cook_max: u32 }
@@ -128,7 +129,7 @@ r.shapeless(&ALLOYING, "tin_ingot", 2, &["base:iron_ingot", "base:coal"], 100)
     .output_chance("base:diamond", 1, 0.05)       // and a diamond now and then
     .value(&ENERGY_PER_TICK, 32);                 // data the machine reads
 ```
-Inputs and outputs can be fluids, `fluid:#water` (the first liquid with the tag) or `fluid:base:water`, with the count in millibuckets, and `hidden()` keeps a recipe out of the viewer. A machine with several inputs finds its recipe with `recipe_find(&KIND, &stacks)`, which gives the `time()`, the `outputs()` with their chances (each an `Amount`: `Amount::Item(stack)` or `Amount::Liquid { liquid, mb }`), the `value(&COMPONENT)` and `consume(&mut stacks)` to take the inputs out. Liquids go into tanks the way energy goes into machines: give the machine the `tank` component (`.attach_with(&TANK, Tank { capacity: 16_000, max_in: 1000, max_out: 1000, ..Default::default() })`) and move them with `w.liquid_insert(pos, liquid, mb, false)` and `w.liquid_extract(..)`. A tank holds one liquid at a time, and like energy it can be on a stack too.
+A liquid is an item too: every liquid has one named like it, counted in millibuckets, so `"base:water"` or `"#water"` (its tags are the liquid's) goes into a recipe with `input_amounts(&[1000])` like any stack, and `hidden()` keeps a recipe out of the viewer. A machine with several inputs finds its recipe with `recipe_find(&KIND, &stacks)`, which gives the `time()`, the `outputs()` with their chances (stacks, liquids among them), the `value(&COMPONENT)` and `consume(&mut stacks)` to take the inputs out. Liquids live in liquid slots, GregTech's way: `.group("water", Slots::single().liquid(16_000))` holds sixteen buckets of one liquid, a player pours a bucket in or fills one by clicking with it, and the machine reads and sets it like any slot (`w.inventory(pos).group("water").get(0)` is the water item with its millibuckets as the count). Nothing else goes into a liquid slot, and a liquid goes nowhere else.
 
 A kind of your own is registered with `r.recipe_kind(&KIND)`, and recipes that name a kind nobody registered fail at load. The same call says how the recipe viewer shows it:
 ```rust
@@ -152,14 +153,14 @@ r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0]).tag("conductor");
 ```
 `Energy` is `stored` and `capacity`, plus `max_in` and `max_out`, the most it takes from or gives to the network per tick. A generator has `max_in: 0`, a machine `max_out: 0`, and a battery has both, without feeding itself. In their systems, generators add to `stored` and machines spend it:
 ```rust
-let Some(mut e) = w.energy(id) else { continue };
+let Some(mut e) = w.component(id, &ENERGY) else { continue };
 e.stored = (e.stored + 40).min(e.capacity);      // a generator, per tick
-w.energy_set(id, e);
+w.set_component(id, &ENERGY, e);
 // a machine: if e.stored >= COST { e.stored -= COST; work }
 ```
-`w.energy(id)` reads it, and `w.energy_insert` and `w.energy_extract` move energy with the limits respected (`simulate = true` only reports how much would move); `w.energy_move` is both in one, positive in and negative out. Networks are rebuilt when a cable or a machine next to one is placed or broken, not every tick.
+`w.component(id, &ENERGY)` reads it, and `w.energy_move` moves energy with the limits respected, positive in and negative out (`simulate = true` only reports how much would move). Networks are rebuilt when a cable or a machine next to one is placed or broken, not every tick.
 
-The same calls take any holder, not only a machine's id: a block (`w.energy(pos)`) or a stack in someone's inventory, `Holder::held(player, slot)`. An item whose stacks carry `energy` (`.set(&ENERGY, Energy { .. })` on the item) is a battery, and a machine charging the tool in its slot is one `energy_insert` on that slot.
+The same calls take any holder, not only a machine's id: a block (`w.component(pos, &ENERGY)`) or a stack in someone's inventory, `Holder::held(player, slot)`. An item whose stacks carry `energy` (`.set(&ENERGY, Energy { .. })` on the item) is a battery, and a machine charging the tool in its slot is one `energy_insert` on that slot.
 
 There are no units, conversion or losses along the way. Testmod uses 40 per tick and capacities in the tens of thousands, so if your mod should play along with others, stay in that range.
 

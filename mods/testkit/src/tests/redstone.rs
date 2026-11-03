@@ -252,6 +252,26 @@ pub async fn redstone_comparator(t: T) -> R {
     Ok(())
 }
 
+/// A mod's gate reads the faces it names and only those: power behind it does nothing.
+pub async fn redstone_gate(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let z = -4;
+    let gate = add(f, [4, 0, z]);
+    let lamp = add(f, [5, 0, z]);
+    t.set(gate, &format!("testmod:and_gate[attach=down,front={}]", NAMES[EAST as usize]))
+        .await?;
+    t.set(lamp, "base:redstone_lamp").await?;
+    t.set(add(f, [3, 0, z]), &lever(true)).await?;
+    t.set(add(f, [4, 0, z - 1]), &lever(true)).await?;
+    settle(&t).await?;
+    t.check(!lit(&t, lamp).await?, "the rear and one side are not both sides");
+    t.set(add(f, [4, 0, z + 1]), &lever(true)).await?;
+    settle(&t).await?;
+    t.check(lit(&t, lamp).await?, "both sides");
+    Ok(())
+}
+
 /// A piston pushes, a sticky one pulls back, and two wanting one block both give way.
 pub async fn redstone_piston(t: T) -> R {
     t.flat().await?;

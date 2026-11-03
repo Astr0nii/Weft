@@ -279,7 +279,7 @@ impl Dim {
                 .copied()
                 .unwrap_or(IVec3::ZERO)
                 * level as i32;
-            breaks |= s.mode == 1;
+            breaks |= s.flags as u32 & weft_abi::signal_flags::BREAKS != 0;
         }
         (sum.signum(), breaks)
     }

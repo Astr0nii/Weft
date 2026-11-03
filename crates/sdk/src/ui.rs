@@ -41,8 +41,9 @@ impl ClientView {
     pub fn day_time(&self) -> u64 {
         unsafe { (host().client_day_time)(self.raw) }
     }
-    pub fn raining(&self) -> bool {
-        unsafe { (host().client_raining)(self.raw) != 0 }
+    /// The weather's id now (`weathers::RAIN.id()`), as the server says.
+    pub fn weather(&self) -> u32 {
+        unsafe { (host().client_weather)(self.raw) }
     }
     /// The player's permission level (`abi::permission`).
     pub fn permission(&self) -> u32 {

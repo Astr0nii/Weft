@@ -24,9 +24,7 @@ pub struct DimSet {
     pub day_offset: i64,
     /// `/time` moved the sky: players hear at once, not at the next second.
     pub day_moved: bool,
-    pub raining: bool,
-    pub thunder: bool,
-    /// The weather (`registry::WeatherDef`) those come from.
+    /// The weather now (`registry::WeatherDef`).
     pub weather: u16,
     /// When the weather changes by itself.
     pub weather_until: u64,
@@ -54,8 +52,6 @@ impl DimSet {
             time: 1000,
             day_offset: 0,
             day_moved: false,
-            raining: false,
-            thunder: false,
             weather: 0,
             weather_until: 0,
             weather_moved: false,
@@ -72,8 +68,6 @@ impl DimSet {
         d.set_rng(weft_noise::hash(self.seed ^ self.time, section.x as i64, section.y as i64, section.z as i64));
         d.time = self.time;
         d.day_offset = self.day_offset;
-        d.raining = self.raining;
-        d.thunder = self.thunder;
         d.weather = self.weather;
         self.regions.push(d);
         self.regions.len() - 1
@@ -364,41 +358,42 @@ impl DimSet {
 
     /// The time of day's own clock.
     pub fn set_weather(&mut self, weather: u16, ticks: u64) {
-        let def = &crate::content::content().game.weathers[weather as usize];
-        (self.weather, self.raining, self.thunder) = (weather, def.falls, def.lightning);
+        self.weather = weather;
         self.weather_until = self.time + ticks;
         self.weather_moved = true;
         for r in &mut self.regions {
-            (r.weather, r.raining, r.thunder) = (self.weather, self.raining, self.thunder);
+            r.weather = self.weather;
         }
     }
 
     /// After clear weather one of the others by their weights, after any other clear again, each
     /// for as long as its `duration` says.
-    pub fn tick_weather(&mut self) {
+    pub fn tick_weather(&mut self, c: &Content) {
+        let tick = abi::WeatherTick { dim: self.id, weather: self.weather as u32 };
+        if let Some(r) = self.regions.first_mut() {
+            r.emit_engine(c, abi::event::WEATHER_TICK, &tick);
+        }
         if self.time < self.weather_until {
             return;
         }
-        let all = &crate::content::content().game.weathers;
+        let all = &c.game.weathers;
         let r = weft_noise::hash(self.seed ^ 0x5745_4154, self.time as i64, 0, 0);
         let first = self.weather_until == 0;
-        let here = |w: &crate::registry::WeatherDef| w.dims.is_empty() || w.dims.contains(&self.id);
-        let total: u64 = all
-            .iter()
-            .filter(|w| here(w))
-            .map(|w| w.weight as u64)
-            .sum();
+        let here = &c.dims[self.id as usize].weathers;
+        let total: u64 = here.iter().map(|&w| all[w as usize].weight as u64).sum();
         let next = if first || self.weather != 0 || total == 0 {
             0
         } else {
             let mut pick = (r >> 32) % total;
-            all.iter()
-                .position(|w| {
-                    let hit = here(w) && pick < w.weight as u64;
-                    pick = pick.saturating_sub(if here(w) { w.weight as u64 } else { 0 });
+            here.iter()
+                .copied()
+                .find(|&w| {
+                    let weight = all[w as usize].weight as u64;
+                    let hit = pick < weight;
+                    pick = pick.saturating_sub(weight);
                     hit
                 })
-                .unwrap_or(0)
+                .unwrap_or(0) as usize
         };
         let [lo, hi] = all[next].duration;
         self.set_weather(next as u16, lo + r % (hi - lo + 1));

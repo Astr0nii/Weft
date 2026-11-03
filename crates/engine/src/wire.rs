@@ -60,12 +60,27 @@ pub fn sides(s: &Signal) -> [u8; 2] {
     [r ^ 1, r]
 }
 
+/// The direction a gate's face (`abi::gate_side`) looks.
+pub fn gate_dir(s: &Signal, side: u32) -> u8 {
+    use weft_abi::gate_side as g;
+    let bottom = if s.attach < 6 { s.attach } else { 2 };
+    let [left, right] = sides(s);
+    match side {
+        g::FRONT => s.front,
+        g::REAR => s.front ^ 1,
+        g::LEFT => left,
+        g::RIGHT => right,
+        g::TOP => bottom ^ 1,
+        _ => bottom,
+    }
+}
+
 /// Whether a device gives what is next to it in direction `dir`.
 pub fn gives(s: &Signal, dir: u8) -> bool {
     match s.kind {
         sk::SWITCH => true,
         sk::TORCH => dir != s.attach,
-        sk::REPEATER | sk::COMPARATOR | sk::LOGIC => dir == s.front,
+        sk::REPEATER | sk::COMPARATOR | sk::GATE => dir == s.front,
         sk::OBSERVER => dir ^ 1 == s.front,
         _ => false,
     }
@@ -76,7 +91,8 @@ pub fn reads(s: &Signal, dir: u8) -> bool {
     match s.kind {
         sk::TORCH => dir == s.attach,
         sk::REPEATER => dir == s.front ^ 1,
-        sk::COMPARATOR | sk::LOGIC => dir == s.front ^ 1 || sides(s).contains(&dir),
+        sk::COMPARATOR => dir == s.front ^ 1 || sides(s).contains(&dir),
+        sk::GATE => (0..6).any(|i| s.inputs & (1 << i) != 0 && gate_dir(s, i) == dir),
         sk::SINK => true,
         // Their front is stuck to what they take along, or is where the head goes.
         sk::FLOATER | sk::PISTON => dir != s.front,
@@ -181,7 +197,7 @@ mod tests {
     #[test]
     fn what_a_device_takes_and_gives() {
         // On the floor, its front to the north.
-        let gate = device(sk::LOGIC, 4, 2);
+        let gate = Signal { inputs: 0b1110, ..device(sk::GATE, 4, 2) };
         assert!(gate.level == 0 && reads(&gate, 5), "from behind");
         assert!(reads(&gate, 0) && reads(&gate, 1), "and from the sides");
         assert!(!reads(&gate, 4) && gives(&gate, 4), "its front is where it gives");

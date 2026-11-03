@@ -24,6 +24,7 @@ static GENERATOR: Block = Block::named("generator");
 static HUM: Sound = Sound::named("machine.hum");
 static CABLE: Block = Block::named("cable");
 static PIPE: Block = Block::named("pipe");
+static AND_GATE: Block = Block::named("and_gate");
 /// Its shape is `models/block/pedestal.json`, a Blockbench Java block model.
 static PEDESTAL: Block = Block::named("pedestal");
 static DYNAMITE: Block = Block::named("dynamite");
@@ -32,6 +33,7 @@ static BOOM: Sound = Sound::named("boom");
 static DYNAMITE_RADIUS: Config<i32> = Config::named("dynamite_radius");
 static ELECTRIC_FURNACE: Block = Block::named("electric_furnace");
 static BATTERY: Block = Block::named("battery");
+static TANK: Block = Block::named("tank");
 static RED_SAND: Block = Block::named("red_sand");
 static VENT: Block = Block::named("vent");
 static REINFORCED_STONE: Block = Block::named("reinforced_stone");
@@ -49,6 +51,7 @@ static SOUL_TORCH: Block = Block::named("base:torch");
 static GENERATOR_MENU: Menu = Menu::named("generator");
 static FURNACE_MENU: Menu = Menu::named("electric_furnace");
 static BATTERY_MENU: Menu = Menu::named("battery");
+static TANK_MENU: Menu = Menu::named("tank");
 use base_api::SMELTING as SMELTING_RECIPES;
 static VOID: Dimension = Dimension::named("void");
 static MARS: Dimension = Dimension::named("mars");
@@ -98,6 +101,13 @@ fn init(r: &mut Registry) {
         .tag("conductor")
         .tag("cables")
         .hardness(0.5);
+    // A gate of its own faces: both sides, not the rear.
+    r.block(&AND_GATE)
+        .texture("machine_top")
+        .model_box([0.0, 0.0, 0.0], [16.0, 2.0, 16.0])
+        .signal_gate(Gate::new().inputs(&[Side::Left, Side::Right]), |g| {
+            if g.side(Side::Left) > 0 && g.side(Side::Right) > 0 { 15 } else { 0 }
+        });
     // Joins whatever pipe is next to it, any mod's, by the shared tag.
     r.block(&PIPE)
         .tag("pipes")
@@ -188,6 +198,14 @@ fn init(r: &mut Registry) {
                 });
             })
         });
+    // Eight buckets of one liquid, in and out by bucket.
+    r.machine(&TANK, &TANK_MENU)
+        .block(|b| {
+            b.textures("machine_top", "machine_top", "machine_top")
+                .hardness(3.0)
+        })
+        .group("liquid", Slots::single().liquid(8000))
+        .screen(|ui| machine_screen(ui, |ui| ui.group("liquid")));
     r.machine(&ELECTRIC_FURNACE, &FURNACE_MENU)
         .block(|b| {
             b.textures("machine_top", "electric_furnace", "machine_top")
@@ -383,7 +401,7 @@ fn init(r: &mut Registry) {
 
     // Healing food without touching the base game's eating code: any used item that heals.
     r.set("#cooked_meat/*", &FOOD_HEAL, 2.0);
-    r.on(&ITEM_USED, |b| {
+    r.on(&actions::USE_ITEM, |b| {
         let w = b.world();
         for e in b.iter() {
             if let Some(heal) = FOOD_HEAL.on_stack(&e.stack) {
@@ -521,7 +539,7 @@ fn energy_gizmos(w: &World, ids: &[u64]) {
         return;
     }
     for &id in ids {
-        if let (Some(st), Some(e)) = (w.entity(id), w.energy(id)) {
+        if let (Some(st), Some(e)) = (w.entity(id), w.component(id, &ENERGY)) {
             let args = [Arg::Int(e.stored as i64), Arg::Int(e.capacity as i64)];
             w.draw_text(&ENERGY_GIZMOS, [st.pos[0], st.pos[1] + 1.3, st.pos[2]], "testmod.energy_label", &args, 0x60FF60FF, 1.0, 11);
         }
@@ -577,7 +595,7 @@ fn tick_generators(b: &mut SystemBatch<Burner>) {
     let w = b.world();
     energy_gizmos(&w, b.ids());
     for (id, m, ticks) in b.iter_mut() {
-        let Some(e) = w.energy(id) else { continue };
+        let Some(e) = w.component(id, &ENERGY) else { continue };
         let room = e.capacity - e.stored;
         if ticks > 1 {
             // Catching up: it runs while there is room for what it makes, lighting fuel as it
@@ -597,9 +615,9 @@ fn tick_generators(b: &mut SystemBatch<Burner>) {
                 ran += r;
                 want -= r;
             }
-            if let Some(mut e) = w.energy(id) {
+            if let Some(mut e) = w.component(id, &ENERGY) {
                 e.stored = (e.stored + ran as i64 * PER_TICK).min(e.capacity);
-                w.energy_set(id, e);
+                w.set_component(id, &ENERGY, e);
             }
             continue;
         }
@@ -616,9 +634,9 @@ fn tick_generators(b: &mut SystemBatch<Burner>) {
         }
         if m.burn > 0 {
             m.burn -= 1;
-            if let Some(mut e) = w.energy(id) {
+            if let Some(mut e) = w.component(id, &ENERGY) {
                 e.stored = (e.stored + PER_TICK).min(e.capacity);
-                w.energy_set(id, e);
+                w.set_component(id, &ENERGY, e);
             }
             // A low hum every two seconds, under the test mod's own volume setting.
             if w.game_time() % 40 == 0 && looks::GENERATOR_HUM.get() {
@@ -634,7 +652,7 @@ fn tick_furnaces(b: &mut SystemBatch<Work>) {
     let w = b.world();
     energy_gizmos(&w, b.ids());
     for (id, m, ticks) in b.iter_mut() {
-        let Some(e) = w.energy(id) else { continue };
+        let Some(e) = w.component(id, &ENERGY) else { continue };
         let stored = e.stored;
         let inv = w.inventory(id);
         let (input_slot, output_slot) = (inv.group("input"), inv.group("output"));
@@ -657,9 +675,9 @@ fn tick_furnaces(b: &mut SystemBatch<Work>) {
             let total = m.progress + steps as u32;
             let done = total / m.progress_max;
             m.progress = total % m.progress_max;
-            if let Some(mut e) = w.energy(id) {
+            if let Some(mut e) = w.component(id, &ENERGY) {
                 e.stored -= steps * FURNACE_USE;
-                w.energy_set(id, e);
+                w.set_component(id, &ENERGY, e);
             }
             if done > 0 {
                 input_slot.set(0, input.shrink(done));
@@ -672,9 +690,9 @@ fn tick_furnaces(b: &mut SystemBatch<Work>) {
         if done {
             m.progress = 0;
         }
-        if let Some(mut e) = w.energy(id) {
+        if let Some(mut e) = w.component(id, &ENERGY) {
             e.stored -= FURNACE_USE;
-            w.energy_set(id, e);
+            w.set_component(id, &ENERGY, e);
         }
         if done {
             input_slot.set(0, input.shrink(1));
@@ -719,7 +737,7 @@ fn recipe_showcase(r: &mut Registry) {
             ui.text_args("testmod.infusing.time", &[Arg::Int(recipe.time() as i64 / 20)]);
         });
     });
-    r.shapeless(&INFUSING, "glow_crystal", 1, &["#gems/diamond", "fluid:#water"], 200)
+    r.shapeless(&INFUSING, "glow_crystal", 1, &["#gems/diamond", "#water"], 200)
         .input_amounts(&[1, 1000]);
 }
 

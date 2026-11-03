@@ -1,10 +1,10 @@
-//! Particles, text conditions, screen effects: things that only change what players see.
+//! Particles, conditions, screen effects: things that only change what players see.
 //!
 //! ```ignore
 //! static SPARK: Particle = Particle::named("spark");
 //! r.particle(&SPARK).textures(&["glint_0", "glint_1"]).life(0.3, 0.6).fullbright();
 //! w.spawn_particles(&SPARK, pos).count(12).speed(2.0);          // server: everyone nearby sees them
-//! r.text_condition(&CHARGED, |v| v.component(&CHARGE).is_some_and(|c| *c > 0));
+//! r.condition(&CHARGED, |c| c.client().is_some_and(|v| v.component(&CHARGE).is_some_and(|c| c > 0)));
 //! c.post_effect("mymod:underwater", 1.0);                  // client: until turned off
 //! ```
 //! Shaders for text (`{fx:..}`), GUI panels (`shader` in a class's `.gui`), particles, entities and screen
@@ -13,9 +13,7 @@
 use std::marker::PhantomData;
 
 use crate::abi::{self, Slice, Str, particle_flags as pf};
-use crate::{
-    Client, ClientView, Dimension, Music, Particle, Registry, SkyObject, SoundCategory, TextCondition, World, callback, host, qualify,
-};
+use crate::{Client, ClientView, Dimension, Music, Particle, Registry, SkyObject, SoundCategory, World, callback, host, qualify};
 
 pub struct ParticleBuilder<'a> {
     raw: *mut abi::Registrar,
@@ -308,15 +306,10 @@ impl Registry {
         }
     }
 
-    /// `{if:<ns>:<name>}...{/if}` in any text shows its part while `f` says so; asked on the
-    /// client every frame such a text is on screen.
-    pub fn text_condition(&mut self, condition: &'static TextCondition, f: impl Fn(&ClientView) -> bool + Send + Sync + 'static) {
-        self.condition(condition, move |c| c.client().is_some_and(|v| f(&v)));
-    }
-
     /// A condition music (`.when`), text (`{if:<ns>:<name>}`), loot (`Cond::Condition`) and
     /// spawning (`.when`) can ask. `f` is answered on whichever side asks: on the server
-    /// (`c.world()`) for loot and spawning, on the client (`c.client()`) for music and text.
+    /// (`c.world()`) for loot and spawning, on the client (`c.client()`) for music and text, every
+    /// frame such a text is on screen. Every game mode is a condition too, by its name.
     pub fn condition(&mut self, condition: &'static crate::Condition, f: impl Fn(&ConditionCtx) -> bool + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::ConditionArgs| a.result = f(&ConditionCtx(*a)) as u32);
         unsafe { (host().reg_condition)(self.raw, Str::new(condition.name()), condition.id_cell(), cb) }

@@ -775,27 +775,6 @@ pub fn recipe_slot(
             ui.add(Kind::Container { class: Some("recipe_slot".into()) }, size);
             return;
         }
-        Ingredient::Fluid(name) => {
-            // The liquid's own top texture, tinted like its item would be (water is gray).
-            let state = c
-                .liquids
-                .iter()
-                .find(|l| &l.name == name)
-                .and_then(|l| c.states.get(l.first_state as usize));
-            let texture = state
-                .and_then(|s| c.textures.get(s.textures[2] as usize))
-                .cloned()
-                .unwrap_or_default();
-            let color =
-                state.map_or(0xFFFFFFFF, |s| if s.tint != 0 { (crate::content::item_tint(s.tint) << 8) | 0xFF } else { 0xFFFFFFFF });
-            let b = ui.button("recipe_slot", size, Rc::new(|_: &mut Ctx| {}), |ui| {
-                ui.add(Kind::Image { texture, color }, Style::default().size(16.0, 16.0));
-            });
-            tip = text::Name::Liquid(name.clone()).spans(lang, None);
-            tip.push(text::Span::text("\n", None));
-            tip.extend(fmt("recipes.fluid_amount", &[text::Arg::Int(count as i64)]));
-            b
-        }
         Ingredient::Item(_) | Ingredient::Tag(_) | Ingredient::Any(_) => {
             let items: Vec<u32> = match ing {
                 Ingredient::Item(i) => vec![*i],

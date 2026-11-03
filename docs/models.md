@@ -223,10 +223,10 @@ It is the same as any model: the bone names above make walking, holding and swin
 An item shows up on the wearer when it sits in an equipment slot. The slots are declared once, with the bones what is worn there covers and the silhouette of the empty slot, and an item only names its slot:
 ```rust
 static HEAD: EquipmentSlot = EquipmentSlot::named("base:head");    // the base game's, or your own
-r.equipment_slot(&BACK, worn_parts::BODY, "slot_back");             // a slot of your mod
+r.equipment_slot(&BACK, &["body", "leftWing", "rightWing"], "slot_back"); // a slot of your mod
 r.item(&RUBY_HELMET).wearable(&HEAD, 1.0, "armor/ruby_1")
 ```
-`worn_parts` are `HEAD`, `BODY`, `ARMS`, `LEGS`, combined with `|`. A slot for something else covers bones by name instead, `Covers::bones(&["leftWing", "rightWing"])`, and `.and_regions(worn_parts::BODY)` adds regions to that. `wearable` takes how far the piece sticks out from the body in pixels (vanilla armor uses 1.0, and 0.5 for the leggings layer) and its texture.
-The slot then takes the item in the inventory, shift-clicks put it there, and a new slot of any mod shows up in the inventory screen by itself (`.equipment()` on the menu, `ui.equipment()` on its screen). That texture is drawn on the same boxes as the wearer's, so it follows the wearer's skin layout, and the 64x32 files in `mods/base/assets/textures/entity/armor/` show how (the name is under `entity/`). It works on any model with the right roles, mobs made with `biped` included.
+A slot covers bones by name. A name with a [role](#roles) (`head`, `leftArm`, `leg0` ...) covers every bone of that role, so armor fits any model; any other name covers that bone only. The base game's slots use `worn::HEAD`, `worn::CHEST`, `worn::LEGS` and `worn::FEET`. `wearable` takes how far the piece sticks out from the body in pixels (vanilla armor uses 1.0, and 0.5 for the leggings layer) and its texture.
+The slot then takes the item in the inventory, shift-clicks put it there, and a new slot of any mod shows up in the inventory screen by itself (`.equipment()` on the menu, `ui.equipment()` on its screen). That texture is drawn on the same boxes as the wearer's, so it follows the wearer's skin layout, and the 64x32 files in `mods/base/assets/textures/entity/armor/` show how (the name is under `entity/`). It works on any model with the right roles, mobs made with `humanoid` included.
 
 Items in the world and in the hand are flat sprites with some thickness, the boxes of a block, or [a model of their own](#blocks-and-items). `F3+T` reloads models and animations along with textures while the game runs.
