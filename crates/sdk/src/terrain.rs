@@ -522,6 +522,7 @@ impl Registry {
             name: scatter.name().to_string(),
             dimensions: String::new(),
             density: String::new(),
+            ground: String::new(),
             desc: abi::ScatterDesc::DEFAULT,
             _p: PhantomData,
         }
@@ -545,6 +546,7 @@ pub struct ScatterBuilder<'a> {
     name: String,
     dimensions: String,
     density: String,
+    ground: String,
     desc: abi::ScatterDesc,
     _p: PhantomData<&'a mut Registry>,
 }
@@ -558,6 +560,12 @@ impl ScatterBuilder<'_> {
     /// How far the shape puts blocks sideways from its site. Up and down it may go 32 and 16.
     pub fn reach(mut self, blocks: i32) -> Self {
         self.desc.reach = blocks;
+        self
+    }
+    /// Only place where the surface block belongs to this block or tag (for example,
+    /// `.ground("#plant_soil")`). Without this constraint, any valid surface is allowed.
+    pub fn ground(mut self, blocks: &str) -> Self {
+        self.ground = blocks.to_string();
         self
     }
     /// The biome component (0..1) that is the chance of a site per cell; biomes without it get
@@ -587,6 +595,7 @@ impl Drop for ScatterBuilder<'_> {
             name: Str::new(&self.name),
             dimensions: Str::new(&self.dimensions),
             density: Str::new(&self.density),
+            ground: Str::new(&self.ground),
             ..self.desc
         };
         unsafe { (host().reg_scatter)(self.raw, &desc) }

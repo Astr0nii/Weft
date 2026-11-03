@@ -965,6 +965,7 @@ pub struct RawScatter {
     pub cell: i32,
     pub reach: i32,
     pub density: String,
+    pub ground: Vec<String>,
     pub shape: Callback,
 }
 

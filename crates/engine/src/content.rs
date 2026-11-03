@@ -470,6 +470,8 @@ pub struct ScatterDef {
     pub reach: i32,
     /// Biome component (f32) with the chance of a site per cell.
     pub density: Option<u32>,
+    /// Block definition IDs allowed beneath the site, sorted.
+    pub ground: Vec<u32>,
     pub salt: u64,
     pub shape: Callback,
 }
@@ -2827,6 +2829,17 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
         if density.is_none() {
             errors.push(format!("{what}: density component {:?} is not set on any biome", s.density));
         }
+        let mut ground = Vec::new();
+        for r in &s.ground {
+            match crate::refs::Ref::parse(r).and_then(|r| {
+                crate::refs::blocks(&r, block_names, block_defs, components, state_count)
+           }) {
+                Ok(blocks) => ground.extend(blocks),
+                Err(e) => errors.push(format!("{what}: ground: {e}")),
+            }
+        }
+        ground.sort_unstable();
+        ground.dedup();
         if s.cell < 1 || s.reach < 0 {
             errors.push(format!("{what}: cell {} and reach {} (cell at least 1)", s.cell, s.reach));
             continue;
@@ -2837,6 +2850,7 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
                 cell: s.cell,
                 reach: s.reach,
                 density,
+                ground: ground.clone(),
                 salt: crate::registry::name_hash(&s.name),
                 shape: s.shape,
             });
