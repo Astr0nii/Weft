@@ -68,6 +68,7 @@ key.core.right = Allez à droite
 key.core.jump = Sauter
 key.core.sneak = S'accroupir / descendre en volant
 key.core.sprint = Courir
+key.core.crawl = Ramper
 key.core.fly = Voler (basculable)
 key.core.inventory = Inventaire
 key.core.drop = Jeter l'objet

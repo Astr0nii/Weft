@@ -2510,9 +2510,10 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl physics::Cells, 
         side_in += 1.0;
     }
     let sneak = p.sneak;
+    let crawl = input.held("core:crawl");
     let jump = input.held("core:jump");
-    // Sprinting needs forward movement and stops when walking backwards or sneaking.
-    let sprint = p.sprint && fwd_in > 0.0 && !sneak && !p.using && (p.can_sprint || p.flying);
+    // Sprinting needs forward movement and stops when walking backwards, sneaking or crawling.
+    let sprint = p.sprint && fwd_in > 0.0 && !sneak && !crawl && !p.using && (p.can_sprint || p.flying);
     // Sprinting swims once the eyes are in a liquid that can be swum in, and keeps at it while the
     // body is. In a liquid it is no use otherwise.
     let can_swim = |at: DVec3| physics::liquid_at(c, block, at).is_some_and(|l| p.swim_anywhere || c.liquids[l as usize].swimmable);
@@ -2526,6 +2527,8 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl physics::Cells, 
         held
     } else if swimming {
         Pose::SWIM
+    } else if crawl && !p.flying && !p.noclip {
+        Pose::CRAWL
     } else if sneak && !p.flying && !p.noclip {
         Pose::CROUCH
     } else {
