@@ -68,6 +68,7 @@ key.core.right = Strafe right
 key.core.jump = Jump
 key.core.sneak = Sneak / fly down
 key.core.sprint = Sprint
+key.core.crawl = Crawl
 key.core.fly = Toggle flight
 key.core.inventory = Inventory
 key.core.drop = Drop item
