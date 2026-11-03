@@ -158,6 +158,8 @@ pub struct EntityRenderer {
     glows: FxHashMap<String, (TextureId, u32)>,
     /// Shader slot of each entity kind.
     kind_shaders: Vec<u32>,
+    /// Shader slot of each entity effect, by effect id.
+    effect_slots: Vec<u32>,
     sprites: FxHashMap<String, Option<Sprite>>,
     /// Entities to pose this frame, kept between frames.
     posed: Vec<Posed>,
@@ -191,6 +193,17 @@ pub const HOOK: crate::shaders::Hook = crate::shaders::Hook {
     fallback: "return vec4(p.albedo.rgb * p.light, p.albedo.a);",
 };
 
+/// Entity effects (`World::entity_effect`) over whatever shaded the pixel.
+pub const EFFECT_HOOK: crate::shaders::Hook = crate::shaders::Hook {
+    kind: "entity_effect",
+    entry: "effect",
+    dispatch: "entity_effect",
+    params: "p: EntityPixel, c: vec4<f32>, strength: f32",
+    args: "p, c, strength",
+    ret: "vec4<f32>",
+    fallback: "return c;",
+};
+
 /// Light on boxes and model layers drawn without any (the inventory figure, flames).
 const FULL_LIGHT: u32 = u32::MAX;
 
@@ -204,7 +217,7 @@ fn light_boxes(boxes: &mut [GpuBox], from: usize, light: u32) {
 impl EntityRenderer {
     pub fn new(gpu: &mut dyn Backend, assets: &Assets) -> Result<EntityRenderer, String> {
         let (pipeline, overlay) = Self::pipelines(gpu, assets)?;
-        let ([model_pipe, preview_pipe, model_hand_pipe], kind_shaders) = Self::model_pipelines(gpu, assets)?;
+        let ([model_pipe, preview_pipe, model_hand_pipe], kind_shaders, effect_slots) = Self::model_pipelines(gpu, assets)?;
         let models = Models::new(gpu, assets);
         let frames = gpu.frames_in_flight();
         let hand_views = (0..frames)
@@ -259,6 +272,7 @@ impl EntityRenderer {
             local: 0,
             glows: FxHashMap::default(),
             kind_shaders,
+            effect_slots,
             sprites: FxHashMap::default(),
             posed: Vec::new(),
             seen_kinds: Vec::new(),
@@ -318,11 +332,26 @@ impl EntityRenderer {
 
     /// The model pipelines (screen, inventory figure image) with every entity shader snippet,
     /// and each kind's slot.
-    fn model_pipelines(gpu: &mut dyn Backend, assets: &Assets) -> Result<([PipelineId; 3], Vec<u32>), String> {
+    fn model_pipelines(gpu: &mut dyn Backend, assets: &Assets) -> Result<([PipelineId; 3], Vec<u32>, Vec<u32>), String> {
         let snippets = crate::shaders::snippets(assets, &HOOK);
-        let (s, mut slots) = crate::packs::compose(assets, "model.wgsl", &[(&HOOK, &snippets)]).map_err(|e| e.0)?;
+        let effects = crate::shaders::snippets(assets, &EFFECT_HOOK);
+        let (s, mut slots) =
+            crate::packs::compose(assets, "model.wgsl", &[(&HOOK, &snippets), (&EFFECT_HOOK, &effects)]).map_err(|e| e.0)?;
+        let effect_slots = slots.pop().unwrap_or_default();
         let slots = slots.pop().unwrap_or_default();
         let c = content();
+        let effect_slots = c
+            .game
+            .entity_effects
+            .iter()
+            .map(|d| {
+                let slot = effect_slots.slot(&d.shader);
+                if slot == 0 {
+                    log::warn!("entity effect {}: no shader entity_effect/{}", d.name, d.shader);
+                }
+                slot
+            })
+            .collect();
         let comp = c.components.id(weft_abi::comp::SHADER);
         let kinds = (0..c.game.entities.len() as u32)
             .map(|k| {
@@ -351,12 +380,13 @@ impl EntityRenderer {
         let (world, preview) = (make("models", "vs", Format::Surface)?, make("entity preview", "vs", Format::Rgba8Srgb)?);
         // A shader pack's older copy of the file has no `vs_hand`.
         let hand = make("model hand", "vs_hand", Format::Surface).or_else(|_| make("model hand", "vs", Format::Surface))?;
-        Ok(([world, preview, hand], kinds))
+        Ok(([world, preview, hand], kinds, effect_slots))
     }
 
     pub fn reload(&mut self, gpu: &mut dyn Backend, assets: &Assets) {
         match Self::model_pipelines(gpu, assets) {
-            Ok(([p, q, h], kinds)) => {
+            Ok(([p, q, h], kinds, effects)) => {
+                self.effect_slots = effects;
                 gpu.destroy_pipeline(self.model_pipe);
                 gpu.destroy_pipeline(self.model_hand_pipe);
                 gpu.destroy_pipeline(self.preview_pipe);
@@ -608,7 +638,7 @@ impl EntityRenderer {
     }
 
     /// The instance of a model that isn't an entity kind's, painted with its own texture.
-    fn model_layer(&self, kind: u32, light: u32, hurt: f32) -> Option<Instance> {
+    fn model_layer(&self, kind: u32, light: u32, effect: (u32, f32)) -> Option<Instance> {
         let m = self.models.kinds.get(kind as usize)?;
         let skin = m.skin.as_ref()?;
         let (_, tex, size) = self.skins.get(skin)?.as_ref()?;
@@ -616,7 +646,8 @@ impl EntityRenderer {
         Some(Instance {
             color: [1.0; 3],
             light,
-            hurt,
+            effect: effect.0,
+            strength: effect.1,
             tex: *tex,
             tex_size: [size[0] as f32, size[1] as f32],
             roles: u32::MAX,
@@ -788,7 +819,7 @@ impl EntityRenderer {
 
     /// Model instances of `entity`, of `kind`: its skin (a player's own if they sent one) and what
     /// it wears (how many in `.1`).
-    fn layers(&self, kind: u32, entity: u64, worn: &[u32], light: u32, hurt: f32) -> ([Instance; MAX_LAYERS], usize) {
+    fn layers(&self, kind: u32, entity: u64, worn: &[u32], light: u32, effect: (u32, f32)) -> ([Instance; MAX_LAYERS], usize) {
         let c = content();
         let k = &c.game.entities[kind as usize];
         let mut out = ([Instance::default(); MAX_LAYERS], 0);
@@ -808,7 +839,8 @@ impl EntityRenderer {
         let base = Instance {
             color: [1.0; 3],
             light,
-            hurt,
+            effect: effect.0,
+            strength: effect.1,
             tex: *skin,
             tex_size: [size[0] as f32, size[1] as f32],
             roles: u32::MAX,
@@ -833,10 +865,20 @@ impl EntityRenderer {
         for &i in worn {
             if let Some((w, t)) = c.worn(i) {
                 if let Some(Some((_, idx, size))) = self.skins.get(t).filter(|_| out.1 < MAX_LAYERS) {
+                    let names = c.worn_bones(i);
+                    let bone_mask = self.models.kinds.get(kind as usize).map_or(0, |m| {
+                        m.parts
+                            .iter()
+                            .take(32)
+                            .enumerate()
+                            .filter(|(_, p)| names.iter().any(|n| n.eq_ignore_ascii_case(&p.name)))
+                            .fold(0u32, |mask, (b, _)| mask | 1 << b)
+                    });
                     out.0[out.1] = Instance {
                         tex: *idx,
                         tex_size: [size[0] as f32, size[1] as f32],
                         roles: crate::model::role_mask(w.roles),
+                        bone_mask,
                         inflate: w.inflate,
                         glow: glow(t),
                         ..base
@@ -918,7 +960,7 @@ impl EntityRenderer {
                 super::models::icon_done(stack, Some(icon));
                 continue;
             }
-            let Some(layer) = self.model_layer(kind, FULL_LIGHT, 0.0) else {
+            let Some(layer) = self.model_layer(kind, FULL_LIGHT, (0, 0.0)) else {
                 super::models::icon_done(stack, None);
                 continue;
             };
@@ -1008,7 +1050,7 @@ impl EntityRenderer {
             Vec4::new(0.0, 0.0, 0.1, 0.0),
             Vec4::new(2.0 * cx / sw - 1.0, 1.0 - 2.0 * feet / sh, 0.5, 1.0),
         );
-        let layers = self.layers(c.game.player_kind, self.local, worn, FULL_LIGHT, 0.0);
+        let layers = self.layers(c.game.player_kind, self.local, worn, FULL_LIGHT, (0, 0.0));
         self.models.begin();
         let root = Mat4::from_rotation_y(yaw) * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
         let kind = self
@@ -1032,7 +1074,7 @@ impl EntityRenderer {
         self.models
             .carried_by(kind, worn, |model, bone| on.push((model, bone)));
         for (model, bone) in on {
-            let Some(layer) = self.model_layer(model, FULL_LIGHT, 0.0) else { continue };
+            let Some(layer) = self.model_layer(model, FULL_LIGHT, (0, 0.0)) else { continue };
             let at = self.models.bone(first as usize + bone);
             let clips = self
                 .models
@@ -1134,14 +1176,19 @@ impl EntityRenderer {
                 }
             }
             let lit = shade(e.pos + DVec3::Y * 0.5);
-            // Below zero the model's shader flashes white instead of red.
-            let hurt = if e.flash > 0.0 { -1.0 } else { (e.hurt / 0.5).clamp(0.0, 1.0) };
+            // The effect a mod put on it, else the red of a recent hit; boxes only show the red.
+            let hurt = (e.hurt / 0.5).clamp(0.0, 1.0);
+            let effect = match e.effect {
+                Some((id, s, _)) => (self.effect_slots.get(id as usize).copied().unwrap_or(0), s),
+                None if hurt > 0.0 => (self.effect_slots[weft_abi::entity_effect::HURT as usize], hurt),
+                None => (0, 0.0),
+            };
             if !e.item.is_empty() {
                 // Made of bones: posed like anything else that is, its feet off the ground.
                 let bones = self
                     .models
                     .model_seen(e.item)
-                    .and_then(|k| Some((k, self.model_layer(k, lit, hurt)?)));
+                    .and_then(|k| Some((k, self.model_layer(k, lit, effect)?)));
                 if let Some((kind, layer)) = bones {
                     let m = &self.models.kinds[kind as usize];
                     let mut clips = Clips::default();
@@ -1179,8 +1226,8 @@ impl EntityRenderer {
             // Without it there is nothing for them to be attached to: they are held in the view.
             let body = own_view && hand.as_ref().is_some_and(|h| h.body);
             let in_view = own_view && !body;
-            let hurt = if own_view { 0.0 } else { hurt };
-            let (mut layers, mut layer_count) = self.layers(look, id, &e.worn, lit, hurt);
+            let effect = if own_view { (0, 0.0) } else { effect };
+            let (mut layers, mut layer_count) = self.layers(look, id, &e.worn, lit, effect);
             if layer_count == 0 {
                 continue;
             }
@@ -1192,14 +1239,15 @@ impl EntityRenderer {
             }
             // Lying down in its low box: head first where it looks when swimming (vanilla's
             // setupRotations), flat when crawling, turned around the middle of the body.
-            let lying = match e.pose {
-                crate::world::Pose::Swim => Some(e.pitch - std::f32::consts::FRAC_PI_2),
-                crate::world::Pose::Crawl => Some(-std::f32::consts::FRAC_PI_2),
+            let pose = e.pose.def();
+            let lying = match pose.tilt {
+                weft_abi::pose_tilt::ALONG_LOOK => Some(e.pitch - std::f32::consts::FRAC_PI_2),
+                weft_abi::pose_tilt::FACE_DOWN => Some(-std::f32::consts::FRAC_PI_2),
                 // On its back, the head toward its back's side.
-                crate::world::Pose::Sleep => Some(std::f32::consts::FRAC_PI_2),
+                weft_abi::pose_tilt::ON_BACK => Some(std::f32::consts::FRAC_PI_2),
                 _ => None,
             };
-            let sleeping = e.pose == crate::world::Pose::Sleep;
+            let sleeping = pose.tilt == weft_abi::pose_tilt::ON_BACK;
             let body_yaw = if sleeping { e.yaw } else { e.body_yaw };
             let swim = lying.map_or(Mat4::IDENTITY, |a| {
                 Mat4::from_translation(Vec3::new(0.0, 0.3, 0.0))
@@ -1219,7 +1267,7 @@ impl EntityRenderer {
             let (mut clips, mut standing) = (Clips::default(), 0);
             // Far away a pose lasts a few frames, each entity at its own turn. Who is dying or was
             // just hit still shows it.
-            let every = if id == self.local || e.dying.is_some() || e.flash > 0.0 || e.hurt > 0.0 {
+            let every = if id == self.local || e.dying.is_some() || e.effect.is_some() || e.hurt > 0.0 {
                 1
             } else if far2 < 32.0 * 32.0 {
                 1
@@ -1259,10 +1307,13 @@ impl EntityRenderer {
                 if e.crouched > 0.0 {
                     m.play(&mut clips, act(Act::Sneak), &Play { looping: true, weight: e.crouched, ..how });
                 }
+                // Lying, its pose's own clip; one the model hasn't got swims.
                 if !sleeping && lying.is_some() {
-                    let crawl = act(Act::Crawl);
-                    let limbs = if e.pose == crate::world::Pose::Crawl && !crawl.is_empty() { crawl } else { act(Act::Swim) };
+                    let own = m.action(0, &pose.action);
+                    let limbs = if own.is_empty() { act(Act::Swim) } else { own };
                     m.play(&mut clips, limbs, &Play { drive: Drive::Distance, ..how });
+                } else if lying.is_none() && !pose.action.is_empty() && e.pose != crate::world::Pose::CROUCH {
+                    m.play(&mut clips, m.action(0, &pose.action), &Play { looping: true, ..how });
                 }
                 standing = clips.n;
                 // From the eyes it stays in view whatever the body does.
@@ -1533,7 +1584,7 @@ impl EntityRenderer {
             self.models.located_at(id, kind, bones as usize);
             self.models
                 .move_live(id, kind, slot, bones as usize, dt, moved);
-            if let Some(l) = self.model_layer(kind, lit, 0.0) {
+            if let Some(l) = self.model_layer(kind, lit, (0, 0.0)) {
                 if own {
                     own_items.push((kind, bones, l));
                 } else {

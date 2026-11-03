@@ -224,7 +224,7 @@ impl T {
     /// A fresh world `test-<name>` with `seed`, waiting until it is loaded.
     pub async fn world(&self, seed: u64) -> R {
         let name = format!("test-{}", self.name());
-        self.c().new_world(&name, seed);
+        self.c().world_create(&name, seed);
         self.until("joined", Duration::from_secs(60), |t| t.flag(cf::JOINED))
             .await?;
         // Mobs only where a test puts them, so pictures repeat.
@@ -236,7 +236,7 @@ impl T {
     pub async fn cmd(&self, line: &str) -> Result<String, String> {
         let before = self.c().chat_line(0);
         let marker = self.0.borrow().state.frame;
-        self.c().chat(line);
+        self.c().say(line);
         let mut seen = String::new();
         self.until(&format!("reply to {line}"), Duration::from_secs(10), |t| {
             let now = t.c().chat_line(0);
@@ -310,13 +310,13 @@ impl T {
 
     /// Player's block position as the client has it.
     pub fn feet(&self) -> [i32; 3] {
-        block_at(self.state().pos)
+        block_pos_of(self.state().pos)
     }
 
     // ------------------------------------------------ input
 
     pub fn press(&self, action: &str) {
-        if !self.c().press(action, 0.0) {
+        if !self.c().input_action(action, 0.0) {
             self.fail(format!("no action {action}"));
         }
     }
@@ -331,7 +331,7 @@ impl T {
     }
 
     pub fn hold(&self, action: &str, secs: f32) {
-        if !self.c().press(action, secs) {
+        if !self.c().input_action(action, secs) {
             self.fail(format!("no action {action}"));
         }
     }
@@ -353,7 +353,7 @@ impl T {
 
     /// Clicks a UI element (`slot:N`, `id:x`, `text:words`) of the top screen.
     pub fn click_ui(&self, query: &str, button: u32) -> bool {
-        let ok = self.c().click_ui(query, button);
+        let ok = self.c().ui_click(query, button);
         if !ok {
             self.fail(format!("no UI element {query} on {}", self.0.borrow().screen));
         }
@@ -373,11 +373,11 @@ impl T {
         let id = self.c().screenshot(&path);
         let mut shot = None;
         self.until(&format!("screenshot {name}"), Duration::from_secs(10), |_| {
-            shot = client::image(id).map(|(w, h, p)| Shot { w, h, px: p.to_vec() });
+            shot = client::image_pixels(id).map(|(w, h, p)| Shot { w, h, px: p.to_vec() });
             shot.is_some()
         })
         .await?;
-        client::image_free(id);
+        client::image_unload(id);
         Ok(shot.unwrap())
     }
 
@@ -669,7 +669,7 @@ pub fn frame(c: &Client) {
         }
         let (t, fut, began) = run.current.as_mut().unwrap();
         // Held, not pressed: a key the test taps itself is pressed only within its own frame.
-        if c.held(&PROBE) {
+        if c.key_held(&PROBE) {
             PROBES.with(|p| p.set(p.get() + 1));
         }
         {
@@ -696,12 +696,12 @@ pub fn frame(c: &Client) {
             drop(i);
             run.done.push(out);
             run.current = None;
-            c.release_all();
+            c.input_release_all();
             if c.state().flags & cf::DEBUG != 0 {
-                c.key("F3", 0.0);
+                c.input_key("F3", 0.0);
             }
             if c.state().flags & cf::IN_WORLD != 0 {
-                c.leave_world();
+                c.world_leave();
             }
         }
     });

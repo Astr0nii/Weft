@@ -1,7 +1,6 @@
 //! Sound events: block groups (`block.<group>.break|place|step|hit`) blocks pick with
 //! `.sound_group(group)`, and the background music; mobs' voices come with them (`mobs.rs`). Files are in `assets/sounds/`.
 
-use weft_sdk::abi::music_when as mw;
 use weft_sdk::*;
 
 pub fn register(r: &mut Registry) {
@@ -32,8 +31,8 @@ pub fn register(r: &mut Registry) {
     }
     r.music(&Music::named("calm"))
         .tracks(&["music/calm1"])
-        .when(mw::SURFACE);
+        .when(&conditions::SURFACE);
     r.music(&Music::named("deep"))
         .tracks(&["music/deep1"])
-        .when(mw::UNDERGROUND);
+        .when(&conditions::UNDERGROUND);
 }

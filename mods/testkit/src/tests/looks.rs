@@ -20,7 +20,7 @@ pub async fn particle_crowd(t: T) -> R {
                 .spawn_particles(&SPARK, pos)
                 .count(10_000)
                 .spread(4.0)
-                .speed(1.0),
+                .random_speed(1.0),
         );
     }
     t.frames(2).await?;
@@ -52,7 +52,7 @@ pub async fn texture_reload(t: T) -> R {
     let f = t.feet();
     t.fill(add(f, [-3, 0, -3]), add(f, [3, 3, -3]), "dirt")
         .await?;
-    t.c().look(0.0, 0.0);
+    t.c().set_look(0.0, 0.0);
     t.settled().await?;
     let plain = t.grab().await?;
     let pack = format!("{}/resourcepacks/testkit_reload", t.c().run_dir());
@@ -88,21 +88,21 @@ pub async fn pack_lang(t: T) -> R {
     weft_sdk::settings::RESOURCE_PACKS.set("testkit_lang");
     t.c().reload_assets();
     t.frames(2).await?;
-    t.c().open_screen(&screens::SETTINGS);
+    t.c().screen_open(&screens::SETTINGS);
     t.screen("core:settings").await?;
     t.frames(2).await?;
     t.laid_out(&["text:Pack Done", "text:View distance", "text:Language"]);
-    t.c().close_screen();
+    t.c().screen_close();
     weft_sdk::settings::RESOURCE_PACKS.set("");
     drop(std::fs::remove_dir_all(&pack));
     t.c().reload_assets();
     t.frames(2).await?;
-    t.c().open_screen(&screens::SETTINGS);
+    t.c().screen_open(&screens::SETTINGS);
     t.screen("core:settings").await?;
     t.frames(2).await?;
     t.check(t.c().ui_rect("text:Pack Done").is_none(), "without the pack the key is the mod's again");
     t.laid_out(&["text:Done"]);
-    t.c().close_screen();
+    t.c().screen_close();
     Ok(())
 }
 
@@ -113,7 +113,7 @@ pub async fn broken_shader_pack(t: T) -> R {
     let f = t.feet();
     t.op(&format!("spawn testmod:idol {} {} {}", f[0], f[1], f[2] - 3))
         .await?;
-    t.c().look(0.0, 0.0);
+    t.c().set_look(0.0, 0.0);
     t.settled().await?;
     t.secs(0.5).await?;
     let before = t.grab().await?;
@@ -183,8 +183,8 @@ pub async fn shaders_and_glow(t: T) -> R {
         .await?;
     t.check(t.count_near("wisp", 8.0).await? == 1, "a wisp floats nearby");
     t.op("put me 0 testmod:rune 1").await?;
-    t.c().select(0);
-    t.c().look(0.0, -5.0);
+    t.c().select_slot(0);
+    t.c().set_look(0.0, -5.0);
     t.settled().await?;
     t.secs(1.0).await?;
     let night = t.shot("night_glow").await?;
@@ -227,7 +227,7 @@ pub async fn models(t: T) -> R {
         .op(&format!("spawn testmod:idol {} {} {}", f[0], f[1], f[2] + 3))
         .await?;
     t.check(t.count_near("orb", 8.0).await? == 1 && t.count_near("idol", 8.0).await? == 1, "an orb and an idol stand nearby");
-    t.c().look(0.0, 0.0);
+    t.c().set_look(0.0, 0.0);
     t.settled().await?;
     t.secs(0.5).await?;
     let a = t.grab().await?;
@@ -255,7 +255,7 @@ pub async fn models(t: T) -> R {
     t.check(T::differ(&ground(&plain), &ground(&swapped)) > 0.0005, "idle plays as the bow");
     t.op(&format!("swap {idol} idle")).await?;
     // The test mod gives the player a wave, seen from the first person like from anywhere.
-    t.c().look(90.0, 0.0);
+    t.c().set_look(90.0, 0.0);
     t.frames(3).await?;
     let a = t.grab().await?;
     t.op("action me wave").await?;
@@ -278,7 +278,7 @@ pub async fn rich_text(t: T) -> R {
     t.press("core:inventory");
     t.screen("core:menu").await?;
     let Some([x, y, w, h]) = t.c().ui_rect("slot:36") else { return Err("no hotbar slot in the inventory".into()) };
-    t.c().cursor(x + w / 2.0, y + h / 2.0);
+    t.c().input_cursor(x + w / 2.0, y + h / 2.0);
     t.frames(4).await?;
     let rune = t.shot("rune").await?;
     let wound = |c: [u8; 3]| c[0] > 200 && (100..170).contains(&c[1]) && (100..170).contains(&c[2]);
@@ -291,8 +291,8 @@ pub async fn rich_text(t: T) -> R {
     let sneak = t.shot("rune_sneak").await?;
     let d = T::differ(&rune.px, &sneak.px) as f32;
     t.probe("sneaking changes the tooltip ({on_key})", d, d > 0.002);
-    t.c().release_all();
-    t.c().close_screen();
+    t.c().input_release_all();
+    t.c().screen_close();
     t.no_screen().await
 }
 
@@ -301,7 +301,7 @@ pub async fn rich_text(t: T) -> R {
 pub async fn sky(t: T) -> R {
     t.world(5).await?;
     t.op("mode creative").await?;
-    t.c().look(0.0, 89.0);
+    t.c().set_look(0.0, 89.0);
     let bright = |c: probe::C| c.iter().all(|&v| v > 215);
     t.op("time 6000").await?;
     t.secs(0.6).await?;
@@ -331,11 +331,11 @@ pub async fn sky(t: T) -> R {
     t.probe("stars at night", stars, stars > 0.0005);
     // Looking at the sunset and away from it.
     t.op("time 12400").await?;
-    t.c().look(90.0, 8.0);
+    t.c().set_look(90.0, 8.0);
     t.secs(0.6).await?;
     let west = t.shot("sunset").await?;
     let warm = |c: probe::C| c[0] > 170 && c[0] as i32 > c[2] as i32 + 50;
-    t.c().look(-90.0, 8.0);
+    t.c().set_look(-90.0, 8.0);
     t.secs(0.6).await?;
     let east = t.shot("sunset_back").await?;
     let (w, e) = (west.share(0.0, 0.3, 1.0, 0.5, warm), east.share(0.0, 0.3, 1.0, 0.5, warm));
@@ -357,7 +357,7 @@ pub async fn clouds(t: T) -> R {
     let s = t.state();
     // Near the horizon from well below them: what is there is thousands of blocks away.
     t.c().teleport([s.pos[0], 150.0, s.pos[2]]);
-    t.c().look(0.0, 2.0);
+    t.c().set_look(0.0, 2.0);
     t.secs(1.0).await?;
     let (x0, y0, x1, y1) = (0.0, 0.47, 1.0, 0.53);
     let far = t.shot("far").await?.share(x0, y0, x1, y1, white);
@@ -370,7 +370,7 @@ pub async fn clouds(t: T) -> R {
     // From above they cover the ground; lifted over the camera they don't.
     LIFT.set(0);
     t.c().teleport([s.pos[0], 330.0, s.pos[2]]);
-    t.c().look(0.0, -60.0);
+    t.c().set_look(0.0, -60.0);
     t.secs(1.0).await?;
     let above = t.shot("above").await?.share(0.0, 0.3, 1.0, 1.0, white);
     LIFT.set(512);
@@ -387,16 +387,16 @@ pub async fn clouds(t: T) -> R {
     t.fill(add(at, [-30, 0, -12]), add(at, [30, 70, -12]), "stone")
         .await?;
     t.c().teleport([s.pos[0], 150.0, s.pos[2]]);
-    t.c().look(0.0, 35.0);
+    t.c().set_look(0.0, 35.0);
     t.secs(1.0).await?;
     let wall = t.shot("wall").await?.share(0.2, 0.3, 0.8, 0.7, white);
     t.check(wall < 0.005, format!("clouds through a wall: {wall:.3}"));
     // Its slider is among the others.
-    t.c().open_screen(&screens::SETTINGS);
+    t.c().screen_open(&screens::SETTINGS);
     t.screen("core:settings").await?;
     t.frames(3).await?;
     t.shot("settings").await?;
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await?;
     Ok(())
 }
@@ -413,7 +413,7 @@ pub async fn light_by_day(t: T) -> R {
         .await?;
     t.c()
         .teleport([f[0] as f64 + 0.5, f[1] as f64 + 7.0, f[2] as f64 - 2.0]);
-    t.c().look(0.0, -60.0);
+    t.c().set_look(0.0, -60.0);
     t.secs(0.4).await?;
     let spot = t
         .on_screen([f[0] as f64 + 0.5, f[1] as f64 + 1.0, f[2] as f64 - 5.5])

@@ -12,20 +12,72 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::dim::Dim;
 use crate::content::Content;
+use crate::shape::Shape;
 use crate::world::cube::{Cube, VOLUME};
 use crate::world::light::Lighter;
 
-/// A ball of one block: every block whose middle is within `radius` of `center` becomes
-/// `state` (unbreakable ones stay with `keep_unbreakable`, liquids with `keep_liquids`).
-#[derive(Clone, Copy, Debug)]
+/// A shape of one block: every block whose middle is inside becomes `state`, unless a `keep`
+/// filter matches it or `only` is given and none of it does.
+#[derive(Clone, Debug)]
 pub struct AreaFill {
     /// Order of the dimension's edits, from 1; cubes remember the last one they got.
     pub id: u32,
-    pub center: DVec3,
-    pub radius: f64,
+    pub shape: Shape,
     pub state: u32,
-    pub keep_unbreakable: bool,
-    pub keep_liquids: bool,
+    pub keep: Vec<Filter>,
+    pub only: Vec<Filter>,
+}
+
+/// Which blocks a fill keeps or changes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Filter {
+    Liquids,
+    Unbreakable,
+    Tag(u32),
+    Block(u32),
+}
+
+impl Filter {
+    pub fn from_abi(c: &Content, f: &weft_abi::BlockFilter) -> Option<Filter> {
+        use weft_abi::block_filter as k;
+        Some(match f.kind {
+            k::LIQUIDS => Filter::Liquids,
+            k::UNBREAKABLE => Filter::Unbreakable,
+            k::TAG if (f.id as usize) < c.components.names.len() => Filter::Tag(f.id),
+            k::BLOCK if (f.id as usize) < c.states.len() => Filter::Block(c.states[f.id as usize].block),
+            _ => return None,
+        })
+    }
+
+    pub fn matches(&self, c: &Content, s: u32) -> bool {
+        let st = &c.states[s as usize];
+        match *self {
+            Filter::Liquids => st.liquid.is_some(),
+            // Liquids count as unbreakable for mining, not here: a crater takes the lake too,
+            // unless it is told otherwise.
+            Filter::Unbreakable => st.liquid.is_none() && st.hardness < 0.0,
+            Filter::Tag(t) => c.components.has(crate::components::BLOCK, s, t),
+            Filter::Block(b) => st.block == b,
+        }
+    }
+
+    fn spec(&self, c: &Content) -> String {
+        match *self {
+            Filter::Liquids => "liquids".into(),
+            Filter::Unbreakable => "unbreakable".into(),
+            Filter::Tag(t) => format!("#{}", c.components.names[t as usize]),
+            Filter::Block(b) => c.blocks[b as usize].name.clone(),
+        }
+    }
+
+    fn parse(c: &Content, w: &str) -> Option<Filter> {
+        Some(match w {
+            "liquids" => Filter::Liquids,
+            "unbreakable" => Filter::Unbreakable,
+            t if t.starts_with('#') => Filter::Tag(c.components.id(&t[1..])?),
+            b => Filter::Block(*c.block_names.get(b)?),
+        })
+    }
 }
 
 /// Light work for one cube of an area edit.
@@ -97,74 +149,98 @@ pub struct FillStats {
 }
 
 impl AreaFill {
-    /// As saved in `world.txt`: `id x y z radius block keep`, keep 1 unbreakable + 2 liquids.
+    /// As saved in `world.txt`: `id block keep:<filters> only:<filters> <shape>`.
     pub fn spec(&self, c: &Content) -> String {
-        let p = self.center;
-        format!(
-            "{} {} {} {} {} {} {}",
-            self.id,
-            p.x,
-            p.y,
-            p.z,
-            self.radius,
-            c.state_name(self.state),
-            self.keep_unbreakable as u8 + self.keep_liquids as u8 * 2
-        )
+        let list = |l: &[Filter]| l.iter().map(|f| f.spec(c)).collect::<Vec<_>>().join(",");
+        format!("{} {} keep:{} only:{} {}", self.id, c.state_name(self.state), list(&self.keep), list(&self.only), self.shape.spec())
     }
 
     pub fn parse(c: &Content, spec: &str) -> Option<AreaFill> {
         let w: Vec<&str> = spec.split_whitespace().collect();
-        let [id, x, y, z, r, block, keep] = w[..] else { return None };
-        let keep: u8 = keep.parse().ok()?;
+        // Saved before shapes: `id x y z radius block keep`, keep 1 unbreakable + 2 liquids.
+        if let [id, x, y, z, r, block, keep] = w[..] {
+            if let (Ok(x), Ok(y), Ok(z), Ok(r), Ok(keep)) = (x.parse(), y.parse(), z.parse(), r.parse(), keep.parse::<u8>()) {
+                let kept = [(1, Filter::Unbreakable), (2, Filter::Liquids)]
+                    .into_iter()
+                    .filter(|(bit, _)| keep & bit != 0)
+                    .map(|f| f.1)
+                    .collect();
+                return Some(AreaFill {
+                    id: id.parse().ok()?,
+                    shape: Shape::ball(DVec3::new(x, y, z), r),
+                    state: c.state_by_name(block)?,
+                    keep: kept,
+                    only: Vec::new(),
+                });
+            }
+        }
+        let [id, block, keep, only, shape @ ..] = &w[..] else { return None };
+        let list = |w: &str, tag: &str| -> Option<Vec<Filter>> {
+            w.strip_prefix(tag)?
+                .split(',')
+                .filter(|f| !f.is_empty())
+                .map(|f| Filter::parse(c, f))
+                .collect()
+        };
         Some(AreaFill {
             id: id.parse().ok()?,
-            center: DVec3::new(x.parse().ok()?, y.parse().ok()?, z.parse().ok()?),
-            radius: r.parse().ok()?,
             state: c.state_by_name(block)?,
-            keep_unbreakable: keep & 1 != 0,
-            keep_liquids: keep & 2 != 0,
+            keep: list(keep, "keep:")?,
+            only: list(only, "only:")?,
+            shape: Shape::parse(shape.iter().copied())?,
         })
     }
 
-    /// Squared distance from the center to the nearest and farthest point of cube `cp`.
-    pub fn reach(&self, cp: IVec3) -> (f64, f64) {
-        let lo = (cp * 16).as_dvec3();
-        let hi = lo + DVec3::splat(16.0);
-        let near = self.center.clamp(lo, hi) - self.center;
-        let far = DVec3::new(
-            (self.center.x - lo.x)
-                .abs()
-                .max((hi.x - self.center.x).abs()),
-            (self.center.y - lo.y)
-                .abs()
-                .max((hi.y - self.center.y).abs()),
-            (self.center.z - lo.z)
-                .abs()
-                .max((hi.z - self.center.z).abs()),
-        );
-        (near.length_squared(), far.length_squared())
+    /// Stays as it is.
+    fn keeps(&self, c: &Content, s: u32) -> bool {
+        self.keep.iter().any(|f| f.matches(c, s)) || (!self.only.is_empty() && !self.only.iter().any(|f| f.matches(c, s)))
     }
 
-    /// The cube may hold a block it changes, or one next to the edge.
+    /// Blocks it keeps may be anywhere in terrain: cubes it covers are then made from what
+    /// was there, not as one block.
+    pub fn keeps_any(&self, c: &Content) -> bool {
+        !self.only.is_empty()
+            || self.keep.iter().any(|f| match f {
+                Filter::Unbreakable => c
+                    .states
+                    .iter()
+                    .any(|s| s.hardness < 0.0 && s.liquid.is_none()),
+                _ => true,
+            })
+    }
+
+    /// Block corners of cube `cp`, grown by `by` blocks.
+    fn cube_box(cp: IVec3, by: f64) -> (DVec3, DVec3) {
+        let lo = (cp * 16).as_dvec3();
+        (lo - by, lo + 16.0 + by)
+    }
+
+    /// The cube may hold a block it changes, or one next to the edge (`by` 1); with a larger
+    /// `by`, a cube that far from it.
+    pub fn near(&self, cp: IVec3, by: f64) -> bool {
+        let (lo, hi) = Self::cube_box(cp, by);
+        self.shape.test_box(lo, hi).1
+    }
+
     pub fn touches(&self, cp: IVec3) -> bool {
-        self.reach(cp).0 <= (self.radius + 1.0).powi(2)
+        self.near(cp, 1.0)
+    }
+
+    /// The middle of every block of the cube is inside.
+    pub fn covers(&self, cp: IVec3) -> bool {
+        let (lo, hi) = Self::cube_box(cp, -0.5);
+        self.shape.test_box(lo, hi).0
     }
 
     fn inside(&self, p: IVec3) -> bool {
-        (p.as_dvec3() + DVec3::splat(0.5) - self.center).length_squared() <= self.radius * self.radius
+        self.shape.contains(p.as_dvec3() + DVec3::splat(0.5))
     }
 
     /// The cube with the fill applied, if that changes it, and the blocks outside next to a
     /// changed one (they get a neighbor update: sand on the rim falls).
     pub fn apply(&self, c: &Content, cp: IVec3, cube: &Cube) -> Option<(Cube, Vec<IVec3>)> {
-        // Liquids count as unbreakable for mining, not here: a crater takes the lake too, unless
-        // it is told otherwise.
-        let keep = |s: u32| {
-            let st = &c.states[s as usize];
-            if st.liquid.is_some() { self.keep_liquids } else { self.keep_unbreakable && st.hardness < 0.0 }
-        };
-        let (_, far) = self.reach(cp);
-        let mut out = if far <= self.radius * self.radius && !cube.palette().iter().any(|&s| keep(s)) {
+        let keep = |s: u32| self.keeps(c, s);
+        let mut out = if self.covers(cp) && !cube.palette().iter().any(|&s| keep(s)) {
             if cube.palette() == [self.state] {
                 return None;
             }

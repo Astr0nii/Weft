@@ -30,28 +30,6 @@ pub fn write(e: &mut Entities, c: &Content, id: u64, v: Energy) {
     }
 }
 
-pub fn insert(e: &mut Entities, c: &Content, id: u64, amount: i64, simulate: bool) -> i64 {
-    let Some(mut v) = read(e, c, id) else { return 0 };
-    let n = amount
-        .clamp(0, v.max_in.max(0))
-        .min((v.capacity - v.stored).max(0));
-    if !simulate && n > 0 {
-        v.stored += n;
-        write(e, c, id, v);
-    }
-    n
-}
-
-pub fn extract(e: &mut Entities, c: &Content, id: u64, amount: i64, simulate: bool) -> i64 {
-    let Some(mut v) = read(e, c, id) else { return 0 };
-    let n = amount.clamp(0, v.max_out.max(0)).min(v.stored.max(0));
-    if !simulate && n > 0 {
-        v.stored -= n;
-        write(e, c, id, v);
-    }
-    n
-}
-
 impl Grid {
     pub fn cube_loaded(&mut self, c: &Content, pos: IVec3, cube: &Cube) {
         // A machine arriving next to cables that are here already belongs to their network.

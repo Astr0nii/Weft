@@ -310,6 +310,27 @@ pub struct Game {
     pub recipe_kind_defs: FxHashMap<String, RecipeKindDef>,
     /// Entity categories by `EntityKind::category`: the engine's three first.
     pub categories: Vec<CategoryDef>,
+    /// By id: the engine's (`abi::damage_cause`) first.
+    pub damage_causes: Vec<DamageCauseDef>,
+    pub damage_cause_names: FxHashMap<String, u32>,
+    /// By id: the engine's (`abi::entity_effect`) first.
+    pub entity_effects: Vec<EntityEffectDef>,
+    pub entity_effect_names: FxHashMap<String, u32>,
+    /// By id: the engine's (`abi::show_place`) first.
+    pub text_places: Vec<crate::hud::Place>,
+    pub text_place_names: FxHashMap<String, u32>,
+    /// By id: the engine's (`abi::game_mode`) first.
+    pub game_modes: Vec<GameModeDef>,
+    pub game_mode_names: FxHashMap<String, u32>,
+    /// By id: the engine's (`abi::pose`) first.
+    pub poses: Vec<PoseDef>,
+    pub pose_names: FxHashMap<String, u32>,
+    /// By id: the engine's (`abi::weather`) first.
+    pub weathers: Vec<WeatherDef>,
+    pub weather_names: FxHashMap<String, u32>,
+    /// By id: rain, snow, then mods'.
+    pub precipitations: Vec<PrecipitationDef>,
+    pub precipitation_names: FxHashMap<String, u32>,
     /// Sound categories by `SoundDef::category`: the engine's six first.
     pub sound_categories: Vec<SoundCategory>,
     pub huds: Vec<HudElement>,
@@ -361,8 +382,10 @@ pub struct Game {
     pub world_ticks: Vec<(ModId, Callback)>,
     /// `abi::comp::NAME` as an entity component.
     pub name_comp: u32,
+    /// Components with `component_flags::CARRIED`: between a block's item and its block entity.
+    pub carried: Vec<u32>,
     /// `HEALTH`, `BURNING`, `WORN`, `SHAPE`, `HELD`, `OFF_HELD`, `USING`, `SWAPS`, `LOOPING_ACTION`.
-    pub field_comps: [u32; 9],
+    pub field_comps: [u32; 11],
     /// `SIMULATED`.
     pub simulated_comp: u32,
     /// Entity components with `SYNC_WATCHERS` / `SYNC_MENU`.
@@ -377,7 +400,9 @@ pub struct Game {
     /// (owner, component, system) in mod order.
     pub systems: Vec<(ModId, u32, Callback)>,
     /// `{if:name}` conditions mods answer.
-    pub text_conditions: FxHashMap<String, (ModId, Callback)>,
+    /// By id: the engine's (`abi::condition`, answered by the engine) first, then mods'.
+    pub conditions: Vec<ConditionDef>,
+    pub condition_names: FxHashMap<String, u32>,
     /// What is in the sky of each dimension, in drawing order.
     pub sky: Vec<Vec<SkyDef>>,
     /// Particle kinds by id (sorted by name).
@@ -408,13 +433,24 @@ pub struct SoundDef {
     pub volume: f32,
     pub pitch: [f32; 2],
     pub range: f32,
+    pub full_within: f32,
+    pub falloff: i32,
 }
 
 pub struct MusicDef {
     pub name: String,
     pub tracks: Vec<String>,
     pub dimension: Option<u32>,
-    pub when: u32,
+    /// Conditions that all hold while it may play, and their names until the freeze.
+    pub when: Vec<u32>,
+    pub when_names: Vec<String>,
+}
+
+/// A condition: the engine answers its own (`cb` none), a mod's callback the rest.
+#[derive(Clone)]
+pub struct ConditionDef {
+    pub name: String,
+    pub cb: Option<(ModId, Callback)>,
 }
 
 pub struct ParticleDef {
@@ -655,6 +691,13 @@ pub struct RawGame {
     pub recipes: Vec<RawRecipe>,
     pub recipe_kinds: Vec<RawRecipeKind>,
     pub categories: Vec<CategoryDef>,
+    pub damage_causes: Vec<(usize, DamageCauseDef)>,
+    pub entity_effects: Vec<(usize, EntityEffectDef)>,
+    pub text_places: Vec<(usize, crate::hud::Place)>,
+    pub game_modes: Vec<(usize, GameModeDef)>,
+    pub poses: Vec<(usize, PoseDef)>,
+    pub weathers: Vec<(usize, WeatherDef)>,
+    pub precipitations: Vec<(usize, PrecipitationDef)>,
     pub sound_categories: Vec<SoundCategory>,
     pub menus: Vec<(usize, MenuDef)>,
     pub huds: Vec<HudElement>,
@@ -703,7 +746,7 @@ pub struct RawGame {
     /// (block name, flow rules).
     pub liquids: Vec<(String, String, weft_abi::LiquidDesc)>,
     /// (liquid, overlay, change), in mod order.
-    pub liquid_changes: Vec<(String, String, weft_abi::LiquidChange)>,
+    pub liquid_changes: Vec<(String, String, weft_abi::LiquidEdit)>,
     /// (command, level), mods' say on what their commands ask for.
     pub command_permissions: Vec<(String, u32)>,
     /// liquid, touching, source result, flowing result, falls-into result.
@@ -721,7 +764,7 @@ pub struct RawGame {
     pub stack_components: Vec<(String, String, u32)>,
     /// (owner, component, schema, system).
     pub systems: Vec<(ModId, String, String, Callback)>,
-    pub text_conditions: Vec<(ModId, String, Callback)>,
+    pub conditions: Vec<(usize, ConditionDef)>,
     pub particles: Vec<RawParticle>,
     pub sky: Vec<RawSky>,
     /// (handle cell, setting).
@@ -739,6 +782,8 @@ pub struct RawSpawn {
     pub entity: String,
     pub biome: String,
     pub ground: String,
+    pub place: u32,
+    pub condition: String,
     pub dimension: String,
     pub light: [u32; 2],
     pub y: [i32; 2],
@@ -753,6 +798,12 @@ pub struct SpawnRule {
     pub category: u32,
     pub biome: Option<u32>,
     pub ground: Option<u32>,
+    /// `abi::spawn_place`.
+    pub place: u32,
+    /// A condition the spot must meet.
+    pub condition: Option<u32>,
+    /// Blocks of room the mob needs up.
+    pub height: i32,
     pub dimension: Option<u32>,
     pub light: [u32; 2],
     pub y: [i32; 2],
@@ -824,8 +875,9 @@ pub struct PlayerGroup {
 #[derive(Clone, Debug)]
 pub struct EquipmentSlot {
     pub name: String,
-    /// `worn_parts` of the model it covers.
+    /// `worn_parts` of the model it covers, and bones it covers by name.
     pub parts: u32,
+    pub bones: Vec<String>,
     pub background: String,
 }
 
@@ -904,6 +956,172 @@ impl SoundCategory {
 /// `SoundDef::category` of the engine's music track: the first category.
 pub const MUSIC_CATEGORY: u32 = 0;
 
+/// A damage cause: what the engine does differently for it (`abi::damage_flags`), and how a
+/// death by it reads.
+#[derive(Clone, Debug)]
+pub struct DamageCauseDef {
+    pub name: String,
+    pub flags: u32,
+    pub death_message: String,
+    pub death_message_by: String,
+}
+
+impl DamageCauseDef {
+    pub fn has(&self, flag: u32) -> bool {
+        self.flags & flag != 0
+    }
+}
+
+fn engine_damage_causes() -> Vec<(usize, DamageCauseDef)> {
+    use abi::damage_flags as f;
+    let flags = [
+        0,
+        f::BYPASSES_ARMOR,
+        0,
+        f::BURNING,
+        f::BYPASSES_ARMOR,
+        f::BYPASSES_ARMOR,
+        f::BYPASSES_ARMOR | f::PIERCES_INVULNERABLE | f::IGNORES_COOLDOWN,
+        f::BURNING,
+        0,
+        f::BYPASSES_ARMOR,
+        0,
+        0,
+    ];
+    let messages = ["generic", "fall", "generic", "fire", "starve", "drown", "void", "lava", "crush", "suffocate", "explosion", "generic"];
+    abi::damage_cause::NAMES
+        .iter()
+        .zip(flags)
+        .zip(messages)
+        .map(|((name, flags), m)| {
+            let by = if *name == "core:attack" { "death.attack".to_string() } else { String::new() };
+            (0, DamageCauseDef { name: name.to_string(), flags, death_message: format!("death.{m}"), death_message_by: by })
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug)]
+pub struct WeatherDef {
+    pub name: String,
+    pub falls: bool,
+    pub lightning: bool,
+    pub darkness: f32,
+    pub duration: [u64; 2],
+    pub weight: u32,
+    /// Dimension names, resolved into `dims` at freeze; empty: any with weather.
+    pub dimension_names: Vec<String>,
+    pub dims: Vec<u32>,
+}
+
+fn engine_weathers() -> Vec<(usize, WeatherDef)> {
+    let w = |name: &str, falls: bool, lightning: bool, duration: [u64; 2], weight: u32| {
+        let darkness = if falls { 0.3125 } else { 0.0 };
+        (
+            0,
+            WeatherDef {
+                name: format!("core:{name}"),
+                falls,
+                lightning,
+                darkness,
+                duration,
+                weight,
+                dimension_names: Vec::new(),
+                dims: Vec::new(),
+            },
+        )
+    };
+    // Vanilla's timing: clear for 10 minutes to 2.5 hours, rain for 10 to 20 minutes, a quarter
+    // of it with thunder.
+    vec![
+        w("clear", false, false, [12000, 180000], 0),
+        w("rain", true, false, [12000, 24000], 3),
+        w("thunder", true, true, [12000, 24000], 1),
+    ]
+}
+
+#[derive(Clone, Debug)]
+pub struct PrecipitationDef {
+    pub name: String,
+    pub texture: String,
+    pub speed: f32,
+    pub density: f32,
+}
+
+/// A pose: its box and eyes as shares of standing, how fast it goes, how the model lies and
+/// the clip it plays.
+#[derive(Clone, Debug)]
+pub struct PoseDef {
+    pub name: String,
+    pub height: f64,
+    pub eye: f64,
+    pub speed: f32,
+    /// `abi::pose_tilt`.
+    pub tilt: u32,
+    pub action: String,
+    /// The camera bobs while walking in it.
+    pub bob: bool,
+}
+
+pub fn engine_pose_defs() -> &'static [PoseDef] {
+    static DEFS: std::sync::OnceLock<Vec<PoseDef>> = std::sync::OnceLock::new();
+    DEFS.get_or_init(|| engine_poses().into_iter().map(|(_, d)| d).collect())
+}
+
+fn engine_poses() -> Vec<(usize, PoseDef)> {
+    use abi::pose_tilt as t;
+    let pose = |name: &str, height: f64, eye: f64, speed: f32, tilt: u32, action: &str, bob: bool| {
+        (0, PoseDef { name: format!("core:{name}"), height, eye, speed, tilt, action: action.into(), bob })
+    };
+    // Modern vanilla's: the player's 1.8 and 1.62 standing.
+    vec![
+        pose("stand", 1.0, 1.0, 1.0, t::UPRIGHT, "", true),
+        pose("crouch", 1.5 / 1.8, 1.27 / 1.62, 0.3, t::UPRIGHT, "sneak", true),
+        pose("swim", 0.6 / 1.8, 0.4 / 1.62, 1.0, t::ALONG_LOOK, "swim", false),
+        pose("crawl", 0.6 / 1.8, 0.4 / 1.62, 0.3, t::FACE_DOWN, "crawl", true),
+        pose("sleep", 0.2 / 1.8, 0.45 / 1.62, 0.0, t::ON_BACK, "", false),
+    ]
+}
+
+/// A game mode: what its players may do (`abi::game_mode_flags`) and the attribute modifiers
+/// they get, (attribute, op, amount).
+#[derive(Clone, Debug)]
+pub struct GameModeDef {
+    pub name: String,
+    pub flags: u32,
+    pub modifiers: Vec<(String, u32, f64)>,
+}
+
+fn engine_game_modes() -> Vec<(usize, GameModeDef)> {
+    use abi::game_mode_flags as f;
+    // Unseen by mobs outside survival; creative reaches further.
+    let unseen = (abi::attribute::VISIBILITY.to_string(), abi::attr_op::MULTIPLY_TOTAL, -1.0);
+    let creative = f::INSTANT_BREAK | f::NO_COSTS | f::INVULNERABLE | f::CAN_FLY | f::CREATIVE_INVENTORY;
+    let spectator = f::INVULNERABLE | f::ALWAYS_FLY | f::NOCLIP | f::NO_INTERACT | f::HIDDEN | f::NO_HUD | f::NO_COSTS;
+    vec![
+        (0, GameModeDef { name: "core:survival".into(), flags: 0, modifiers: Vec::new() }),
+        (
+            0,
+            GameModeDef {
+                name: "core:creative".into(),
+                flags: creative,
+                modifiers: vec![
+                    (abi::attribute::BLOCK_REACH.into(), abi::attr_op::ADD, 0.5),
+                    (abi::attribute::ENTITY_REACH.into(), abi::attr_op::ADD, 2.0),
+                    unseen.clone(),
+                ],
+            },
+        ),
+        (0, GameModeDef { name: "core:spectator".into(), flags: spectator, modifiers: vec![unseen] }),
+    ]
+}
+
+/// A shader effect on entities: the snippet that draws it, `ns:name`.
+#[derive(Clone, Debug)]
+pub struct EntityEffectDef {
+    pub name: String,
+    pub shader: String,
+}
+
 /// What natural spawning and despawning know of entities by category.
 #[derive(Clone, Debug)]
 pub struct CategoryDef {
@@ -912,6 +1130,8 @@ pub struct CategoryDef {
     pub cap: u32,
     /// Further than this from every player they vanish (checked every 5 s); 0 = never.
     pub despawn: f64,
+    /// The cap counts them this close to a player.
+    pub cap_radius: f64,
 }
 
 pub struct AttrDef {
@@ -938,6 +1158,10 @@ pub const ENGINE_EVENTS: &[(&str, &str, u32)] = {
         (abi::event::CHAT_MESSAGE, abi::ChatMessage::SCHEMA, size_of::<abi::ChatMessage>() as u32),
         (abi::event::ENTITY_HURT, abi::Hurt::SCHEMA, size_of::<abi::Hurt>() as u32),
         (abi::event::ITEM_USED, abi::ItemUsed::SCHEMA, size_of::<abi::ItemUsed>() as u32),
+        (abi::event::ENTITY_HEALED, abi::Hurt::SCHEMA, size_of::<abi::Hurt>() as u32),
+        (abi::event::BLOCK_USED, abi::BlockChange::SCHEMA, size_of::<abi::BlockChange>() as u32),
+        (abi::event::ENTITY_INTERACTED, abi::Interaction::SCHEMA, size_of::<abi::Interaction>() as u32),
+        (abi::event::DIMENSION_CHANGED, abi::DimensionChange::SCHEMA, size_of::<abi::DimensionChange>() as u32),
     ]
 };
 
@@ -956,6 +1180,10 @@ pub struct RawOre {
     pub veins: u32,
     pub size: u32,
     pub biome: String,
+    pub shape: u32,
+    pub shape_size: [f32; 2],
+    pub height: u32,
+    pub plateau: i32,
 }
 
 pub struct RawScatter {
@@ -964,6 +1192,8 @@ pub struct RawScatter {
     pub dimensions: Vec<String>,
     pub cell: i32,
     pub reach: i32,
+    /// Down and up.
+    pub reach_y: [i32; 2],
     pub density: String,
     pub shape: Callback,
 }
@@ -1027,7 +1257,7 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
         RawEntity {
             name: d.name.as_str().to_string(),
             cell: d.cell as usize,
-            replace: d.replace != 0,
+            replace: d.replacing != 0,
             components: RawValue::list(d.components),
             desc: EntityKind {
                 name: d.name.as_str().to_string(),
@@ -1046,7 +1276,7 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
                 on_interact: one(d.on_interact),
                 components: Vec::new(),
                 values: Vec::new(),
-                slots: 0,
+                slots: d.slots.min(1 << 16),
                 sounds: [u32::MAX; 4],
                 carry_height: d.carry_height,
                 template_name: d.template.as_str().to_string(),
@@ -1210,6 +1440,10 @@ pub const OFF_HELD: &str = "core:off_held";
 pub const USING: &str = "core:using";
 pub const SWAPS: &str = "core:swaps";
 pub const LOOPING_ACTION: &str = "core:looping_action";
+/// The shader effect on it: effect id, strength (`f32`), the tick it ends (`u64`).
+pub const EFFECT: &str = "core:effect";
+/// A pose a mod holds it in (`u32` pose id), empty: as it moves.
+pub const FORCED_POSE: &str = "core:forced_pose";
 /// Entity component (`u64`, saved): the world time a system last simulated it to, so it can
 /// catch up on what it missed (`Dim::run_systems`).
 pub const SIMULATED: &str = "core:simulated";
@@ -1352,10 +1586,30 @@ pub fn freeze(
         .map(|n| SoundCategory::new(&format!("core:{n}"), n != "music" && n != "ui"))
         .to_vec();
     let mut categories: Vec<CategoryDef> = vec![
-        CategoryDef { name: "core:misc".into(), cap: 6, despawn: 0.0 },
-        CategoryDef { name: "core:hostile".into(), cap: 8, despawn: 128.0 },
-        CategoryDef { name: "core:passive".into(), cap: 6, despawn: 0.0 },
+        CategoryDef { name: "core:misc".into(), cap: 6, despawn: 0.0, cap_radius: 64.0 },
+        CategoryDef { name: "core:hostile".into(), cap: 8, despawn: 128.0, cap_radius: 64.0 },
+        CategoryDef { name: "core:passive".into(), cap: 6, despawn: 0.0, cap_radius: 64.0 },
     ];
+    let mut damage_causes = engine_damage_causes();
+    let mut game_modes = engine_game_modes();
+    let mut poses = engine_poses();
+    let mut conditions: Vec<(usize, ConditionDef)> = abi::condition::NAMES
+        .iter()
+        .map(|n| (0, ConditionDef { name: n.to_string(), cb: None }))
+        .collect();
+    let mut weathers = engine_weathers();
+    let mut precipitations: Vec<(usize, PrecipitationDef)> = vec![
+        (0, PrecipitationDef { name: "core:rain".into(), texture: "core:environment/rain".into(), speed: 1.0, density: 0.1 }),
+        (0, PrecipitationDef { name: "core:snow".into(), texture: "core:environment/snow".into(), speed: 0.1, density: 0.5 }),
+    ];
+    let mut text_places: Vec<(usize, crate::hud::Place)> = crate::hud::engine_places()
+        .into_iter()
+        .map(|p| (0, p))
+        .collect();
+    let mut entity_effects: Vec<(usize, EntityEffectDef)> = abi::entity_effect::NAMES
+        .iter()
+        .map(|n| (0, EntityEffectDef { name: n.to_string(), shader: n.to_string() }))
+        .collect();
     let mut entity_ticks: Vec<(ModId, String, Callback)> = Vec::new();
     let mut entity_watchers: Vec<(ModId, String, Callback)> = Vec::new();
     let mut attached_models: Vec<(String, String, String)> = Vec::new();
@@ -1371,14 +1625,7 @@ pub fn freeze(
         particles.extend(r.particles);
         sky.extend(r.sky);
         configs.extend(r.configs);
-        for (owner, name, cb) in r.text_conditions {
-            if g.text_conditions
-                .insert(name.clone(), (owner, cb))
-                .is_some()
-            {
-                errors.push(format!("text condition {name} registered twice"));
-            }
-        }
+        conditions.extend(r.conditions);
         g.client_hooks.extend(r.client_hooks);
         packets.extend(r.packets);
         g.keys.extend(r.keys);
@@ -1396,6 +1643,13 @@ pub fn freeze(
             g.recipe_kind_defs.insert(k.name, k.def);
         }
         categories.extend(r.categories);
+        damage_causes.extend(r.damage_causes);
+        entity_effects.extend(r.entity_effects);
+        text_places.extend(r.text_places);
+        game_modes.extend(r.game_modes);
+        poses.extend(r.poses);
+        weathers.extend(r.weathers);
+        precipitations.extend(r.precipitations);
         sound_categories.extend(r.sound_categories);
         menus.extend(r.menus);
         g.huds.extend(r.huds);
@@ -1549,6 +1803,100 @@ pub fn freeze(
     }
     g.categories = categories;
     g.sound_categories = sound_categories;
+    for (cell, d) in damage_causes {
+        if g.damage_cause_names.contains_key(&d.name) {
+            errors.push(format!("damage cause {} registered twice", d.name));
+            continue;
+        }
+        let id = g.damage_causes.len() as u32;
+        write_cell(cell, id);
+        g.damage_cause_names.insert(d.name.clone(), id);
+        g.damage_causes.push(d);
+    }
+    for (cell, d) in conditions {
+        if g.condition_names.contains_key(&d.name) {
+            errors.push(format!("condition {} registered twice", d.name));
+            continue;
+        }
+        let id = g.conditions.len() as u32;
+        write_cell(cell, id);
+        g.condition_names.insert(d.name.clone(), id);
+        g.conditions.push(d);
+    }
+    for m in g.music.iter_mut() {
+        for n in std::mem::take(&mut m.when_names) {
+            match g.condition_names.get(&n) {
+                Some(&id) => m.when.push(id),
+                None => errors.push(format!("music {}: no condition {n}", m.name)),
+            }
+        }
+    }
+    for (cell, mut d) in weathers {
+        if g.weather_names.contains_key(&d.name) {
+            errors.push(format!("weather {} registered twice", d.name));
+            continue;
+        }
+        for n in &d.dimension_names {
+            match dim_names.get(n) {
+                Some(&i) => d.dims.push(i),
+                None => errors.push(format!("weather {}: no dimension {n}", d.name)),
+            }
+        }
+        let id = g.weathers.len() as u32;
+        write_cell(cell, id);
+        g.weather_names.insert(d.name.clone(), id);
+        g.weathers.push(d);
+    }
+    for (cell, d) in precipitations {
+        if g.precipitation_names.contains_key(&d.name) {
+            errors.push(format!("precipitation {} registered twice", d.name));
+            continue;
+        }
+        let id = g.precipitations.len() as u32;
+        write_cell(cell, id);
+        g.precipitation_names.insert(d.name.clone(), id);
+        g.precipitations.push(d);
+    }
+    for (cell, d) in poses {
+        if g.pose_names.contains_key(&d.name) {
+            errors.push(format!("pose {} registered twice", d.name));
+            continue;
+        }
+        let id = g.poses.len() as u32;
+        write_cell(cell, id);
+        g.pose_names.insert(d.name.clone(), id);
+        g.poses.push(d);
+    }
+    for (cell, d) in game_modes {
+        if g.game_mode_names.contains_key(&d.name) {
+            errors.push(format!("game mode {} registered twice", d.name));
+            continue;
+        }
+        let id = g.game_modes.len() as u32;
+        write_cell(cell, id);
+        g.game_mode_names.insert(d.name.clone(), id);
+        g.game_modes.push(d);
+    }
+    for (cell, d) in text_places {
+        if g.text_place_names.contains_key(&d.name) {
+            errors.push(format!("text place {} registered twice", d.name));
+            continue;
+        }
+        let id = g.text_places.len() as u32;
+        write_cell(cell, id);
+        g.text_place_names.insert(d.name.clone(), id);
+        g.text_places.push(d);
+    }
+    for (cell, d) in entity_effects {
+        if g.entity_effect_names.contains_key(&d.name) {
+            errors.push(format!("entity effect {} registered twice", d.name));
+            continue;
+        }
+        let id = g.entity_effects.len() as u32;
+        write_cell(cell, id);
+        g.entity_effect_names.insert(d.name.clone(), id);
+        g.entity_effects.push(d);
+    }
     for s in spawns {
         let Some(&entity) = g.entity_names.get(&s.entity) else {
             errors.push(format!("spawn rule for unknown entity {}", s.entity));
@@ -1574,11 +1922,25 @@ pub fn freeze(
             },
         };
         let category = g.entities[entity as usize].category;
+        let height = (g.entities[entity as usize].height.ceil() as i32).max(1);
+        let condition = match s.condition.as_str() {
+            "" => None,
+            n => match g.condition_names.get(n) {
+                Some(&id) => Some(id),
+                None => {
+                    errors.push(format!("spawn rule for {}: no condition {n}", s.entity));
+                    continue;
+                }
+            },
+        };
         g.spawns.push(SpawnRule {
             entity,
             category,
             biome,
             ground,
+            place: s.place,
+            height,
+            condition,
             dimension,
             light: s.light,
             y: s.y,
@@ -1668,6 +2030,18 @@ pub fn freeze(
         },
         schema: String::new(),
     });
+    let tank = size_of::<weft_abi::Tank>() as u32;
+    components.push(RawComponent {
+        owner: ENGINE,
+        def: ComponentDef {
+            name: abi::comp::TANK.into(),
+            size: tank,
+            flags: weft_abi::component_flags::SAVE | weft_abi::component_flags::SYNC_MENU,
+            default: vec![0; tank as usize],
+            runtime: true,
+        },
+        schema: String::new(),
+    });
     // Variable length (size 0): attribute modifiers, added on demand.
     components.push(RawComponent {
         owner: ENGINE,
@@ -1685,7 +2059,7 @@ pub fn freeze(
         def: ComponentDef {
             name: abi::comp::NAME.into(),
             size: 0,
-            flags: weft_abi::component_flags::SAVE,
+            flags: weft_abi::component_flags::SAVE | weft_abi::component_flags::CARRIED,
             default: Vec::new(),
             runtime: true,
         },
@@ -1706,6 +2080,8 @@ pub fn freeze(
         (USING, 4, shown, vec![0; 4]),
         (SWAPS, 0, own | shown, Vec::new()),
         (LOOPING_ACTION, 0, shown, Vec::new()),
+        (EFFECT, 0, shown, Vec::new()),
+        (FORCED_POSE, 0, own | shown, Vec::new()),
         (SIMULATED, 8, save, vec![0; 8]),
     ] {
         components.push(RawComponent {
@@ -1729,7 +2105,15 @@ pub fn freeze(
     g.modifiers_comp = g.component_names[MODIFIERS];
     g.timers_comp = g.component_names[TIMERS];
     g.name_comp = g.component_names[abi::comp::NAME];
-    g.field_comps = [HEALTH, BURNING, WORN, SHAPE, HELD, OFF_HELD, USING, SWAPS, LOOPING_ACTION].map(|n| g.component_names[n]);
+    g.carried = g
+        .components
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.runtime && d.flags & weft_abi::component_flags::CARRIED != 0)
+        .map(|(i, _)| i as u32)
+        .collect();
+    g.field_comps =
+        [HEALTH, BURNING, WORN, SHAPE, HELD, OFF_HELD, USING, SWAPS, LOOPING_ACTION, EFFECT, FORCED_POSE].map(|n| g.component_names[n]);
     g.simulated_comp = g.component_names[SIMULATED];
     let with_flag = |f: u32| {
         g.components
@@ -2088,6 +2472,8 @@ fn engine_sounds() -> Vec<(usize, SoundDef)> {
                 volume,
                 pitch,
                 range: 16.0,
+                full_within: 1.0,
+                falloff: 0,
             },
         )
     };

@@ -185,19 +185,19 @@ impl Wire for DVec3 {
 
 impl Wire for Pose {
     fn put(&self, w: &mut W) {
-        (*self as u8).put(w);
+        (self.0 as u32).put(w);
     }
     fn get(r: &mut R) -> Option<Self> {
-        Some(Pose::from_u8(u8::get(r)?))
+        Some(Pose::from_id(u32::get(r)?))
     }
 }
 
 impl Wire for GameMode {
     fn put(&self, w: &mut W) {
-        (*self as u8).put(w);
+        (self.0 as u32).put(w);
     }
     fn get(r: &mut R) -> Option<Self> {
-        Some(GameMode::from_u8(u8::get(r)?))
+        Some(GameMode::from_id(u32::get(r)?))
     }
 }
 
@@ -328,7 +328,7 @@ mod tests {
                 yaw: 1.0,
                 pitch: -0.5,
                 on_ground: true,
-                pose: crate::world::Pose::Swim,
+                pose: crate::world::Pose::SWIM,
                 sprint: true,
                 flying: false,
                 frame: Some((7, DVec3::ONE)),

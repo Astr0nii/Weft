@@ -862,7 +862,7 @@ impl Screen for ConfigScreen {
                         let mut spans = if cx.lang.has(&tip) { cx.t(&tip, &[]) } else { Vec::new() };
                         for (on, note) in [
                             (locked, "settings.config_synced"),
-                            (d.flags & weft_abi::config_flags::RESTART != 0, "settings.config_restart"),
+                            (d.flags & weft_abi::config_flags::RESTART_REQUIRED != 0, "settings.config_restart"),
                         ] {
                             if on {
                                 if !spans.is_empty() {

@@ -375,7 +375,7 @@ pub async fn redstone_piston_moves(t: T) -> R {
     t.probe("largest step of a frame when shoved", largest as f32, largest < 0.15);
     t.cmd(&format!("/tp {} {} {}", f[0], f[1] + 12, f[2]))
         .await?;
-    t.c().fly(true);
+    t.c().set_flying(true);
     t.secs(0.3).await?;
 
     // Slime brings the block touching it, not what it can't move.
@@ -721,7 +721,7 @@ pub async fn redstone_body_light(t: T) -> R {
     t.flat().await?;
     let f = t.feet();
     // A dark box around the player.
-    t.c().fly(true);
+    t.c().set_flying(true);
     t.fill(add(f, [-4, -1, -8]), add(f, [8, 6, 4]), "base:stone")
         .await?;
     t.fill(add(f, [-3, 0, -7]), add(f, [7, 5, 3]), "air")
@@ -939,11 +939,11 @@ pub async fn redstone_floater(t: T) -> R {
     t.set(at(-3, 2), "base:floater[facing=south]").await?;
     t.cmd(&format!("/tp {} {} {}", f[0] as f64 - 0.5, f[1] + y + 4, f[2] as f64 + z as f64 + 4.5))
         .await?;
-    t.c().fly(true);
+    t.c().set_flying(true);
     t.op("put me 1 base:floater 1").await?;
     t.op("put me 2 base:lever 1").await?;
     t.op("put me 3 base:redstone_torch 1").await?;
-    t.c().select(1);
+    t.c().select_slot(1);
     t.look_at(at(-1, 1));
     t.secs(0.5).await?;
     t.shot("floaters").await?;
@@ -1047,7 +1047,7 @@ pub async fn redstone_body_edges(t: T) -> R {
     settle(&t).await?;
     let id_num: u64 = id.parse().map_err(|_| "no platform".to_string())?;
     t.check(!lit(&t, lamp).await?, "the platform's wire isn't fed by the wire next to it");
-    let sb = t.c().structure_block(id_num, [0, 1, 0]);
+    let sb = t.c().body_block(id_num, [0, 1, 0]);
     t.check(sb.is_some(), "the client has what is on it");
 
     // A gate on a platform changes its look for clients as well.
@@ -1066,11 +1066,11 @@ pub async fn redstone_body_edges(t: T) -> R {
         .await?;
     let id_num: u64 = id.parse().map_err(|_| "no platform".to_string())?;
     t.secs(0.3).await?;
-    let before = t.c().structure_block(id_num, [1, 1, 0]);
+    let before = t.c().body_block(id_num, [1, 1, 0]);
     t.op(&format!("structureset {id} 0 1 0 base:redstone_block"))
         .await?;
     settle(&t).await?;
-    let after = t.c().structure_block(id_num, [1, 1, 0]);
+    let after = t.c().body_block(id_num, [1, 1, 0]);
     t.check(before.is_some() && before != after, format!("its look changes for clients: {before:?} then {after:?}"));
     t.check(
         t.op(&format!("sblock {id} 1 1 0"))
@@ -1409,7 +1409,7 @@ pub async fn redstone_body_and_world(t: T) -> R {
     t.check(seen, "an observer sees it go past");
     t.check(own_lit, "its own lamp is lit going past a block of the world");
     let passes: u32 = t.op("passes").await?.parse().unwrap_or(0);
-    t.check(passes > passes_before + 3, format!("on_pass as it goes: {passes_before} then {passes}"));
+    t.check(passes > passes_before + 3, format!("on_carried as it goes: {passes_before} then {passes}"));
     Ok(())
 }
 
@@ -1608,7 +1608,7 @@ pub async fn redstone_by_hand(t: T) -> R {
     let (wall, cell) = (add(f, [0, 0, z]), add(f, [0, 0, z + 1]));
     t.set(wall, "base:stone").await?;
     t.op("put me 0 redstone 8").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     t.frames(2).await?;
     t.look_at(wall);
     t.frames(2).await?;
@@ -1644,7 +1644,7 @@ pub async fn redstone_by_hand(t: T) -> R {
     t.set(add(cell, [0, -1, 0]), "base:stone").await?;
 
     t.op("put me 1 repeater 1").await?;
-    t.c().select(1);
+    t.c().select_slot(1);
     t.frames(2).await?;
     t.look_at(wall);
     t.secs(0.3).await?;
@@ -1741,7 +1741,7 @@ pub async fn redstone_looks(t: T) -> R {
     t.set(add(f, [-5, 0, z - 2]), "base:piston[facing=west]")
         .await?;
     t.set(add(f, [-5, 1, z - 2]), "base:redstone_block").await?;
-    t.c().look(180.0, 8.0);
+    t.c().set_look(180.0, 8.0);
     t.secs(0.5).await?;
     t.shot("gallery").await?;
 
@@ -1769,8 +1769,8 @@ pub async fn redstone_looks(t: T) -> R {
     {
         t.op(&format!("put me {i} {item} 1")).await?;
     }
-    t.c().look(0.0, -32.0);
-    t.c().select(8);
+    t.c().set_look(0.0, -32.0);
+    t.c().select_slot(8);
     t.secs(1.0).await?;
     t.shot("close").await?;
 
@@ -1960,7 +1960,7 @@ pub fn build_turned(w: &World, seed: u64, from: [i32; 3]) -> Result<String, Stri
         for x in -REACH..=REACH {
             for y in -REACH..=REACH {
                 for z in -REACH..=REACH {
-                    if !w.set(at([x, y, z]), air) {
+                    if !w.set_block(at([x, y, z]), air) {
                         return Err(format!("{:?} is not loaded", at([x, y, z])));
                     }
                 }
@@ -1978,7 +1978,7 @@ pub fn build_turned(w: &World, seed: u64, from: [i32; 3]) -> Result<String, Stri
                 }
                 let q = turned(way, p);
                 let state = state_of(part, way).ok_or("a state of the circuit doesn't exist")?;
-                w.set([from[0] + o[0] + q[0], from[1] + o[1] + q[1], from[2] + o[2] + q[2]], state);
+                w.set_block([from[0] + o[0] + q[0], from[1] + o[1] + q[1], from[2] + o[2] + q[2]], state);
             }
         }
     }
@@ -1999,9 +1999,9 @@ pub async fn redstone_on_a_structure(t: T) -> R {
     t.op(&structure_set(1, "base:redstone[faces=4]")).await?;
     t.frames(5).await?;
     let name = format!("test-{}", t.name());
-    t.c().leave_world();
+    t.c().world_leave();
     t.screen("core:title").await?;
-    t.c().open_world(&name, 1);
+    t.c().world_open(&name, 1);
     t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED))
         .await?;
     t.loaded().await?;
@@ -2027,7 +2027,7 @@ pub async fn redstone_on_a_structure(t: T) -> R {
         .await?;
     let uid: u64 = id.parse().map_err(|_| "not an id".to_string())?;
     // From above.
-    t.c().fly(true);
+    t.c().set_flying(true);
     t.cmd(&format!("/tp {} {} {}", f[0] + 4, f[1] + 7, f[2] - 8))
         .await?;
     t.secs(0.5).await?;
@@ -2039,7 +2039,7 @@ pub async fn redstone_on_a_structure(t: T) -> R {
         let st = t.state();
         let (dx, dy, dz) = (at[0] - st.shown[0], at[1] - st.shown[1] - 1.62, at[2] - st.shown[2]);
         t.c()
-            .look((-dx).atan2(-dz).to_degrees() as f32, dy.atan2((dx * dx + dz * dz).sqrt()).to_degrees() as f32);
+            .set_look((-dx).atan2(-dz).to_degrees() as f32, dy.atan2((dx * dx + dz * dz).sqrt()).to_degrees() as f32);
         t.frames(2).await?;
         let Some(o) = t.c().entity(uid).map(|e| e.pos) else { continue };
         if let Some((x, y)) = t.on_screen([o[0] + 0.0, o[1] + 1.03, o[2] - 1.0]) {
@@ -2114,9 +2114,9 @@ pub async fn redstone_saved(t: T) -> R {
     let before = t.shot("before").await?.share(0.05, 0.05, 0.95, 0.95, red);
     t.check(lit(&t, lamp).await?, "lit before");
 
-    t.c().leave_world();
+    t.c().world_leave();
     t.screen("core:title").await?;
-    t.c().open_world(&format!("test-{}", t.name()), 1);
+    t.c().world_open(&format!("test-{}", t.name()), 1);
     t.loaded().await?;
     t.look_at(add(f, [2, 0, z]));
     settle(&t).await?;

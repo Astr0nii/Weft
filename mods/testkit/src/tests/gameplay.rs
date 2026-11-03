@@ -17,13 +17,13 @@ pub async fn sprint_and_sneak_modes(t: T) -> R {
     static TOGGLE_SPRINT: Config<bool> = Config::named("core:toggle_sprint");
     t.flat().await?;
     // The options are in Controls, and nothing is left of them in the Settings.
-    t.c().open_screen(&screens::SETTINGS);
+    t.c().screen_open(&screens::SETTINGS);
     t.screen("core:settings").await?;
     t.frames(3).await?;
     t.check(t.c().ui_rect("text:Toggle sneak").is_none(), "input options out of the Settings");
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await?;
-    t.c().open_screen(&screens::CONTROLS);
+    t.c().screen_open(&screens::CONTROLS);
     t.screen("core:controls").await?;
     t.frames(3).await?;
     t.shot("controls").await?;
@@ -32,9 +32,9 @@ pub async fn sprint_and_sneak_modes(t: T) -> R {
     t.until("toggle sneak on", Duration::from_secs(2), |_| TOGGLE_SNEAK.get())
         .await?;
     TOGGLE_SNEAK.set(false);
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await?;
-    t.c().look(0.0, 0.0);
+    t.c().set_look(0.0, 0.0);
 
     // Blocks walked in a second of holding forward.
     let walk = async || -> Result<f64, String> {
@@ -102,7 +102,7 @@ pub async fn sprint_and_sneak_modes(t: T) -> R {
 pub async fn mining_and_wear(t: T) -> R {
     t.flat().await?;
     t.op("put me 0 stone_pickaxe 1").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     let f = t.feet();
     let stone = add(f, [2, 0, 0]);
     t.set(stone, "stone").await?;
@@ -121,7 +121,7 @@ pub async fn mining_and_wear(t: T) -> R {
         .await;
     t.check(picked.is_ok(), "no cobblestone after mining stone with a pickaxe");
     // Dirt by hand drops dirt.
-    t.c().select(4);
+    t.c().select_slot(4);
     let dirt = add(f, [0, 0, 2]);
     t.set(dirt, "dirt").await?;
     t.look_at(dirt);
@@ -140,7 +140,7 @@ pub async fn mining_and_wear(t: T) -> R {
     let gold = add(f, [-2, 0, 0]);
     t.set(gold, "gold_block").await?;
     t.op("put me 1 diamond_pickaxe 1").await?;
-    t.c().select(1);
+    t.c().select_slot(1);
     t.cmd("/rule testkit:protect_gold 1").await?;
     t.look_at(gold);
     t.frames(2).await?;
@@ -161,7 +161,7 @@ pub async fn armor(t: T) -> R {
     t.press("core:inventory");
     t.screen("core:menu").await?;
     for i in 36..40 {
-        t.c().key("ShiftLeft", 0.3);
+        t.c().input_key("ShiftLeft", 0.3);
         t.frames(1).await?;
         t.click_ui(&format!("slot:{i}"), 0);
         t.frames(4).await?;
@@ -173,7 +173,7 @@ pub async fn armor(t: T) -> R {
     t.check_eq(t.op("group me base:head").await?, "1 1".to_string(), "the head slot");
     t.check_eq(t.op("group me hotbar").await?, "9 0".to_string(), "hotbar group");
     t.shot("worn").await?;
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await?;
     let f = t.feet();
     t.op(&format!("spawn zombie {}", at(add(f, [1, 0, 1]))))
@@ -202,7 +202,7 @@ pub async fn slot_limit(t: T) -> R {
         .await?;
     t.screen("core:menu").await?;
     // Menu slots: 0 input, 1 output, 2-28 main inventory, 29-37 hotbar.
-    t.c().key("ShiftLeft", 0.3);
+    t.c().input_key("ShiftLeft", 0.3);
     t.frames(1).await?;
     t.click_ui("slot:29", 0);
     t.until("ores in the furnace", Duration::from_secs(5), |t| t.c().menu_slot(0).count > 0)
@@ -210,7 +210,7 @@ pub async fn slot_limit(t: T) -> R {
     t.frames(4).await?;
     t.check_eq(t.c().menu_slot(0).count, 16, "the input slot holds 16");
     t.check_eq(t.c().menu_slot(29).count, 16, "the rest stays in the hotbar");
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await
 }
 
@@ -227,7 +227,7 @@ pub async fn slot_accepts(t: T) -> R {
     t.screen("core:menu").await?;
     // Menu slots: 0 the generator's, 1-27 main inventory, 28-36 hotbar.
     for slot in [28, 29] {
-        t.c().key("ShiftLeft", 0.3);
+        t.c().input_key("ShiftLeft", 0.3);
         t.frames(1).await?;
         t.click_ui(&format!("slot:{slot}"), 0);
         t.frames(4).await?;
@@ -243,12 +243,12 @@ pub async fn slot_accepts(t: T) -> R {
     t.click_ui("slot:0", 0);
     t.frames(4).await?;
     t.check(t.c().cursor_stack().is_empty(), "nothing comes out of an input slot");
-    t.c().key("ShiftLeft", 0.3);
+    t.c().input_key("ShiftLeft", 0.3);
     t.frames(1).await?;
     t.click_ui("slot:0", 0);
     t.frames(4).await?;
     t.check(t.c().menu_slot(0).count + 1 >= before, "a shift-click doesn't take it out either");
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await
 }
 
@@ -256,7 +256,7 @@ pub async fn slot_accepts(t: T) -> R {
 pub async fn bucket(t: T) -> R {
     t.flat().await?;
     t.op("put me 0 water_bucket 1").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     let f = t.feet();
     // A one block hole: the source cannot spread, so it is still there to scoop.
     let water = add(f, [1, -1, 0]);
@@ -297,7 +297,7 @@ pub async fn advancements(t: T) -> R {
     t.secs(0.6).await?;
     t.shot("toast").await?;
     t.op("put me 1 torch 1").await?;
-    t.c().select(1);
+    t.c().select_slot(1);
     t.look_at(add(t.feet(), [1, -1, 0]));
     t.frames(2).await?;
     t.press("core:use");
@@ -312,23 +312,23 @@ pub async fn advancements(t: T) -> R {
     if let Some([x, y, w, h]) = t.c().ui_rect("text:Making Progress") {
         let st = t.state();
         t.c()
-            .cursor(x + w + 13.0 * st.gui_scale / st.window[0] as f32, y + h / 2.0);
+            .input_cursor(x + w + 13.0 * st.gui_scale / st.window[0] as f32, y + h / 2.0);
         t.frames(5).await?;
         t.shot("tooltip").await?;
     }
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await?;
     // The pause menu's button, as wide as the engine's own, opens the list too.
-    t.c().open_screen(&screens::PAUSE);
+    t.c().screen_open(&screens::PAUSE);
     t.screen("core:pause").await?;
     t.frames(3).await?;
     t.shot("pause").await?;
     t.check(t.click_ui("text:Advancements", 0), "the pause menu's advancements button");
     t.screen("base:advancements").await?;
     // It opened on top of the pause menu, which is back once it closes.
-    t.c().close_screen();
+    t.c().screen_close();
     t.screen("core:pause").await?;
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await?;
     // Dying takes none of them.
     t.cmd("/kill").await?;
@@ -360,7 +360,7 @@ async fn place_bed(t: &T) -> Result<[i32; 3], String> {
     t.fill(add(f, [-3, 0, -6]), add(f, [3, 4, 2]), "air")
         .await?;
     t.op("put me 0 bed 1").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     let foot = add(f, [0, 0, -2]);
     t.look_at(add(foot, [0, -1, 0]));
     t.frames(2).await?;
@@ -415,7 +415,7 @@ pub async fn model_bones(t: T) -> R {
     t.secs(0.5).await?;
     let tip = at("tip").ok_or("the sword's tip")?;
     for _ in 0..6 {
-        t.c().turn_bone(me, "blade", [90.0, 0.0, 0.0]);
+        t.c().bone_turn(me, "blade", [90.0, 0.0, 0.0]);
         t.frames(1).await?;
     }
     let bent = at("tip").ok_or("the sword's tip")?;
@@ -429,7 +429,7 @@ pub async fn model_bones(t: T) -> R {
     t.op("put me 0 base:apple").await?;
     t.secs(1.0).await?;
     t.check(at("fruit").is_some(), "an apple in hand is its model");
-    t.c().key("Digit2", 0.0);
+    t.c().input_key("Digit2", 0.0);
     t.frames(3).await?;
     t.check(at("fruit").is_some(), "the apple going down is still its model");
     t.secs(1.0).await?;
@@ -613,7 +613,7 @@ pub async fn beds(t: T) -> R {
     // Placed each way: the head away from the player, the bed facing them. Seen from above, the
     // pillow is at the far end of each.
     t.op("mode creative").await?;
-    t.c().fly(true);
+    t.c().set_flying(true);
     t.fill(add(f, [-4, -1, -4]), add(f, [4, -1, 4]), "stone")
         .await?;
     t.fill(add(f, [-4, 0, -4]), add(f, [4, 4, 4]), "air")
@@ -637,8 +637,8 @@ pub async fn beds(t: T) -> R {
     t.c()
         .teleport([f[0] as f64 + 0.5, f[1] as f64 + 7.0, f[2] as f64 + 0.5]);
     // Landing ended the flight.
-    t.c().fly(true);
-    t.c().look(0.0, -89.0);
+    t.c().set_flying(true);
+    t.c().set_look(0.0, -89.0);
     t.secs(1.0).await?;
     t.shot("facings").await?;
 
@@ -669,7 +669,7 @@ pub async fn beds_far(t: T) -> R {
         .await?;
     // Only now: the news of the mode, on its way above, turns flying off.
     t.secs(0.2).await?;
-    t.c().fly(true);
+    t.c().set_flying(true);
     t.loaded().await?;
     let foot = place_bed(&t).await?;
     t.look_at(foot);
@@ -740,7 +740,7 @@ pub async fn explosions_and_water(t: T) -> R {
     t.check_eq(t.block(add(spot, [0, -1, 0])).await?, "base:stone".into(), "the floor under it stays");
     // The same place, a hole in the water that the water must fill.
     t.op("mode creative").await?;
-    t.c().fly(true);
+    t.c().set_flying(true);
     t.c()
         .teleport([f[0] as f64 + 0.5, f[1] as f64 + 1.0, f[2] as f64 + 0.5]);
     t.secs(0.2).await?;
@@ -807,7 +807,7 @@ pub async fn sneak_edge(t: T) -> R {
         .teleport([base[0] as f64 + 0.5, base[1] as f64 + 3.0, base[2] as f64 + 0.5]);
     t.until("on the pillar", Duration::from_secs(5), |t| t.flag(client::client_flags::ON_GROUND))
         .await?;
-    t.c().look(30.0, 0.0);
+    t.c().set_look(30.0, 0.0);
     t.hold("core:sneak", 4.0);
     t.frames(2).await?;
     t.hold("core:forward", 2.0);
@@ -823,7 +823,7 @@ pub async fn sneak_edge(t: T) -> R {
 /// a stronger jump goes higher, and a push from the server lifts it.
 pub async fn movement_attributes(t: T) -> R {
     t.flat().await?;
-    t.c().look(0.0, 0.0);
+    t.c().set_look(0.0, 0.0);
     let walk = |t: T| async move {
         let start = t.state().pos;
         t.hold("core:forward", 1.0);
@@ -973,8 +973,8 @@ pub async fn mob_physics(t: T) -> R {
 pub async fn drop_and_pickup(t: T) -> R {
     t.flat().await?;
     t.op("put me 0 cobblestone 10").await?;
-    t.c().select(0);
-    t.c().look(0.0, 0.0);
+    t.c().select_slot(0);
+    t.c().set_look(0.0, 0.0);
     t.frames(2).await?;
     t.press("core:drop");
     t.until("one dropped", Duration::from_secs(5), |t| t.c().inventory_slot(0).count == 9)
@@ -1003,7 +1003,7 @@ pub async fn creative_and_invulnerable(t: T) -> R {
     t.flat().await?;
     t.op("mode creative").await?;
     t.op("put me 0 stone_pickaxe 1").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     let f = t.feet();
     let stone = add(f, [2, 0, 0]);
     t.set(stone, "stone").await?;
@@ -1053,7 +1053,7 @@ fn aim(t: &T, p: [f64; 3]) {
     let d = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
     let yaw = (-d[0]).atan2(-d[2]).to_degrees() as f32;
     let pitch = d[1].atan2((d[0] * d[0] + d[2] * d[2]).sqrt()).to_degrees() as f32;
-    t.c().look(yaw, pitch);
+    t.c().set_look(yaw, pitch);
 }
 
 /// Stairs, slabs and vertical slabs: made for all with a tag, also another mod's block; placed by
@@ -1103,7 +1103,7 @@ pub async fn block_shapes(t: T) -> R {
     t.fill(add(wall, [-1, 0, 0]), add(wall, [1, 2, 0]), "stone")
         .await?;
     t.op("put me 0 base:oak_planks_slab 16").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     t.frames(4).await?;
 
     // High on a wall the top half, low on it the bottom one.
@@ -1139,13 +1139,13 @@ pub async fn block_shapes(t: T) -> R {
 
     // On a floor, from above, wherever one is: flying over it, next to it, at one's feet.
     t.op("mode creative").await?;
-    t.c().fly(true);
+    t.c().set_flying(true);
     let floor = add(f, [8, -1, -8]);
     t.fill(add(floor, [-3, 0, -3]), add(floor, [3, 0, 3]), "stone")
         .await?;
     for (name, over, height) in [("flying over", [0.5, 0.5], 3.0), ("off to a side", [1.5, 0.5], 1.0), ("next to it", [0.5, 1.4], 0.0)] {
         t.op("put me 0 base:sandstone_slab 16").await?;
-        t.c().select(0);
+        t.c().select_slot(0);
         t.c()
             .teleport(centre(floor, over[0], 1.0 + height, over[1]));
         t.secs(0.4).await?;
@@ -1157,7 +1157,7 @@ pub async fn block_shapes(t: T) -> R {
         t.check(t.block(there).await?.contains("type=bottom"), format!("{name}: {}", t.block(there).await?));
         t.set(there, "air").await?;
     }
-    t.c().fly(false);
+    t.c().set_flying(false);
     // Standing on a slab beside it, over its edge: in the air over the block, not in it.
     t.set(add(floor, [0, 1, 1]), "base:sandstone_slab").await?;
     t.c().teleport(centre(floor, 0.5, 1.6, 1.2));
@@ -1182,14 +1182,14 @@ pub async fn block_shapes(t: T) -> R {
     t.c().teleport(centre(f, 0.0, 0.0, 0.0));
     t.secs(0.3).await?;
     t.op("put me 0 base:oak_planks_slab 16").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
 
     // Of two different blocks too, which is all of them it gives back.
     let mix = add(f, [-8, 0, -8]);
     t.set(add(mix, [0, -1, 0]), "stone").await?;
     t.set(mix, "base:oak_planks_slab").await?;
     t.op("put me 2 base:sandstone_slab 8").await?;
-    t.c().select(2);
+    t.c().select_slot(2);
     t.c().teleport(centre(mix, 0.5, 0.0, 2.4));
     t.secs(0.4).await?;
     aim(&t, centre(mix, 0.5, 0.5, 0.5));
@@ -1219,11 +1219,11 @@ pub async fn block_shapes(t: T) -> R {
     t.check(inv.contains("oak_planks_slab"), format!("and the other: {inv}"));
     t.c().teleport(centre(f, 0.0, 0.0, 0.0));
     t.secs(0.2).await?;
-    t.c().select(0);
+    t.c().select_slot(0);
 
     // A vertical one goes against what is clicked, and a second makes it whole too.
     t.op("put me 1 base:oak_planks_vertical_slab 16").await?;
-    t.c().select(1);
+    t.c().select_slot(1);
     t.frames(4).await?;
     aim(&t, centre(wall, 0.5, 1.5, 1.0));
     t.frames(3).await?;
@@ -1266,7 +1266,7 @@ pub async fn block_shapes(t: T) -> R {
     t.fill(add(f, [-12, 0, -4]), add(f, [-12, 0, 1]), "stone")
         .await?;
     t.c().teleport(centre(f, -11.5, 0.0, 4.5));
-    t.c().look(0.0, 0.0);
+    t.c().set_look(0.0, 0.0);
     t.secs(0.3).await?;
     t.hold("core:forward", 1.4);
     t.secs(1.5).await?;
@@ -1278,7 +1278,7 @@ pub async fn block_shapes(t: T) -> R {
     t.set(add(v, [0, 1, 0]), "base:oak_planks_vertical_slab[side=north]")
         .await?;
     t.c().teleport(centre(v, 0.5, 0.0, 2.5));
-    t.c().look(0.0, 0.0);
+    t.c().set_look(0.0, 0.0);
     t.secs(0.3).await?;
     t.hold("core:forward", 1.2);
     t.secs(1.3).await?;
@@ -1345,7 +1345,7 @@ pub async fn cell_parts(t: T) -> R {
     t.set(add(pool, [0, -1, 0]), "air").await?;
     t.set(pool, "base:stone_slab").await?;
     t.op("put me 0 base:water_bucket 1").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     t.c().teleport(centre(pool, 0.5, 0.0, 3.5));
     t.secs(0.3).await?;
     aim(&t, centre(pool, 0.5, 0.5, 0.5));
@@ -1375,7 +1375,7 @@ pub async fn cell_parts(t: T) -> R {
     t.set(pool, "base:water").await?;
     t.frames(2).await?;
     t.op("put me 1 base:stone_slab 8").await?;
-    t.c().select(1);
+    t.c().select_slot(1);
     t.fill(add(pool, [-1, 0, 0]), add(pool, [-1, 1, 0]), "stone")
         .await?;
     t.c().teleport(centre(pool, 0.5, 0.0, 3.5));
@@ -1397,7 +1397,7 @@ pub async fn cell_parts(t: T) -> R {
     let steps = add(pool, [3, 0, 0]);
     t.set(steps, "base:stone_stairs[facing=north]").await?;
     t.op("put me 0 base:water_bucket 1").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     t.c().teleport(centre(steps, 0.5, 0.0, 3.5));
     t.secs(0.3).await?;
     aim(&t, centre(steps, 0.5, 0.3, 1.0));
@@ -1422,7 +1422,7 @@ pub async fn cell_parts(t: T) -> R {
     t.set(add(bed, [0, -1, 0]), "base:grass").await?;
     t.set(bed, "base:rose").await?;
     t.op("put me 2 testmod:snow_layer 8").await?;
-    t.c().select(2);
+    t.c().select_slot(2);
     t.c().teleport(centre(bed, 0.5, 0.0, 2.5));
     t.secs(0.3).await?;
     aim(&t, centre(bed, 0.5, 0.4, 0.5));
@@ -1474,9 +1474,9 @@ pub async fn cell_parts(t: T) -> R {
 
     // It is all in the save.
     let name = format!("test-{}", t.name());
-    t.c().leave_world();
+    t.c().world_leave();
     t.screen("core:title").await?;
-    t.c().open_screen(&screens::WORLDS);
+    t.c().screen_open(&screens::WORLDS);
     t.screen("core:worlds").await?;
     t.frames(2).await?;
     t.click_ui(&format!("text:{name} |"), 0);
@@ -1516,7 +1516,7 @@ pub async fn hitboxes(t: T) -> R {
     t.set(add(wall, [0, -1, 0]), "base:sand").await?;
     t.set(wall, "base:cactus").await?;
     t.c().teleport(centre(wall, 0.5, 0.0, 3.5));
-    t.c().look(0.0, 0.0);
+    t.c().set_look(0.0, 0.0);
     t.secs(0.3).await?;
     t.hold("core:forward", 1.0);
     t.secs(1.1).await?;
@@ -1540,7 +1540,7 @@ pub async fn food(t: T) -> R {
     let before = t.state().health;
     t.cmd("/feed 10").await?;
     t.op("put me 0 cooked_beef 3").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     t.until("hunger synced", Duration::from_secs(5), |t| {
         t.c()
             .view()
@@ -1664,7 +1664,7 @@ pub async fn replaced_plants_drop(t: T) -> R {
     let f = t.feet();
     let flower = add(f, [2, 0, 0]);
     t.op("put me 0 stone 2").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     for creative in [false, true] {
         if creative {
             t.op("mode creative").await?;
@@ -1713,7 +1713,7 @@ pub async fn swimming(t: T) -> R {
         let s = t.state().pos;
         t.c().teleport([s[0], f[1] as f64 + 8.0, f[2] as f64 + 0.5]);
         t.secs(0.3).await?;
-        t.c().look(0.0, pitch);
+        t.c().set_look(0.0, pitch);
         t.hold("core:sprint", 2.0);
         t.hold("core:forward", 2.0);
         t.secs(1.0).await?;
@@ -1752,7 +1752,7 @@ pub async fn swimming(t: T) -> R {
 pub async fn attack_charge(t: T) -> R {
     t.flat().await?;
     t.op("put me 0 iron_sword 1").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     let f = t.feet();
     let spot = add(f, [0, 0, -2]);
     // Walled in with the player, or it would run off from the first hit.
@@ -1774,8 +1774,8 @@ pub async fn attack_charge(t: T) -> R {
     t.look_at(spot);
     // The sword just came to hand: nearly no charge, and the hand comes up over the next second.
     t.secs(0.2).await?;
-    t.c().select(1);
-    t.c().select(0);
+    t.c().select_slot(1);
+    t.c().select_slot(0);
     t.frames(2).await?;
     let before = health(t.clone(), id.clone()).await?;
     t.press("core:attack");
@@ -1799,7 +1799,7 @@ pub async fn permissions(t: T) -> R {
     t.flat().await?;
     t.check(t.cmd("/time query").await?.contains("time is"), "the host may do it all");
     t.op("put me 0 stone 1").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     t.secs(0.1).await?;
     t.cmd("/op @s 0").await?;
     let no = t.cmd("/time set 1000").await?;
@@ -1939,7 +1939,7 @@ pub async fn dedicated_server(t: T) -> R {
     let mut server = start()?;
     t.until("the server listening", Duration::from_secs(30), listening)
         .await?;
-    t.c().join(&format!("127.0.0.1:{port}"));
+    t.c().world_join(&format!("127.0.0.1:{port}"));
     t.until("joined by address", Duration::from_secs(30), |t| t.flag(client::client_flags::JOINED))
         .await?;
     t.loaded().await?;
@@ -1953,7 +1953,7 @@ pub async fn dedicated_server(t: T) -> R {
     t.secs(0.5).await?;
     let allowed = t.cmd("/time query").await?;
     t.check(allowed.contains("time is"), format!("op from the console: {allowed}"));
-    t.c().leave_world();
+    t.c().world_leave();
     t.screen("core:title").await?;
     t.check_eq(SPARKS.get(), own_sparks, "the player's own setting after leaving");
     writeln!(console, "stop").map_err(|e| e.to_string())?;
@@ -1968,9 +1968,9 @@ pub async fn dedicated_server(t: T) -> R {
     let _server = start()?;
     t.until("the server listening again", Duration::from_secs(30), listening)
         .await?;
-    t.c().join(&format!("127.0.0.1:{port}"));
+    t.c().world_join(&format!("127.0.0.1:{port}"));
     t.screen("core:message").await?;
     t.check(!t.flag(client::client_flags::IN_WORLD), "not on the whitelist, not in");
-    t.c().close_screen();
+    t.c().screen_close();
     Ok(())
 }

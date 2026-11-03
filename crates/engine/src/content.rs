@@ -1,10 +1,11 @@
 //! Frozen registries. Built once from every mod's registrar, then shared read-only.
 
+use glam::IVec3;
 use std::sync::OnceLock;
 
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
-use weft_abi::{self as abi, Callback, Layer, ModId, Model};
+use weft_abi::{self as abi, BlockModel, Callback, ModId, RenderLayer};
 
 use crate::components::{self as comps, Components, RawSet, RawValue, Target};
 
@@ -57,9 +58,9 @@ pub struct StateInfo {
     pub opacity: u8,
     pub tint: u8,
     pub tint_faces: u8,
-    pub layer: Layer,
+    pub layer: RenderLayer,
     pub level: u8,
-    pub model: Model,
+    pub model: BlockModel,
     /// Texture ids (`Content::textures`) per face.
     pub textures: [u32; 6],
     pub boxes: Vec<ModelBox>,
@@ -79,8 +80,8 @@ pub struct StateInfo {
     pub support: Option<(u8, Option<u32>)>,
     /// Tag a horizontal neighbor of the support needs (unless the support is the same block).
     pub support_near: Option<u32>,
-    /// Spreads onto blocks of this tag (`abi::comp::SPREADS_TO`): mean ticks, light needed.
-    pub spread: Option<(u32, f64, u32)>,
+    /// Spreads onto blocks of a tag (`abi::comp::SPREADS_TO`).
+    pub spread: Option<Spread>,
     /// Mean ticks between growth steps and the light one needs.
     pub grow: Option<(f64, u32)>,
     /// Turns into this state when covered (`abi::comp::SMOTHERED_INTO`), in mean ticks.
@@ -98,7 +99,7 @@ impl StateInfo {
             return Some(self.textures[3]);
         }
         match self.model {
-            Model::Cross | Model::None | Model::Wire => Some(self.textures[0]),
+            BlockModel::Cross | BlockModel::None | BlockModel::Wire => Some(self.textures[0]),
             _ => None,
         }
     }
@@ -109,7 +110,7 @@ pub struct BlockCallbacks {
     pub on_use: Option<Callback>,
     pub on_neighbor: Option<Callback>,
     pub on_scheduled: Option<Callback>,
-    pub on_pass: Option<Callback>,
+    pub on_carried: Option<Callback>,
     pub signal_read: Option<Callback>,
     pub placement: Option<Callback>,
     pub merge: Option<Callback>,
@@ -450,6 +451,8 @@ pub struct DimensionDef {
     pub bare: bool,
     /// `dim_flags::WEATHER`.
     pub weather: bool,
+    /// (turn, level) points sorted by turn, empty for vanilla's curve.
+    pub daylight: Vec<[f32; 2]>,
     /// In name order, placed after `generator`.
     pub scatters: Vec<ScatterDef>,
     /// (mod, callback) run after the generator and scatters, in load order.
@@ -468,6 +471,8 @@ pub struct ScatterDef {
     pub owner: ModId,
     pub cell: i32,
     pub reach: i32,
+    /// How far below and above its site it may put blocks.
+    pub reach_y: [i32; 2],
     /// Biome component (f32) with the chance of a site per cell.
     pub density: Option<u32>,
     pub salt: u64,
@@ -530,13 +535,41 @@ impl DimensionDef {
         (0.25 + (from_noon * 2.0 + eased) / 3.0).rem_euclid(1.0)
     }
 
-    /// Fraction of full daylight (0..1) at world time `time`, vanilla's curve.
+    /// Fraction of full daylight (0..1) at world time `time`: the dimension's curve, or
+    /// vanilla's.
     pub fn daylight(&self, time: u64) -> f32 {
         if !self.sky_light {
             return 0.0;
         }
-        ((self.day_turn(time as f64) * std::f64::consts::TAU).sin() * 2.0 + 0.5).clamp(0.0, 1.0) as f32
+        let turn = self.day_turn(time as f64);
+        let pts = &self.daylight;
+        if pts.is_empty() {
+            return ((turn * std::f64::consts::TAU).sin() * 2.0 + 0.5).clamp(0.0, 1.0) as f32;
+        }
+        // Between the last point before `turn` and the first after it, around the day.
+        let t = turn as f32;
+        let after = pts.iter().position(|p| p[0] > t).unwrap_or(0);
+        let before = (after + pts.len() - 1) % pts.len();
+        let (a, b) = (pts[before], pts[after]);
+        let span = (b[0] - a[0]).rem_euclid(1.0);
+        if span <= f32::EPSILON {
+            return a[1];
+        }
+        a[1] + (b[1] - a[1]) * ((t - a[0]).rem_euclid(1.0) / span)
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Spread {
+    pub tag: u32,
+    pub mean: f64,
+    /// Light the target needs.
+    pub light: u32,
+    /// From the spreader to the target, inclusive.
+    pub min: IVec3,
+    pub max: IVec3,
+    /// The target must have nothing opaque on top.
+    pub open_top: bool,
 }
 
 #[derive(Clone)]
@@ -552,6 +585,49 @@ pub struct OreDef {
     pub salt: u64,
     /// Biome tag the block's column must carry.
     pub biome: Option<u32>,
+    /// `abi::vein_shape`, and its sizes.
+    pub shape: u32,
+    pub shape_size: [f32; 2],
+    /// `abi::height_curve`.
+    pub height: u32,
+    pub plateau: i32,
+}
+
+impl OreDef {
+    /// How far from its start a vein may put blocks: a cube at most, so the cubes around one
+    /// are all there is to look at.
+    pub fn reach(&self) -> i32 {
+        let r = match self.shape {
+            abi::vein_shape::SPHERE | abi::vein_shape::DISK => self.shape_size[0].ceil() as i32,
+            abi::vein_shape::BLOB => (self.size as f32).cbrt().ceil() as i32 + 2,
+            _ => self.size as i32,
+        };
+        r.clamp(0, 16)
+    }
+
+    /// How likely a vein starting at `y` is to be kept (0..1), and how many starts to try per
+    /// vein wanted so that the average comes out as `veins`.
+    pub fn weight(&self, y: i32) -> f64 {
+        let (lo, hi) = (self.min_y as f64, self.max_y as f64);
+        let half = (hi - lo) / 2.0;
+        if half <= 0.0 || self.height == abi::height_curve::UNIFORM {
+            return 1.0;
+        }
+        let off = (y as f64 - (lo + half)).abs();
+        let flat = if self.height == abi::height_curve::TRAPEZOID { (self.plateau as f64 / 2.0).min(half) } else { 0.0 };
+        if half - flat <= 0.0 { 1.0 } else { ((half - off) / (half - flat)).clamp(0.0, 1.0) }
+    }
+
+    pub fn tries(&self) -> u32 {
+        let (lo, hi) = (self.min_y as f64, self.max_y as f64);
+        let span = hi - lo;
+        let avg = match self.height {
+            abi::height_curve::TRIANGLE => 0.5,
+            abi::height_curve::TRAPEZOID if span > 0.0 => (1.0 + (self.plateau as f64 / span).min(1.0)) / 2.0,
+            _ => 1.0,
+        };
+        (self.veins as f64 / avg).round() as u32
+    }
 }
 
 /// A template's blocks, checked at freeze: (offset from the lowest corner, state).
@@ -608,6 +684,10 @@ pub struct Ids {
     pub sweeps: Option<u32>,
     pub no_creative_break: Option<u32>,
     pub snowy: Option<u32>,
+    pub inventory: Option<u32>,
+    pub contents: Option<u32>,
+    pub energy: Option<u32>,
+    pub tank: Option<u32>,
 }
 
 /// What lighting and meshing read of a state for every block they pass, packed tight: a
@@ -637,6 +717,8 @@ pub struct Content {
     pub dims: Vec<DimensionDef>,
     /// Tags some block spreads onto (`StateInfo::spread`).
     pub spread_tags: Vec<u32>,
+    /// From a target, the box holding everything that may spread onto it.
+    pub spread_search: (IVec3, IVec3),
     pub templates: Vec<TemplateDef>,
     pub template_names: FxHashMap<String, u32>,
     /// Weighted lists of block states from `blocks` component values, by the index the value holds.
@@ -679,6 +761,10 @@ pub struct Content {
     pub loot: FxHashMap<String, crate::loot::Table>,
     /// `abi::stack_flags` of stack components by component id.
     pub stack_flags: FxHashMap<u32, u32>,
+    /// What falls in each biome when a weather does (`registry::PrecipitationDef`), by biome.
+    pub biome_precipitation: Vec<u16>,
+    /// The `immune/<cause>` tag of each damage cause, by cause id, if anything uses it.
+    pub damage_immune: Vec<Option<u32>>,
 }
 
 static CONTENT: OnceLock<Content> = OnceLock::new();
@@ -836,6 +922,14 @@ impl Content {
         ))
     }
 
+    /// Bones an item's equipment slot covers by name, on top of its regions.
+    pub fn worn_bones(&self, item: u32) -> &[String] {
+        self.items
+            .get(item as usize)
+            .and_then(|d| d.equip)
+            .map_or(&[], |e| &self.game.player_layout.equipment[e as usize].bones)
+    }
+
     pub fn matches(&self, m: &Match, state: u32) -> bool {
         m.0.contains(&self.states[state as usize].block)
     }
@@ -952,8 +1046,8 @@ pub struct RawState {
     pub flags: u32,
     pub filter: [u8; 3],
     pub opacity: u8,
-    pub layer: Layer,
-    pub model: Model,
+    pub layer: RenderLayer,
+    pub model: BlockModel,
     pub textures: [String; 6],
     /// (min, max, textures, uv, turn, tilt) per box, see `abi::ModelBox`.
     pub boxes: Vec<([f32; 3], [f32; 3], [String; 6], [[f32; 4]; 6], [u8; 6], weft_abi::BoxTilt)>,
@@ -1043,7 +1137,7 @@ fn inherit_states(b: &mut RawBlock, old: &RawBlock) {
         .collect();
     let (n, o) = (&mut b.cb, &old.cb);
     for (mine, theirs) in [
-        (&mut n.on_pass, o.on_pass),
+        (&mut n.on_carried, o.on_carried),
         (&mut n.signal_read, o.signal_read),
         (&mut n.on_signal, o.on_signal),
         (&mut n.signal_logic, o.signal_logic),
@@ -1129,7 +1223,7 @@ fn expand_templates(
             .map_or(template.name.as_str(), |x| x.1);
         let item = items.iter().find(|i| i.1.block == template.name);
         for (s, (_, source)) in blocks.iter().enumerate() {
-            let cube = source.states[0].model == Model::Cube && source.derive.is_none();
+            let cube = source.states[0].model == BlockModel::Cube && source.derive.is_none();
             if !cube || !sources.split_whitespace().any(|w| matches(source, w)) {
                 continue;
             }
@@ -1148,9 +1242,9 @@ fn expand_templates(
                     let mut st = own.clone();
                     st.textures = from.textures.clone();
                     st.filter = from.filter;
-                    if own.model == Model::Cube {
+                    if own.model == BlockModel::Cube {
                         (st.flags, st.opacity, st.layer) = (from.flags, from.opacity, from.layer);
-                    } else if from.layer == Layer::Translucent {
+                    } else if from.layer == RenderLayer::Translucent {
                         st.layer = from.layer;
                         st.flags |= from.flags & abi::block_flags::CULL_SAME;
                     }
@@ -1235,11 +1329,11 @@ fn apply_model(b: &mut RawBlock, m: &crate::block_model::FileModel) {
         if m.boxes.is_empty() {
             continue;
         }
-        s.model = Model::Boxes;
+        s.model = BlockModel::Boxes;
         s.flags &= !abi::block_flags::OPAQUE;
         s.opacity = 0;
-        if s.layer == Layer::Opaque {
-            s.layer = Layer::Cutout;
+        if s.layer == RenderLayer::Opaque {
+            s.layer = RenderLayer::Cutout;
         }
         s.boxes = m
             .boxes
@@ -1285,8 +1379,7 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
         RawBlock {
             name: d.name.as_str().to_string(),
             cell: d.cell as usize,
-            derive: (!d.derive_from.as_str().is_empty())
-                .then(|| (d.derive_from.as_str().to_string(), d.derive_suffix.as_str().to_string())),
+            derive: (!d.shapes_of.as_str().is_empty()).then(|| (d.shapes_of.as_str().to_string(), d.shapes_suffix.as_str().to_string())),
             shares_cell: d
                 .shares_cell
                 .as_slice()
@@ -1314,7 +1407,7 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 on_use: cb(d.on_use),
                 on_neighbor: cb(d.on_neighbor),
                 on_scheduled: cb(d.on_scheduled),
-                on_pass: cb(d.on_pass),
+                on_carried: cb(d.on_carried),
                 signal_read: cb(d.signal_read),
                 merge: cb(d.merge),
                 placement: cb(d.placement),
@@ -1322,7 +1415,7 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 on_signal: cb(d.on_signal),
                 signal_logic: cb(d.signal_logic),
             },
-            replace: d.replace != 0,
+            replace: d.replacing != 0,
             own_states: d.own_states != 0,
             retexture: d
                 .retexture
@@ -1380,6 +1473,17 @@ pub(crate) unsafe fn copy_dimension(owner: ModId, d: &abi::DimensionDesc) -> (Di
                 terrain: None,
                 bare: d.flags & abi::dim_flags::BARE != 0,
                 weather: d.flags & abi::dim_flags::WEATHER != 0,
+                daylight: {
+                    let mut v: Vec<[f32; 2]> = d
+                        .daylight
+                        .as_slice()
+                        .iter()
+                        .filter(|p| p[0].is_finite() && p[1].is_finite())
+                        .map(|p| [p[0].rem_euclid(1.0), p[1].clamp(0.0, 1.0)])
+                        .collect();
+                    v.sort_by(|a, b| a[0].total_cmp(&b[0]));
+                    v
+                },
                 scatters: Vec::new(),
                 decorations: Vec::new(),
                 column_cache: crate::server::terrain::ColumnCache::new(4096),
@@ -1422,6 +1526,7 @@ fn void_dimension() -> DimensionDef {
         terrain: None,
         bare: true,
         weather: false,
+        daylight: Vec::new(),
         scatters: Vec::new(),
         decorations: Vec::new(),
         column_cache: crate::server::terrain::ColumnCache::new(1),
@@ -1809,7 +1914,50 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     check_ambient_particles(&game, &components, states.len() as u32, &mut errors);
     link_entity_templates(&mut game, &templates, &template_names, &mut errors);
     link_equipment(&game, &mut item_defs, &components);
+    // `immune/fall`, `immune/mymod:radiation`: the engine's causes go without their namespace.
+    let damage_immune = game
+        .damage_causes
+        .iter()
+        .map(|d| components.id(&format!("immune/{}", d.name.strip_prefix("core:").unwrap_or(&d.name))))
+        .collect();
     link_menus(&mut game, &mut block_defs, &item_defs, &opens_names, &mods, &mut errors);
+    let biome_precipitation = (0..biome_defs.len() as u32)
+        .map(|b| {
+            let own = components
+                .id(abi::comp::PRECIPITATION)
+                .and_then(|id| components.text(comps::BIOME, b, id));
+            match own {
+                Some(name) => game
+                    .precipitation_names
+                    .get(name)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        errors.push(format!("biome {}: no precipitation {name}", biome_defs[b as usize].name));
+                        0
+                    }) as u16,
+                None if ids
+                    .snowy
+                    .is_some_and(|t| components.has(comps::BIOME, b, t)) =>
+                {
+                    1
+                }
+                None => 0,
+            }
+        })
+        .collect();
+    word_sets.entry("core:weathers".into()).or_default().extend(
+        game.weathers
+            .iter()
+            .map(|m| m.name.strip_prefix("core:").unwrap_or(&m.name).to_string()),
+    );
+    word_sets
+        .entry("core:game_modes".into())
+        .or_default()
+        .extend(
+            game.game_modes
+                .iter()
+                .map(|m| m.name.strip_prefix("core:").unwrap_or(&m.name).to_string()),
+        );
     word_sets.entry("core:rules".into()).or_default().extend(
         game.configs
             .iter()
@@ -1823,16 +1971,22 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }
     let mut spread_tags: Vec<u32> = states
         .iter()
-        .filter_map(|s| s.spread.map(|sp| sp.0))
+        .filter_map(|s| s.spread.map(|sp| sp.tag))
         .collect();
     spread_tags.sort_unstable();
     spread_tags.dedup();
+    // Where a target looks for what spreads onto it: every reach, mirrored.
+    let spread_search = states
+        .iter()
+        .filter_map(|s| s.spread)
+        .fold((IVec3::ZERO, IVec3::ZERO), |(lo, hi), sp| (lo.min(-sp.max), hi.max(-sp.min)));
     let tight = states
         .iter()
         .map(|s| Tight { flags: s.flags, opacity: s.opacity, light: s.light, absorb: s.absorb })
         .collect();
     Ok(Content {
         spread_tags,
+        spread_search,
         mods,
         tight,
         states,
@@ -1869,6 +2023,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         containers,
         loot,
         stack_flags,
+        damage_immune,
+        biome_precipitation,
     })
 }
 
@@ -1962,8 +2118,8 @@ fn freeze_tints(
     biomes: &mut [RawBiome],
     errors: &mut Vec<String>,
 ) -> Vec<(String, u32)> {
-    if tint_kinds.len() > abi::tint::MAX as usize {
-        errors.push(format!("{} tint kinds registered, at most {} fit", tint_kinds.len(), abi::tint::MAX));
+    if tint_kinds.len() > abi::tint::MAX_KINDS as usize {
+        errors.push(format!("{} tint kinds registered, at most {} fit", tint_kinds.len(), abi::tint::MAX_KINDS));
     }
     for (i, (name, _)) in tint_kinds.iter().enumerate() {
         if tint_kinds[..i].iter().any(|k| &k.0 == name) {
@@ -1974,7 +2130,7 @@ fn freeze_tints(
         tint_kinds
             .iter()
             .position(|k| k.0 == name)
-            .filter(|i| *i < abi::tint::MAX as usize)
+            .filter(|i| *i < abi::tint::MAX_KINDS as usize)
             .map(|i| i as u8 + 1)
     };
     for (b, ..) in biomes.iter_mut() {
@@ -1988,7 +2144,7 @@ fn freeze_tints(
             _ => errors.push(format!("biome tint: no biome {biome} or tint kind {kind}")),
         }
     }
-    tint_kinds.truncate(abi::tint::MAX as usize);
+    tint_kinds.truncate(abi::tint::MAX_KINDS as usize);
     tint_kinds
 }
 
@@ -2033,9 +2189,9 @@ fn number_blocks(mods: &[ModMeta], blocks: Vec<(ModId, RawBlock)>, textures: &mu
         opacity: 0,
         tint: 0,
         tint_faces: 0,
-        layer: Layer::Opaque,
+        layer: RenderLayer::Opaque,
         level: 0,
-        model: Model::None,
+        model: BlockModel::None,
         textures: [0; 6],
         boxes: Vec::new(),
         collision: Vec::new(),
@@ -2110,18 +2266,18 @@ fn number_blocks(mods: &[ModMeta], blocks: Vec<(ModId, RawBlock)>, textures: &mu
                 Vec::new()
             } else if !s.hitbox.is_empty() {
                 s.hitbox.clone()
-            } else if s.model == Model::Boxes {
+            } else if s.model == BlockModel::Boxes {
                 of_model()
             } else {
                 vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
             };
             let selection: Vec<[f32; 6]> = if !s.hitbox.is_empty() {
                 s.hitbox.clone()
-            } else if s.model == Model::Cube {
+            } else if s.model == BlockModel::Cube {
                 vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
             } else if !boxes.is_empty() {
                 of_model()
-            } else if s.model == Model::Cross {
+            } else if s.model == BlockModel::Cross {
                 vec![[0.125, 0.0, 0.125, 0.875, 0.8, 0.875]]
             } else {
                 vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
@@ -2148,7 +2304,7 @@ fn number_blocks(mods: &[ModMeta], blocks: Vec<(ModId, RawBlock)>, textures: &mu
                     mode: s.signal.mode,
                     ..Signal::default()
                 },
-                textures: if s.model == Model::None { [0; 6] } else { std::array::from_fn(|i| tex(&s.textures[i])) },
+                textures: if s.model == BlockModel::None { [0; 6] } else { std::array::from_fn(|i| tex(&s.textures[i])) },
                 boxes,
                 collision,
                 selection,
@@ -2187,7 +2343,7 @@ fn number_blocks(mods: &[ModMeta], blocks: Vec<(ModId, RawBlock)>, textures: &mu
                     st.signal.stride = each;
                     st.signal.level = if n == 2 { at as u8 * 15 } else { at.min(15) as u8 };
                 }
-                _ if st.signal.kind == weft_abi::signal_kind::SOURCE => st.signal.level = 15,
+                _ if st.signal.kind == weft_abi::signal_kind::SWITCH => st.signal.level = 15,
                 _ => {}
             }
         }
@@ -2434,6 +2590,9 @@ fn declare_components(
     cb.declare(crate::registry::MODIFIERS, "bytes", None, &|| "the engine".into(), errors);
     cb.declare(crate::registry::TIMERS, "bytes", None, &|| "the engine".into(), errors);
     cb.declare(abi::comp::NAME, "bytes", None, &|| "the engine".into(), errors);
+    cb.declare(abi::comp::CONTENTS, "bytes", None, &|| "the engine".into(), errors);
+    cb.declare(abi::comp::ENERGY, <abi::Energy as abi::Schema>::SCHEMA, None, &|| "the engine".into(), errors);
+    cb.declare(abi::comp::TANK, <abi::Tank as abi::Schema>::SCHEMA, None, &|| "the engine".into(), errors);
     for (name, schema) in [
         (crate::registry::HEALTH, "[f32;2]"),
         (crate::registry::BURNING, "u8"),
@@ -2443,6 +2602,8 @@ fn declare_components(
         (crate::registry::USING, "u32"),
         (crate::registry::SWAPS, "bytes"),
         (crate::registry::LOOPING_ACTION, "bytes"),
+        (crate::registry::EFFECT, "bytes"),
+        (crate::registry::FORCED_POSE, "bytes"),
         (crate::registry::SHAPE, "bytes"),
         (crate::registry::SIMULATED, "u64"),
     ] {
@@ -2659,7 +2820,7 @@ fn component_ids(components: &Components) -> Ids {
         two_handed: id(abi::comp::TWO_HANDED),
         one_handed: id(abi::comp::ONE_HANDED),
         harvest_level: id(abi::comp::HARVEST_LEVEL),
-        damage: id(abi::comp::DAMAGE),
+        damage: id(abi::comp::WEAR),
         name: id(abi::comp::NAME),
         conductor: id(abi::comp::CONDUCTOR),
         worn: id(abi::comp::WORN),
@@ -2672,6 +2833,10 @@ fn component_ids(components: &Components) -> Ids {
         sweeps: id(abi::comp::SWEEPS),
         no_creative_break: id(abi::comp::NO_CREATIVE_BREAK),
         snowy: id(abi::comp::SNOWY),
+        inventory: id(abi::comp::INVENTORY),
+        contents: id(abi::comp::CONTENTS),
+        energy: id(abi::comp::ENERGY),
+        tank: id(abi::comp::TANK),
     }
 }
 
@@ -2703,7 +2868,26 @@ fn flatten_components(states: &mut [StateInfo], item_defs: &mut [ItemDef], compo
         }
         if let Some(tag) = u32_of(st, abi::comp::SPREADS_TO) {
             let secs = f32_of(st, abi::comp::SPREAD_TIME).unwrap_or(765.0);
-            s.spread = Some((tag, secs as f64 * crate::world::TPS as f64, u32_of(st, abi::comp::SPREAD_LIGHT).unwrap_or(9)));
+            let (min, max) = match get(st, abi::comp::SPREAD_REACH).filter(|b| b.len() >= 24) {
+                Some(b) => {
+                    let v: Vec<i32> = b
+                        .chunks(4)
+                        .take(6)
+                        .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]).clamp(-4, 4))
+                        .collect();
+                    let (a, b) = (IVec3::new(v[0], v[1], v[2]), IVec3::new(v[3], v[4], v[5]));
+                    (a.min(b), a.max(b))
+                }
+                None => (IVec3::new(-1, -3, -1), IVec3::new(1, 1, 1)),
+            };
+            s.spread = Some(Spread {
+                tag,
+                mean: secs as f64 * crate::world::TPS as f64,
+                light: u32_of(st, abi::comp::SPREAD_LIGHT).unwrap_or(9),
+                min,
+                max,
+                open_top: !id(abi::comp::SPREADS_COVERED).is_some_and(|t| components.has(comps::BLOCK, st, t)),
+            });
         }
         if let Some(into) = u32_of(st, abi::comp::SMOTHERED_INTO) {
             s.smother = Some((into, f32_of(st, abi::comp::SMOTHER_TIME).unwrap_or(68.0) as f64 * crate::world::TPS as f64));
@@ -2806,6 +2990,10 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
                 size: o.size,
                 salt,
                 biome,
+                shape: o.shape,
+                shape_size: o.shape_size,
+                height: o.height,
+                plateau: o.plateau,
             },
         ));
     }
@@ -2836,6 +3024,7 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
                 owner: s.owner,
                 cell: s.cell,
                 reach: s.reach,
+                reach_y: s.reach_y,
                 density,
                 salt: crate::registry::name_hash(&s.name),
                 shape: s.shape,

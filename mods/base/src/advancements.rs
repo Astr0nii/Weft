@@ -102,7 +102,7 @@ pub fn register(r: &mut Registry) {
     r.entity_component(
         &ADVANCEMENTS,
         Advancements { done: 0 },
-        component_flags::SAVE | component_flags::SYNC_OWNER | component_flags::KEEP,
+        component_flags::SAVE | component_flags::SYNC_OWNER | component_flags::KEEP_ON_RESPAWN,
     );
     r.attach(&PLAYER, &ADVANCEMENTS);
     r.sound(&CHIME)
@@ -125,7 +125,7 @@ pub fn register(r: &mut Registry) {
     r.on(&ENTITY_DIED, |b| {
         let w = b.world();
         for d in b.iter() {
-            grant_where(&w, d.killer, |rule| matches!(rule, Rule::Kill(t) if t.on_entity(d.kind)));
+            grant_where(&w, d.source, |rule| matches!(rule, Rule::Kill(t) if t.on_entity(d.kind)));
         }
     });
     r.on(&ITEM_USED, |b| {
@@ -154,11 +154,11 @@ pub fn register(r: &mut Registry) {
 fn check_players(w: &World) {
     for id in w.players() {
         let Some(st) = w.entity(id) else { continue };
-        if st.age % 20 != 0 || w.exempt(id) {
+        if st.age % 20 != 0 || w.outside_survival(id) {
             continue;
         }
         let inv = w.inventory(id);
-        let items: Vec<u32> = (0..inv.size())
+        let items: Vec<u32> = (0..inv.len())
             .map(|i| inv.get(i))
             .filter(|s| !s.is_empty())
             .map(|s| s.item)
@@ -182,7 +182,7 @@ fn check_players(w: &World) {
 /// Grants every advancement whose rule `met` says so to `player`, if it is a player in survival
 /// that doesn't have it yet, and tells their client.
 fn grant_where(w: &World, player: u64, met: impl Fn(&Rule) -> bool) {
-    if player == 0 || w.exempt(player) {
+    if player == 0 || w.outside_survival(player) {
         return;
     }
     let Some(a) = w.component_mut(player, &ADVANCEMENTS) else { return };
@@ -232,7 +232,7 @@ fn client(r: &mut Registry) {
         let (gw, gh) = (st.window[0] as f32 / scale, st.window[1] as f32 / scale);
         let left = gw - (TOAST_W + TOAST_MARGIN) * ease;
         let text = |x: f32, y: f32, key: &str, args: &[Arg], color: u32, size: f32| {
-            c.screen_text((left + x) / gw, (TOAST_MARGIN + y) / gh, key, args, color, size)
+            c.draw_screen_text((left + x) / gw, (TOAST_MARGIN + y) / gh, key, args, color, size)
         };
         text(TOAST_W / 2.0, 0.0, "advancements.base.toast_box", &[], 0xffffffff, 1.0);
         // An icon in text is as tall as a line: twice the size fills the slot.
@@ -246,22 +246,22 @@ fn client(r: &mut Registry) {
     // Every group a chain of tiles, gold framed once made, with the details in their tooltips.
     // Built when the screen opens, from what the player has made by then.
     r.screen(&SCREEN, |ui| {
-        let done = ui.client().component(&ADVANCEMENTS).map_or(0, |a| a.done);
-        ui.panel("panel", S::col().pad(8.0).gap(6.0), |ui| {
+        let done = ui.view().component(&ADVANCEMENTS).map_or(0, |a| a.done);
+        ui.panel("panel", S::column().pad(8.0).gap(6.0), |ui| {
             ui.row(S::row().gap(8.0), |ui| {
-                ui.text_styled(S::col().class("title").scale(1.5).no_wrap(), "advancements.base.title", &[]);
+                ui.text_styled(S::column().class("title").scale(1.5).no_wrap(), "advancements.base.title", &[]);
                 ui.spacer();
-                ui.text_bind_styled(S::col().class("dim").no_wrap(), |v, out| {
+                ui.text_bind_styled(S::column().class("dim").no_wrap(), |v, out| {
                     let done = v
                         .component(&ADVANCEMENTS)
                         .map_or(0, |a| a.done.count_ones());
                     out.set("advancements.base.progress", &[Arg::Int(done as i64), Arg::Int(ALL.len() as i64)]);
                 });
             });
-            ui.panel("well", S::col().pad(6.0).gap(6.0), |ui| {
+            ui.panel("well", S::column().pad(6.0).gap(6.0), |ui| {
                 for (g, group) in GROUPS.iter().enumerate() {
                     ui.row(S::row(), |ui| {
-                        ui.text_styled(S::col().w(90.0).no_wrap(), &format!("advancements.base.group.{group}"), &[]);
+                        ui.text_styled(S::column().w(90.0).no_wrap(), &format!("advancements.base.group.{group}"), &[]);
                         for (n, (i, adv)) in ALL
                             .iter()
                             .enumerate()
@@ -287,14 +287,14 @@ fn client(r: &mut Registry) {
             });
         });
     });
-    r.key(&OPEN, "L").on_press(|c| {
-        c.open_screen(&SCREEN);
+    r.key(&OPEN, "L").on_press_client(|c| {
+        c.screen_open(&SCREEN);
     });
     // The pause menu stretches its mods' parts across the screen; sized and centered like its own
     // buttons (200 wide) instead.
     r.screen_part(&screens::PAUSE, "buttons", 0, |ui| {
-        ui.button("advancements.base.button", S::col().min_w(200.0).self_align(abi::ui_align::CENTER), |c| {
-            c.client().open_screen(&SCREEN);
+        ui.button("advancements.base.button", S::column().min_w(200.0).self_align(abi::ui_align::CENTER), |c| {
+            c.client().screen_open(&SCREEN);
         });
     });
 }

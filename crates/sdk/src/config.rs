@@ -165,7 +165,7 @@ impl ConfigBuilder<'_> {
     }
     /// Only read at start: the screen says a restart is needed.
     pub fn restart_required(mut self) -> Self {
-        self.desc.flags |= cf::RESTART;
+        self.desc.flags |= cf::RESTART_REQUIRED;
         self
     }
 }
@@ -195,7 +195,7 @@ impl Registry {
             name: config.h.name().to_string(),
             choices: Vec::new(),
             text: String::new(),
-            cell: config.h.cell(),
+            cell: config.h.id_cell(),
             desc: abi::ConfigDesc::DEFAULT,
             _p: PhantomData,
         }
@@ -208,7 +208,7 @@ impl Registry {
             name: config.h.name().to_string(),
             choices: Vec::new(),
             text: String::new(),
-            cell: config.h.cell(),
+            cell: config.h.id_cell(),
             desc: abi::ConfigDesc::DEFAULT,
             _p: PhantomData,
         }

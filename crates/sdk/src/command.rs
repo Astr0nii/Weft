@@ -137,7 +137,7 @@ impl Command<'_> {
     }
 
     /// Whether a literal word of the usage (or an optional parameter) was given.
-    pub fn has(&self, name: &str) -> bool {
+    pub fn given(&self, name: &str) -> bool {
         self.value(name).is_some()
     }
 

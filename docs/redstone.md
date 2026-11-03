@@ -22,7 +22,7 @@ Only wire of the same block connects, so another wire block is an insulated wire
 - *Strongly*, from a gate facing it, a lever on it, or the top of a torch under it. Wire touching that block takes the power, and so do devices.
 - *Weakly*, from wire lying on it. Only devices next to it take that. Otherwise all the wires on one wall would be one wire.
 
-Solid blocks carry power by default. `.redstone_blocker()` turns that off, the way glass, ice and leaves have it. Wire can still lie on them. Slabs and other partial solid blocks carry power too.
+Solid blocks carry power by default. `.signal_blocker()` turns that off, the way glass, ice and leaves have it. Wire can still lie on them. Slabs and other partial solid blocks carry power too.
 
 **Wire reaches** the block it lies on and any device touching one of its edges or its back. It doesn't reach across the cell, so wire on a floor doesn't touch what is on the ceiling above it. Wire running past a lamp lights it. To get past without lighting it, take another face.
 
@@ -60,7 +60,7 @@ Say what a block is and the engine runs it. No ticking and no neighbor callbacks
 
 ```rust
 // Always on.
-r.block(&CRYSTAL).signal_block();
+r.block(&CRYSTAL).signal_constant();
 
 // Follows the power around it: a `power` property (`off`, `on`) changes by itself.
 r.block(&LIGHT)
@@ -87,7 +87,7 @@ r.block(&AND_GATE)
 r.block(&BLUE_WIRE).wire().textures("blue_dot", "blue_line", "blue_dot");
 
 // Glass-like, and something a piston can't move.
-r.block(&CASING).redstone_blocker();
+r.block(&CASING).signal_blocker();
 r.block(&BEDROCK_ISH).immovable();
 ```
 
@@ -97,7 +97,7 @@ The rest of the set, each with the properties it needs added for you:
 - `.signal_torch()`, `.signal_repeater()`, `.signal_comparator()`: as in the game.
 - `.signal_read(|w, p| level)`: what a comparator behind the block reads, instead of how full it is. It looks again when the block changes; `w.signal_read_changed(p)` for anything else it depends on.
 - `.signal_floater(breaks)` after `.facing(..)`: a floater; `breaks` makes it break what is in its way. `power` is 0 idle, 1 going, 2 stuck.
-- `w.lift(center, &cells)` takes blocks out of the world into a moving structure, with chests and what is in them, circuits going on. Move it with `set_entity` (a speed) or `w.body_go(id, pos, ticks)`, and `w.put_down(id)` makes it blocks again, on the nearest whole block.
+- `w.body_from_blocks(center, &cells)` takes blocks out of the world into a moving body, with chests and what is in them, circuits going on. Move it with `set_entity` (a speed) or `w.body_move_to(id, pos, ticks)`, and `w.body_to_blocks(id)` makes it blocks again, on the nearest whole block. Its blocks are reached the way the world's are, through `w.on_body(id)`: `w.on_body(ship)?.prop_set(pos, "lit", "true")` in the body's own coordinates, with parts, scheduled ticks and signals as in the world. `w.push_blocks(pos, dir)` moves blocks the way a piston does, without one: what would be pushed goes one block that way, slime and all, so a machine can open a drawbridge. `w.body_fall(id)` lets it drop instead, like sand: each block lands where it comes down, or drops if it can't stand there, so a felled tree or a collapsing roof is a lift and a fall.
 - `.signal_observer()` and `.signal_piston(head, sticky)`, `.signal_piston_head()`: after `.facing(..)`.
 
 **A model on any face:** those blocks have `attach` and `front` properties. Write the model once for a floor with the front to the north, and `frame` turns it, pictures included:
@@ -107,11 +107,11 @@ r.block(&GATE).signal_repeater().states(|p, s| {
     let top = if p.is("power", "on") { "gate_on" } else { "gate" };
     let mut faces = [("smooth_stone", UV_FROM_BOX); 6];
     faces[3].0 = top;
-    s.frame(p.frame()).model_box_faces([0.0, 0.0, 0.0], [16.0, 2.0, 16.0], faces)
+    s.oriented(p.orientation()).model_box_faces([0.0, 0.0, 0.0], [16.0, 2.0, 16.0], faces)
 });
 ```
 
-`p.frame_up()` is the same for a block with `facing` and its top that way, like a piston.
+`p.orientation_up()` is the same for a block with `facing` and its top that way, like a piston.
 
 `base` is written with exactly this: see `mods/base/src/redstone.rs`.
 
@@ -121,5 +121,5 @@ r.block(&GATE).signal_repeater().states(|p, s| {
 
 ## Limits
 
-- Wire on moving structures runs but isn't drawn.
+- Wire on moving bodies runs but isn't drawn.
 - A gate changing is still a block change, so on the client it remeshes its cube. Only wire avoids that.

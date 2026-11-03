@@ -26,6 +26,8 @@ pub struct DimSet {
     pub day_moved: bool,
     pub raining: bool,
     pub thunder: bool,
+    /// The weather (`registry::WeatherDef`) those come from.
+    pub weather: u16,
     /// When the weather changes by itself.
     pub weather_until: u64,
     /// Changed: players hear at once.
@@ -54,6 +56,7 @@ impl DimSet {
             day_moved: false,
             raining: false,
             thunder: false,
+            weather: 0,
             weather_until: 0,
             weather_moved: false,
             seed,
@@ -71,6 +74,7 @@ impl DimSet {
         d.day_offset = self.day_offset;
         d.raining = self.raining;
         d.thunder = self.thunder;
+        d.weather = self.weather;
         self.regions.push(d);
         self.regions.len() - 1
     }
@@ -309,7 +313,7 @@ impl DimSet {
     pub fn area_fill(&mut self, c: &'static Content, mut fill: super::area::AreaFill, fresh: &[IVec3]) {
         let start = std::time::Instant::now();
         fill.id = self.edits.last().map_or(1, |e| e.id + 1);
-        Arc::make_mut(&mut self.edits).push(fill);
+        Arc::make_mut(&mut self.edits).push(fill.clone());
         // Regions first (making one may merge others), then who gets what.
         for &cp in fresh {
             self.region_for(c, section_of_cube(cp));
@@ -329,8 +333,8 @@ impl DimSet {
             total.light_ms += s.light_ms;
         }
         log::info!(
-            "area fill r {:.0}: {} cubes changed ({} whole), {:.0} ms applying, {} relit in {:.0} ms, {} edge updates queued, {:.0} ms in all",
-            fill.radius,
+            "area fill {}: {} cubes changed ({} whole), {:.0} ms applying, {} relit in {:.0} ms, {} edge updates queued, {:.0} ms in all",
+            fill.id,
             total.cubes,
             total.whole,
             total.apply_ms,
@@ -359,27 +363,45 @@ impl DimSet {
     }
 
     /// The time of day's own clock.
-    pub fn set_weather(&mut self, raining: bool, thunder: bool, ticks: u64) {
-        (self.raining, self.thunder) = (raining, raining && thunder);
+    pub fn set_weather(&mut self, weather: u16, ticks: u64) {
+        let def = &crate::content::content().game.weathers[weather as usize];
+        (self.weather, self.raining, self.thunder) = (weather, def.falls, def.lightning);
         self.weather_until = self.time + ticks;
         self.weather_moved = true;
         for r in &mut self.regions {
-            r.raining = raining;
-            r.thunder = self.thunder;
+            (r.weather, r.raining, r.thunder) = (self.weather, self.raining, self.thunder);
         }
     }
 
-    /// Vanilla's timing: clear for 10 minutes to 2.5 hours, rain for 10 to 20 minutes, a third of
-    /// it with thunder.
+    /// After clear weather one of the others by their weights, after any other clear again, each
+    /// for as long as its `duration` says.
     pub fn tick_weather(&mut self) {
         if self.time < self.weather_until {
             return;
         }
+        let all = &crate::content::content().game.weathers;
         let r = weft_noise::hash(self.seed ^ 0x5745_4154, self.time as i64, 0, 0);
         let first = self.weather_until == 0;
-        let raining = !first && !self.raining;
-        let ticks = if raining { 12000 + r % 12000 } else { 12000 + r % 168000 };
-        self.set_weather(raining, raining && r >> 32 & 3 == 0, ticks);
+        let here = |w: &crate::registry::WeatherDef| w.dims.is_empty() || w.dims.contains(&self.id);
+        let total: u64 = all
+            .iter()
+            .filter(|w| here(w))
+            .map(|w| w.weight as u64)
+            .sum();
+        let next = if first || self.weather != 0 || total == 0 {
+            0
+        } else {
+            let mut pick = (r >> 32) % total;
+            all.iter()
+                .position(|w| {
+                    let hit = here(w) && pick < w.weight as u64;
+                    pick = pick.saturating_sub(if here(w) { w.weight as u64 } else { 0 });
+                    hit
+                })
+                .unwrap_or(0)
+        };
+        let [lo, hi] = all[next].duration;
+        self.set_weather(next as u16, lo + r % (hi - lo + 1));
     }
 
     pub fn day_time(&self) -> u64 {

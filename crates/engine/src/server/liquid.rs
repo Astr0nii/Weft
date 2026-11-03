@@ -147,7 +147,7 @@ impl Dim {
         self.set(c, p, state);
         // Plants and torches wash away with their drops, like vanilla.
         for old in was {
-            self.drop_block_loot(c, p, old, ItemStack::EMPTY, false, None);
+            self.drop_block_loot(c, p, old, ItemStack::EMPTY, false, 0);
         }
     }
 
@@ -281,7 +281,7 @@ impl Dim {
         let creative = self
             .entities
             .get(player)
-            .is_some_and(|e| e.mode == crate::world::GameMode::Creative);
+            .is_some_and(|e| e.mode.has(weft_abi::game_mode_flags::NO_COSTS));
         if let Some(&(l, empty)) = c.item_liquid.get(&held.item) {
             let hit = self
                 .look_ray(c, player, self.block_reach(c, player), false)
@@ -354,7 +354,13 @@ impl Dim {
     pub fn look_ray(&self, c: &Content, id: u64, max: f64, liquids: bool) -> Option<crate::physics::Hit> {
         let e = self.entities.get(id)?;
         let eye = e.pos + DVec3::Y * e.eye(c);
-        let dir = crate::physics::look_dir(e.yaw, e.pitch);
+        let from = if self.frame != 0 { self.place.to_local(eye) } else { eye };
+        self.ray(c, from, crate::physics::look_dir(e.yaw, e.pitch), max, liquids)
+    }
+
+    /// The first block along a ray from `from` (in this dimension's frame: a body's blocks when
+    /// asked from them), bodies included when asked from the world.
+    pub fn ray(&self, c: &Content, from: DVec3, dir: DVec3, max: f64, liquids: bool) -> Option<crate::physics::Hit> {
         let structures: Vec<(u64, crate::physics::Transform, &dyn crate::physics::Blocks)> = self
             .bodies
             .iter()
@@ -366,8 +372,8 @@ impl Dim {
             .collect();
         // Asked from a body's blocks, it looks along those.
         if self.frame != 0 {
-            return crate::physics::pick(c, &*self.space, &[], self.place.to_local(eye), dir, max, liquids);
+            return crate::physics::pick(c, &*self.space, &[], from, dir, max, liquids);
         }
-        crate::physics::pick(c, &*self.space, &structures, eye, dir, max, liquids)
+        crate::physics::pick(c, &*self.space, &structures, from, dir, max, liquids)
     }
 }

@@ -235,26 +235,26 @@ impl BiomeRule {
     /// Climate ranges like `0.35..` or `..-0.45` (from inclusive, to exclusive); the fields are
     /// about -1.4..1.4. Usually the biome's.
     pub fn temperature(mut self, range: impl RangeBounds<f64>) -> Self {
-        (self.temperature, self.fields) = (span(range), self.fields | rf::TEMPERATURE);
+        (self.temperature, self.fields) = (range_f64(range), self.fields | rf::TEMPERATURE);
         self
     }
     pub fn humidity(mut self, range: impl RangeBounds<f64>) -> Self {
-        (self.humidity, self.fields) = (span(range), self.fields | rf::HUMIDITY);
+        (self.humidity, self.fields) = (range_f64(range), self.fields | rf::HUMIDITY);
         self
     }
     /// Continentalness: below 0 is sea, coasts are about 0..0.1.
     pub fn continent(mut self, range: impl RangeBounds<f64>) -> Self {
-        (self.continent, self.fields) = (span(range), self.fields | rf::CONTINENT);
+        (self.continent, self.fields) = (range_f64(range), self.fields | rf::CONTINENT);
         self
     }
     /// Surface heights, like `..=SEA + 1`.
     pub fn height(mut self, range: impl RangeBounds<i32>) -> Self {
-        (self.height, self.fields) = (span_int(range), self.fields | rf::HEIGHT);
+        (self.height, self.fields) = (range_i32(range), self.fields | rf::HEIGHT);
         self
     }
     /// Where the named feature's mask is in `range`.
     pub fn feature(mut self, name: &str, range: impl RangeBounds<f64>) -> Self {
-        let (min, max) = span(range);
+        let (min, max) = range_f64(range);
         (self.feature, self.fields) = ((name.to_string(), min, max), self.fields | rf::FEATURE);
         self
     }
@@ -325,7 +325,7 @@ impl BiomeRule {
     }
 }
 
-fn span(r: impl RangeBounds<f64>) -> (f64, f64) {
+fn range_f64(r: impl RangeBounds<f64>) -> (f64, f64) {
     let at = |b: Bound<&f64>, open: f64| match b {
         Bound::Included(v) | Bound::Excluded(v) => *v,
         Bound::Unbounded => open,
@@ -334,7 +334,7 @@ fn span(r: impl RangeBounds<f64>) -> (f64, f64) {
 }
 
 /// Inclusive.
-fn span_int(r: impl RangeBounds<i32>) -> (i32, i32) {
+fn range_i32(r: impl RangeBounds<i32>) -> (i32, i32) {
     let min = match r.start_bound() {
         Bound::Included(v) => *v,
         Bound::Excluded(v) => v + 1,
@@ -447,12 +447,12 @@ impl TerrainBuilder<'_> {
     pub fn feature(self, f: Feature) -> Self {
         self.send(Op { feature: Some(f), ..Op::new(op::FEATURE) })
     }
-    pub fn remove_feature(self, name: &str) -> Self {
-        self.send(Op { anchor: name.to_string(), ..Op::new(op::REMOVE_FEATURE) })
+    pub fn feature_remove(self, name: &str) -> Self {
+        self.send(Op { anchor: name.to_string(), ..Op::new(op::FEATURE_REMOVE) })
     }
     /// Limits the named feature further: its mask is multiplied by `mask`.
-    pub fn mask_feature(self, name: &str, mask: Mask) -> Self {
-        self.send(Op { anchor: name.to_string(), feature: Some(Feature::preset(0, [0.0; 4]).mask(mask)), ..Op::new(op::MASK_FEATURE) })
+    pub fn feature_mask(self, name: &str, mask: Mask) -> Self {
+        self.send(Op { anchor: name.to_string(), feature: Some(Feature::preset(0, [0.0; 4]).mask(mask)), ..Op::new(op::FEATURE_MASK) })
     }
     /// A rule after all others.
     pub fn biome(self, rule: BiomeRule) -> Self {
@@ -465,16 +465,16 @@ impl TerrainBuilder<'_> {
     pub fn biome_after(self, rule: &str, new: BiomeRule) -> Self {
         self.send(Op { anchor: rule.to_string(), rule: Some(new), ..Op::new(op::BIOME_AFTER) })
     }
-    pub fn replace_biome(self, rule: &str, new: BiomeRule) -> Self {
-        self.send(Op { anchor: rule.to_string(), rule: Some(new), ..Op::new(op::REPLACE_BIOME) })
+    pub fn biome_replace(self, rule: &str, new: BiomeRule) -> Self {
+        self.send(Op { anchor: rule.to_string(), rule: Some(new), ..Op::new(op::BIOME_REPLACE) })
     }
-    pub fn remove_biome(self, rule: &str) -> Self {
-        self.send(Op { anchor: rule.to_string(), ..Op::new(op::REMOVE_BIOME) })
+    pub fn biome_remove(self, rule: &str) -> Self {
+        self.send(Op { anchor: rule.to_string(), ..Op::new(op::BIOME_REMOVE) })
     }
     /// Changes what the closure sets on the rule and keeps the rest:
-    /// `edit_biome("base:desert", |r| r.temperature(0.5..))`.
-    pub fn edit_biome(self, rule: &str, edit: impl FnOnce(BiomeRule) -> BiomeRule) -> Self {
-        self.send(Op { anchor: rule.to_string(), rule: Some(edit(BiomeRule::blank())), ..Op::new(op::EDIT_BIOME) })
+    /// `biome_edit("base:desert", |r| r.temperature(0.5..))`.
+    pub fn biome_edit(self, rule: &str, edit: impl FnOnce(BiomeRule) -> BiomeRule) -> Self {
+        self.send(Op { anchor: rule.to_string(), rule: Some(edit(BiomeRule::blank())), ..Op::new(op::BIOME_EDIT) })
     }
     /// A biome in 3D: whole cubes at least `depth` blocks under the surface where a 3D noise of
     /// patches about `size` blocks across is above `threshold` (-1..1). Biomes are kept per
@@ -482,8 +482,8 @@ impl TerrainBuilder<'_> {
     pub fn cave_biome(self, biome: &str, depth: i32, size: f64, threshold: f64) -> Self {
         self.send(Op { rule: Some(BiomeRule::new(biome)), level: depth, size, value: threshold, ..Op::new(op::CAVE_BIOME) })
     }
-    pub fn remove_cave_biome(self, biome: &str) -> Self {
-        self.send(Op { anchor: biome.to_string(), ..Op::new(op::REMOVE_CAVE_BIOME) })
+    pub fn cave_biome_remove(self, biome: &str) -> Self {
+        self.send(Op { anchor: biome.to_string(), ..Op::new(op::CAVE_BIOME_REMOVE) })
     }
 }
 
@@ -498,7 +498,7 @@ impl Dimension {
 
     /// Whether caves took the surface block of column (`x`, `z`), so nothing should stand there.
     pub fn surface_carved(&self, seed: u64, x: i32, z: i32) -> bool {
-        unsafe { (host().dim_carved)(self.id(), seed, x, z) != 0 }
+        unsafe { (host().dim_surface_carved)(self.id(), seed, x, z) != 0 }
     }
 }
 
@@ -530,7 +530,7 @@ impl Registry {
     /// Runs `f` on every generated cube after the generator and scatters (grass, flowers,
     /// boulders), in every dimension but bare ones unless `.dimension(..)` limits it.
     /// `g.columns()` has the surface of every column. Pure, like a generator.
-    pub fn decorate<'a>(&'a mut self, f: impl Fn(&mut Gen) + Send + Sync + 'static) -> DecorationBuilder<'a> {
+    pub fn decoration<'a>(&'a mut self, f: impl Fn(&mut Gen) + Send + Sync + 'static) -> DecorationBuilder<'a> {
         DecorationBuilder {
             raw: self.raw,
             dimensions: String::new(),
@@ -555,9 +555,17 @@ impl ScatterBuilder<'_> {
         self.desc.cell = blocks;
         self
     }
-    /// How far the shape puts blocks sideways from its site. Up and down it may go 32 and 16.
+    /// How far the shape puts blocks sideways from its site. Up and down it may go 32 and 16
+    /// unless `reach_y` says otherwise.
     pub fn reach(mut self, blocks: i32) -> Self {
         self.desc.reach = blocks;
+        self
+    }
+    /// How far above and below its site the shape may put blocks (a giant tree, roots going
+    /// deep); what goes further is left out.
+    pub fn reach_y(mut self, up: i32, down: i32) -> Self {
+        self.desc.reach_up = up;
+        self.desc.reach_down = down;
         self
     }
     /// The biome component (0..1) that is the chance of a site per cell; biomes without it get
@@ -624,7 +632,7 @@ impl Site {
         self.push(pos, state, 0);
     }
     /// `state` at `pos` whatever is there (a trunk through another tree's leaves).
-    pub fn force(&mut self, pos: [i32; 3], state: u32) {
+    pub fn put_force(&mut self, pos: [i32; 3], state: u32) {
         self.push(pos, state, 1);
     }
     fn push(&mut self, pos: [i32; 3], state: u32, force: u32) {
@@ -682,13 +690,13 @@ impl Gen {
 
     /// Whether caves took the surface block of column (`x`, `z`), in world coordinates.
     pub fn surface_carved(&self, x: i32, z: i32) -> bool {
-        unsafe { (host().dim_carved)(self.args.dim, self.args.seed, x, z) != 0 }
+        unsafe { (host().dim_surface_carved)(self.args.dim, self.args.seed, x, z) != 0 }
     }
 
     /// The block the terrain leaves at the top of column (`x`, `z`), in world coordinates: 0
     /// where caves took it or the dimension has no terrain. `get` only sees this cube, so this is
     /// how to know the ground under its lowest layer.
     pub fn surface_block(&self, x: i32, z: i32) -> u32 {
-        unsafe { (host().dim_surface)(self.args.dim, self.args.seed, x, z) }
+        unsafe { (host().dim_surface_block)(self.args.dim, self.args.seed, x, z) }
     }
 }

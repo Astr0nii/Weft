@@ -63,9 +63,9 @@ pub async fn body_chest(t: T) -> R {
     // Open from on board.
     t.op(&format!("onto {id} 1.0")).await?;
     t.secs(0.4).await?;
-    t.c().look(-90.0, -40.0);
+    t.c().set_look(-90.0, -40.0);
     t.secs(0.2).await?;
-    t.check_eq(t.state().target_frame, id, "the chest on the structure is looked at");
+    t.check_eq(t.state().target_body, id, "the chest on the structure is looked at");
     t.press("core:use");
     t.secs(0.4).await?;
     let open = t.c().screen();
@@ -73,14 +73,14 @@ pub async fn body_chest(t: T) -> R {
     // Still open after it flew on.
     t.secs(0.4).await?;
     t.check_eq(t.c().screen(), open, "and stays open as it flies");
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await?;
 
     // Saved with it.
     let name = format!("test-{}", t.name());
-    t.c().leave_world();
+    t.c().world_leave();
     t.screen("core:title").await?;
-    t.c().open_world(&name, 1);
+    t.c().world_open(&name, 1);
     t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED))
         .await?;
     t.loaded().await?;
@@ -162,7 +162,7 @@ pub async fn body_sneak_edge(t: T) -> R {
                 .await?;
             t.secs(0.2).await?;
             t.op(&format!("onto {id} 1.0")).await?;
-            t.c().look(yaw, 0.0);
+            t.c().set_look(yaw, 0.0);
             t.secs(0.5).await?;
             t.hold("core:sneak", 2.4);
             t.frames(3).await?;
@@ -196,7 +196,7 @@ pub async fn body_place(t: T) -> R {
     t.flat().await?;
     t.op("mode creative").await?;
     t.op("put me 0 oak_planks 64").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     let f = t.feet();
     // A plate lifted around a spot over it: all it has is a layer under its middle.
     let center = add(f, [0, 4, -5]);
@@ -207,11 +207,11 @@ pub async fn body_place(t: T) -> R {
         .await?;
     t.cmd(&format!("/tp {} {} {}", center[0] as f64 + 0.5, center[1] + 2, center[2] as f64 + 3.5))
         .await?;
-    t.c().fly(true);
+    t.c().set_flying(true);
     t.secs(0.5).await?;
     t.look_at(add(center, [0, -1, 0]));
     t.secs(0.3).await?;
-    t.check(t.state().target_frame.to_string() == id, "looking at the structure");
+    t.check(t.state().target_body.to_string() == id, "looking at the structure");
     t.press("core:use");
     t.secs(0.5).await?;
     t.check_eq(t.op(&format!("sblock {id} 0 0 0")).await?, "base:oak_planks".to_string(), "a block goes on top of the plate");
@@ -424,7 +424,7 @@ pub async fn skiff_blocks(t: T) -> R {
     t.flat().await?;
     t.op("mode creative").await?;
     t.op("put me 0 stone 64").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     let f = t.feet();
     let id = spawn(&t, "testmod:skiff", add(f, [0, 3, 0])).await?;
     let sb = |p: [i32; 3]| format!("sblock {id} {} {} {}", p[0], p[1], p[2]);
@@ -432,7 +432,7 @@ pub async fn skiff_blocks(t: T) -> R {
     t.op(&format!("onto {id} 1.0")).await?;
     t.secs(0.4).await?;
     // Down at the deck ahead: the block goes on top of it.
-    t.c().look(0.0, -60.0);
+    t.c().set_look(0.0, -60.0);
     t.secs(0.2).await?;
     t.press("core:use");
     t.secs(0.5).await?;
@@ -448,13 +448,13 @@ pub async fn skiff_blocks(t: T) -> R {
     let eye = [st.shown[0], st.shown[1] + t.c().entity(0).map_or(1.62, |e| e.size[2] as f64), st.shown[2]];
     let (dx, dy, dz) = (spot[0] - eye[0], spot[1] - eye[1], spot[2] - eye[2]);
     t.c()
-        .look((-dx).atan2(-dz).to_degrees() as f32, dy.atan2((dx * dx + dz * dz).sqrt()).to_degrees() as f32);
+        .set_look((-dx).atan2(-dz).to_degrees() as f32, dy.atan2((dx * dx + dz * dz).sqrt()).to_degrees() as f32);
     t.frames(2).await?;
     let mut targets = std::collections::BTreeSet::new();
     for _ in 0..60 {
         t.frames(1).await?;
         let s = t.state();
-        targets.insert((s.target, s.target_frame));
+        targets.insert((s.target, s.target_body));
     }
     t.check(targets.len() == 1, format!("one block looked at while riding ({targets:?})"));
     let (a, sa) = (pos_of(&t, &format!("{id}")).await?, t.op(&sb([0, 1, -1])).await?);
@@ -464,7 +464,7 @@ pub async fn skiff_blocks(t: T) -> R {
     // A mod's write, then the player breaks the stone.
     t.check_eq(t.op(&format!("{} base:cobblestone", sb([1, 1, 1]))).await?, "1".to_string(), "a mod sets a block of it");
     t.check_eq(t.op(&sb([1, 1, 1])).await?, "base:cobblestone".to_string(), "and reads it back");
-    t.c().look(0.0, -60.0);
+    t.c().set_look(0.0, -60.0);
     t.secs(0.2).await?;
     t.hold("core:attack", 0.1);
     t.secs(0.5).await?;

@@ -14,61 +14,79 @@ pub const TICK: f64 = 1.0 / TPS as f64;
 
 /// How a player holds itself, which decides its box and eyes.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub enum Pose {
-    #[default]
-    Stand,
-    Crouch,
-    /// In a liquid, lying along where it looks.
-    Swim,
-    /// Where nothing higher fits: lying flat, with the same low box.
-    Crawl,
-    /// In bed, on its back.
-    Sleep,
-}
+pub struct Pose(pub u16);
 
 impl Pose {
-    pub fn from_u8(v: u8) -> Pose {
-        match v {
-            1 => Pose::Crouch,
-            2 => Pose::Swim,
-            3 => Pose::Crawl,
-            4 => Pose::Sleep,
-            _ => Pose::Stand,
-        }
+    pub const STAND: Pose = Pose(weft_abi::pose::STAND as u16);
+    pub const CROUCH: Pose = Pose(weft_abi::pose::CROUCH as u16);
+    /// In a liquid, lying along where it looks.
+    pub const SWIM: Pose = Pose(weft_abi::pose::SWIM as u16);
+    /// Where nothing higher fits: lying flat, with the same low box.
+    pub const CRAWL: Pose = Pose(weft_abi::pose::CRAWL as u16);
+    /// In bed, on its back.
+    pub const SLEEP: Pose = Pose(weft_abi::pose::SLEEP as u16);
+
+    pub fn from_id(v: u32) -> Pose {
+        let n = crate::content::try_content().map_or(5, |c| c.game.poses.len());
+        if (v as usize) < n { Pose(v as u16) } else { Pose::STAND }
+    }
+
+    /// Before content is frozen (unit tests) only the engine's poses are there.
+    pub fn def(self) -> &'static crate::registry::PoseDef {
+        let all = match crate::content::try_content() {
+            Some(c) => &c.game.poses,
+            None => crate::registry::engine_pose_defs(),
+        };
+        all.get(self.0 as usize).unwrap_or(&all[0])
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub enum GameMode {
-    #[default]
-    Survival,
-    Creative,
-    /// Flies through blocks, cannot touch anything, unseen by mobs and survival players.
-    Spectator,
-}
+pub struct GameMode(pub u16);
 
 impl GameMode {
-    pub const ALL: [GameMode; 3] = [GameMode::Survival, GameMode::Creative, GameMode::Spectator];
+    pub const SURVIVAL: GameMode = GameMode(weft_abi::game_mode::SURVIVAL as u16);
+    pub const CREATIVE: GameMode = GameMode(weft_abi::game_mode::CREATIVE as u16);
+    pub const SPECTATOR: GameMode = GameMode(weft_abi::game_mode::SPECTATOR as u16);
 
+    /// Every registered mode, the engine's first.
+    pub fn all() -> impl Iterator<Item = GameMode> {
+        (0..crate::content::content().game.game_modes.len() as u16).map(GameMode)
+    }
+
+    pub fn def(self) -> &'static crate::registry::GameModeDef {
+        let all = &crate::content::content().game.game_modes;
+        all.get(self.0 as usize).unwrap_or(&all[0])
+    }
+
+    /// One of `abi::game_mode_flags`.
+    pub fn has(self, flag: u32) -> bool {
+        self.def().flags & flag != 0
+    }
+
+    /// The name players use: the engine's without `core:`.
     pub fn name(self) -> &'static str {
-        match self {
-            GameMode::Survival => "survival",
-            GameMode::Creative => "creative",
-            GameMode::Spectator => "spectator",
-        }
+        let n = &self.def().name;
+        n.strip_prefix("core:").unwrap_or(n)
     }
 
+    /// By its name, with or without the engine's `core:`.
     pub fn parse(s: &str) -> Option<GameMode> {
-        GameMode::ALL.into_iter().find(|m| m.name() == s)
+        let modes = &crate::content::content().game.game_modes;
+        modes
+            .iter()
+            .position(|m| m.name == s || m.name.strip_prefix("core:") == Some(s))
+            .map(|i| GameMode(i as u16))
     }
 
-    pub fn from_u8(v: u8) -> GameMode {
-        GameMode::ALL.get(v as usize).copied().unwrap_or_default()
+    pub fn from_id(v: u32) -> GameMode {
+        let n = crate::content::try_content().map_or(3, |c| c.game.game_modes.len());
+        if (v as usize) < n { GameMode(v as u16) } else { GameMode::SURVIVAL }
     }
 
     /// Takes no damage and needs no food.
     pub fn invulnerable(self) -> bool {
-        self != GameMode::Survival
+        self.has(weft_abi::game_mode_flags::INVULNERABLE)
     }
 }
 

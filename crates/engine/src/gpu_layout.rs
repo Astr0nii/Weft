@@ -410,16 +410,18 @@ pub fn frame_buffer(
 /// WGSL spelling of a field type.
 pub trait Wgsl {
     const TY: &'static str;
+    /// Alignment and size in a WGSL storage buffer.
+    const LAYOUT: (usize, usize);
 }
 
 macro_rules! wgsl_types {
-    ($($t:ty => $s:literal),* $(,)?) => { $(impl Wgsl for $t { const TY: &'static str = $s; })* };
+    ($($t:ty => $s:literal, $a:literal, $n:literal),* $(,)?) => { $(impl Wgsl for $t { const TY: &'static str = $s; const LAYOUT: (usize, usize) = ($a, $n); })* };
 }
 wgsl_types! {
-    f32 => "f32", u32 => "u32", i32 => "i32",
-    [f32; 2] => "vec2<f32>", [f32; 3] => "vec3<f32>", [f32; 4] => "vec4<f32>",
-    [u32; 4] => "vec4<u32>", [i32; 4] => "vec4<i32>",
-    [[f32; 4]; 3] => "array<vec4<f32>, 3>", [[f32; 4]; 4] => "mat4x4<f32>", [[f32; 4]; 6] => "array<vec4<f32>, 6>",
+    f32 => "f32", 4, 4, u32 => "u32", 4, 4, i32 => "i32", 4, 4,
+    [f32; 2] => "vec2<f32>", 8, 8, [f32; 3] => "vec3<f32>", 16, 12, [f32; 4] => "vec4<f32>", 16, 16,
+    [u32; 4] => "vec4<u32>", 16, 16, [i32; 4] => "vec4<i32>", 16, 16,
+    [[f32; 4]; 3] => "array<vec4<f32>, 3>", 16, 48, [[f32; 4]; 4] => "mat4x4<f32>", 16, 64, [[f32; 4]; 6] => "array<vec4<f32>, 6>", 16, 96,
 }
 
 /// Declares a GPU buffer struct: the Rust type and, from the same fields, its WGSL text
@@ -430,6 +432,21 @@ macro_rules! gpu_struct {
         #[repr(C)]
         #[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
         pub struct $name { $($(#[$fm])* pub $f: $t),* }
+
+        // The shader reads every field where Rust puts it, and arrays of it by the same stride.
+        const _: () = {
+            let (mut off, mut align) = (0usize, 4usize);
+            $(
+                let (a, n) = <$t as Wgsl>::LAYOUT;
+                off = off.div_ceil(a) * a;
+                assert!(off == core::mem::offset_of!($name, $f), concat!(stringify!($name), ".", stringify!($f), " sits elsewhere in WGSL"));
+                off += n;
+                if a > align {
+                    align = a;
+                }
+            )*
+            assert!(off.div_ceil(align) * align == core::mem::size_of::<$name>(), concat!(stringify!($name), " has another size in WGSL: pad it"));
+        };
 
         impl $name {
             pub fn wgsl() -> String {
@@ -528,21 +545,27 @@ gpu_struct! {
         pub cuboids: u32,
         pub cuboid_count: u32,
         pub vertices: u32,
-        /// Tint (rgb) and hurt flash.
+        /// Tint (rgb), and the strength of `effect`.
         pub color: [f32; 3],
-        pub hurt: f32,
+        pub strength: f32,
         pub tex: u32,
         /// Extra model pixels on every side (worn layers).
         pub inflate: f32,
         pub tex_size: [f32; 2],
-        /// Bit per part role this layer draws.
+        /// Bit per part role this layer draws, and bit per bone (the first 32) it draws too.
         pub roles: u32,
+        pub bone_mask: u32,
         /// Entity shader slot (`shaders/entity/<name>.wgsl`, 0 none) and glow mask texture (all
         /// ones: none).
         pub shader: u32,
         pub glow: u32,
         /// Light as the world stores it, all ones: full light.
         pub light: u32,
+        /// Entity effect slot (`shaders/entity_effect/<name>.wgsl`, 0 none).
+        pub effect: u32,
+        // Whole 16 bytes: WGSL rounds the array stride up to them.
+        pub pad0: u32,
+        pub pad1: u32,
     }
 }
 

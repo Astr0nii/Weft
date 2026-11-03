@@ -11,7 +11,7 @@
 //! r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.5);
 //! // Loot tables any mod can change:
 //! r.loot(&OAK_LEAVES).pool(Pool::new().when(Cond::Chance(0.05)).item("sapling"));
-//! r.loot_modify(&ZOMBIE).add_pool(Pool::new().item("mymod:brain"));
+//! r.loot_edit(&ZOMBIE).add_pool(Pool::new().item("mymod:brain"));
 //! ```
 
 use std::marker::PhantomData;
@@ -21,7 +21,9 @@ use crate::abi::{self, ItemStack, Slice, Str};
 use crate::component::Value;
 use crate::{Attribute, Chain, LootSource, Question, Registry, World, callback, host, qualify};
 
-pub use abi::{BlockChange, ChatMessage, Death, Hurt, ItemUsed, Pickup, PlayerEvent, attr_op, permission, stage};
+pub use abi::{
+    BlockChange, ChatMessage, Death, DimensionChange, Hurt, Interaction, ItemUsed, Pickup, PlayerEvent, attr_op, permission, stage,
+};
 
 /// The engine's questions (`Registry::intercept`, `World::ask`).
 pub mod question {
@@ -47,9 +49,10 @@ pub mod question {
     pub static USE_ITEM: Question = Question::named(q::USE_ITEM);
     /// A player (`entity`) about to say `text()` in the chat. Commands don't ask.
     pub static CHAT: Question = Question::named(q::CHAT);
+    pub static DIE: Question = Question::named(q::DIE);
 }
 
-/// The engine's value chains (`Registry::modify`, `World::compute`).
+/// The engine's value chains (`Registry::modify`, `World::chain_compute`).
 pub mod chain {
     use crate::Chain;
     /// Damage an entity takes (`entity` hurt by `other`, `cause`), after `on_hurt` hooks.
@@ -68,7 +71,7 @@ pub mod attribute {
     pub static VISIBILITY: Attribute = Attribute::named(crate::abi::attribute::VISIBILITY);
     /// Multiplier on jump speed, players and mobs (1).
     pub static JUMP_STRENGTH: Attribute = Attribute::named(crate::abi::attribute::JUMP_STRENGTH);
-    /// 1 or more: can swim in any liquid, also those that are `not_swimmable`.
+    /// 1 or more: can swim in any liquid, also those that are not `swimmable`.
     pub static SWIM_ANYWHERE: Attribute = Attribute::named(crate::abi::attribute::SWIM_ANYWHERE);
     /// Multiplier on how fast a swing recharges (1).
     pub static ATTACK_SPEED: Attribute = Attribute::named(crate::abi::attribute::ATTACK_SPEED);
@@ -106,7 +109,7 @@ impl<T: Value> Event<T> {
         if id != UNRESOLVED {
             return id;
         }
-        if unsafe { (host().components)() }.is_null() {
+        if unsafe { (host().component_table)() }.is_null() {
             return u32::MAX;
         }
         let id = unsafe { (host().find_event)(Str::new(self.name()), Str::new(&T::schema())) };
@@ -124,7 +127,18 @@ macro_rules! schema_values {
         }
     )*};
 }
-schema_values!(ItemStack, abi::ChatMessage, abi::BlockChange, abi::Death, abi::Hurt, abi::PlayerEvent, abi::Pickup, abi::ItemUsed);
+schema_values!(
+    ItemStack,
+    abi::ChatMessage,
+    abi::BlockChange,
+    abi::Death,
+    abi::Hurt,
+    abi::PlayerEvent,
+    abi::Pickup,
+    abi::ItemUsed,
+    abi::Interaction,
+    abi::DimensionChange
+);
 
 /// The engine's events.
 pub static BLOCK_BROKEN: Event<abi::BlockChange> = Event::named(abi::event::BLOCK_BROKEN);
@@ -141,6 +155,60 @@ pub static ENTITY_HURT: Event<abi::Hurt> = Event::named(abi::event::ENTITY_HURT)
 /// A player used the held item and something happened (`stack` as it was before): eating,
 /// emptying a bucket. Another mod reacts to food here, by the item's components.
 pub static ITEM_USED: Event<abi::ItemUsed> = Event::named(abi::event::ITEM_USED);
+pub static ENTITY_HEALED: Event<abi::Hurt> = Event::named(abi::event::ENTITY_HEALED);
+pub static BLOCK_USED: Event<abi::BlockChange> = Event::named(abi::event::BLOCK_USED);
+pub static ENTITY_INTERACTED: Event<abi::Interaction> = Event::named(abi::event::ENTITY_INTERACTED);
+pub static DIMENSION_CHANGED: Event<abi::DimensionChange> = Event::named(abi::event::DIMENSION_CHANGED);
+
+/// Something that happens, as one name: the question asked before it (`r.intercept(&A.ask, ..)`,
+/// any deny wins) and the event after (`r.on(&A.done, ..)`). The engine's are in `actions`; a
+/// mod's own goes through `w.act(&WRENCH, &mut query, value)`.
+///
+/// ```ignore
+/// static WRENCH: Action<Wrenched> = Action::named("wrench");
+/// r.intercept(&actions::DIE.ask, |a| if has_totem(a) { Verdict::Deny } else { Verdict::Abstain });
+/// ```
+pub struct Action<T: Value> {
+    pub ask: Question,
+    pub done: Event<T>,
+}
+
+impl<T: Value> Action<T> {
+    pub const fn named(name: &'static str) -> Self {
+        Action { ask: Question::named(name), done: Event::named(name) }
+    }
+    const fn engine(ask: &'static str, done: &'static str) -> Self {
+        Action { ask: Question::named(ask), done: Event::named(done) }
+    }
+}
+
+impl World {
+    /// Asks `action`'s question with `q`, and when nobody refuses sends its event with `value`.
+    /// True if it may happen.
+    pub fn act<T: Value>(&self, action: &Action<T>, q: &mut abi::Query, value: T) -> bool {
+        let ok = self.ask(&action.ask, q);
+        if ok {
+            self.emit(&action.done, value);
+        }
+        ok
+    }
+}
+
+/// The engine's actions: what may be refused and what is told after, for each.
+pub mod actions {
+    use super::Action;
+    use crate::abi::{self, event as e, question as q};
+    pub static BREAK_BLOCK: Action<abi::BlockChange> = Action::engine(q::BREAK_BLOCK, e::BLOCK_BROKEN);
+    pub static PLACE_BLOCK: Action<abi::BlockChange> = Action::engine(q::PLACE_BLOCK, e::BLOCK_PLACED);
+    pub static USE_BLOCK: Action<abi::BlockChange> = Action::engine(q::USE_BLOCK, e::BLOCK_USED);
+    pub static USE_ITEM: Action<abi::ItemUsed> = Action::engine(q::USE_ITEM, e::ITEM_USED);
+    pub static INTERACT_ENTITY: Action<abi::Interaction> = Action::engine(q::INTERACT_ENTITY, e::ENTITY_INTERACTED);
+    pub static HURT: Action<abi::Hurt> = Action::engine(q::HURT, e::ENTITY_HURT);
+    pub static DIE: Action<abi::Death> = Action::engine(q::DIE, e::ENTITY_DIED);
+    pub static PICKUP_ITEM: Action<abi::Pickup> = Action::engine(q::PICKUP_ITEM, e::ITEM_PICKED_UP);
+    pub static ENTER_DIMENSION: Action<abi::DimensionChange> = Action::engine(q::ENTER_DIMENSION, e::DIMENSION_CHANGED);
+    pub static CHAT: Action<abi::ChatMessage> = Action::engine(q::CHAT, e::CHAT_MESSAGE);
+}
 
 /// Every value of one event queued during a tick, in the order they happened.
 pub struct EventBatch<T> {
@@ -243,12 +311,14 @@ pub enum Cond {
     ToolLevel(u32),
     KilledByPlayer,
     OnFire,
-    /// The block was harvested: broken by the world, or mined with a tool its `needs_tool`
+    /// The block was harvested: broken by the world, or mined with a tool its `needs_tool_level`
     /// accepts. `drops(..)` tables have it; write it on pools of your own tables that should.
     Harvested,
     /// The block's state has this property at this value, written as in `w.prop`:
     /// `BlockState("age=7")` for a ripe crop, `BlockState("lit=true")`.
     BlockState(&'static str),
+    /// A condition (`Registry::condition`) holds there, asked about the killer or breaker.
+    Condition(&'static crate::Condition),
 }
 
 impl Cond {
@@ -266,6 +336,7 @@ impl Cond {
             Cond::OnFire => (k::ON_FIRE, 1.0, ""),
             Cond::BlockState(prop) => (k::BLOCK_STATE, 1.0, *prop),
             Cond::Harvested => (k::HARVESTED, 1.0, ""),
+            Cond::Condition(c) => (k::CONDITION, 1.0, c.name()),
         }
     }
 }
@@ -458,25 +529,25 @@ impl LootModBuilder<'_> {
             if from.is_empty() { String::new() } else { qualify(self.reg.ns, from) },
             if to.is_empty() { String::new() } else { qualify(self.reg.ns, to) },
         );
-        let desc = abi::LootModDesc {
+        let desc = abi::LootEditDesc {
             table: Str::new(&self.table),
             op,
             pool: raw.pools.first().copied().unwrap_or(abi::LootPool::DEFAULT),
             from: Str::new(&from),
             to: Str::new(&to),
-            ..abi::LootModDesc::DEFAULT
+            ..abi::LootEditDesc::DEFAULT
         };
-        unsafe { (host().reg_loot_modifier)(self.reg.raw, &desc) }
+        unsafe { (host().reg_loot_edit)(self.reg.raw, &desc) }
     }
     pub fn add_pool(mut self, p: Pool) -> Self {
         self.send(abi::loot_op::ADD_POOL, Some(&p), "", "");
         self
     }
-    pub fn replace(mut self, from: &str, to: &str) -> Self {
+    pub fn replace_item(mut self, from: &str, to: &str) -> Self {
         self.send(abi::loot_op::REPLACE_ITEM, None, from, to);
         self
     }
-    pub fn remove(mut self, item: &str) -> Self {
+    pub fn remove_item(mut self, item: &str) -> Self {
         self.send(abi::loot_op::REMOVE_ITEM, None, item, "");
         self
     }
@@ -583,7 +654,7 @@ impl Registry {
             f(&mut m);
             a.value = m.value;
         });
-        unsafe { (host().reg_modifier)(self.raw, Str::new(chain.name()), stage, cb) }
+        unsafe { (host().reg_chain_modifier)(self.raw, Str::new(chain.name()), stage, cb) }
     }
 
     /// An attribute of living entities (`attribute::*` are the engine's).
@@ -596,7 +667,7 @@ impl Registry {
         LootBuilder { reg: self, name: table.table_name().to_string(), pools: Vec::new() }
     }
 
-    pub fn loot_modify<'a>(&'a mut self, table: &dyn LootSource) -> LootModBuilder<'a> {
+    pub fn loot_edit<'a>(&'a mut self, table: &dyn LootSource) -> LootModBuilder<'a> {
         LootModBuilder { reg: self, table: table.table_name().to_string() }
     }
 
@@ -611,13 +682,13 @@ impl World {
     /// In `ticks` ticks `event` fires with `value` (a calm-down, a hunger pulse). The timer is
     /// saved with `entity` and goes with it when it is removed; one per entity and event, so
     /// setting it again moves it.
-    pub fn after<T: Value>(&self, entity: u64, ticks: u32, event: &Event<T>, value: T) {
+    pub fn emit_after<T: Value>(&self, entity: u64, ticks: u32, event: &Event<T>, value: T) {
         let id = event.id();
         if id == u32::MAX {
             return;
         }
         let b = unsafe { std::slice::from_raw_parts(&value as *const T as *const u8, size_of::<T>()) };
-        unsafe { (host().entity_after)(self.raw(), entity, ticks, id, Slice::new(b)) }
+        unsafe { (host().emit_after)(self.raw(), entity, ticks, id, Slice::new(b)) }
     }
 
     pub fn emit<T: Value>(&self, event: &Event<T>, value: T) {
@@ -634,13 +705,13 @@ impl World {
         unsafe { (host().ask)(self.raw(), Str::new(question.name()), q) != 0 }
     }
 
-    pub fn compute(&self, chain: &Chain, base: f64, q: &abi::Query) -> f64 {
-        unsafe { (host().compute)(self.raw(), Str::new(chain.name()), base, q, 0) }
+    pub fn chain_compute(&self, chain: &Chain, base: f64, q: &abi::Query) -> f64 {
+        unsafe { (host().chain_compute)(self.raw(), Str::new(chain.name()), base, q, 0) }
     }
 
-    /// Like `compute`, with the steps that led to the value ("4, base at stage 200: 4 -> 2 = 2").
-    pub fn explain(&self, chain: &Chain, base: f64, q: &abi::Query) -> (f64, String) {
-        let v = unsafe { (host().compute)(self.raw(), Str::new(chain.name()), base, q, 1) };
+    /// Like `chain_compute`, with the steps that led to the value ("4, base at stage 200: 4 -> 2 = 2").
+    pub fn chain_explain(&self, chain: &Chain, base: f64, q: &abi::Query) -> (f64, String) {
+        let v = unsafe { (host().chain_compute)(self.raw(), Str::new(chain.name()), base, q, 1) };
         (v, unsafe { (host().explanation)().as_str().to_string() })
     }
 
@@ -648,18 +719,18 @@ impl World {
         unsafe { (host().attribute)(self.raw(), entity, Str::new(attribute.name())) }
     }
 
-    pub fn explain_attribute(&self, entity: u64, attribute: &Attribute) -> (f64, String) {
+    pub fn attribute_explain(&self, entity: u64, attribute: &Attribute) -> (f64, String) {
         let v = unsafe { (host().attribute_explain)(self.raw(), entity, Str::new(attribute.name())) };
         (v, unsafe { (host().explanation)().as_str().to_string() })
     }
 
     /// Adds or replaces modifier `id` on an attribute for `ticks` (0 = until removed).
-    pub fn add_modifier(&self, entity: u64, attr: &Attribute, id: &str, op: u32, amount: f64, ticks: u64) {
-        unsafe { (host().attribute_modifier)(self.raw(), entity, Str::new(attr.name()), Str::new(id), op, amount, ticks) }
+    pub fn attribute_add_modifier(&self, entity: u64, attr: &Attribute, id: &str, op: u32, amount: f64, ticks: u64) {
+        unsafe { (host().attribute_add_modifier)(self.raw(), entity, Str::new(attr.name()), Str::new(id), op, amount, ticks) }
     }
 
-    pub fn remove_modifier(&self, entity: u64, attr: &Attribute, id: &str) {
-        unsafe { (host().attribute_remove)(self.raw(), entity, Str::new(attr.name()), Str::new(id)) }
+    pub fn attribute_remove_modifier(&self, entity: u64, attr: &Attribute, id: &str) {
+        unsafe { (host().attribute_remove_modifier)(self.raw(), entity, Str::new(attr.name()), Str::new(id)) }
     }
 
     pub fn roll_loot(&self, table: &dyn LootSource, ctx: &LootCtx) -> Vec<ItemStack> {

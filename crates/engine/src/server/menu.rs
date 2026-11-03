@@ -6,6 +6,7 @@
 use weft_abi::{self as abi, ItemStack, slot_flags as sf};
 
 use super::dim::Dim;
+use super::holder::{self, At};
 use crate::content::Content;
 use crate::host;
 
@@ -14,6 +15,11 @@ pub enum Owner {
     Temp,
     Player,
     Entity(u64),
+    /// The contents of the stack in `slot` of `entity`'s inventory.
+    Held {
+        entity: u64,
+        slot: u32,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -34,6 +40,9 @@ pub struct OpenMenu {
     pub on_block: bool,
     pub kind: u32,
     pub owner: u64,
+    /// Opened on the stack in this slot of `owner`'s inventory, and the item it was: the menu
+    /// closes once that stack is gone.
+    pub held: Option<(u32, u32)>,
     pub slots: Vec<SlotRef>,
     pub temp: Vec<ItemStack>,
     pub cursor: ItemStack,
@@ -95,6 +104,7 @@ fn get(m: &OpenMenu, dim: &Dim, player: u64, slot: u32) -> ItemStack {
             .and_then(|i| i.get(r.index as usize))
             .copied()
             .unwrap_or_default(),
+        Owner::Held { entity, slot } => holder::get(dim, crate::content::content(), At::Stack { entity, slot }, r.index),
     }
 }
 
@@ -109,6 +119,7 @@ fn set(m: &mut OpenMenu, dim: &mut Dim, player: u64, slot: u32, stack: ItemStack
         }
         Owner::Player => dim.entities.set_slot(player, r.index, stack),
         Owner::Entity(id) => dim.entities.set_slot(id, r.index, stack),
+        Owner::Held { entity, slot } => holder::set(dim, crate::content::content(), At::Stack { entity, slot }, r.index, stack),
     }
 }
 
@@ -129,8 +140,9 @@ fn call(
     host::invoke(def.owner, cb, &mut args);
 }
 
-/// The slots of menu `kind` opened on `owner`, from its groups.
-pub fn slots(c: &Content, kind: u32, owner: u64) -> Vec<SlotRef> {
+/// The slots of menu `kind` opened on `owner` (on the stack in slot `held` of its inventory),
+/// from its groups.
+pub fn slots(c: &Content, kind: u32, owner: u64, held: Option<u32>, player: u64) -> Vec<SlotRef> {
     use abi::slot_owner as so;
     let def = &c.game.menus[kind as usize];
     let layout = &c.game.player_layout;
@@ -143,25 +155,32 @@ pub fn slots(c: &Content, kind: u32, owner: u64) -> Vec<SlotRef> {
                 u32::MAX - 1
             }),
         };
-        let o = match g.owner {
-            so::MENU => Owner::Temp,
-            so::BLOCK => Owner::Entity(owner),
+        let o = match (g.owner, held) {
+            (so::MENU, _) => Owner::Temp,
+            (so::MACHINE, None) => Owner::Entity(owner),
+            (so::MACHINE, Some(slot)) => Owner::Held { entity: owner, slot },
             _ => Owner::Player,
         };
         for i in 0..n {
-            out.push(SlotRef { owner: o, index: g.index(layout, i), flags: g.flags, accepts, limit: g.limit, priority: g.priority });
+            let index = g.index(layout, i);
+            // The stack the menu is open on can't be moved while it is.
+            let locked = o == Owner::Player && owner == player && held == Some(index);
+            let flags = if locked { g.flags | sf::LOCKED } else { g.flags };
+            out.push(SlotRef { owner: o, index, flags, accepts, limit: g.limit, priority: g.priority });
         }
     }
     out
 }
 
-pub fn open(dim: &mut Dim, c: &Content, player: u64, kind: u32, owner: u64) -> OpenMenu {
+pub fn open(dim: &mut Dim, c: &Content, player: u64, kind: u32, owner: u64, held: Option<u32>) -> OpenMenu {
     let def = &c.game.menus[kind as usize];
+    let held_item = held.map(|slot| (slot, holder::get(dim, c, At::Entity(owner), slot).item));
     let mut m = OpenMenu {
         on_block: false,
         kind,
         owner,
-        slots: slots(c, kind, owner),
+        held: held_item,
+        slots: slots(c, kind, owner, held, player),
         temp: vec![ItemStack::EMPTY; def.temp_slots as usize],
         cursor: ItemStack::EMPTY,
         sent_slots: Vec::new(),
@@ -179,6 +198,11 @@ pub fn out_of_reach(m: &OpenMenu, dim: &Dim, player: u64) -> bool {
         return false;
     }
     let Some(owner) = dim.entities.get(m.owner).filter(|o| !o.removed) else { return true };
+    if let Some((slot, item)) = m.held {
+        let c = crate::content::content();
+        let now = holder::get(dim, c, At::Entity(m.owner), slot);
+        return now.item != item || now.is_empty();
+    }
     if owner.anchor.is_none() || !m.on_block {
         return false;
     }
@@ -219,7 +243,11 @@ pub fn close(m: OpenMenu, dim: &mut Dim, c: &Content, player: u64) {
 }
 
 fn fits(c: &Content, s: &SlotRef, item: u32) -> bool {
-    if s.flags & sf::OFF_HAND != 0 && !crate::content::fits_one_hand(c, item) {
+    if s.flags & sf::LOCKED != 0 || (s.flags & sf::OFF_HAND != 0 && !crate::content::fits_one_hand(c, item)) {
+        return false;
+    }
+    // A stack holding items doesn't go into another one.
+    if matches!(s.owner, Owner::Held { .. }) && holder::item_slots(c, item) > 0 {
         return false;
     }
     s.accepts == u32::MAX || item == 0 || c.components.has(crate::components::ITEM, item, s.accepts)
@@ -233,7 +261,7 @@ fn cap(c: &Content, s: &SlotRef, item: u32) -> u32 {
 
 /// Whether a player may take items out of `s` by hand.
 fn takeable(s: &SlotRef) -> bool {
-    s.flags & sf::INPUT == 0
+    s.flags & (sf::INPUT | sf::LOCKED) == 0
 }
 
 /// `button` 2..=10 over a slot: number key 1..9, swaps it with that hotbar slot (vanilla).
@@ -288,7 +316,7 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
         let creative = dim
             .entities
             .get(player)
-            .is_some_and(|e| e.mode == crate::world::GameMode::Creative);
+            .is_some_and(|e| e.mode.has(weft_abi::game_mode_flags::NO_COSTS));
         let there = if (slot as usize) < m.slots.len() { get(m, dim, player, slot) } else { ItemStack::EMPTY };
         if creative && m.cursor.is_empty() && !there.is_empty() {
             m.cursor = ItemStack { count: c.max_stack(there.item), ..there };
@@ -337,6 +365,9 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
         return;
     }
     let Some(r) = m.slots.get(slot as usize).copied() else { return };
+    if r.flags & sf::LOCKED != 0 {
+        return;
+    }
     let cur = get(m, dim, player, slot);
     let output = r.flags & sf::OUTPUT != 0;
     let max = |item: u32| c.max_stack(item);
@@ -429,7 +460,7 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
                     s.owner == Owner::Player
                         && s.index < layout.slots
                         && !layout.worn.contains(&s.index)
-                        && s.flags & sf::OFF_HAND == 0
+                        && s.flags & (sf::OFF_HAND | sf::LOCKED) == 0
                         && (s.index < layout.hotbar) != hotbar
                 })
                 .collect()

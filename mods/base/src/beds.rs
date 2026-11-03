@@ -181,7 +181,7 @@ pub fn register(r: &mut Registry) {
             // What the model file of a bed says for one facing south, turned to this one.
             let mut s = s
                 .cutout()
-                .frame(signal::Frame::new(Dir::Down, p.facing().opposite()))
+                .oriented(signal::Orientation::new(Dir::Down, p.facing().opposite()))
                 .hitbox([0.0; 3], [16.0, 9.0, 16.0]);
             for b in if head { HEAD_BOXES } else { FOOT_BOXES } {
                 let mut faces = b.2;
@@ -199,7 +199,7 @@ pub fn register(r: &mut Registry) {
     r.entity_component(
         &BED_SPAWN,
         BedSpawn { bed: [0; 3], set: 0, dim_key: 0 },
-        component_flags::SAVE | component_flags::KEEP | component_flags::SYNC_OWNER,
+        component_flags::SAVE | component_flags::KEEP_ON_RESPAWN | component_flags::SYNC_OWNER,
     );
     r.attach(&PLAYER, &BED_SPAWN);
     r.entity_component(&SLEEP, Sleep { bed: [0; 3], since: 0, night: 0, asleep: 0 }, 0);
@@ -212,7 +212,7 @@ pub fn register(r: &mut Registry) {
             let Some(spawn) = w.component_mut(e.player, &BED_SPAWN).filter(|s| s.set != 0) else { continue };
             let (Some(st), Some(arriving)) = (w.entity(e.player), w.component_mut(e.player, &ARRIVING)) else { continue };
             // Its mod may be gone by now.
-            let Some(dim) = dimension_of_key(spawn.dim_key).map(|d| name_of(abi::entry_kind::DIMENSION, d)) else {
+            let Some(dim) = dimension_from_key(spawn.dim_key).map(|d| name_of(abi::entry_kind::DIMENSION, d)) else {
                 spawn.set = 0;
                 w.hint(e.player, MISSING, &[]);
                 continue;
@@ -249,7 +249,7 @@ fn use_bed(u: &mut Use) -> bool {
     // A player stays standing in bed, so as much room as that takes.
     if [1, 2]
         .iter()
-        .any(|dy| w.flags([foot[0], foot[1] + dy, foot[2]]) & abi::block_flags::SOLID != 0)
+        .any(|dy| w.block_flags([foot[0], foot[1] + dy, foot[2]]) & abi::block_flags::SOLID != 0)
     {
         w.hint(player, OBSTRUCTED, &[]);
         return true;
@@ -268,8 +268,8 @@ fn use_bed(u: &mut Use) -> bool {
         w.hint(player, MONSTERS_NEAR, &[]);
     } else if let Some(s) = w.component_mut(player, &SLEEP) {
         let night = NIGHTS.lock().unwrap().get(&dim).map_or(0, |n| n.skipped);
-        *s = Sleep { bed: foot, since: w.time(), night, asleep: 1 };
-        let state = w.get(foot);
+        *s = Sleep { bed: foot, since: w.game_time(), night, asleep: 1 };
+        let state = w.block(foot);
         w.teleport(player, None, lying_on_bed(foot, state));
         w.send(player, &LYING, &(1 + lying_quarters(state)));
     }
@@ -279,7 +279,7 @@ fn use_bed(u: &mut Use) -> bool {
 fn monsters_near(w: &World, foot: [i32; 3]) -> bool {
     let c = [foot[0] as f64 + 0.5, foot[1] as f64 + 0.5, foot[2] as f64 + 0.5];
     let reach = (2.0 * MONSTERS[0] * MONSTERS[0] + MONSTERS[1] * MONSTERS[1]).sqrt();
-    w.near_targets(c, reach, None)
+    w.targets_near(c, reach, None)
         .into_iter()
         .filter_map(|id| w.entity(id))
         .any(|e| {
@@ -298,7 +298,7 @@ fn arrive(w: &World, id: u64) {
     if dimension_key(w.dimension()) != spawn.dim_key {
         return;
     }
-    let Some(state) = w.get_loaded(spawn.bed) else { return };
+    let Some(state) = w.block_loaded(spawn.bed) else { return };
     a.on_way = 0;
     if !BED.is(state) {
         spawn.set = 0;
@@ -311,7 +311,7 @@ fn get_up(w: &World, player: u64) {
     if let Some(s) = w.component_mut(player, &SLEEP).filter(|s| s.asleep != 0) {
         s.asleep = 0;
         w.send(player, &LYING, &0);
-        if BED.is(w.get(s.bed)) {
+        if BED.is(w.block(s.bed)) {
             w.teleport(player, None, on_bed(s.bed));
         }
     }
@@ -320,7 +320,7 @@ fn get_up(w: &World, player: u64) {
 /// Wakes sleepers whose night was skipped or who left their bed, notes who is asleep, and skips
 /// the night once everybody has been asleep a while. Spectators and the dead aren't asked.
 fn watch_sleepers(w: &World) {
-    let (now, dim) = (w.time(), w.dimension());
+    let (now, dim) = (w.game_time(), w.dimension());
     let night = NIGHTS.lock().unwrap().get(&dim).map_or(0, |n| n.skipped);
     let mut here_asleep = false;
     let mut seen = Vec::new();
@@ -333,15 +333,15 @@ fn watch_sleepers(w: &World) {
                 let d = [e.pos[0] - (s.bed[0] as f64 + 0.5), e.pos[2] - (s.bed[2] as f64 + 0.5)];
                 d[0] * d[0] + d[1] * d[1] > 2.5 * 2.5
             });
-            if s.night < night || left || !BED.is(w.get(s.bed)) {
+            if s.night < night || left || !BED.is(w.block(s.bed)) {
                 get_up(w, id);
             } else {
-                ready = w.time().saturating_sub(s.since) >= FALL_ASLEEP;
+                ready = w.game_time().saturating_sub(s.since) >= FALL_ASLEEP;
                 here_asleep |= ready;
             }
         }
         if w.entity(id)
-            .is_some_and(|e| w.near_targets(e.pos, 0.1, None).contains(&id))
+            .is_some_and(|e| w.targets_near(e.pos, 0.1, None).contains(&id))
         {
             seen.push((id, ready));
         }
@@ -374,12 +374,12 @@ fn client(r: &mut Registry) {
         if lying != 0 {
             *LYING_SINCE.lock().unwrap() = Some(Instant::now());
             c.lie_down(Some((lying - 1) as f32 * 90.0));
-            c.open_screen(&SLEEP_SCREEN);
+            c.screen_open(&SLEEP_SCREEN);
         } else if LYING_SINCE.lock().unwrap().take().is_some() {
             c.lie_down(None);
             c.post_effect(SLEEP_EFFECT, 0.0);
             if c.screen() == SLEEP_SCREEN.name() {
-                c.close_screen();
+                c.screen_close();
             }
         }
     });
@@ -397,9 +397,9 @@ fn client(r: &mut Registry) {
         }
     });
     r.screen(&SLEEP_SCREEN, |ui| {
-        ui.column(S::col().gap(12.0).center(), |ui| {
+        ui.column(S::column().gap(12.0).center(), |ui| {
             ui.text_styled(
-                S::col()
+                S::column()
                     .class("title")
                     .scale(2.0)
                     .no_wrap()
@@ -407,8 +407,8 @@ fn client(r: &mut Registry) {
                 "bed.base.sleeping",
                 &[],
             );
-            ui.button("bed.base.leave", S::col().min_w(200.0).self_align(abi::ui_align::CENTER), |c| {
-                c.client().close_screen();
+            ui.button("bed.base.leave", S::column().min_w(200.0).self_align(abi::ui_align::CENTER), |c| {
+                c.client().screen_close();
             });
         });
     })

@@ -1422,7 +1422,7 @@ impl Running {
                         relayout |= text::refresh(&mut t.spans, &test);
                     }
                     // Jumping about needs drawing again, whatever the value does.
-                    Kind::Icons { bind, value, shake: true, .. } if (0.0..=4.0).contains(value) => {
+                    Kind::Icons { bind, value, shake: Some(s), .. } if (0.0..=*s).contains(value) => {
                         *value = bind(&ctx);
                         redraw = true;
                     }
@@ -1460,24 +1460,22 @@ impl Running {
     }
 }
 
-/// `{if:name}`: the engine's conditions, then mods' (`Host::reg_text_condition`); unknown ones
+/// `{if:name}`: the engine's conditions, then mods' (`Host::reg_condition`); unknown ones
 /// are false.
 fn text_condition(name: &str, client: Option<&Client>, debug: bool, dev: bool) -> bool {
-    use crate::world::GameMode;
     let mode = client.map(|c| c.mode);
+    // A game mode's name holds while the player is in it.
+    if let Some(m) = crate::world::GameMode::parse(name) {
+        return mode == Some(m);
+    }
     match name {
-        "creative" => mode == Some(GameMode::Creative),
-        "survival" => mode == Some(GameMode::Survival),
-        "spectator" => mode == Some(GameMode::Spectator),
         "debug" => debug,
         "dev" => dev,
-        _ => {
-            let Some(&(owner, cb)) = content().game.text_conditions.get(name) else { return false };
-            let mut v = crate::client::modui::ClientView::new(client);
-            let mut a = abi::TextConditionArgs { client: v.raw(), result: 0 };
-            crate::host::invoke(owner, cb, &mut a);
-            a.result != 0
-        }
+        _ => content()
+            .game
+            .condition_names
+            .get(name)
+            .is_some_and(|&id| crate::conditions::on_client(client, id)),
     }
 }
 
@@ -1734,7 +1732,7 @@ const F3_COMBOS: &[(KeyCode, F3Action)] = &[
     // Through the command, so permissions still apply.
     (KeyCode::F4, |r| {
         if let Some(g) = &mut r.game {
-            let all = crate::world::GameMode::ALL;
+            let all: Vec<_> = crate::world::GameMode::all().collect();
             let next = all[(all.iter().position(|&m| m == g.client.mode).unwrap_or(0) + 1) % all.len()];
             g.client
                 .send(net::ToServer::Chat(format!("/gamemode {}", next.name())));

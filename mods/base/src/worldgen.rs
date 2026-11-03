@@ -133,7 +133,7 @@ pub fn register(r: &mut Registry) {
         r.ore(ore)
             .y(i32::MIN, max_y)
             .veins(veins)
-            .size(size)
+            .vein_size(size)
             .replace("#stone_ore_replaceables");
     }
 
@@ -187,9 +187,9 @@ pub fn register(r: &mut Registry) {
                 .and_then(|l| l.pick(s.random() >> 40))
                 .unwrap_or(OAK_LOG.id());
             let Some(t) = tree_at(log, x, y, z, s.random() >> 32) else { return };
-            tree_blocks(&t, |x, y, z, state, force| if force { s.force([x, y, z], state) } else { s.put([x, y, z], state) });
+            tree_blocks(&t, |x, y, z, state, force| if force { s.put_force([x, y, z], state) } else { s.put([x, y, z], state) });
         });
-    r.decorate(decorate);
+    r.decoration(decorate);
 }
 
 static TREE_SITES: Scatter = Scatter::named("trees");
@@ -255,14 +255,14 @@ fn tree_blocks(t: &TreeAt, mut put: impl FnMut(i32, i32, i32, u32, bool)) {
 pub fn grow_tree(w: World, p: [i32; 3]) {
     let Some(t) = tree_at(OAK_LOG.id(), p[0], p[1], p[2], w.random()) else { return };
     for y in t.y + 1..t.y + t.height {
-        if w.get([t.x, y, t.z]) != 0 {
+        if w.block([t.x, y, t.z]) != 0 {
             return;
         }
     }
     tree_blocks(&t, |x, y, z, s, overwrite| {
-        let cur = w.get([x, y, z]);
+        let cur = w.block([x, y, z]);
         if overwrite || cur == 0 || TALL_GRASS.is(cur) {
-            w.set([x, y, z], s);
+            w.set_block([x, y, z], s);
         }
     });
 }

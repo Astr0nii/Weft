@@ -59,7 +59,7 @@ pub fn register(r: &mut Registry) {
         .tag("materials/diamond")
         .tab(&crate::tabs::INGREDIENTS);
     r.item(&WHEAT_SEEDS)
-        .placed_block(&crate::blocks::WHEAT)
+        .places(&crate::blocks::WHEAT)
         .tab(&crate::tabs::NATURAL);
     r.item(&WHEAT)
         .tag("crops/wheat")
@@ -87,7 +87,7 @@ pub fn register(r: &mut Registry) {
         let i = r
             .item(Item::generated(name.into()))
             .set(&FOOD, Food { hunger, saturation })
-            .use_time(1.6)
+            .use_ticks(32)
             .on_use(base_api::eat)
             .tab(&crate::tabs::FOOD);
         let i = if tag.starts_with("cooked_meat/") { i.tag("cooked_meat") } else { i };

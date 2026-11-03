@@ -1,13 +1,14 @@
 //! Authoritative simulation. Runs on its own thread; single player talks to it through the
 //! in-process transport. Each dimension is a set of regions ticked in parallel.
 
-mod actions;
+pub(crate) mod actions;
 pub mod area;
 mod builtin;
 pub mod dim;
 pub mod energy;
 pub mod entity;
 pub(crate) mod extend;
+pub mod holder;
 mod liquid;
 mod load;
 pub mod path;
@@ -35,7 +36,7 @@ use glam::{DVec3, IVec3};
 use parking_lot::Mutex;
 use rayon::prelude::*;
 use rustc_hash::FxHashSet;
-use weft_abi::{self as abi, ItemStack, component_flags as cf, damage};
+use weft_abi::{self as abi, ItemStack, component_flags as cf};
 
 pub use dim::{Dim, DimEvent, mining_rate};
 
@@ -380,10 +381,11 @@ impl Server {
                     dims[i as usize].set_time(*t);
                 }
             }
-            for (name, raining, thunder, until) in &s.meta.weather {
-                if let Some(&i) = c.dim_names.get(name) {
+            for (name, weather, until) in &s.meta.weather {
+                if let (Some(&i), Some(&w)) = (c.dim_names.get(name), c.game.weather_names.get(weather)) {
                     let d = &mut dims[i as usize];
-                    (d.raining, d.thunder, d.weather_until) = (*raining, *thunder, *until);
+                    d.set_weather(w as u16, 0);
+                    d.weather_until = *until;
                 }
             }
             for (name, o) in &s.meta.day_offsets {
@@ -690,9 +692,9 @@ impl Server {
                         }
                     }
                 }
-                DimEvent::OpenMenu { player, menu, owner, block } => {
+                DimEvent::OpenMenu { player, menu, owner, block, held } => {
                     if let Some(pi) = self.players.iter().position(|p| p.entity == player) {
-                        self.open_menu(c, pi, menu, owner, block);
+                        self.open_menu(c, pi, menu, owner, block, held);
                     }
                 }
                 DimEvent::Died { player, cause, killer } => {
@@ -725,18 +727,8 @@ impl Server {
                         self.set_permission(pi, level);
                     }
                 }
-                DimEvent::SetWeather { dim, raining, thunder, ticks } => {
-                    self.dims[dim as usize].set_weather(raining, thunder, ticks as u64)
-                }
-                DimEvent::Flash { id } => {
-                    for p in self
-                        .players
-                        .iter_mut()
-                        .filter(|p| p.joined && p.known.contains(&id))
-                    {
-                        p.conn.send(ToClient::Flash(id));
-                    }
-                }
+                DimEvent::SetWeather { dim, weather, ticks } => self.dims[dim as usize].set_weather(weather, ticks as u64),
+
                 DimEvent::EntitySwing { id, off } => {
                     for p in self
                         .players
@@ -793,7 +785,7 @@ impl Server {
         }
     }
 
-    fn open_menu(&mut self, c: &'static Content, pi: usize, kind: u32, owner: u64, block: u32) {
+    fn open_menu(&mut self, c: &'static Content, pi: usize, kind: u32, owner: u64, block: u32, held: Option<u32>) {
         if kind as usize >= c.game.menus.len() {
             return;
         }
@@ -804,15 +796,18 @@ impl Server {
             menu::close(m, r, c, p.entity);
         }
         p.window += 1;
-        let mut m = menu::open(r, c, p.entity, kind, owner);
+        let mut m = menu::open(r, c, p.entity, kind, owner, held);
         m.on_block = block != 0;
-        // The title: the owner's own name, else the block it stands on.
-        let name = r
-            .entities
-            .comps
-            .get(&(owner, c.game.name_comp))
-            .map(|b| String::from_utf8_lossy(b).into_owned())
-            .unwrap_or_default();
+        // The title: the owner's own name (the held stack's), else the block it stands on.
+        let name = match held {
+            Some(slot) => crate::stack::name(&holder::get(r, c, holder::At::Entity(owner), slot)).unwrap_or_default(),
+            None => r
+                .entities
+                .comps
+                .get(&(owner, c.game.name_comp))
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default(),
+        };
         let block = if block != 0 {
             block
         } else {
@@ -887,7 +882,7 @@ impl Server {
             .dims
             .iter()
             .filter(|d| d.weather_until != 0)
-            .map(|d| (c.dims[d.id as usize].name.clone(), d.raining, d.thunder, d.weather_until))
+            .map(|d| (c.dims[d.id as usize].name.clone(), c.game.weathers[d.weather as usize].name.clone(), d.weather_until))
             .collect();
         s.meta.edits = self
             .dims
@@ -999,7 +994,7 @@ impl Server {
         p.conn
             .send(ToClient::Time { dim: to, time: dims[to as usize].day_time() });
         p.conn
-            .send(ToClient::Weather { raining: dims[to as usize].raining, thunder: dims[to as usize].thunder });
+            .send(ToClient::Weather(dims[to as usize].weather as u32));
         if to == c.void_dim && from != to as usize {
             p.conn
                 .send(ToClient::Show(crate::net::Shown::chat(void_note(c))));
@@ -1178,6 +1173,11 @@ impl Server {
                 return;
             }
         }
+        if dim != to_dim {
+            if let Some(r) = self.dims[dim as usize].entity_region(id) {
+                r.emit_engine(c, abi::event::DIMENSION_CHANGED, &abi::DimensionChange { entity: id, from: dim, to: to_dim });
+            }
+        }
         if let Some(pi) = self.player_index(id) {
             self.change_dim(c, pi, to_dim, pos);
             return;
@@ -1260,17 +1260,23 @@ pub fn structure_near(c: &Content, dim: u32, seed: u64, name: &str, pos: IVec3, 
 /// What a game mode changes through attributes: in creative mobs do not notice the player, and it
 /// reaches further.
 fn mode_modifiers(c: &Content, r: &mut Dim, id: u64, mode: GameMode) {
-    if mode == GameMode::Creative {
-        r.set_attr_modifier(c, id, extend::BLOCK_REACH, "core:game_mode", abi::attr_op::ADD, 0.5, 0);
-        r.set_attr_modifier(c, id, extend::ENTITY_REACH, "core:game_mode", abi::attr_op::ADD, 2.0, 0);
-    } else {
-        r.remove_attr_modifier(c, id, extend::BLOCK_REACH, "core:game_mode");
-        r.remove_attr_modifier(c, id, extend::ENTITY_REACH, "core:game_mode");
+    // What another mode added goes first: each attribute any mode touches.
+    for a in c
+        .game
+        .game_modes
+        .iter()
+        .flat_map(|m| &m.modifiers)
+        .map(|m| &m.0)
+    {
+        if let Some(&attr) = c.game.attr_names.get(a) {
+            r.remove_attr_modifier(c, id, attr, "core:game_mode");
+        }
     }
-    if mode == GameMode::Survival {
-        r.remove_attr_modifier(c, id, extend::VISIBILITY, "core:game_mode");
-    } else {
-        r.set_attr_modifier(c, id, extend::VISIBILITY, "core:game_mode", abi::attr_op::MUL_TOTAL, -1.0, 0);
+    for (a, op, amount) in &mode.def().modifiers {
+        match c.game.attr_names.get(a) {
+            Some(&attr) => r.set_attr_modifier(c, id, attr, "core:game_mode", *op, *amount, 0),
+            None => log::warn!("game mode {}: no attribute {a}", mode.def().name),
+        }
     }
 }
 
@@ -1332,26 +1338,18 @@ fn entities_in(c: &Content, d: &Dim, cube: IVec3) -> Vec<u8> {
 /// Said to a player arriving in the engine's void.
 /// "X was slain by Zombie": `killer` is the kind of whatever did it, if something did.
 fn death_message(c: &Content, cause: u32, killer: Option<u32>, name: String) -> Msg {
-    use abi::damage as d;
     let by = killer
         .and_then(|k| c.game.entities.get(k as usize))
         .map(|k| Arg::Key(format!("entity.{}", k.name.replace(':', "."))));
-    let key = match (cause, &by) {
-        (d::ATTACK, Some(_)) => "death.attack",
-        (d::FALL, _) => "death.fall",
-        (d::FIRE, _) => "death.fire",
-        (d::LAVA, _) => "death.lava",
-        (d::STARVE, _) => "death.starve",
-        (d::DROWN, _) => "death.drown",
-        (d::VOID, _) => "death.void",
-        (d::CRUSH, _) => "death.crush",
-        (d::EXPLOSION, _) => "death.explosion",
-        (d::SUFFOCATE, _) => "death.suffocate",
-        _ => "death.generic",
+    let def = c.game.damage_causes.get(cause as usize);
+    let key = match (def, &by) {
+        (Some(d), Some(_)) if !d.death_message_by.is_empty() => d.death_message_by.clone(),
+        (Some(d), _) if !d.death_message.is_empty() => d.death_message.clone(),
+        _ => "death.generic".to_string(),
     };
     let mut args = vec![Arg::Text(name)];
     args.extend(by);
-    Msg::new(key, args)
+    Msg::new(&key, args)
 }
 
 fn void_note(c: &Content) -> Msg {

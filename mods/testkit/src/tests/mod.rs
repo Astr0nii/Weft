@@ -192,7 +192,7 @@ impl T {
         let d = [p[0] as f64 + 0.5 - eye[0], p[1] as f64 + 0.5 - eye[1], p[2] as f64 + 0.5 - eye[2]];
         let yaw = (-d[0]).atan2(-d[2]).to_degrees() as f32;
         let pitch = d[1].atan2((d[0] * d[0] + d[2] * d[2]).sqrt()).to_degrees() as f32;
-        self.c().look(yaw, pitch);
+        self.c().set_look(yaw, pitch);
     }
 
     /// Counts entities of a kind near the player as the server has them.

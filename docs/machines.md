@@ -22,7 +22,7 @@ static SMELTING: Component<Smelting> = Component::named("base:smelting");
 
 r.entity_component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU);
 r.machine(&FURNACE, &FURNACE_MENU)
-    .block(|b| b.hardness(3.5).mineable("pickaxe").needs_tool(0).tab(&FUNCTIONAL))
+    .block(|b| b.hardness(3.5).mineable("pickaxe").needs_tool_level(0).tab(&FUNCTIONAL))
     .group("input", Slots::single())
     .group("fuel", Slots::single().accepts("fuel"))
     .group("output", Slots::single().output())
@@ -30,7 +30,7 @@ r.machine(&FURNACE, &FURNACE_MENU)
     .screen(|ui| { /* see below */ });
 r.system(&SMELTING, tick_furnaces);
 ```
-`block` is the same builder as `r.block`, so everything from the blocks part of the [cheat sheet](modding.md) applies to it. The block entity is named like the block, so `Entity::named("furnace")` finds it if your code needs to.
+`block` is the same builder as `r.block`, so everything from the blocks part of the [cheat sheet](modding.md) applies to it. A machine that should keep its state when broken (a charged battery, a half-done job) declares that state with `r.instance_component(&C, default, flags | component_flags::CARRIED)`: the broken block's item takes the value along, and placing the item puts it back on the new block entity, the way a renamed chest keeps its name. `w.component_get(h, &C)` and `w.component_set(h, &C, v)` read and write such a value on any holder, the stack in a player's slot included. The block entity is named like the block, so `EntityKind::named("furnace")` finds it if your code needs to.
 
 Slots come in named groups. The machine's inventory holds all of its groups, the engine works out how big it is and which slot is which, and the tick and the screen ask for a group by its name. A group starts from a shape and adds rules:
 
@@ -68,7 +68,7 @@ fn tick_generators(b: &mut SystemBatch<Burner>) {
             // `fuel` is the common component, so any mod's fuel works
             if let Some(ticks) = FUEL.on_item(fuel.item).filter(|_| !fuel.is_empty()) {
                 m.burn = ticks;
-                slot.set(0, use_one(fuel));
+                slot.set(0, consume_one(fuel));
             }
         }
         if m.burn > 0 {
@@ -77,11 +77,11 @@ fn tick_generators(b: &mut SystemBatch<Burner>) {
     }
 }
 ```
-`w.inventory(id).group("fuel")` is one group of the machine's slots, numbered from 0 (`get`, `set`, `len`); the whole inventory also has `insert`, which returns what didn't fit. Give each kind of machine a state component of its own (the generator's `Burner`, the furnace's `Smelting`), so its system reaches only its machines. For stacks there are `use_one` (a lava bucket leaves its bucket), `shrink`, `grow`, `stacks_with` and `max_stack`, and the rest of the world is in `w` too (`get`, `set`, `play_sound`, `emit`).
+`w.inventory(id).group("fuel")` is one group of the machine's slots, numbered from 0 (`get`, `set`, `len`); the whole inventory also has `insert`, which returns what didn't fit. Give each kind of machine a state component of its own (the generator's `Burner`, the furnace's `Smelting`), so its system reaches only its machines. For stacks there are `consume_one` (a lava bucket leaves its bucket), `shrink`, `grow`, `stacks_with` and `max_stack`, and the rest of the world is in `w` too (`block`, `set_block`, `play_sound`, `emit`).
 
 To show that a machine is working, give the block a property and flip it from the tick. The furnace has `.facing(..)` and `.prop("lit", ["false", "true"])`, and its tick does
 ```rust
-w.set_prop(pos, "lit", if lit { "true" } else { "false" });
+w.prop_set(pos, "lit", if lit { "true" } else { "false" });
 ```
 which keeps the way it faces.
 `tick_furnaces` in `mods/base/src/machines.rs` is the whole thing in one place, with the recipe, the lit state and an event.
@@ -93,7 +93,7 @@ The third value is how many ticks the call stands for. It's 1 almost always. Whe
 `screen(|ui| ..)` builds the window. `ui.group("input")` draws a group as its grid, `ui.group_slot("input", 1)` a single slot of it when a layout places them apart, and `ui.player_inventory(true)` the player's inventory and hotbar, every machine menu has them:
 ```rust
 .screen(|ui| {
-    ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
+    ui.panel("panel", S::column().pad(7.0).gap(4.0).stretch(), |ui| {
         ui.title();
         ui.row(S::row().gap(8.0), |ui| {
             ui.group("input");
@@ -105,7 +105,7 @@ The third value is how many ticks the call stands for. It's 1 almost always. Whe
 })
 ```
 `ui.title()` is the block's name, so the window says "Furnace" without a translation of its own; a chest a player renamed (`/rename Loot` on the item, the anvil's job) shows that name instead, and keeps it when it's broken and picked up again. A menu opened from code has `menu.<ns>.<name>` as its title.
-The arrow reads the machine's component through `menu_component`, which is why it needs `SYNC_MENU`. The screen belongs to the menu and not to a single block, so every machine of one kind shows the same window. Parts, layout and themes are in the [UI guide](ui.md). `.plain_screen()` instead of `.screen(..)` is the usual one: the title, the groups in order, the player's inventory. Using the block already opens the menu, and `world.open_menu(player, &MENU, owner)` does the same from code.
+The arrow reads the machine's component through `menu_component`, which is why it needs `SYNC_MENU`. The screen belongs to the menu and not to a single block, so every machine of one kind shows the same window. Parts, layout and themes are in the [UI guide](ui.md). `.default_screen()` instead of `.screen(..)` is the usual one: the title, the groups in order, the player's inventory. Using the block already opens the menu, and `world.open_menu(player, &MENU, pos)` does the same from code.
 
 ## Recipes
 Anything where inputs turn into outputs over time is a recipe kind, and a machine can use the base game's or one of its own:
@@ -125,10 +125,10 @@ A recipe can say more than one output and a time:
 ```rust
 r.shapeless(&ALLOYING, "tin_ingot", 2, &["base:iron_ingot", "base:coal"], 100)
     .input_amounts(&[3, 1])                              // 3 iron and 1 coal
-    .chance_output("base:diamond", 1, 0.05)       // and a diamond now and then
+    .output_chance("base:diamond", 1, 0.05)       // and a diamond now and then
     .value(&ENERGY_PER_TICK, 32);                 // data the machine reads
 ```
-Inputs and outputs can be fluids, `fluid:#water` (the first liquid with the tag) or `fluid:base:water`, with the count in millibuckets, and `hidden()` keeps a recipe out of the viewer. A machine with several inputs finds its recipe with `recipe_find(&KIND, &stacks)`, which gives the `time()`, the `outputs()` with their chances, the `value(&COMPONENT)` and `consume(&mut stacks)` to take the inputs out.
+Inputs and outputs can be fluids, `fluid:#water` (the first liquid with the tag) or `fluid:base:water`, with the count in millibuckets, and `hidden()` keeps a recipe out of the viewer. A machine with several inputs finds its recipe with `recipe_find(&KIND, &stacks)`, which gives the `time()`, the `outputs()` with their chances (each an `Amount`: `Amount::Item(stack)` or `Amount::Liquid { liquid, mb }`), the `value(&COMPONENT)` and `consume(&mut stacks)` to take the inputs out. Liquids go into tanks the way energy goes into machines: give the machine the `tank` component (`.attach_with(&TANK, Tank { capacity: 16_000, max_in: 1000, max_out: 1000, ..Default::default() })`) and move them with `w.liquid_insert(pos, liquid, mb, false)` and `w.liquid_extract(..)`. A tank holds one liquid at a time, and like energy it can be on a stack too.
 
 A kind of your own is registered with `r.recipe_kind(&KIND)`, and recipes that name a kind nobody registered fail at load. The same call says how the recipe viewer shows it:
 ```rust
@@ -152,11 +152,14 @@ r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0]).tag("conductor");
 ```
 `Energy` is `stored` and `capacity`, plus `max_in` and `max_out`, the most it takes from or gives to the network per tick. A generator has `max_in: 0`, a machine `max_out: 0`, and a battery has both, without feeding itself. In their systems, generators add to `stored` and machines spend it:
 ```rust
-let Some(e) = w.energy_mut(id) else { continue };
+let Some(mut e) = w.energy(id) else { continue };
 e.stored = (e.stored + 40).min(e.capacity);      // a generator, per tick
+w.energy_set(id, e);
 // a machine: if e.stored >= COST { e.stored -= COST; work }
 ```
-`w.energy(id)` reads it, and `w.insert_energy` and `w.extract_energy` move energy with the limits respected (`simulate = true` only reports how much would move). Networks are rebuilt when a cable or a machine next to one is placed or broken, not every tick.
+`w.energy(id)` reads it, and `w.energy_insert` and `w.energy_extract` move energy with the limits respected (`simulate = true` only reports how much would move); `w.energy_move` is both in one, positive in and negative out. Networks are rebuilt when a cable or a machine next to one is placed or broken, not every tick.
+
+The same calls take any holder, not only a machine's id: a block (`w.energy(pos)`) or a stack in someone's inventory, `Holder::held(player, slot)`. An item whose stacks carry `energy` (`.set(&ENERGY, Energy { .. })` on the item) is a battery, and a machine charging the tool in its slot is one `energy_insert` on that slot.
 
 There are no units, conversion or losses along the way. Testmod uses 40 per tick and capacities in the tens of thousands, so if your mod should play along with others, stay in that range.
 
@@ -167,3 +170,5 @@ r.system(&HEAT, |batch| for (_, heat, ticks) in batch.iter_mut() { *heat = heat.
 ```
 
 Machines have no built-in way to pass items to each other, so a pipe or a hopper is something you write: do it in a tick with `inventory(id).insert(..)`.
+
+A block that only stores things needs no machine: `r.block(&CRATE).inventory(27)` gives each placed crate a block entity with 27 slots, `w.inventory(pos)` reaches them and `w.open_menu(player, &CRATE_MENU, pos)` shows them. Entities take `.inventory(n)` the same way, and an item with `.inventory(n)` is a backpack: each stack keeps its own items, saved with it, and `w.open_menu(player, &BAG_MENU, Holder::held(player, slot))` opens it. While that menu is open its stack can't be moved, and the menu closes if the stack goes away.

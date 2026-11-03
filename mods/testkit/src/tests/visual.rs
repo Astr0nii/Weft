@@ -52,7 +52,7 @@ pub async fn held_items(t: T) -> R {
     {
         t.op(&format!("put me {i} {name} 1")).await?;
     }
-    t.c().look(0.0, -10.0);
+    t.c().set_look(0.0, -10.0);
     let looks: [(&str, fn([u8; 3]) -> bool, f32); 5] = [
         ("pickaxe", probe::brown, 0.03),
         ("sword", probe::cyan, 0.03),
@@ -61,7 +61,7 @@ pub async fn held_items(t: T) -> R {
         ("torch", probe::dark, 0.003),
     ];
     for (i, (name, color, min)) in looks.into_iter().enumerate() {
-        t.c().select(i as u32);
+        t.c().select_slot(i as u32);
         t.until("selected", Duration::from_secs(5), |t| t.state().selected == i as u32)
             .await?;
         // The hand lowers and comes back up on a switch.
@@ -83,7 +83,7 @@ pub async fn tooltips(t: T) -> R {
     t.op("put me 4 diamond_chestplate 1").await?;
     t.press("core:inventory");
     t.screen("core:menu").await?;
-    t.c().cursor(0.02, 0.02);
+    t.c().input_cursor(0.02, 0.02);
     t.frames(4).await?;
     let plain = t.grab().await?;
     let (w, h) = (t.state().window[0], t.state().window[1]);
@@ -93,7 +93,7 @@ pub async fn tooltips(t: T) -> R {
             continue;
         };
         let (cx, cy) = (x + sw / 2.0, y + sh / 2.0);
-        t.c().cursor(cx, cy);
+        t.c().input_cursor(cx, cy);
         t.frames(4).await?;
         t.shot(name).await?;
         let now = t.grab().await?;
@@ -129,7 +129,7 @@ pub async fn tooltips(t: T) -> R {
             t.probe("diamond block icon in the tooltip", block, block > 0.0008);
         }
     }
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await
 }
 
@@ -144,7 +144,7 @@ pub async fn night_light(t: T) -> R {
         .await?;
     t.fill(add(f, [-4, -1, -8]), add(f, [4, -1, 1]), "birch_planks")
         .await?;
-    t.c().look(0.0, -35.0);
+    t.c().set_look(0.0, -35.0);
     t.secs(0.5).await?;
     let dark = t.shot("dark").await?;
     let v = dark.share(0.1, 0.3, 0.9, 0.8, probe::dark);
@@ -178,7 +178,7 @@ pub async fn liquid_layers(t: T) -> R {
         .await?;
     t.op(&format!("spawn pig {} {} {}", f[0], f[1] - 3, f[2] - 5))
         .await?;
-    t.c().look(0.0, -40.0);
+    t.c().set_look(0.0, -40.0);
     t.frames(30).await?;
     let pool = t.shot("pool").await?;
     let water = around(&t, &pool, [f[0] as f64, f[1] as f64 - 0.1, f[2] as f64 - 4.5], 0.03, probe::blue);
@@ -186,7 +186,7 @@ pub async fn liquid_layers(t: T) -> R {
     let lava = around(&t, &pool, [f[0] as f64 + 4.0, f[1] as f64 - 0.1, f[2] as f64 - 5.0], 0.02, probe::orange);
     t.probe("the lava pit is drawn orange", lava, lava > 0.5);
     // Over the pool, looking down at the pig under the water.
-    t.c().look(0.0, -70.0);
+    t.c().set_look(0.0, -70.0);
     t.cmd(&format!("/tp {} {} {}", f[0] as f64 - 0.5, f[1], f[2] as f64 - 4.0))
         .await?;
     t.frames(20).await?;
@@ -197,7 +197,7 @@ pub async fn liquid_layers(t: T) -> R {
     t.probe("and not drawn pink", pink, pink < 0.002);
     t.cmd(&format!("/tp {} {} {}", f[0] as f64 + 2.5, f[1], f[2] as f64 - 4.5))
         .await?;
-    t.c().look(270.0, -55.0);
+    t.c().set_look(270.0, -55.0);
     t.frames(20).await?;
     let pit = t.shot("outline_lava").await?;
     let v = pit.share(0.3, 0.3, 0.7, 0.7, probe::orange);
@@ -267,7 +267,7 @@ pub async fn break_overlay(t: T) -> R {
 /// Hosts the test world and lets a second game process join it over the network transport.
 pub async fn multiplayer(t: T) -> R {
     t.world(13).await?;
-    t.c().host_world();
+    t.c().world_host();
     t.until("hosting", Duration::from_secs(60), |t| t.flag(client::client_flags::HOSTING))
         .await?;
     let run = t.c().run_dir();
@@ -348,25 +348,25 @@ pub async fn multiplayer(t: T) -> R {
 pub async fn client_hooks(t: T) -> R {
     t.flat().await?;
     let before = crate::runner::PROBES.with(|p| p.get());
-    t.c().key("F9", 0.0);
+    t.c().input_key("F9", 0.0);
     t.until("probe key seen", Duration::from_secs(3), |_| crate::runner::PROBES.with(|p| p.get()) > before)
         .await?;
-    t.c().open_screen(&screens::CONTROLS);
+    t.c().screen_open(&screens::CONTROLS);
     t.screen("core:controls").await?;
     for _ in 0..40 {
         if t.c().ui_rect("text:test probe").is_some() {
             break;
         }
-        t.c().cursor(0.5, 0.5);
-        t.c().scroll(-3.0);
+        t.c().input_cursor(0.5, 0.5);
+        t.c().input_scroll(-3.0);
         t.frames(2).await?;
     }
     t.check(t.c().ui_rect("text:test probe").is_some(), "Controls does not list the mod's key");
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await?;
     let f = t.feet();
     let b = [f[0] as f64 + 2.0, f[1] as f64, f[2] as f64 - 4.0];
-    t.c().look(0.0, -10.0);
+    t.c().set_look(0.0, -10.0);
     static DRAWN: weft_sdk::GizmoGroup = weft_sdk::GizmoGroup::named("drawn");
     let green = |shot: &crate::runner::Shot| shot.share(0.0, 0.0, 1.0, 0.9, |c| c[1] > 200 && c[0] < 80 && c[2] < 80);
     for _ in 0..3 {
@@ -377,7 +377,7 @@ pub async fn client_hooks(t: T) -> R {
         t.c()
             .draw_text(None, [b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "testkit.drawn", &[], 0xFFFF80FF, 2.0);
         t.c()
-            .screen_text(0.5, 0.3, "testkit.screen_text", &[], 0x80FFFFFF, 1.0);
+            .draw_screen_text(0.5, 0.3, "testkit.screen_text", &[], 0x80FFFFFF, 1.0);
         t.frames(1).await?;
     }
     t.c()
@@ -387,7 +387,7 @@ pub async fn client_hooks(t: T) -> R {
     t.c()
         .draw_text(None, [b[0] + 0.5, b[1] + 2.5, b[2] + 0.5], "testkit.drawn", &[], 0xFFFF80FF, 2.0);
     t.c()
-        .screen_text(0.5, 0.3, "testkit.screen_text", &[], 0x80FFFFFF, 1.0);
+        .draw_screen_text(0.5, 0.3, "testkit.screen_text", &[], 0x80FFFFFF, 1.0);
     let shot = t.shot("drawn").await?;
     let hidden = green(&shot);
     t.probe("a shape of a group that is off is not drawn", hidden, hidden < 0.0005);
@@ -412,11 +412,11 @@ pub async fn client_hooks(t: T) -> R {
     // Screen text is text like any other: icons of blocks and items show in it.
     for _ in 0..3 {
         t.c()
-            .screen_text(0.5, 0.7, "testkit.rich_label", &[], 0xFFFFFFFF, 2.0);
+            .draw_screen_text(0.5, 0.7, "testkit.rich_label", &[], 0xFFFFFFFF, 2.0);
         t.frames(1).await?;
     }
     t.c()
-        .screen_text(0.5, 0.7, "testkit.rich_label", &[], 0xFFFFFFFF, 2.0);
+        .draw_screen_text(0.5, 0.7, "testkit.rich_label", &[], 0xFFFFFFFF, 2.0);
     let rich = t.shot("rich_label").await?;
     let diamond = rich.share(0.35, 0.65, 0.65, 0.8, probe::cyan);
     t.probe("a block icon in screen text", diamond, diamond > 0.002);

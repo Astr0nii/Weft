@@ -114,8 +114,9 @@ impl Client {
             ToClient::Players(names) => self.players = names,
             ToClient::GameMode(mode) => {
                 self.mode = mode;
-                self.player.flying = mode == GameMode::Spectator || (mode == GameMode::Creative && self.player.flying);
-                self.player.noclip = mode == GameMode::Spectator;
+                self.player.flying =
+                    mode.has(weft_abi::game_mode_flags::ALWAYS_FLY) || (mode.has(weft_abi::game_mode_flags::CAN_FLY) && self.player.flying);
+                self.player.noclip = mode.has(weft_abi::game_mode_flags::NOCLIP);
                 self.player.fly_speed = 1.0;
             }
             ToClient::Inventory(slots) => {
@@ -183,12 +184,12 @@ impl Client {
                 self.using = ticks.map(|(t, _)| (t as f32, t as f32));
                 self.using_off = ticks.is_some_and(|(_, off)| off);
             }
-            ToClient::Weather { raining, thunder } => self.weather = (raining, thunder),
-            ToClient::Flash(id) => {
-                if let Some(e) = self.entities.get_mut(&id) {
-                    e.flash = 0.1;
-                }
+            ToClient::Weather(w) => {
+                let def = &content().game.weathers[(w as usize).min(content().game.weathers.len() - 1)];
+                self.weather = (def.falls, def.lightning);
+                self.weather_id = w as u16;
             }
+
             ToClient::EntitySwing { id, off } => {
                 if let Some(e) = self.entities.get_mut(&id) {
                     restart_swing(&mut e.arm_swing);
@@ -299,7 +300,7 @@ impl Client {
                     target_yaw: e.yaw,
                     body_yaw: e.yaw,
                     arm_swing: None,
-                    flash: 0.0,
+                    effect: None,
                     pitch: e.pitch,
                     item: e.item,
                     // Arrives as a component right after: no hurt flash for the first.
@@ -321,7 +322,7 @@ impl Client {
                     dying: None,
                     next_step: 0.0,
                     action: None,
-                    pose: Pose::Stand,
+                    pose: Pose::STAND,
                     track: Default::default(),
                     pulled: None,
                     size: None,

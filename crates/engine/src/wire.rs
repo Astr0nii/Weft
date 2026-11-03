@@ -63,7 +63,7 @@ pub fn sides(s: &Signal) -> [u8; 2] {
 /// Whether a device gives what is next to it in direction `dir`.
 pub fn gives(s: &Signal, dir: u8) -> bool {
     match s.kind {
-        sk::SOURCE => true,
+        sk::SWITCH => true,
         sk::TORCH => dir != s.attach,
         sk::REPEATER | sk::COMPARATOR | sk::LOGIC => dir == s.front,
         sk::OBSERVER => dir ^ 1 == s.front,

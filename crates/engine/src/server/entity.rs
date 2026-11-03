@@ -50,6 +50,9 @@ pub struct Entity {
     /// The body it is on: what it rides, or whose blocks hold it if it has an `anchor`.
     pub frame: Option<u64>,
     pub motion: Motion,
+    /// A body that falls under its weight and is put down as blocks where it lands, whatever
+    /// its kind would do otherwise (`World::body_fall`, every falling block).
+    pub falls: bool,
     /// Its own box (width, height, eye) and another kind it looks like, set by mods.
     pub size: Option<[f32; 3]>,
     pub look: Option<u32>,
@@ -115,7 +118,7 @@ impl Entity {
             item: ItemStack::EMPTY,
             pickup_delay: 0,
             player: false,
-            mode: crate::world::GameMode::Survival,
+            mode: crate::world::GameMode::SURVIVAL,
             fire: 0,
             selected: 0,
             using: (0, false),
@@ -124,6 +127,7 @@ impl Entity {
             worn: Vec::new(),
             frame: None,
             motion: Motion::Free,
+            falls: false,
             size: None,
             look: None,
             pose: Default::default(),
@@ -190,7 +194,7 @@ impl Entity {
 
     /// Something that stands in the world and can be hit: not a dropped item or a spectator either.
     pub fn is_body(&self, c: &Content) -> bool {
-        self.in_world(c) && self.item.is_empty() && self.mode != crate::world::GameMode::Spectator
+        self.in_world(c) && self.item.is_empty() && !self.mode.has(weft_abi::game_mode_flags::HIDDEN)
     }
 
     /// It comes and goes with the world's cube it is in: players have a file of their own, what is
@@ -204,7 +208,7 @@ impl Entity {
         weft_abi::EntityState {
             kind: self.kind,
             flags: k.flags | if self.blocked { ef::BLOCKED } else { 0 },
-            pose: self.pose as u32,
+            pose: self.pose.0 as u32,
             flying: self.flying as u32,
             pos: self.pos.to_array(),
             vel: self.vel.to_array(),
@@ -217,7 +221,7 @@ impl Entity {
             health: self.health,
             max_health,
             age: self.age,
-            fall: self.fall,
+            fall_distance: self.fall,
             moved: self.moved,
             size: {
                 let (hw, h, eye) = self.dims(c);
@@ -297,8 +301,10 @@ impl Entities {
             .filter(|e| !e.removed)
     }
 
-    pub fn insert(&mut self, c: &Content, e: Entity) {
+    pub fn insert(&mut self, c: &Content, mut e: Entity) {
         let id = e.id;
+        // Saved mid-fall, it still lands.
+        e.falls |= e.kind == c.game.falling_kind;
         let kind = &c.game.entities[e.kind as usize];
         for &comp in &kind.components {
             self.comps
@@ -328,7 +334,7 @@ impl Entities {
     pub fn reset_components(&mut self, c: &Content, id: u64) {
         let Some(kind) = self.get(id).map(|e| &c.game.entities[e.kind as usize]) else { return };
         for &comp in &kind.components {
-            if c.game.components[comp as usize].flags & weft_abi::component_flags::KEEP == 0 {
+            if c.game.components[comp as usize].flags & weft_abi::component_flags::KEEP_ON_RESPAWN == 0 {
                 self.comps.insert((id, comp), starting_value(c, kind, comp));
             }
         }
@@ -530,14 +536,25 @@ impl Entities {
     }
 
     /// Within `radius`, of `kind` (`u32::MAX`: any), `abi::near` saying what else.
-    pub fn near(&self, c: &Content, pos: DVec3, radius: f64, kind: u32, flags: u32) -> Vec<u64> {
-        let r2 = radius * radius;
-        let bodies = flags & weft_abi::near::BODIES != 0;
+    /// In `shape` (in the frame `place` turns world positions into), of `kind` (`u32::MAX`:
+    /// any), `abi::entity_filter` saying what else.
+    pub fn within(&self, c: &Content, place: &crate::physics::Transform, shape: &crate::shape::Shape, kind: u32, flags: u32) -> Vec<u64> {
+        use weft_abi::entity_filter as f;
+        let (targets, touching) = (flags & f::TARGETS != 0, flags & f::TOUCHING != 0);
         self.list
             .iter()
-            .filter(|e| !e.removed && (kind == u32::MAX || e.kind == kind) && (e.pos - pos).length_squared() <= r2)
+            .filter(|e| !e.removed && (kind == u32::MAX || e.kind == kind))
             .filter(|e| !c.game.entities[e.kind as usize].is(ef::NOT_IN_WORLD))
-            .filter(|e| !bodies || (e.is_body(c) && e.alive()))
+            .filter(|e| !targets || (e.is_body(c) && e.alive()))
+            .filter(|e| {
+                if touching {
+                    let b = e.aabb(c);
+                    let (a, z) = (place.to_local(b.min), place.to_local(b.max));
+                    shape.test_box(a.min(z), a.max(z)).1
+                } else {
+                    shape.contains(place.to_local(e.pos))
+                }
+            })
             .map(|e| e.id)
             .collect()
     }
@@ -580,7 +597,7 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl physics::Cel
     if e.anchor.is_some() || k.is(ef::NOT_IN_WORLD) {
         return out;
     }
-    if k.is(ef::KINEMATIC) || e.motion == Motion::Parked {
+    if (k.is(ef::KINEMATIC) && !e.falls) || e.motion == Motion::Parked {
         // On another body, it goes with that too (a piston on a platform moving blocks).
         let carried = e
             .frame
@@ -632,7 +649,7 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl physics::Cel
         half_width: hw,
         height: h,
         step: if e.item.is_empty() { physics::STEP_UP } else { 0.0 },
-        gravity: if k.is(ef::NO_GRAVITY) { 0.0 } else { physics::gravity_per_tick(gravity) },
+        gravity: if k.is(ef::NO_GRAVITY) && !e.falls { 0.0 } else { physics::gravity_per_tick(gravity) },
     };
     let mut v = e.vel * DT;
     let r = physics::walk(c, block, bodies, e.id, &mut e.pos, &mut v, e.on_ground, &ctl, &frame);

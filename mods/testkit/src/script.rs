@@ -79,17 +79,17 @@ pub async fn run(t: T, src: String) -> R {
                 let (a, secs) = rest.rsplit_once(' ').unwrap_or((rest, "1"));
                 t.hold(a.trim(), secs.parse().unwrap_or(1.0));
             }
-            "click" => t.c().click(num(0, 0.0) as u32, 0.0),
-            "cursor" => t.c().cursor(num(0, 0.5), num(1, 0.5)),
-            "scroll" => t.c().scroll(num(0, -1.0)),
-            "type" => t.c().type_text(rest),
+            "click" => t.c().input_click(num(0, 0.0) as u32, 0.0),
+            "cursor" => t.c().input_cursor(num(0, 0.5), num(1, 0.5)),
+            "scroll" => t.c().input_scroll(num(0, -1.0)),
+            "type" => t.c().input_type(rest),
             "key" => {
-                if !t.c().key(rest, 0.0) {
+                if !t.c().input_key(rest, 0.0) {
                     t.fail(format!("unknown key {rest}"));
                 }
             }
-            "look" => t.c().look(num(0, 0.0), num(1, 0.0)),
-            "chat" => t.c().chat(rest),
+            "look" => t.c().set_look(num(0, 0.0), num(1, 0.0)),
+            "chat" => t.c().say(rest),
             // `view 64 vsync off`-like settings, past what `same_conditions` fixed.
             "view" => weft_sdk::settings::VIEW_DISTANCE.set(rest.parse().map_err(|_| "view: a number")?),
             "vsync" => weft_sdk::settings::VSYNC.set(rest == "on"),
@@ -99,7 +99,7 @@ pub async fn run(t: T, src: String) -> R {
             }
             "say_config" => {
                 let cfg = weft_sdk::Config::<f64>::named(Box::leak(rest.to_string().into_boxed_str()));
-                t.c().chat(&format!("config {rest} = {}", cfg.get()));
+                t.c().say(&format!("config {rest} = {}", cfg.get()));
             }
             "shot" => {
                 let path = match launch_option("shot-dir") {
@@ -118,7 +118,7 @@ pub async fn run(t: T, src: String) -> R {
                 t.bench(secs.parse().unwrap_or(5.0), label.trim()).await?;
             }
             "host" => {
-                t.c().host_world();
+                t.c().world_host();
                 t.until("hosting", Duration::from_secs(60), |t| t.flag(cf::HOSTING))
                     .await?;
                 let _ = std::fs::write(rest, t.c().ticket());
@@ -133,7 +133,7 @@ pub async fn run(t: T, src: String) -> R {
                     !ticket.is_empty()
                 })
                 .await?;
-                t.c().join(&ticket);
+                t.c().world_join(&ticket);
             }
             "origin" => origin = t.state().pos,
             "where" => {

@@ -27,7 +27,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     (abi::comp::TOOL_LEVEL, "u32"),
     (abi::comp::USE_PRIORITY, "i32"),
     (abi::comp::HARVEST_LEVEL, "u32"),
-    (abi::comp::DAMAGE, "u32"),
+    (abi::comp::WEAR, "u32"),
     (abi::comp::HARDNESS, "f32"),
     (abi::comp::FRICTION, "f32"),
     (abi::comp::DRAG, "f32"),

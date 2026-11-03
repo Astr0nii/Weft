@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::abi::{self, Layer, Model, Slice, Str, block_flags as bf};
+use crate::abi::{self, BlockModel, RenderLayer, Slice, Str, block_flags as bf};
 use crate::component::{self as c, Component, Value};
 use crate::{World, callback, host, qualify};
 
@@ -31,7 +31,15 @@ pub mod kind {
         Menu = crate::abi::entry_kind::MENU,
         Particle = crate::abi::entry_kind::PARTICLE,
         Config = crate::abi::entry_kind::CONFIG,
-        Sound = crate::abi::entry_kind::SOUND
+        Sound = crate::abi::entry_kind::SOUND,
+        DamageCause = crate::abi::entry_kind::DAMAGE_CAUSE,
+        EntityEffect = crate::abi::entry_kind::ENTITY_EFFECT,
+        TextPlace = crate::abi::entry_kind::TEXT_PLACE,
+        GameMode = crate::abi::entry_kind::GAME_MODE,
+        Pose = crate::abi::entry_kind::POSE,
+        Weather = crate::abi::entry_kind::WEATHER,
+        Precipitation = crate::abi::entry_kind::PRECIPITATION,
+        Condition = crate::abi::entry_kind::CONDITION
     );
     macro_rules! named_kinds {
         ($($n:ident),*) => {
@@ -56,7 +64,6 @@ pub mod kind {
         Attribute,
         RecipeKind,
         LootTable,
-        TextCondition,
         Music,
         EquipmentSlot,
         Scatter,
@@ -110,7 +117,7 @@ impl<K: kind::Kind> Handle<K> {
 }
 
 impl Item {
-    /// `count` of this item, plain; `.with(&COMP, v)` and `.with_damage(n)` give it data.
+    /// `count` of this item, plain; `.with(&COMP, v)` and `.with_wear(n)` give it data.
     pub fn stack(&self, count: u32) -> abi::ItemStack {
         abi::ItemStack::new(self.id(), count)
     }
@@ -126,7 +133,7 @@ impl<K: kind::HasId> Handle<K> {
 
     #[cold]
     fn resolve(&self, id: u32) -> u32 {
-        let frozen = unsafe { !(host().components)().is_null() };
+        let frozen = unsafe { !(host().component_table)().is_null() };
         if id == u32::MAX || !frozen {
             return u32::MAX;
         }
@@ -170,7 +177,7 @@ impl<K: kind::HasId> Handle<K> {
         state.wrapping_sub(self.id()) < self.count.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn cell(&self) -> *const AtomicU32 {
+    pub(crate) fn id_cell(&self) -> *const AtomicU32 {
         &self.id
     }
 
@@ -180,7 +187,7 @@ impl<K: kind::HasId> Handle<K> {
 }
 
 fn cell<K: kind::HasId>(h: Option<&'static Handle<K>>) -> *const AtomicU32 {
-    h.map_or(std::ptr::null(), |h| h.cell())
+    h.map_or(std::ptr::null(), |h| h.id_cell())
 }
 
 pub type Block = Handle<kind::Block>;
@@ -190,7 +197,7 @@ pub type Dimension = Handle<kind::Dimension>;
 pub type Particle = Handle<kind::Particle>;
 pub type SkyObject = Handle<kind::SkyObject>;
 pub type Sound = Handle<kind::Sound>;
-pub type Entity = Handle<kind::Entity>;
+pub type EntityKind = Handle<kind::Entity>;
 
 /// A thing by its handle, or by the id that handle gives: what takes this takes either.
 pub struct Id<H> {
@@ -223,7 +230,7 @@ pub type HudElement = Handle<kind::HudElement>;
 pub type GizmoGroup = Handle<kind::GizmoGroup>;
 pub type TintKind = Handle<kind::TintKind>;
 pub type Scatter = Handle<kind::Scatter>;
-/// A fixed shape of blocks (`Registry::template`), for world structures, moving structures and
+/// A fixed shape of blocks (`Registry::template`), for world structures, moving bodies and
 /// `World::place`.
 pub type Template = Handle<kind::Template>;
 
@@ -235,6 +242,439 @@ pub mod tints {
     pub static WATER: TintKind = TintKind::named("core:water");
 }
 pub type EntityCategory = Handle<kind::EntityCategory>;
+/// What hurt an entity (`World::damage`): its armor and invulnerability rules and death message
+/// come with it (`Registry::damage_cause`). The engine's are in `damage_causes`.
+pub type DamageCause = Handle<kind::DamageCause>;
+
+/// A shader effect drawn on entities (`World::entity_effect`): `shaders/entity_effect/<name>.wgsl`
+/// of the mod with `fn effect(p: EntityPixel, c: vec4<f32>, strength: f32) -> vec4<f32>`.
+pub type EntityEffect = Handle<kind::EntityEffect>;
+/// A place on the screen for text (`World::show_at`); the engine's are in `text_places`.
+pub type TextPlace = Handle<kind::TextPlace>;
+
+/// The engine's entity effects.
+pub mod entity_effects {
+    use super::EntityEffect;
+    /// White.
+    pub static FLASH: EntityEffect = EntityEffect::named("core:flash");
+    /// Red, what damage shows by itself.
+    pub static HURT: EntityEffect = EntityEffect::named("core:hurt");
+    /// Lit up whatever the light around it.
+    pub static GLOW: EntityEffect = EntityEffect::named("core:glow");
+}
+
+impl crate::Registry {
+    /// Registers `effect`, drawn by the mod's `shaders/entity_effect/<its name>.wgsl`.
+    pub fn entity_effect(&mut self, effect: &'static EntityEffect) {
+        let shader = effect.name().to_string();
+        unsafe { (host().reg_entity_effect)(self.raw, Str::new(effect.name()), effect.id_cell(), Str::new(&shader)) }
+    }
+}
+
+/// A weather (`Registry::weather`); the engine's are in `weathers`.
+pub type Weather = Handle<kind::Weather>;
+/// What falls from the sky in a biome (`Registry::precipitation`, `BiomeBuilder::precipitation`).
+pub type Precipitation = Handle<kind::Precipitation>;
+
+pub mod weathers {
+    use super::Weather;
+    pub static CLEAR: Weather = Weather::named("core:clear");
+    pub static RAIN: Weather = Weather::named("core:rain");
+    pub static THUNDER: Weather = Weather::named("core:thunder");
+}
+
+pub mod precipitations {
+    use super::Precipitation;
+    pub static RAIN: Precipitation = Precipitation::named("core:rain");
+    pub static SNOW: Precipitation = Precipitation::named("core:snow");
+}
+
+/// A weather being registered: rain's rules unless told otherwise.
+///
+/// ```ignore
+/// static ACID_RAIN: Weather = Weather::named("acid_rain");
+/// r.weather(&ACID_RAIN).darkness(0.5).duration(2400, 6000).weight(1);
+/// ```
+/// `/weather mymod:acid_rain` sets it; the engine brings it now and then after clear weather.
+pub struct WeatherBuilder<'a> {
+    reg: &'a mut crate::Registry,
+    handle: &'static Weather,
+    dims: String,
+    desc: abi::WeatherDesc,
+}
+
+impl crate::Registry {
+    pub fn weather<'a>(&'a mut self, weather: &'static Weather) -> WeatherBuilder<'a> {
+        WeatherBuilder { reg: self, handle: weather, dims: String::new(), desc: abi::WeatherDesc::DEFAULT }
+    }
+
+    /// Something to fall from the sky: `textures/<texture>.png` as a strip of drops, `speed`
+    /// as a share of rain's (snow drifts at 0.1), `density` the share of the picture shown.
+    pub fn precipitation(&mut self, p: &'static Precipitation, texture: &str, speed: f32, density: f32) {
+        let tex = crate::asset("", texture);
+        let d = abi::PrecipitationDesc { name: Str::new(p.name()), cell: p.id_cell(), texture: Str::new(&tex), speed, density };
+        unsafe { (host().reg_precipitation)(self.raw, &d) }
+    }
+}
+
+impl WeatherBuilder<'_> {
+    /// Whether something falls (rain, snow, each biome's own) and shelters from the sun.
+    pub fn falls(mut self, yes: bool) -> Self {
+        self.desc.falls = yes as u32;
+        self
+    }
+    pub fn lightning(mut self, yes: bool) -> Self {
+        self.desc.lightning = yes as u32;
+        self
+    }
+    /// Share of daylight it takes away (rain 0.3125).
+    pub fn darkness(mut self, share: f32) -> Self {
+        self.desc.darkness = share;
+        self
+    }
+    /// Ticks it lasts, at least and at most.
+    pub fn duration(mut self, min: u32, max: u32) -> Self {
+        self.desc.duration = [min, max];
+        self
+    }
+    /// How likely it comes after clear weather next to the others (rain 3, thunder 1); 0 only
+    /// by command or code.
+    pub fn weight(mut self, w: u32) -> Self {
+        self.desc.weight = w;
+        self
+    }
+    /// Only in this dimension (call again for more).
+    pub fn dimension(mut self, d: &Dimension) -> Self {
+        self.dims = format!("{} {}", self.dims, d.name());
+        self
+    }
+}
+
+impl Drop for WeatherBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let d = abi::WeatherDesc {
+            name: Str::new(self.handle.name()),
+            cell: self.handle.id_cell(),
+            dimensions: Str::new(&self.dims),
+            ..self.desc
+        };
+        unsafe { (host().reg_weather)(self.reg.raw, &d) }
+    }
+}
+
+/// A way to hold a body (`Registry::pose`): its box and eyes, its speed, how the model lies and
+/// what it plays. `EntityState::pose` holds one; the engine's are in `poses`.
+pub type Pose = Handle<kind::Pose>;
+
+/// The engine's poses; it picks among the first four by itself as players move.
+pub mod poses {
+    use super::Pose;
+    pub static STAND: Pose = Pose::named("core:stand");
+    pub static CROUCH: Pose = Pose::named("core:crouch");
+    pub static SWIM: Pose = Pose::named("core:swim");
+    pub static CRAWL: Pose = Pose::named("core:crawl");
+    pub static SLEEP: Pose = Pose::named("core:sleep");
+}
+
+/// A pose being registered: standing's box and speed unless told otherwise.
+///
+/// ```ignore
+/// static SIT: Pose = Pose::named("sit");
+/// r.pose(&SIT).height(0.7).eye(0.62).speed(0.0).action("sit");
+/// w.set_pose(pet, Some(&SIT));
+/// ```
+pub struct PoseBuilder<'a> {
+    reg: &'a mut crate::Registry,
+    handle: &'static Pose,
+    action: String,
+    desc: abi::PoseDesc,
+}
+
+impl crate::Registry {
+    pub fn pose<'a>(&'a mut self, pose: &'static Pose) -> PoseBuilder<'a> {
+        PoseBuilder { reg: self, handle: pose, action: String::new(), desc: abi::PoseDesc::DEFAULT }
+    }
+}
+
+impl PoseBuilder<'_> {
+    /// Box height as a share of standing (crouching is 1.5 / 1.8).
+    pub fn height(mut self, share: f32) -> Self {
+        self.desc.height = share;
+        self
+    }
+    /// Eye height as a share of standing.
+    pub fn eye(mut self, share: f32) -> Self {
+        self.desc.eye = share;
+        self
+    }
+    /// Walking speed as a share of normal, 0 to stay put.
+    pub fn speed(mut self, share: f32) -> Self {
+        self.desc.speed = share;
+        self
+    }
+    /// How the model lies (`abi::pose_tilt`): along the look like swimming, face down, on its back.
+    pub fn tilt(mut self, tilt: u32) -> Self {
+        self.desc.tilt = tilt;
+        self
+    }
+    /// The model's clip for it, by action name.
+    pub fn action(mut self, name: &str) -> Self {
+        self.action = name.to_string();
+        self
+    }
+    /// Whether the camera bobs walking in it.
+    pub fn bob(mut self, yes: bool) -> Self {
+        self.desc.bob = yes as u32;
+        self
+    }
+}
+
+impl Drop for PoseBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let d =
+            abi::PoseDesc { name: Str::new(self.handle.name()), cell: self.handle.id_cell(), action: Str::new(&self.action), ..self.desc };
+        unsafe { (host().reg_pose)(self.reg.raw, &d) }
+    }
+}
+
+/// A game mode: what its players may do and what they are spared (`Registry::game_mode`); the
+/// engine's are in `game_modes`.
+pub type GameMode = Handle<kind::GameMode>;
+
+/// The engine's game modes.
+pub mod game_modes {
+    use super::GameMode;
+    pub static SURVIVAL: GameMode = GameMode::named("core:survival");
+    pub static CREATIVE: GameMode = GameMode::named("core:creative");
+    pub static SPECTATOR: GameMode = GameMode::named("core:spectator");
+}
+
+impl GameMode {
+    /// `abi::game_mode_flags` of the mode with this id.
+    pub fn flags_of(mode: u32) -> u32 {
+        unsafe { (crate::host().game_mode_flags)(mode) }
+    }
+}
+
+/// A game mode being registered: survival's rules unless told otherwise.
+///
+/// ```ignore
+/// static ADVENTURE: GameMode = GameMode::named("adventure");
+/// r.game_mode(&ADVENTURE).breaks(Breaking::None).places(false);
+/// ```
+/// `/gamemode mymod:adventure` sets it, `{if:mymod:adventure}` in text asks for it.
+pub struct GameModeBuilder<'a> {
+    reg: &'a mut crate::Registry,
+    handle: &'static GameMode,
+    flags: u32,
+    modifiers: Vec<(String, u32, f64)>,
+}
+
+/// How a game mode breaks blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Breaking {
+    Normal,
+    Instant,
+    None,
+}
+
+/// How a game mode flies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flight {
+    None,
+    /// Jumping twice starts and stops it.
+    Allowed,
+    Always,
+}
+
+impl crate::Registry {
+    pub fn game_mode<'a>(&'a mut self, mode: &'static GameMode) -> GameModeBuilder<'a> {
+        GameModeBuilder { reg: self, handle: mode, flags: 0, modifiers: Vec::new() }
+    }
+}
+
+impl GameModeBuilder<'_> {
+    fn flag(mut self, f: u32, on: bool) -> Self {
+        if on {
+            self.flags |= f;
+        } else {
+            self.flags &= !f;
+        }
+        self
+    }
+    pub fn breaks(self, how: Breaking) -> Self {
+        use abi::game_mode_flags as f;
+        self.flag(f::INSTANT_BREAK, how == Breaking::Instant)
+            .flag(f::NO_BREAK, how == Breaking::None)
+    }
+    pub fn places(self, yes: bool) -> Self {
+        self.flag(abi::game_mode_flags::NO_PLACE, !yes)
+    }
+    /// Whether anything gets used up: placed blocks, poured buckets, wear. Without costs,
+    /// picking a block gives a stack of it.
+    pub fn costs(self, yes: bool) -> Self {
+        self.flag(abi::game_mode_flags::NO_COSTS, !yes)
+    }
+    /// No damage, hunger or air.
+    pub fn invulnerable(self, yes: bool) -> Self {
+        self.flag(abi::game_mode_flags::INVULNERABLE, yes)
+    }
+    pub fn flight(self, how: Flight) -> Self {
+        use abi::game_mode_flags as f;
+        self.flag(f::CAN_FLY, how == Flight::Allowed)
+            .flag(f::ALWAYS_FLY, how == Flight::Always)
+    }
+    /// Through blocks.
+    pub fn noclip(self, yes: bool) -> Self {
+        self.flag(abi::game_mode_flags::NOCLIP, yes)
+    }
+    /// Unnoticed by mobs, spawning and other players, and not a body to hit.
+    pub fn hidden(self, yes: bool) -> Self {
+        self.flag(abi::game_mode_flags::HIDDEN, yes)
+    }
+    /// Whether it can use, hit, pick up, drop and hold anything.
+    pub fn interacts(self, yes: bool) -> Self {
+        self.flag(abi::game_mode_flags::NO_INTERACT, !yes)
+    }
+    /// Whether the hotbar and bars show.
+    pub fn hud(self, yes: bool) -> Self {
+        self.flag(abi::game_mode_flags::NO_HUD, !yes)
+    }
+    /// The inventory key opens the creative inventory.
+    pub fn creative_inventory(self, yes: bool) -> Self {
+        self.flag(abi::game_mode_flags::CREATIVE_INVENTORY, yes)
+    }
+    /// An attribute modifier its players have while in it (longer reach, `visibility` 0).
+    pub fn modifier(mut self, attribute: &crate::Attribute, op: u32, amount: f64) -> Self {
+        self.modifiers
+            .push((attribute.name().to_string(), op, amount));
+        self
+    }
+}
+
+impl Drop for GameModeBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let mods: Vec<abi::ModeModifier> = self
+            .modifiers
+            .iter()
+            .map(|(a, op, amount)| abi::ModeModifier { attribute: Str::new(a), op: *op, amount: *amount })
+            .collect();
+        let d = abi::GameModeDesc {
+            name: Str::new(self.handle.name()),
+            cell: self.handle.id_cell(),
+            flags: self.flags,
+            modifiers: Slice::new(&mods),
+        };
+        unsafe { (host().reg_game_mode)(self.reg.raw, &d) }
+    }
+}
+
+/// The engine's damage causes.
+pub mod damage_causes {
+    use super::DamageCause;
+    pub static GENERIC: DamageCause = DamageCause::named("core:generic");
+    pub static FALL: DamageCause = DamageCause::named("core:fall");
+    pub static ATTACK: DamageCause = DamageCause::named("core:attack");
+    pub static FIRE: DamageCause = DamageCause::named("core:fire");
+    pub static STARVE: DamageCause = DamageCause::named("core:starve");
+    pub static DROWN: DamageCause = DamageCause::named("core:drown");
+    pub static VOID: DamageCause = DamageCause::named("core:void");
+    pub static LAVA: DamageCause = DamageCause::named("core:lava");
+    pub static CRUSH: DamageCause = DamageCause::named("core:crush");
+    pub static SUFFOCATE: DamageCause = DamageCause::named("core:suffocate");
+    pub static EXPLOSION: DamageCause = DamageCause::named("core:explosion");
+    pub static HEAL: DamageCause = DamageCause::named("core:heal");
+}
+
+impl DamageCause {
+    /// `abi::damage_flags` of the cause with this id: a mod's armor asks
+    /// `DamageCause::flags_of(q.cause) & damage_flags::BYPASSES_ARMOR`.
+    pub fn flags_of(cause: u32) -> u32 {
+        unsafe { (crate::host().damage_cause_flags)(cause) }
+    }
+}
+
+/// `r.damage_cause(&RADIATION).bypasses_armor().death_message("death.mymod.radiation")`.
+pub struct DamageCauseBuilder<'a> {
+    reg: &'a mut crate::Registry,
+    handle: &'static DamageCause,
+    flags: u32,
+    death_message: String,
+    death_message_by: String,
+}
+
+impl crate::Registry {
+    pub fn damage_cause<'a>(&'a mut self, cause: &'static DamageCause) -> DamageCauseBuilder<'a> {
+        DamageCauseBuilder { reg: self, handle: cause, flags: 0, death_message: String::new(), death_message_by: String::new() }
+    }
+}
+
+impl DamageCauseBuilder<'_> {
+    /// Armor doesn't soften it.
+    pub fn bypasses_armor(mut self) -> Self {
+        self.flags |= abi::damage_flags::BYPASSES_ARMOR;
+        self
+    }
+    /// Hurts invulnerable entities and players outside survival too.
+    pub fn pierces_invulnerable(mut self) -> Self {
+        self.flags |= abi::damage_flags::PIERCES_INVULNERABLE;
+        self
+    }
+    /// Lands in full even right after another hit.
+    pub fn ignores_cooldown(mut self) -> Self {
+        self.flags |= abi::damage_flags::IGNORES_COOLDOWN;
+        self
+    }
+    /// What dies of it drops cooked food.
+    pub fn burning(mut self) -> Self {
+        self.flags |= abi::damage_flags::BURNING;
+        self
+    }
+    pub fn no_knockback(mut self) -> Self {
+        self.flags |= abi::damage_flags::NO_KNOCKBACK;
+        self
+    }
+    /// No hurt sound.
+    pub fn silent(mut self) -> Self {
+        self.flags |= abi::damage_flags::SILENT;
+        self
+    }
+    /// Translation key said when a player dies of it, `{0}` their name.
+    pub fn death_message(mut self, key: &str) -> Self {
+        self.death_message = key.to_string();
+        self
+    }
+    /// The key when something did it, `{1}` that thing's name.
+    pub fn death_message_by(mut self, key: &str) -> Self {
+        self.death_message_by = key.to_string();
+        self
+    }
+}
+
+impl Drop for DamageCauseBuilder<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        let desc = abi::DamageCauseDesc {
+            name: Str::new(self.handle.name()),
+            cell: self.handle.id_cell(),
+            flags: self.flags,
+            death_message: Str::new(&self.death_message),
+            death_message_by: Str::new(&self.death_message_by),
+        };
+        unsafe { (host().reg_damage_cause)(self.reg.raw, &desc) }
+    }
+}
 pub type SoundCategory = Handle<kind::SoundCategory>;
 pub type CreativeTab = Handle<kind::CreativeTab>;
 pub type Question = Handle<kind::Question>;
@@ -245,7 +685,21 @@ pub type Attribute = Handle<kind::Attribute>;
 pub static SPAWN_EGGS: CreativeTab = CreativeTab::named("core:spawn_eggs");
 pub type RecipeKind = Handle<kind::RecipeKind>;
 pub type LootTable = Handle<kind::LootTable>;
-pub type TextCondition = Handle<kind::TextCondition>;
+/// What `{if:..}` asks: a condition answered on the client.
+pub type TextCondition = Condition;
+/// A predicate music, text, loot and spawning share (`Registry::condition`); the engine's are in
+/// `conditions`.
+pub type Condition = Handle<kind::Condition>;
+
+pub mod conditions {
+    use super::Condition;
+    pub static DAY: Condition = Condition::named("core:day");
+    pub static NIGHT: Condition = Condition::named("core:night");
+    /// No sky over it.
+    pub static UNDERGROUND: Condition = Condition::named("core:underground");
+    pub static SURFACE: Condition = Condition::named("core:surface");
+    pub static CREATIVE: Condition = Condition::named("core:creative");
+}
 pub type Music = Handle<kind::Music>;
 pub type EquipmentSlot = Handle<kind::EquipmentSlot>;
 /// The second hand, in the player's equipment: register it to have one, with any background.
@@ -260,7 +714,7 @@ impl LootSource for Block {
         self.name()
     }
 }
-impl LootSource for Entity {
+impl LootSource for EntityKind {
     fn table_name(&self) -> &str {
         self.name()
     }
@@ -345,15 +799,11 @@ impl Pending {
 }
 
 /// `CompValue`s pointing into `list`; for text the `Str` bytes live in `scratch`.
-pub(crate) fn raw_values_pub(list: &[Pending], scratch: &mut Vec<Vec<u8>>) -> Vec<abi::CompValue> {
-    raw_values(list, scratch)
-}
-
-fn raw_values(list: &[Pending], scratch: &mut Vec<Vec<u8>>) -> Vec<abi::CompValue> {
+pub(crate) fn raw_values(list: &[Pending], scratch: &mut Vec<Vec<u8>>) -> Vec<abi::CompValue> {
     scratch.clear();
     for p in list {
         let bytes = match &p.text {
-            Some(t) => c::pod_bytes(&Str::new(t)),
+            Some(t) => c::value_bytes(&Str::new(t)),
             None => p.bytes.clone(),
         };
         scratch.push(bytes);
@@ -410,6 +860,8 @@ impl Registry {
             made_of: None,
             shares_cell: Vec::new(),
             signal: None,
+            inventory: 0,
+            neighbor_fns: Vec::new(),
         }
     }
 
@@ -496,6 +948,7 @@ impl Registry {
             handle: Some(dimension),
             desc: abi::DimensionDesc::DEFAULT,
             components: Vec::new(),
+            daylight: Vec::new(),
             _p: PhantomData,
         }
     }
@@ -542,10 +995,10 @@ impl Registry {
 
     /// Every entity of `kind` has `model` on its bone `bone`, drawn in that model's own pixels, with
     /// the same origin as the kind's. What plays on the entity plays on it too, by the names of
-    /// clips and bones: `r.attach_model(&PLAYER, "tailmod:tail", "body")`.
-    pub fn attach_model(&mut self, kind: impl ModelTarget, model: &str, bone: &str) {
+    /// clips and bones: `r.bone_model(&PLAYER, "tailmod:tail", "body")`.
+    pub fn bone_model(&mut self, kind: impl ModelTarget, model: &str, bone: &str) {
         let (model, kind) = (crate::asset("", model), qualify(self.ns, kind.target().name()));
-        unsafe { (host().reg_attach_model)(self.raw, Str::new(&kind), Str::new(&model), Str::new(bone)) }
+        unsafe { (host().reg_bone_model)(self.raw, Str::new(&kind), Str::new(&model), Str::new(bone)) }
     }
 
     /// `bone` of `model` moves by itself. A bone called `hanging` or `hanging_<anything>` does without this.
@@ -573,7 +1026,7 @@ impl Registry {
             }
         });
         let item = qualify(self.ns, item.target().name());
-        unsafe { (host().reg_item_model_when)(self.raw, Str::new(&item), cb) }
+        unsafe { (host().reg_item_model_for_stack)(self.raw, Str::new(&item), cb) }
     }
 
     /// A text component on entries of any mod.
@@ -582,7 +1035,7 @@ impl Registry {
     }
 
     /// Takes a component or tag away from entries of any mod.
-    pub fn remove(&mut self, target: Target, component: &str) {
+    pub fn unset_on(&mut self, target: Target, component: &str) {
         self.send_set(target, &Pending::tag(component), true);
     }
 
@@ -655,7 +1108,7 @@ impl ModelTarget for &Block {
     }
 }
 
-impl ModelTarget for &crate::Entity {
+impl ModelTarget for &crate::EntityKind {
     fn target(&self) -> Target<'_> {
         Target::Entity(self.name())
     }
@@ -696,14 +1149,14 @@ struct StateDef {
     filter: [u8; 3],
     /// `None`: what its flags say, whatever came before or after.
     opacity: Option<u8>,
-    layer: Layer,
-    model: Model,
+    layer: RenderLayer,
+    model: BlockModel,
     textures: [String; 6],
     boxes: Vec<([f32; 3], [f32; 3], [String; 6], [[f32; 4]; 6], [u8; 6], abi::BoxTilt)>,
     /// In sixteenths of a block.
     hitbox: Vec<[f32; 6]>,
     /// What boxes from here on are turned by.
-    frame: Option<crate::signal::Frame>,
+    orientation: Option<crate::signal::Orientation>,
     components: Vec<Pending>,
     signal: SignalSpec,
 }
@@ -728,34 +1181,34 @@ impl Default for SignalSpec {
 
 impl StateDef {
     /// A later value of the same component wins at freeze.
-    fn put<T: Value>(&mut self, comp: &Component<T>, v: T) {
+    fn set<T: Value>(&mut self, comp: &Component<T>, v: T) {
         self.components.push(comp.raw_value(&v));
     }
-    fn put_text(&mut self, name: &str, schema: &str, text: &str) {
+    fn set_text(&mut self, name: &str, schema: &str, text: &str) {
         self.components.push(Pending::text_as(name, schema, text));
     }
 }
 
 impl StateDef {
-    /// One more box, turned by the frame if there is one. A model that isn't a cube doesn't hide
+    /// One more box, turned by its orientation if it has one. A model that isn't a cube doesn't hide
     /// what is behind it, so nothing else about a block says how it is to be drawn.
     fn add_box(&mut self, min: [f32; 3], max: [f32; 3], textures: [String; 6], uv: [[f32; 4]; 6]) {
-        if self.model != Model::Boxes {
+        if self.model != BlockModel::Boxes {
             self.boxes.clear();
         }
-        self.model = Model::Boxes;
+        self.model = BlockModel::Boxes;
         self.flags &= !bf::OPAQUE;
-        if self.layer == Layer::Opaque {
-            self.layer = Layer::Cutout;
+        if self.layer == RenderLayer::Opaque {
+            self.layer = RenderLayer::Cutout;
         }
-        let Some(frame) = self.frame else {
+        let Some(o) = self.orientation else {
             self.boxes
                 .push((min, max, textures, uv, [0; 6], abi::BoxTilt::NONE));
             return;
         };
         // From where the box is on the floor, before it turns.
         let uv: [[f32; 4]; 6] = std::array::from_fn(|i| if uv[i] == abi::UV_FROM_BOX { abi::box_face_uv(i, min, max) } else { uv[i] });
-        let (lo, hi, own, turn) = frame.place(min, max, [0usize, 1, 2, 3, 4, 5]);
+        let (lo, hi, own, turn) = o.place(min, max, [0usize, 1, 2, 3, 4, 5]);
         self.boxes
             .push((lo, hi, std::array::from_fn(|i| textures[own[i]].clone()), own.map(|i| uv[i]), turn, abi::BoxTilt::NONE));
     }
@@ -771,7 +1224,7 @@ impl StateDef {
             textures: std::array::from_fn(|_| tex.to_string()),
             boxes: Vec::new(),
             hitbox: Vec::new(),
-            frame: None,
+            orientation: None,
             components: Vec::new(),
             signal: SignalSpec::default(),
         }
@@ -783,7 +1236,7 @@ struct BlockCallbacks {
     on_use: Option<abi::Callback>,
     on_neighbor: Option<abi::Callback>,
     on_scheduled: Option<abi::Callback>,
-    on_pass: Option<abi::Callback>,
+    on_carried: Option<abi::Callback>,
     signal_read: Option<abi::Callback>,
     placement: Option<abi::Callback>,
     merge: Option<abi::Callback>,
@@ -803,7 +1256,7 @@ macro_rules! state_setters {
         /// Seconds to mine by hand: the `hardness` component, as are the light, friction, drag,
         /// support and tint setters (other mods change them with `r.set`).
         pub fn hardness(mut self, h: f32) -> Self {
-            self.each(|s, _| s.put(&c::HARDNESS, h));
+            self.each(|s, _| s.set(&c::HARDNESS, h));
             self
         }
         pub fn unbreakable(self) -> Self {
@@ -814,37 +1267,37 @@ macro_rules! state_setters {
             self.light_rgb(level, level, level)
         }
         pub fn light_rgb(mut self, r: u8, g: u8, b: u8) -> Self {
-            self.each(|s, _| s.put(&c::LIGHT, [r, g, b]));
+            self.each(|s, _| s.set(&c::LIGHT, [r, g, b]));
             self
         }
         /// Per-channel absorption of passing light (stained glass).
-        pub fn filter(mut self, r: u8, g: u8, b: u8) -> Self {
+        pub fn light_filter(mut self, r: u8, g: u8, b: u8) -> Self {
             self.each(|s, _| s.filter = [r, g, b]);
             self
         }
         /// Same texture on every face, relative names are under `block/`.
         pub fn texture(mut self, t: &str) -> Self {
-            self.each(|s, ns| s.textures = std::array::from_fn(|_| block_tex(ns, t)));
+            self.each(|s, ns| s.textures = std::array::from_fn(|_| block_texture(ns, t)));
             self
         }
         /// Top, sides, bottom.
         pub fn textures(mut self, top: &str, side: &str, bottom: &str) -> Self {
             self.each(|s, ns| {
-                let (t, si, b) = (block_tex(ns, top), block_tex(ns, side), block_tex(ns, bottom));
+                let (t, si, b) = (block_texture(ns, top), block_texture(ns, side), block_texture(ns, bottom));
                 s.textures = [si.clone(), si.clone(), b, t, si.clone(), si];
             });
             self
         }
         /// Faces in -X, +X, -Y, +Y, -Z, +Z order.
         pub fn faces(mut self, f: [&str; 6]) -> Self {
-            self.each(|s, ns| s.textures = std::array::from_fn(|i| block_tex(ns, f[i])));
+            self.each(|s, ns| s.textures = std::array::from_fn(|i| block_texture(ns, f[i])));
             self
         }
         /// Not opaque, rendered alpha-tested, lets light through (glass, leaves).
         pub fn cutout(mut self) -> Self {
             self.each(|s, _| {
                 s.flags &= !bf::OPAQUE;
-                s.layer = Layer::Cutout;
+                s.layer = RenderLayer::Cutout;
             });
             self
         }
@@ -855,7 +1308,7 @@ macro_rules! state_setters {
         }
         /// Light it takes away, 0..15 (leaves 1, ice 2), when what it looks like isn't enough to
         /// go by: otherwise 15 for what is opaque and 0 for the rest.
-        pub fn opacity(mut self, o: u8) -> Self {
+        pub fn light_opacity(mut self, o: u8) -> Self {
             self.each(|s, _| s.opacity = Some(o));
             self
         }
@@ -863,7 +1316,7 @@ macro_rules! state_setters {
             self.each(|s, _| {
                 s.flags &= !bf::OPAQUE;
                 s.flags |= bf::CULL_SAME;
-                s.layer = Layer::Translucent;
+                s.layer = RenderLayer::Translucent;
             });
             self
         }
@@ -876,32 +1329,32 @@ macro_rules! state_setters {
         /// empty.
         pub fn needs(mut self, side: crate::Dir, tag: &str) -> Self {
             self.each(|s, _| {
-                s.put(&c::SUPPORT_FACE, side.face() as u8);
+                s.set(&c::SUPPORT_FACE, side.face() as u8);
                 if !tag.is_empty() {
-                    s.put_text(abi::comp::SUPPORT, "tag", tag);
+                    s.set_text(abi::comp::SUPPORT, "tag", tag);
                 }
             });
             self
         }
         /// The supporting block must have a block tagged `tag` beside it (sugar cane: `#water`),
         /// unless it is this same block.
-        pub fn needs_near_support(mut self, tag: &str) -> Self {
-            self.each(|s, _| s.put_text(abi::comp::SUPPORT_NEAR, "tag", tag));
+        pub fn needs_near(mut self, tag: &str) -> Self {
+            self.each(|s, _| s.set_text(abi::comp::SUPPORT_NEAR, "tag", tag));
             self
         }
         /// A plant: tagged `plantable`, cross model, no collision, replaced by placing a block.
         pub fn plant(mut self) -> Self {
             self.each(|s, _| {
                 s.flags = (s.flags & !(bf::SOLID | bf::OPAQUE)) | bf::REPLACEABLE;
-                s.model = Model::Cross;
-                s.layer = Layer::Cutout;
-                s.put(&c::HARDNESS, 0.0);
+                s.model = BlockModel::Cross;
+                s.layer = RenderLayer::Cutout;
+                s.set(&c::HARDNESS, 0.0);
                 s.components.push(Pending::tag("plantable"));
             });
             self
         }
         /// Keeps the liquid source it is placed in, and a bucket fills it: waterlogging.
-        pub fn holds_liquids(mut self) -> Self {
+        pub fn holds_liquid(mut self) -> Self {
             self.each(|s, _| s.flags |= bf::HOLDS_LIQUID);
             self
         }
@@ -920,28 +1373,28 @@ macro_rules! state_setters {
         /// Colored by the biome it stands in: `tints::GRASS`, `FOLIAGE`, `WATER` or a mod's own
         /// kind (`Registry::tint_kind`).
         pub fn tint(mut self, kind: &TintKind) -> Self {
-            self.each(|s, _| s.put_text(abi::comp::TINT, "tint", kind.name()));
+            self.each(|s, _| s.set_text(abi::comp::TINT, "tint", kind.name()));
             self
         }
         /// `tint` on the top face only (grass blocks: the sides carry their own color).
         pub fn tint_top(mut self, kind: &TintKind) -> Self {
             self.each(|s, _| {
-                s.put_text(abi::comp::TINT, "tint", kind.name());
-                s.put(&c::TINT_FACES, 1 << 3);
+                s.set_text(abi::comp::TINT, "tint", kind.name());
+                s.set(&c::TINT_FACES, 1 << 3);
             });
             self
         }
         pub fn friction(mut self, f: f32) -> Self {
-            self.each(|s, _| s.put(&c::FRICTION, f));
+            self.each(|s, _| s.set(&c::FRICTION, f));
             self
         }
         pub fn drag(mut self, d: f32) -> Self {
-            self.each(|s, _| s.put(&c::DRAG, d));
+            self.each(|s, _| s.set(&c::DRAG, d));
             self
         }
         /// How many times its loot is rolled when it breaks: 2 for two slabs in one block.
         pub fn loot_rolls(mut self, n: u32) -> Self {
-            self.each(|s, _| s.put(&c::LOOT_ROLLS, n));
+            self.each(|s, _| s.set(&c::LOOT_ROLLS, n));
             self
         }
         /// Custom model made of boxes in 1/16 units, each face showing the state's texture of
@@ -957,24 +1410,24 @@ macro_rules! state_setters {
         /// from where the box is, `UV_NO_FACE` leaves a face out.
         pub fn model_box_faces(mut self, min: [f32; 3], max: [f32; 3], faces: [(&str, [f32; 4]); 6]) -> Self {
             self.each(|s, ns| {
-                let textures = std::array::from_fn(|i| block_tex(ns, faces[i].0));
+                let textures = std::array::from_fn(|i| block_texture(ns, faces[i].0));
                 s.add_box(min, max, textures, faces.map(|f| f.1));
             });
             self
         }
         /// `model_box`, `model_box_faces` and `hitbox` from here on are written for a floor with
-        /// the front to the north, and turned as `frame` says (`Props::frame`), pictures included.
-        pub fn frame(mut self, frame: crate::signal::Frame) -> Self {
-            self.each(|s, _| s.frame = Some(frame));
+        /// the front to the north, and turned as `o` says (`Props::orientation`), pictures included.
+        pub fn oriented(mut self, o: crate::signal::Orientation) -> Self {
+            self.each(|s, _| s.orientation = Some(o));
             self
         }
         /// The last box's pictures get quarter turns of their own, per face.
         pub fn turned(mut self, turns: [u8; 6]) -> Self {
             self.each(|s, _| {
-                let frame = s.frame;
+                let o = s.orientation;
                 let Some(last) = s.boxes.last_mut() else { return };
                 for (own, t) in turns.iter().enumerate() {
-                    let to = frame.map_or(own, |f| f.face(own));
+                    let to = o.map_or(own, |f| f.face(own));
                     last.4[to] = (last.4[to] + t) % 4;
                 }
             });
@@ -984,16 +1437,16 @@ macro_rules! state_setters {
         /// `Dir`) by degrees, right-handed, like a model file's element.
         pub fn tilted(mut self, origin: [f32; 3], axis: crate::Dir, degrees: f32) -> Self {
             self.each(|s, _| {
-                let frame = s
-                    .frame
-                    .unwrap_or(crate::signal::Frame::new(crate::Dir::Down, crate::Dir::North));
+                let o = s
+                    .orientation
+                    .unwrap_or(crate::signal::Orientation::new(crate::Dir::Down, crate::Dir::North));
                 let Some(last) = s.boxes.last_mut() else { return };
-                last.5 = abi::BoxTilt { origin: frame.at(origin), axis: frame.along(axis), degrees };
+                last.5 = abi::BoxTilt { origin: o.at(origin), axis: o.along(axis), degrees };
             });
             self
         }
         /// Doesn't carry redstone power, the way glass doesn't. Wire can still lie on it.
-        pub fn redstone_blocker(mut self) -> Self {
+        pub fn signal_blocker(mut self) -> Self {
             self.each(|s, _| s.flags |= bf::SIGNAL_BLOCKER);
             self
         }
@@ -1014,7 +1467,7 @@ macro_rules! state_setters {
         /// else a plant's cross, else the whole block.
         pub fn hitbox(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
             self.each(|s, _| {
-                let (lo, hi) = s.frame.map_or((min, max), |f| f.corners(min, max));
+                let (lo, hi) = s.orientation.map_or((min, max), |f| f.corners(min, max));
                 s.hitbox.push([lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]])
             });
             self
@@ -1023,19 +1476,19 @@ macro_rules! state_setters {
         pub fn air(mut self) -> Self {
             self.each(|s, _| {
                 s.flags = (s.flags & !(bf::SOLID | bf::OPAQUE)) | bf::REPLACEABLE | bf::NOT_TARGETABLE;
-                s.model = Model::None;
-                s.layer = Layer::Opaque;
+                s.model = BlockModel::None;
+                s.layer = RenderLayer::Opaque;
             });
             self
         }
-        pub fn flags(mut self, add: u32, remove: u32) -> Self {
-            self.each(|s, _| s.flags = (s.flags | add) & !remove);
+        pub fn flags(mut self, f: u32) -> Self {
+            self.each(|s, _| s.flags |= f);
             self
         }
     };
 }
 
-fn block_tex(_ns: &str, t: &str) -> String {
+fn block_texture(_ns: &str, t: &str) -> String {
     crate::asset("block", t)
 }
 
@@ -1087,6 +1540,32 @@ pub struct BlockBuilder<'a> {
     merge: Option<Box<dyn Fn(&Place, &mut Props) + Send + Sync>>,
     made_of: Option<(String, String)>,
     shares_cell: Vec<String>,
+    inventory: u32,
+    /// What its `on_neighbor` does, `joins` and `derived` included, run in order.
+    neighbor_fns: Vec<NeighborFn>,
+}
+
+type NeighborFn = Box<dyn Fn(&mut BlockEvent) + Send + Sync>;
+
+/// The blocks around one (`BlockBuilder::derived`).
+pub struct Neighbors {
+    world: World,
+    pos: [i32; 3],
+}
+
+impl Neighbors {
+    pub fn pos(&self) -> [i32; 3] {
+        self.pos
+    }
+    pub fn world(&self) -> World {
+        self.world
+    }
+    /// The block on that side, air where nothing is loaded.
+    pub fn at(&self, side: crate::Dir) -> u32 {
+        let o = side.offset();
+        self.world
+            .block([self.pos[0] + o[0], self.pos[1] + o[1], self.pos[2] + o[2]])
+    }
 }
 
 /// Values a property can take: names (`["false", "true"]`) or numbers (`0..=7`).
@@ -1136,28 +1615,28 @@ impl Props {
         crate::Dir::from_name(self.get("facing")).unwrap_or(crate::Dir::Up)
     }
     /// How the block is turned, from its `attach` and `front` or `facing` properties, for
-    /// `.frame`.
-    pub fn frame(&self) -> crate::signal::Frame {
+    /// `.oriented`.
+    pub fn orientation(&self) -> crate::signal::Orientation {
         let attach = crate::Dir::from_name(self.get("attach")).unwrap_or(crate::Dir::Down);
         let front = crate::Dir::from_name(self.get("front")).unwrap_or_else(|| self.facing());
-        crate::signal::Frame::new(attach, front)
+        crate::signal::Orientation::new(attach, front)
     }
-    /// A block that faces along `facing`, with its top that way: for `.frame`.
-    pub fn frame_up(&self) -> crate::signal::Frame {
+    /// A block that faces along `facing`, with its top that way: for `.oriented`.
+    pub fn orientation_up(&self) -> crate::signal::Orientation {
         let f = self.facing();
         let north = if f.face() / 2 == 1 { crate::Dir::North } else { crate::Dir::Up };
-        crate::signal::Frame::new(f.opposite(), north)
+        crate::signal::Orientation::new(f.opposite(), north)
     }
     /// A block with its north to `facing`, the way vanilla turns one: its top stays up unless it
     /// faces up or down.
-    pub fn frame_front(&self) -> crate::signal::Frame {
+    pub fn orientation_front(&self) -> crate::signal::Orientation {
         let f = self.facing();
         let attach = match f {
             crate::Dir::Up => crate::Dir::North,
             crate::Dir::Down => crate::Dir::South,
             _ => crate::Dir::Down,
         };
-        crate::signal::Frame::new(attach, f)
+        crate::signal::Orientation::new(attach, f)
     }
     pub fn set(&mut self, name: &str, value: &str) {
         if let Some(v) = self.values.iter_mut().find(|v| v.0 == name) {
@@ -1167,7 +1646,7 @@ impl Props {
 }
 
 /// Every combination of property values, the last property changing fastest.
-fn combinations(props: &[(String, Vec<String>)]) -> Vec<Props> {
+fn state_combinations(props: &[(String, Vec<String>)]) -> Vec<Props> {
     let mut out = vec![Props { values: Vec::new() }];
     for (name, values) in props {
         out = out
@@ -1184,8 +1663,8 @@ fn combinations(props: &[(String, Vec<String>)]) -> Vec<Props> {
     out
 }
 
-/// The state index of `p` among `combinations(props)`; values it does not know count as the first.
-fn index_of(props: &[(String, Vec<String>)], p: &Props) -> u32 {
+/// The state index of `p` among `state_combinations(props)`; values it does not know count as the first.
+fn state_index(props: &[(String, Vec<String>)], p: &Props) -> u32 {
     props
         .iter()
         .fold(0, |i, (name, values)| i * values.len() as u32 + values.iter().position(|v| v == p.get(name)).unwrap_or(0) as u32)
@@ -1203,7 +1682,7 @@ impl<'a> BlockBuilder<'a> {
 
     /// A named property with its values, the first being the default: `.prop("lit", ["false",
     /// "true"])`, `.prop("age", 0..=7)`. The block has a state for every combination of its
-    /// properties; read and change them with `World::prop` / `set_prop`.
+    /// properties; read and change them with `World::prop` / `prop_set`.
     pub fn prop(mut self, name: &str, values: impl PropValues) -> Self {
         self.own_states = true;
         self.props.push((name.to_string(), values.values()));
@@ -1229,7 +1708,7 @@ impl<'a> BlockBuilder<'a> {
     /// wood 0, stone 100, iron 200, diamond 300; any number between works), like vanilla's
     /// "requires correct tool". It is the `harvest_level` component, checked by
     /// `Cond::Harvested` on the block's loot.
-    pub fn needs_tool(mut self, level: u32) -> Self {
+    pub fn needs_tool_level(mut self, level: u32) -> Self {
         self.components.push(c::HARVEST_LEVEL.raw_value(&level));
         self
     }
@@ -1305,10 +1784,10 @@ impl<'a> BlockBuilder<'a> {
     /// Grows over time, a step every `mean_seconds` on average (spread like random ticks) while
     /// the light is at least `min_light`: by default to the next state until the last. Timed by
     /// world time, so unloaded plants catch up when their area loads again.
-    pub fn growth(mut self, mean_seconds: f32, min_light: u32) -> Self {
+    pub fn grows(mut self, mean_seconds: f32, min_light: u32) -> Self {
         self.each(|s, _| {
-            s.put(&c::GROW_TIME, mean_seconds);
-            s.put(&c::GROW_LIGHT, min_light);
+            s.set(&c::GROW_TIME, mean_seconds);
+            s.set(&c::GROW_LIGHT, min_light);
         });
         self
     }
@@ -1326,19 +1805,30 @@ impl<'a> BlockBuilder<'a> {
     /// also while nobody is near (caught up on loading).
     pub fn spreads(mut self, tag: &str, mean_seconds: f32, min_light: u32) -> Self {
         self.each(|s, _| {
-            s.put_text(abi::comp::SPREADS_TO, "tag", tag);
-            s.put(&c::SPREAD_TIME, mean_seconds);
-            s.put(&c::SPREAD_LIGHT, min_light);
+            s.set_text(abi::comp::SPREADS_TO, "tag", tag);
+            s.set(&c::SPREAD_TIME, mean_seconds);
+            s.set(&c::SPREAD_LIGHT, min_light);
         });
         self
     }
 
     /// Turns into `block` in `mean_seconds` on average once something opaque covers it (grass
     /// into dirt).
-    pub fn smothered(mut self, block: &str, mean_seconds: f32) -> Self {
+    /// Where `spreads` reaches, from this block to the target: min and max offsets, at most 4
+    /// each way (grass: `[-1, -3, -1]` to `[1, 1, 1]`, the default). With `covered`, targets
+    /// with something opaque on top count too, lit by their brightest side (moss up a wall).
+    pub fn spread_reach(mut self, min: [i32; 3], max: [i32; 3], covered: bool) -> Self {
+        let v = [min[0], min[1], min[2], max[0], max[1], max[2]];
         self.each(|s, _| {
-            s.put_text(abi::comp::SMOTHERED_INTO, "block", block);
-            s.put(&c::SMOTHER_TIME, mean_seconds);
+            s.set(&c::SPREAD_REACH, v);
+        });
+        if covered { self.tag(abi::comp::SPREADS_COVERED) } else { self }
+    }
+
+    pub fn smothered_into(mut self, block: &str, mean_seconds: f32) -> Self {
+        self.each(|s, _| {
+            s.set_text(abi::comp::SMOTHERED_INTO, "block", block);
+            s.set(&c::SMOTHER_TIME, mean_seconds);
         });
         self
     }
@@ -1356,7 +1846,7 @@ impl<'a> BlockBuilder<'a> {
             .map(|k| crate::full_name(k))
             .collect::<Vec<_>>()
             .join(",");
-        self.each(|s, _| s.put_text(abi::comp::AMBIENT_PARTICLE, "str", &kinds));
+        self.each(|s, _| s.set_text(abi::comp::AMBIENT_PARTICLE, "str", &kinds));
         self
     }
 
@@ -1393,14 +1883,60 @@ impl<'a> BlockBuilder<'a> {
     }
 
     pub fn on_neighbor(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
-        self.callbacks.on_neighbor = Some(callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a))));
+        self.neighbor_fns.push(Box::new(f));
+        self
+    }
+
+    /// A `true`/`false` property for each of `sides` (`north`, `east` .. `up`, `down`) the engine
+    /// keeps saying whether the block there is one it joins: blocks tagged `to` (`#fences`,
+    /// another mod's pipes by a shared tag), named `to`, or with `"self"` its own kind. Fences,
+    /// walls, panes, pipes and cables: `.states` shapes it by `p.is("north", "true")`.
+    pub fn joins(mut self, sides: crate::Facings, to: &str) -> Self {
+        for d in sides.dirs() {
+            self = self.prop(d.name(), ["false", "true"]);
+        }
+        let to = to.to_string();
+        self.derive_each(move |n, e| {
+            let own = e.state();
+            for d in sides.dirs() {
+                let there = n.at(d);
+                let joins = there != 0
+                    && match to.as_str() {
+                        "self" => crate::block_of(there) == crate::block_of(own),
+                        t if t.starts_with('#') => crate::block_has_tag(there, &t[1..]),
+                        name => crate::block_name(there).split('[').next() == Some(name),
+                    };
+                let want = if joins { "true" } else { "false" };
+                if n.world().prop(n.pos(), d.name()) != Some(want) {
+                    n.world().prop_set(n.pos(), d.name(), want);
+                }
+            }
+        })
+    }
+
+    /// Property `prop` worked out from the blocks around, kept up to date by the engine as they
+    /// change (a stair's corner shape). `f` gives the value; the property must have it.
+    pub fn derived(self, prop: &'static str, f: impl Fn(&Neighbors) -> &'static str + Send + Sync + 'static) -> Self {
+        self.derive_each(move |n, _| {
+            let want = f(n);
+            if n.world().prop(n.pos(), prop) != Some(want) {
+                n.world().prop_set(n.pos(), prop, want);
+            }
+        })
+    }
+
+    fn derive_each(mut self, f: impl Fn(&Neighbors, &BlockEvent) + Send + Sync + 'static) -> Self {
+        self.neighbor_fns.push(Box::new(move |e: &mut BlockEvent| {
+            let n = Neighbors { world: e.world(), pos: e.pos() };
+            f(&n, e)
+        }));
         self
     }
 
     /// On a moving body, it came to another cell of the world: a drill, a plow. `pos` is that cell,
-    /// in the world's coordinates; `other` where this is on the body, `entity` the body.
-    pub fn on_pass(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
-        self.callbacks.on_pass = Some(callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a))));
+    /// in the world's coordinates; `body_pos` where this is on the body, `entity` the body.
+    pub fn on_carried(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
+        self.callbacks.on_carried = Some(callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a))));
         self
     }
     pub fn on_scheduled(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
@@ -1419,7 +1955,7 @@ impl<'a> BlockBuilder<'a> {
         way: impl Fn(u32) -> crate::Dir + Copy + Send + Sync + 'static,
     ) -> Self {
         let Some(block) = self.handle else {
-            crate::mistake("two_part needs a block registered by its handle");
+            crate::reg_mistake("two_part needs a block registered by its handle");
             return self;
         };
         let other = move |pos: [i32; 3], state: u32| crate::other_part(pos, state, prop, parts[1], way);
@@ -1427,26 +1963,26 @@ impl<'a> BlockBuilder<'a> {
             if !block.is(q.state()) {
                 return crate::Verdict::Abstain;
             }
-            let there = q.world().get(other(q.pos(), q.state()));
+            let there = q.world().block(other(q.pos(), q.state()));
             if there == 0 || crate::state_flags(there) & bf::REPLACEABLE != 0 { crate::Verdict::Abstain } else { crate::Verdict::Deny }
         });
         self.prop(prop, parts)
-            .on_neighbor(|e| e.world().schedule(e.pos(), 1))
+            .on_neighbor(|e| e.world().schedule_tick(e.pos(), 1))
             .on_scheduled(move |e| {
                 let w = e.world();
-                if block.is(e.state()) && !block.is(w.get(other(e.pos(), e.state()))) {
-                    w.set(e.pos(), 0);
+                if block.is(e.state()) && !block.is(w.block(other(e.pos(), e.state()))) {
+                    w.set_block(e.pos(), 0);
                 }
             })
             .on_placed(move |w, c| {
                 if let Some(s) = crate::state_with(c.state, prop, parts[1]) {
-                    w.set(other(c.pos, c.state), s);
+                    w.set_block(other(c.pos, c.state), s);
                 }
             })
             .on_broken(move |w, c| {
                 let there = other(c.pos, c.state);
-                if block.is(w.get(there)) {
-                    w.set(there, 0);
+                if block.is(w.block(there)) {
+                    w.set_block(there, 0);
                 }
             })
     }
@@ -1454,13 +1990,20 @@ impl<'a> BlockBuilder<'a> {
     /// Falls like sand when nothing holds it up: a block next to it changing checks two ticks
     /// later whether below is free, and if so it drops as a moving block (`World::fall`).
     pub fn falling(self) -> Self {
-        self.on_neighbor(|e| e.world().schedule(e.pos(), 2))
+        self.on_neighbor(|e| e.world().schedule_tick(e.pos(), 2))
             .on_scheduled(|e| {
                 let (w, p) = (e.world(), e.pos());
-                if w.flags([p[0], p[1] - 1, p[2]]) & abi::block_flags::REPLACEABLE != 0 {
-                    w.fall(p);
+                if w.block_flags([p[0], p[1] - 1, p[2]]) & abi::block_flags::REPLACEABLE != 0 {
+                    w.fall_block(p);
                 }
             })
+    }
+
+    /// Each placed block holds `slots` items (`w.inventory(pos)`), kept by a block entity the
+    /// engine adds. Its contents drop when it breaks.
+    pub fn inventory(mut self, slots: u32) -> Self {
+        self.inventory = slots;
+        self
     }
 
     /// Using it opens `menu`, on the block's block entity if it has one (machines), else a menu
@@ -1486,7 +2029,7 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// Which way it faces as an item and by default (after `facing`).
-    pub fn facing_first(mut self, d: crate::Dir) -> Self {
+    pub fn default_facing(mut self, d: crate::Dir) -> Self {
         if let Some((_, values)) = self.props.iter_mut().find(|p| p.0 == "facing") {
             if let Some(i) = values.iter().position(|v| v == d.name()) {
                 values.swap(0, i);
@@ -1500,9 +2043,9 @@ impl<'a> BlockBuilder<'a> {
     pub fn wire(mut self) -> Self {
         self.each(|s, _| {
             s.flags &= !(bf::SOLID | bf::OPAQUE);
-            s.model = Model::Wire;
-            s.layer = Layer::Cutout;
-            s.put(&c::HARDNESS, 0.0);
+            s.model = BlockModel::Wire;
+            s.layer = RenderLayer::Cutout;
+            s.set(&c::HARDNESS, 0.0);
         });
         self.signal = Some(SignalBuild { kind: abi::signal_kind::WIRE, ..SignalBuild::default() });
         self.prop("faces", 0..=63)
@@ -1525,13 +2068,13 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// Always gives full power to what is next to it.
-    pub fn signal_block(self) -> Self {
-        self.signal_props(abi::signal_kind::SOURCE, 0, false, false)
+    pub fn signal_constant(self) -> Self {
+        self.signal_props(abi::signal_kind::SWITCH, 0, false, false)
     }
     /// A lever or button: goes on the clicked face; its `power` property (`off`, `on`) gives full
     /// power around it and strongly into the block it is on.
     pub fn signal_switch(self) -> Self {
-        self.signal_props(abi::signal_kind::SOURCE, 2, true, true)
+        self.signal_props(abi::signal_kind::SWITCH, 2, true, true)
     }
     /// Goes on the clicked face and gives full power unless the block it is on has any.
     pub fn signal_torch(self) -> Self {
@@ -1617,7 +2160,7 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// Not a block but a template: see `Registry::shapes_of`.
-    pub(crate) fn made_of(mut self, sources: &str, suffix: &str) -> Self {
+    pub(crate) fn shapes_of(mut self, sources: &str, suffix: &str) -> Self {
         self.made_of = Some((sources.to_string(), suffix.to_string()));
         self
     }
@@ -1641,7 +2184,7 @@ impl Drop for BlockBuilder<'_> {
         if !self.props.is_empty() || looks.is_some() {
             let template = self.states[0].clone();
             let ns = self.reg.ns;
-            self.states = combinations(&self.props)
+            self.states = state_combinations(&self.props)
                 .iter()
                 .map(|p| {
                     let mut d = template.clone();
@@ -1662,7 +2205,7 @@ impl Drop for BlockBuilder<'_> {
             }
         }
         let attaches = signal.is_some_and(|b| b.attaches);
-        let switch = signal.is_some_and(|b| b.kind == abi::signal_kind::SOURCE);
+        let switch = signal.is_some_and(|b| b.kind == abi::signal_kind::SWITCH);
         if self.facing.is_some() || self.placement.is_some() || attaches {
             let (props, facing, user) = (self.props.clone(), self.facing, self.placement.take());
             self.callbacks.placement = Some(callback(move |a: &mut abi::PlaceArgs| {
@@ -1679,27 +2222,28 @@ impl Drop for BlockBuilder<'_> {
                     let attach = crate::Dir::from_face(a.face).opposite();
                     p.set("attach", attach.name());
                     // A switch on a wall is always upright, as in vanilla; a gate goes with the look.
-                    let front = if switch && attach.horizontal() { crate::Dir::Down } else { crate::signal::along(attach, a.look) };
+                    let front =
+                        if switch && attach.horizontal() { crate::Dir::Down } else { crate::signal::dir_along_face(attach, a.look) };
                     p.set("front", front.name());
                 }
                 let first = a.state;
                 if let Some(f) = &user {
                     f(Place::wrap(a), &mut p);
                 }
-                a.state = first + index_of(&props, &p);
+                a.state = first + state_index(&props, &p);
             }));
         }
         if let Some(f) = self.merge.take() {
             let props = self.props.clone();
             self.callbacks.merge = Some(callback(move |a: &mut abi::PlaceArgs| {
-                let Some(mut p) = combinations(&props)
+                let Some(mut p) = state_combinations(&props)
                     .into_iter()
                     .nth((a.state - a.first) as usize)
                 else {
                     return;
                 };
                 f(Place::wrap(a), &mut p);
-                a.state = a.first + index_of(&props, &p);
+                a.state = a.first + state_index(&props, &p);
             }));
         }
         let shares_cell: Vec<Str> = self.shares_cell.iter().map(|x| Str::new(x)).collect();
@@ -1773,6 +2317,15 @@ impl Drop for BlockBuilder<'_> {
             .iter()
             .flat_map(|(a, b)| [Str::new(a), Str::new(b)])
             .collect();
+        if !self.neighbor_fns.is_empty() {
+            let fns = std::mem::take(&mut self.neighbor_fns);
+            self.callbacks.on_neighbor = Some(callback(move |a: &mut abi::BlockEventArgs| {
+                let e = BlockEvent::wrap(a);
+                for f in &fns {
+                    f(e);
+                }
+            }));
+        }
         let cb = &self.callbacks;
         let desc = abi::BlockDesc {
             name: Str::new(&self.name),
@@ -1784,14 +2337,14 @@ impl Drop for BlockBuilder<'_> {
 
             on_neighbor: cb.on_neighbor.unwrap_or(abi::Callback::NONE),
             on_scheduled: cb.on_scheduled.unwrap_or(abi::Callback::NONE),
-            on_pass: cb.on_pass.unwrap_or(abi::Callback::NONE),
+            on_carried: cb.on_carried.unwrap_or(abi::Callback::NONE),
             signal_read: cb.signal_read.unwrap_or(abi::Callback::NONE),
             merge: cb.merge.unwrap_or(abi::Callback::NONE),
-            derive_from: self.made_of.as_ref().map_or(Str::EMPTY, |m| Str::new(&m.0)),
-            derive_suffix: self.made_of.as_ref().map_or(Str::EMPTY, |m| Str::new(&m.1)),
+            shapes_of: self.made_of.as_ref().map_or(Str::EMPTY, |m| Str::new(&m.0)),
+            shapes_suffix: self.made_of.as_ref().map_or(Str::EMPTY, |m| Str::new(&m.1)),
             shares_cell: Slice::new(&shares_cell),
             placement: cb.placement.unwrap_or(abi::Callback::NONE),
-            replace: self.replace as u32,
+            replacing: self.replace as u32,
             on_grow: cb.on_grow.unwrap_or(abi::Callback::NONE),
             on_signal: cb.on_signal.unwrap_or(abi::Callback::NONE),
             signal_logic: cb.signal_logic.unwrap_or(abi::Callback::NONE),
@@ -1804,6 +2357,17 @@ impl Drop for BlockBuilder<'_> {
             h.set_count(self.states.len() as u32);
         }
         unsafe { (host().reg_block)(self.reg.raw, &desc) };
+        if self.inventory > 0 {
+            let kind = crate::EntityKind::generated(self.name.clone());
+            drop(
+                self.reg
+                    .entity(kind)
+                    .no_egg()
+                    .flags(abi::entity_flags::NO_GRAVITY | abi::entity_flags::INVULNERABLE),
+            );
+            let block = crate::Block::generated(self.name.clone());
+            self.reg.block_entity(block, kind, self.inventory);
+        }
 
         if self.item {
             // The item gets the block's components from the engine.
@@ -1897,7 +2461,7 @@ impl ItemBuilder<'_> {
     pub fn handheld(self) -> Self {
         self.tag("handheld")
     }
-    /// The highest `needs_tool` level it harvests (`abi::tool_tier`: wood 0 ... diamond 300).
+    /// The highest `needs_tool_level` it harvests (`abi::tool_tier`: wood 0 ... diamond 300).
     pub fn tool_level(self, level: u32) -> Self {
         self.set(&c::TOOL_LEVEL, level)
     }
@@ -1914,9 +2478,9 @@ impl ItemBuilder<'_> {
     pub fn no_creative_break(self) -> Self {
         self.tag(abi::comp::NO_CREATIVE_BREAK)
     }
-    /// Takes effect after holding the use button this long (food 32 ticks), slowing the player down.
-    pub fn use_time(self, seconds: f32) -> Self {
-        self.set(&c::USE_TICKS, (seconds * 20.0).round() as u32)
+    /// Takes effect after holding the use button this many ticks (food 32), slowing the player down.
+    pub fn use_ticks(self, ticks: u32) -> Self {
+        self.set(&c::USE_TICKS, ticks)
     }
     /// Full swings per second: hitting sooner does less (a sword 1.6, an empty hand 4).
     pub fn attack_speed(self, per_second: f32) -> Self {
@@ -1925,12 +2489,12 @@ impl ItemBuilder<'_> {
     pub fn attack_damage(self, damage: f32) -> Self {
         self.set(&c::ATTACK_DAMAGE, damage)
     }
-    pub fn placed_block(mut self, block: &Block) -> Self {
+    pub fn places(mut self, block: &Block) -> Self {
         self.block = block.name().to_string();
         self
     }
     /// Worn in equipment `slot`, where it shows as `model` on the wearer's bone `bone`, moved by
-    /// what plays on the wearer, like `Registry::attach_model`: a tail only those who wear it have.
+    /// what plays on the wearer, like `Registry::bone_model`: a tail only those who wear it have.
     pub fn wearable_model(self, slot: &EquipmentSlot, model: &str, bone: &str) -> Self {
         let model = format!("{}@{bone}", crate::asset("", model));
         self.tag(&format!("worn/{}", slot.name()))
@@ -1955,11 +2519,18 @@ impl ItemBuilder<'_> {
 
     /// Used on a block, puts `entity` on that side of it. One is used up, outside creative. Entities
     /// have an egg of their own without this; it is for something else that hatches one.
-    pub fn spawns(mut self, entity: &'static crate::Entity) -> Self {
+    /// Each stack carries an inventory of `slots` (`w.inventory(Holder::held(player, slot))`,
+    /// `w.open_menu(player, &MENU, Holder::held(player, slot))`), saved in the stack. Stacks
+    /// holding something only stack with stacks holding the same.
+    pub fn inventory(self, slots: u32) -> Self {
+        self.set(&crate::component::INVENTORY_SLOTS, slots)
+    }
+
+    pub fn spawns(mut self, entity: &'static crate::EntityKind) -> Self {
         self.components
             .push(Pending::text(abi::comp::SPAWN_EGG, entity.name()));
         self.on_use(move |u| {
-            let Some((p, face)) = u.target() else { return false };
+            let Some((p, face)) = u.target_block() else { return false };
             let (w, side) = (u.world(), crate::Dir::from_face(face).offset());
             w.spawn(entity, [(p[0] + side[0]) as f64 + 0.5, (p[1] + side[1]) as f64, (p[2] + side[2]) as f64 + 0.5]);
             if !w.creative(u.player()) {
@@ -2049,6 +2620,10 @@ impl BiomeBuilder<'_> {
     pub fn snows(self) -> Self {
         self.tag(abi::comp::SNOWY)
     }
+    /// What falls here when a weather brings rain: `precipitations::SNOW`, or a mod's own.
+    pub fn precipitation(self, p: &'static Precipitation) -> Self {
+        self.set(&crate::component::PRECIPITATION, crate::component::Text::new(p.name()))
+    }
     /// The color (`0xRRGGBB`) blocks tinted with `kind` take here (`tints::GRASS`, or a mod's
     /// own kind). Kinds not given keep their default.
     pub fn tint(mut self, kind: &'static TintKind, color: u32) -> Self {
@@ -2084,6 +2659,7 @@ pub struct DimensionBuilder<'a> {
     handle: Option<&'static Dimension>,
     desc: abi::DimensionDesc,
     components: Vec<Pending>,
+    daylight: Vec<[f32; 2]>,
     _p: PhantomData<&'a mut Registry>,
 }
 
@@ -2097,7 +2673,7 @@ impl DimensionBuilder<'_> {
     /// The block a player starts on top of in this dimension, for a seed. Without one the engine
     /// finds open ground near 0, 0 on the dimension's columns (biomes tagged `spawn_biome`
     /// first), out of caves and trees.
-    pub fn spawn(mut self, f: impl Fn(u64) -> [i32; 3] + Send + Sync + 'static) -> Self {
+    pub fn spawn_point(mut self, f: impl Fn(u64) -> [i32; 3] + Send + Sync + 'static) -> Self {
         self.desc.spawn = callback(move |a: &mut abi::SpawnArgs| a.pos = f(a.seed));
         self
     }
@@ -2126,7 +2702,7 @@ impl DimensionBuilder<'_> {
         self
     }
     /// Inclusive limits in cubes (16 blocks).
-    pub fn height(mut self, min_cube: i32, max_cube: i32) -> Self {
+    pub fn height_cubes(mut self, min_cube: i32, max_cube: i32) -> Self {
         self.desc.min_cube_y = min_cube;
         self.desc.max_cube_y = max_cube;
         self
@@ -2154,17 +2730,25 @@ impl DimensionBuilder<'_> {
         self.desc.day_length = ticks;
         self
     }
+    /// Daylight through the day as points (turn of the sky, level 0..1): the turn 0 is sunrise,
+    /// 0.25 noon, 0.5 sunset, 0.75 midnight, with straight lines between. Endless dusk is
+    /// `&[(0.0, 0.4)]`, a long polar day `&[(0.0, 1.0), (0.6, 1.0), (0.7, 0.0), (0.95, 0.0)]`.
+    /// Spawning, growth, burning in the sun and the sky all follow it.
+    pub fn daylight(mut self, points: &[(f32, f32)]) -> Self {
+        self.daylight = points.iter().map(|&(t, l)| [t, l]).collect();
+        self
+    }
     pub fn fixed_time(mut self, time: u32) -> Self {
         self.desc.day_length = 0;
         self.desc.fixed_time = time;
         self
     }
-    pub fn sky(mut self, sky: u32, fog: u32) -> Self {
+    pub fn sky_color(mut self, sky: u32, fog: u32) -> Self {
         self.desc.sky_color = sky;
         self.desc.fog_color = fog;
         self
     }
-    pub fn ambient(mut self, level: u32) -> Self {
+    pub fn ambient_light(mut self, level: u32) -> Self {
         self.desc.ambient = level;
         self
     }
@@ -2177,7 +2761,13 @@ impl Drop for DimensionBuilder<'_> {
         }
         let mut scratch = Vec::new();
         let values = raw_values(&self.components, &mut scratch);
-        let desc = abi::DimensionDesc { name: Str::new(&self.name), cell: cell(self.handle), components: Slice::new(&values), ..self.desc };
+        let desc = abi::DimensionDesc {
+            name: Str::new(&self.name),
+            cell: cell(self.handle),
+            components: Slice::new(&values),
+            daylight: Slice::new(&self.daylight),
+            ..self.desc
+        };
         unsafe { (host().reg_dimension)(self.raw, &desc) }
     }
 }
@@ -2217,7 +2807,7 @@ impl StructureBuilder<'_> {
     }
     /// How far into the ground its bottom layer goes.
     pub fn buried(mut self, blocks: i32) -> Self {
-        self.desc.sink = blocks;
+        self.desc.buried = blocks;
         self
     }
 }
@@ -2257,17 +2847,17 @@ impl TemplateBuilder<'_> {
     }
     /// `block` may name a state (`furnace[lit=true]`) or `air` to clear.
     pub fn key(mut self, c: char, block: &str) -> Self {
-        self.keys.push((c, block_ref(self.ns, block)));
+        self.keys.push((c, qualify_block(self.ns, block)));
         self
     }
-    /// A box of `block` from `from` to `to`, inclusive (a moving structure's deck).
+    /// A box of `block` from `from` to `to`, inclusive (a moving body's deck).
     pub fn fill(mut self, block: &str, from: [i32; 3], to: [i32; 3]) -> Self {
-        self.fills.push((block_ref(self.ns, block), from, to));
+        self.fills.push((qualify_block(self.ns, block), from, to));
         self
     }
 }
 
-fn block_ref(ns: &str, block: &str) -> String {
+fn qualify_block(ns: &str, block: &str) -> String {
     if block == "air" { "core:air".to_string() } else { qualify(ns, block) }
 }
 
@@ -2304,6 +2894,56 @@ impl Drop for TemplateBuilder<'_> {
     }
 }
 
+/// Heights ore veins start at (`OreBuilder::height`).
+#[derive(Clone, Copy, Debug)]
+pub struct Height {
+    min: i32,
+    max: i32,
+    curve: u32,
+    plateau: i32,
+}
+
+impl Height {
+    pub fn uniform(min: i32, max: i32) -> Height {
+        Height { min, max, curve: abi::height_curve::UNIFORM, plateau: 0 }
+    }
+    /// Most in the middle, fewer towards the ends, none past them.
+    pub fn triangle(min: i32, max: i32) -> Height {
+        Height { min, max, curve: abi::height_curve::TRIANGLE, plateau: 0 }
+    }
+    /// At its most over `plateau` blocks in the middle, then falling off.
+    pub fn trapezoid(min: i32, max: i32, plateau: i32) -> Height {
+        Height { min, max, curve: abi::height_curve::TRAPEZOID, plateau }
+    }
+}
+
+/// What an ore vein looks like (`OreBuilder::shape`). Every shape stays within 16 blocks of
+/// where it starts.
+#[derive(Clone, Copy, Debug)]
+pub struct Vein {
+    kind: u32,
+    size: [f32; 2],
+    blocks: u32,
+}
+
+impl Vein {
+    /// A random walk of `blocks` steps, the default.
+    pub fn walk(blocks: u32) -> Vein {
+        Vein { kind: abi::vein_shape::WALK, size: [0.0; 2], blocks }
+    }
+    /// A lump of about `blocks`, like modern vanilla's.
+    pub fn blob(blocks: u32) -> Vein {
+        Vein { kind: abi::vein_shape::BLOB, size: [0.0; 2], blocks }
+    }
+    pub fn sphere(radius: f32) -> Vein {
+        Vein { kind: abi::vein_shape::SPHERE, size: [radius, 0.0], blocks: 0 }
+    }
+    /// Flat and round (clay, gravel and sand under water).
+    pub fn disk(radius: f32, thickness: f32) -> Vein {
+        Vein { kind: abi::vein_shape::DISK, size: [radius, thickness], blocks: 0 }
+    }
+}
+
 pub struct OreBuilder<'a> {
     raw: *mut abi::Registrar,
     ns: &'static str,
@@ -2326,9 +2966,23 @@ impl OreBuilder<'_> {
         self.biome = tag.to_string();
         self
     }
-    /// Heights the veins start at, inclusive.
-    pub fn y(mut self, min: i32, max: i32) -> Self {
-        (self.desc.min_y, self.desc.max_y) = (min, max);
+    /// Heights the veins start at, inclusive, as many at each: `height(Height::uniform(..))`.
+    pub fn y(self, min: i32, max: i32) -> Self {
+        self.height(Height::uniform(min, max))
+    }
+    /// How the veins spread over heights: `Height::triangle(-24, 56)` puts most in the middle,
+    /// like modern vanilla's iron.
+    pub fn height(mut self, h: Height) -> Self {
+        (self.desc.min_y, self.desc.max_y, self.desc.height, self.desc.plateau) = (h.min, h.max, h.curve, h.plateau);
+        self
+    }
+    /// What a vein looks like (a random walk of `size` blocks unless this says otherwise).
+    pub fn shape(mut self, v: Vein) -> Self {
+        self.desc.shape = v.kind;
+        self.desc.shape_size = v.size;
+        if v.blocks > 0 {
+            self.desc.blocks = v.blocks;
+        }
         self
     }
     /// Veins started per cube.
@@ -2337,7 +2991,7 @@ impl OreBuilder<'_> {
         self
     }
     /// Blocks per vein.
-    pub fn size(mut self, n: u32) -> Self {
+    pub fn vein_size(mut self, n: u32) -> Self {
         self.desc.blocks = n;
         self
     }
@@ -2488,7 +3142,7 @@ impl SignalEvent {
         self.args.level as u8
     }
     /// What it was.
-    pub fn was(&self) -> u8 {
+    pub fn level_before(&self) -> u8 {
         self.args.was as u8
     }
     /// It just got power.
@@ -2542,7 +3196,11 @@ impl BlockEvent {
         self.args.state
     }
     /// The neighbor that changed, for `on_neighbor`.
-    pub fn other(&self) -> [i32; 3] {
+    pub fn neighbor(&self) -> [i32; 3] {
+        self.args.other
+    }
+    /// Where the block is on the body, for `on_carried`.
+    pub fn body_pos(&self) -> [i32; 3] {
         self.args.other
     }
     pub fn entity(&self) -> u64 {
@@ -2567,8 +3225,9 @@ impl Use {
     pub fn state(&self) -> u32 {
         self.args.state
     }
-    pub fn face(&self) -> u32 {
-        self.args.face
+    /// Face of the block that was clicked.
+    pub fn face(&self) -> crate::Dir {
+        crate::Dir::from_face(self.args.face)
     }
     pub fn player(&self) -> u64 {
         self.args.player
@@ -2590,7 +3249,7 @@ impl Place {
     pub fn face(&self) -> crate::Dir {
         crate::Dir::from_face(self.args.face)
     }
-    pub fn look(&self) -> [f32; 3] {
+    pub fn look_dir(&self) -> [f32; 3] {
         self.args.look
     }
     /// Just outside where it was clicked, 0..1 from this cell's corner: for a slab, `hit()[1] > 0.5`
@@ -2603,7 +3262,7 @@ impl Place {
         crate::world::state_prop(self.args.placed, prop)
     }
     /// Which way around the player looks.
-    pub fn looking(&self) -> crate::Dir {
+    pub fn look_facing(&self) -> crate::Dir {
         crate::Dir::nearest(self.args.look, crate::Facings::HORIZONTAL)
     }
 }
@@ -2622,11 +3281,19 @@ impl ItemUse {
     pub fn player(&self) -> u64 {
         self.args.player
     }
-    pub fn target(&self) -> Option<([i32; 3], u32)> {
+    pub fn target_block(&self) -> Option<([i32; 3], u32)> {
         (self.args.has_target != 0).then_some((self.args.pos, self.args.face))
     }
     pub fn stack(&self) -> crate::ItemStack {
         self.args.stack
+    }
+    /// The slot of the player's inventory the stack is in.
+    pub fn slot(&self) -> u32 {
+        self.args.slot
+    }
+    /// The used stack as a holder: what a backpack opens its menu on.
+    pub fn holder(&self) -> crate::Holder {
+        crate::Holder::held(self.args.player, self.args.slot)
     }
     /// Replaces the held stack (use count 0 to consume it entirely).
     pub fn set_stack(&mut self, s: crate::ItemStack) {
@@ -2638,7 +3305,7 @@ impl ItemUse {
 ///
 /// ```ignore
 /// r.liquid(&OIL).texture("oil_still").flow_delay(15).drop_off(2).bucket(&OIL_BUCKET, &BUCKET, &TOOLS);
-/// r.liquid_reaction("#hot", "#water").source_block("obsidian").flowing_block("cobblestone").turns_below_into("stone");
+/// r.liquid_reaction("#hot", "#water").source_turns_into("obsidian").flowing_turns_into("cobblestone").below_turns_into("stone");
 /// ```
 pub struct LiquidBuilder<'a> {
     reg: &'a mut Registry,
@@ -2672,7 +3339,7 @@ impl LiquidBuilder<'_> {
         self
     }
     /// How much light it absorbs per block.
-    pub fn opacity(mut self, o: u8) -> Self {
+    pub fn light_opacity(mut self, o: u8) -> Self {
         self.opacity = o;
         self
     }
@@ -2718,10 +3385,10 @@ impl LiquidBuilder<'_> {
         self.desc.temperature = t;
         self
     }
-    /// Sprinting in it does not swim, whatever its temperature. Someone with the
+    /// `false`: sprinting in it does not swim, whatever its temperature. Someone with the
     /// `core:swim_anywhere` attribute still can, for as long as a modifier on it lasts.
-    pub fn not_swimmable(mut self) -> Self {
-        self.desc.swimmable = 0;
+    pub fn swimmable(mut self, swimmable: bool) -> Self {
+        self.desc.swimmable = swimmable as u32;
         self
     }
     /// The fog seen from inside: its color (0xRRGGBB) and how many blocks away it hides
@@ -2768,7 +3435,7 @@ impl Drop for LiquidBuilder<'_> {
             .prop("level", 0..=15)
             .unbreakable()
             .light_rgb(light[0], light[1], light[2])
-            .opacity(opacity)
+            .light_opacity(opacity)
             .drag(drag)
             .no_item()
             .drops_nothing();
@@ -2800,17 +3467,17 @@ pub struct ReactionBuilder<'a> {
 
 impl ReactionBuilder<'_> {
     /// What a source of the liquid becomes.
-    pub fn source_block(mut self, block: &str) -> Self {
+    pub fn source_turns_into(mut self, block: &str) -> Self {
         self.names[2] = qualify(self.reg.ns, block);
         self
     }
     /// What flowing liquid becomes.
-    pub fn flowing_block(mut self, block: &str) -> Self {
+    pub fn flowing_turns_into(mut self, block: &str) -> Self {
         self.names[3] = qualify(self.reg.ns, block);
         self
     }
     /// What the touched liquid becomes when this one flows down into it.
-    pub fn turns_below_into(mut self, block: &str) -> Self {
+    pub fn below_turns_into(mut self, block: &str) -> Self {
         self.names[4] = qualify(self.reg.ns, block);
         self
     }
@@ -2835,15 +3502,15 @@ impl Drop for ReactionBuilder<'_> {
 }
 
 /// Changes how any mod's liquid looks from inside and whether it can be swum in; what you don't
-/// set stays, and its flow is the mod's own. See `Registry::change_liquid`.
-pub struct LiquidChangeBuilder<'a> {
+/// set stays, and its flow is the mod's own. See `Registry::liquid_edit`.
+pub struct LiquidEditBuilder<'a> {
     reg: &'a mut Registry,
     name: String,
     overlay: String,
-    desc: abi::LiquidChange,
+    desc: abi::LiquidEdit,
 }
 
-impl LiquidChangeBuilder<'_> {
+impl LiquidEditBuilder<'_> {
     pub fn swimmable(mut self, on: bool) -> Self {
         self.desc.swimmable = on as u32;
         self
@@ -2868,20 +3535,20 @@ impl LiquidChangeBuilder<'_> {
     }
 }
 
-impl Drop for LiquidChangeBuilder<'_> {
+impl Drop for LiquidEditBuilder<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
             return;
         }
-        let desc = abi::LiquidChange { name: Str::new(&self.name), overlay: Str::new(&self.overlay), ..self.desc };
-        unsafe { (host().reg_liquid_change)(self.reg.raw, &desc) };
+        let desc = abi::LiquidEdit { name: Str::new(&self.name), overlay: Str::new(&self.overlay), ..self.desc };
+        unsafe { (host().reg_liquid_edit)(self.reg.raw, &desc) };
     }
 }
 
 impl Registry {
-    /// Changes another mod's liquid: `r.change_liquid(&WATER).fog(0x204020, 12.0)`.
-    pub fn change_liquid<'a>(&'a mut self, liquid: &Block) -> LiquidChangeBuilder<'a> {
-        LiquidChangeBuilder { name: liquid.name().to_string(), reg: self, overlay: String::new(), desc: abi::LiquidChange::DEFAULT }
+    /// Changes another mod's liquid: `r.liquid_edit(&WATER).fog(0x204020, 12.0)`.
+    pub fn liquid_edit<'a>(&'a mut self, liquid: &Block) -> LiquidEditBuilder<'a> {
+        LiquidEditBuilder { name: liquid.name().to_string(), reg: self, overlay: String::new(), desc: abi::LiquidEdit::DEFAULT }
     }
 
     /// A liquid the engine flows; see `LiquidBuilder`. Defaults are vanilla water's numbers, an
@@ -2929,19 +3596,19 @@ mod order_tests {
 
     #[test]
     fn what_comes_after_keeps_what_came_before() {
-        let d = built(|s| s.holds_liquids().plant());
+        let d = built(|s| s.holds_liquid().plant());
         assert_ne!(d.flags & bf::HOLDS_LIQUID, 0);
         assert_eq!(d.flags & bf::SOLID, 0);
-        assert_eq!(built(|s| s.opacity(2).translucent()).opacity, Some(2));
-        assert_eq!(built(|s| s.translucent().opacity(2)).opacity, Some(2));
-        assert_eq!(built(|s| s.translucent().model_box([0.0; 3], [16.0; 3])).layer, Layer::Translucent);
+        assert_eq!(built(|s| s.light_opacity(2).translucent()).opacity, Some(2));
+        assert_eq!(built(|s| s.translucent().light_opacity(2)).opacity, Some(2));
+        assert_eq!(built(|s| s.translucent().model_box([0.0; 3], [16.0; 3])).layer, RenderLayer::Translucent);
     }
 
     #[test]
     fn a_frame_turns_boxes_and_hitboxes() {
-        let f = crate::signal::Frame::new(crate::Dir::Down, crate::Dir::South);
+        let f = crate::signal::Orientation::new(crate::Dir::Down, crate::Dir::South);
         let d = built(|s| {
-            s.frame(f)
+            s.oriented(f)
                 .model_box([0.0; 3], [16.0, 16.0, 1.0])
                 .hitbox([0.0; 3], [16.0, 16.0, 1.0])
         });

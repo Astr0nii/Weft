@@ -261,13 +261,13 @@ pub unsafe extern "C" fn client_state(c: *mut abi::ClientCtx, out: *mut abi::Cli
             s.pos = p.pos.to_array();
             s.shown = cl.smooth_pos().to_array();
             if let Some(h) = cl.target {
-                (s.target, s.target_frame) = (h.block.to_array(), h.frame);
+                (s.target, s.target_body) = (h.block.to_array(), h.frame);
             }
             s.vel = p.vel.to_array();
             s.yaw = p.yaw;
             s.pitch = p.pitch;
             s.selected = cl.selected as u32;
-            s.mode = cl.mode as u32;
+            s.mode = cl.mode.0 as u32;
             s.health = cl.health;
             s.cubes = cl.world.len() as u32;
             s.pending_meshes = cl.pending_meshes() as u32;
@@ -358,7 +358,7 @@ pub unsafe extern "C" fn client_set_player(c: *mut abi::ClientCtx, control: *con
         if ctl.mask & m::LYING != 0 {
             p.lying = (!ctl.lying.is_nan()).then_some(ctl.lying);
             if p.lying.is_none() {
-                p.pose = crate::world::Pose::Stand;
+                p.pose = crate::world::Pose::STAND;
             }
         }
         if ctl.mask & m::FLY_SPEED != 0 {
@@ -647,7 +647,7 @@ pub unsafe extern "C" fn client_draw(
         let (a, b, text) =
             (DVec3::from_array(*a), DVec3::from_array(*b), crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(args)));
         match kind {
-            abi::gizmo_kind::SCREEN_LABEL => {
+            abi::gizmo_kind::SCREEN_TEXT => {
                 r.mod_screen_text
                     .push((a.x as f32, a.y as f32, text, color, if b.x > 0.0 { b.x as f32 } else { 1.0 }))
             }
@@ -680,7 +680,7 @@ pub unsafe extern "C" fn client_send_packet(c: *mut abi::ClientCtx, name: Str, s
     }
 }
 
-pub unsafe extern "C" fn client_particles(c: *mut abi::ClientCtx, burst: *const abi::ParticleBurst) {
+pub unsafe extern "C" fn client_particle_burst(c: *mut abi::ClientCtx, burst: *const abi::ParticleBurst) {
     unsafe {
         let Some(r) = run(c) else { return };
         if let Some(g) = r.game.as_mut() {

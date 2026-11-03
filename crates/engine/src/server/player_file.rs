@@ -53,7 +53,7 @@ impl Server {
         e.mode = self
             .storage
             .as_ref()
-            .map_or(GameMode::Survival, |s| saved_mode(&s.lock(), &key));
+            .map_or(GameMode::SURVIVAL, |s| saved_mode(&s.lock(), &key));
         (e.yaw, e.pitch) = (look[0], look[1]);
         (e.flying, e.fire) = (flying, fire);
         // The first connection is the one playing on this machine, the world's owner.
@@ -160,7 +160,7 @@ pub(super) fn save_player(s: &Storage, p: &Player, d: &Dim) {
         p.name, c.dims[p.dim as usize].name, e.pos.x, e.pos.y, e.pos.z, e.yaw, e.pitch, e.selected, e.health
     );
     text.push_str(&format!("flying = {}\nfire = {}\n", e.flying as u8, e.fire));
-    if e.mode != GameMode::Survival {
+    if e.mode != GameMode::SURVIVAL {
         text.push_str(&format!("mode = {}\n", e.mode.name()));
     }
     if let Some(inv) = d.entities.inventories.get(&p.entity) {

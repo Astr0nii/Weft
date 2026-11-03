@@ -25,7 +25,7 @@ impl Server {
             send_clock(p, dim, *tick, *tick_rate);
             let viewer = dim
                 .entity(p.entity)
-                .map_or((DVec3::ZERO, GameMode::Survival), |e| (e.pos, e.mode));
+                .map_or((DVec3::ZERO, GameMode::SURVIVAL), |e| (e.pos, e.mode));
             send_entities(c, p, dim, &moved[d], *tick, view.radius, viewer);
             send_own_state(c, p, dim);
             if !p.gizmos.is_empty() {
@@ -226,8 +226,7 @@ fn send_clock(p: &mut Player, dim: &DimSet, tick: u64, rate: u32) {
         p.conn.send(ToClient::TickRate(rate));
     }
     if dim.weather_moved || p.first_sync {
-        p.conn
-            .send(ToClient::Weather { raining: dim.raining, thunder: dim.thunder });
+        p.conn.send(ToClient::Weather(dim.weather as u32));
     }
     if tick % TPS as u64 == 0 || dim.day_moved {
         p.conn
@@ -250,7 +249,9 @@ fn send_entities(
     let mut visible = FxHashSet::default();
     for reg in &dim.regions {
         // Spectators are seen only by other spectators.
-        let shown = |e: &&Entity| e.mode != GameMode::Spectator || me_mode == GameMode::Spectator;
+        // Hidden ones are seen by the hidden alone.
+        let hidden = |m: GameMode| m.has(weft_abi::game_mode_flags::HIDDEN);
+        let shown = |e: &&Entity| !hidden(e.mode) || hidden(me_mode);
         // A dead player is gone for the others (its death animation plays) until it respawns.
         for e in reg
             .entities

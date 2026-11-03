@@ -98,6 +98,15 @@ pub fn with_name(stack: ItemStack, name: Option<&str>) -> ItemStack {
     ItemStack { data: with(stack.data, comp, name.filter(|n| !n.is_empty()).map(str::as_bytes)), ..stack }
 }
 
+/// `stack` with the components of `data` on top of its own.
+pub fn merged_data(stack: ItemStack, data: u32) -> ItemStack {
+    let mut comps: Vec<(u32, Box<[u8]>)> = get(stack.data).to_vec();
+    comps.extend(get(data).iter().cloned());
+    comps.reverse();
+    comps.sort_by_key(|e| e.0);
+    ItemStack { data: intern(comps), ..stack }
+}
+
 pub fn with_damage(stack: ItemStack, damage: u32) -> ItemStack {
     let Some(comp) = crate::content::try_content().and_then(|c| c.ids.damage) else { return stack };
     let bytes = damage.to_le_bytes();
@@ -139,8 +148,45 @@ pub fn to_names(data: u32) -> Vec<(String, Vec<u8>)> {
     let Some(c) = crate::content::try_content() else { return Vec::new() };
     get(data)
         .iter()
-        .map(|(id, b)| (c.components.names[*id as usize].clone(), b.to_vec()))
+        .map(|(id, b)| {
+            let bytes = if Some(*id) == c.ids.contents { contents_to_names(c, b) } else { b.to_vec() };
+            (c.components.names[*id as usize].clone(), bytes)
+        })
         .collect()
+}
+
+/// `contents` holds stacks by item id and data handle, both per process: written out by name.
+fn contents_to_names(c: &crate::content::Content, b: &[u8]) -> Vec<u8> {
+    use crate::net::codec::{W, Wire};
+    let mut w = W(Vec::new());
+    let n = b.len() / 12;
+    (n as u32).put(&mut w);
+    for i in 0..n {
+        let at = |k: usize| u32::from_le_bytes(b[i * 12 + k..i * 12 + k + 4].try_into().unwrap());
+        let (item, count, data) = (at(0), at(4), at(8));
+        c.items
+            .get(item as usize)
+            .filter(|_| count > 0 && item != 0)
+            .map_or(String::new(), |d| d.name.clone())
+            .put(&mut w);
+        count.put(&mut w);
+        put_named(&mut w, data);
+    }
+    w.0
+}
+
+fn contents_from_names(c: &crate::content::Content, b: &[u8]) -> Vec<u8> {
+    use crate::net::codec::{R, Wire};
+    let mut r = R(b);
+    let mut out = Vec::new();
+    let Some(n) = u32::get(&mut r) else { return out };
+    for _ in 0..n.min(1 << 12) {
+        let (Some(name), Some(count), Some(data)) = (String::get(&mut r), u32::get(&mut r), get_named(&mut r)) else { break };
+        let item = c.item_names.get(&name).copied().filter(|_| count > 0);
+        let (item, count, data) = item.map_or((0, 0, 0), |i| (i, count, data));
+        out.extend([item, count, data].iter().flat_map(|v| v.to_le_bytes()));
+    }
+    out
 }
 
 /// `amount` more damage, nothing left when that uses it up; what has no durability stays.
@@ -190,7 +236,11 @@ pub fn from_names(list: Vec<(String, Vec<u8>)>) -> u32 {
     let Some(c) = crate::content::try_content() else { return 0 };
     intern(
         list.into_iter()
-            .filter_map(|(name, b)| c.components.id(&name).map(|id| (id, b.into_boxed_slice())))
+            .filter_map(|(name, b)| {
+                let id = c.components.id(&name)?;
+                let b = if Some(id) == c.ids.contents { contents_from_names(c, &b) } else { b };
+                Some((id, b.into_boxed_slice()))
+            })
             .collect(),
     )
 }

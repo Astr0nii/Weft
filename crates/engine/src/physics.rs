@@ -11,16 +11,13 @@ use crate::content::Content;
 /// alike, from its width, height and eyes standing: crouching lowers them like the player's 1.8 to
 /// 1.5 and 1.62 to 1.27, swimming to 0.6 and 0.4, whatever size it has.
 pub fn posed(size: [f32; 3], pose: crate::world::Pose) -> (f64, f64, f64) {
-    use crate::world::Pose;
     let r = |v: f64| (v * 1e6).round() / 1e6;
     let [width, height, eye] = size.map(f64::from);
-    let (height, eye) = match pose {
-        Pose::Stand => (height, eye),
-        Pose::Crouch => (r(height * 1.5 / 1.8), r(eye * 1.27 / 1.62)),
-        Pose::Swim | Pose::Crawl => (r(height * 0.6 / 1.8), r(eye * 0.4 / 1.62)),
-        Pose::Sleep => (r(height * 0.2 / 1.8), r(eye * 0.45 / 1.62)),
-    };
-    (width / 2.0, height, eye)
+    let d = pose.def();
+    if d.height == 1.0 && d.eye == 1.0 {
+        return (width / 2.0, height, eye);
+    }
+    (width / 2.0, r(height * d.height), r(eye * d.eye))
 }
 
 /// Where a look goes, radians: yaw 0 is north (-Z), pitch up.
@@ -942,11 +939,11 @@ mod knock_tests {
     #[test]
     fn a_pose_scales_with_the_size() {
         use crate::world::Pose;
-        let (hw, h, eye) = posed([0.6, 1.8, 1.62], Pose::Stand);
+        let (hw, h, eye) = posed([0.6, 1.8, 1.62], Pose::STAND);
         assert!((hw - 0.3).abs() < 1e-5 && (h - 1.8).abs() < 1e-5 && (eye - 1.62).abs() < 1e-5);
-        let (_, h, eye) = posed([0.6, 1.8, 1.62], Pose::Crouch);
+        let (_, h, eye) = posed([0.6, 1.8, 1.62], Pose::CROUCH);
         assert!((h - 1.5).abs() < 1e-5 && (eye - 1.27).abs() < 1e-5);
-        let (_, h, _) = posed([1.2, 3.6, 3.24], Pose::Crouch);
+        let (_, h, _) = posed([1.2, 3.6, 3.24], Pose::CROUCH);
         assert!((h - 3.0).abs() < 1e-5);
     }
 }

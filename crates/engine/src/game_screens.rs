@@ -118,7 +118,7 @@ impl Screen for MenuScreen {
         ui.root_style(Style::default().stretch());
         let creative = cx
             .client
-            .is_some_and(|cl| cl.mode == crate::world::GameMode::Creative)
+            .is_some_and(|cl| cl.mode.has(weft_abi::game_mode_flags::CREATIVE_INVENTORY))
             && c.game.player_menu == Some(self.kind);
         ui.panel("overlay", Style::default().grow().center(), |ui| {
             ui.container(Style::row().gap(4.0).align(crate::ui::Align::Start), |ui| {

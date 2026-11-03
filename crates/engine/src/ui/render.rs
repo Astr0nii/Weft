@@ -1052,7 +1052,7 @@ impl UiRenderer {
                     // A value counts halves of an icon, as vanilla's bars do.
                     let v = *value / 2.0 - i as f32;
                     let slot = if matches!(*dir, ui_dir::LEFT | ui_dir::UP) { count - 1 - i } else { i } as f32 * 8.0 * scale;
-                    let jump = if *shake && *value <= 4.0 { (weft_noise::hash(0, tick, i as i64, 0) & 1) as f32 } else { 0.0 };
+                    let jump = if shake.is_some_and(|s| *value <= s) { (weft_noise::hash(0, tick, i as i64, 0) & 1) as f32 } else { 0.0 };
                     let (dx, dy) = if matches!(*dir, ui_dir::UP | ui_dir::DOWN) { (0.0, slot) } else { (slot, 0.0) };
                     let rr = Rect { x: r.x + dx, y: r.y + dy + jump * scale, w: 9.0 * scale, h: 9.0 * scale };
                     if let Some((idx, _, _)) = empty {

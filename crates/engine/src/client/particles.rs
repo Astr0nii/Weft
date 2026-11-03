@@ -286,9 +286,9 @@ impl Particles {
         let side = |s: &crate::content::StateInfo| {
             let d = looks.drawn(b.block as u32, s);
             match d.boxes.first() {
-                Some(b) if d.model == weft_abi::Model::Boxes => b.textures[1],
+                Some(b) if d.model == weft_abi::BlockModel::Boxes => b.textures[1],
                 // A piece of wire shows its dot, red: the picture has no color of its own.
-                _ if d.model == weft_abi::Model::Wire => d.textures[3],
+                _ if d.model == weft_abi::BlockModel::Wire => d.textures[3],
                 _ => d.textures[1],
             }
         };
@@ -299,7 +299,7 @@ impl Particles {
         let layer = dust.map_or(0, side);
         // Only if the side it shows is a tinted one: grass blocks' sides are dirt with a tinted
         // overlay, and their dust stays brown like vanilla's.
-        let tint = if dust.is_some_and(|s| s.model == weft_abi::Model::Wire) {
+        let tint = if dust.is_some_and(|s| s.model == weft_abi::BlockModel::Wire) {
             0xC8_1414
         } else {
             dust.filter(|s| s.tint != 0 && s.tint_faces & 2 != 0)

@@ -234,7 +234,7 @@ fn direct(s: &Signal, dir: u8) -> u8 {
 /// What a device gives a block in direction `dir`, strongly: its power goes on through that block.
 fn strong(s: &Signal, dir: u8) -> u8 {
     let reaches = match s.kind {
-        sk::SOURCE => dir == s.attach,
+        sk::SWITCH => dir == s.attach,
         sk::TORCH | sk::REPEATER | sk::COMPARATOR | sk::LOGIC => dir == s.front,
         sk::OBSERVER => dir ^ 1 == s.front,
         _ => false,
@@ -243,7 +243,7 @@ fn strong(s: &Signal, dir: u8) -> u8 {
 }
 
 fn can_give(s: &Signal) -> bool {
-    matches!(s.kind, sk::SOURCE | sk::TORCH | sk::REPEATER | sk::COMPARATOR | sk::LOGIC | sk::OBSERVER)
+    matches!(s.kind, sk::SWITCH | sk::TORCH | sk::REPEATER | sk::COMPARATOR | sk::LOGIC | sk::OBSERVER)
 }
 
 use wire::is_device;
@@ -1618,6 +1618,24 @@ impl Dim {
         Some((moved, broken))
     }
 
+    /// What a piston in front of `from` facing `dir` would push, moved one block that way as a
+    /// body over a piston's time, then put down: for a mod's own movers. False if it can't go.
+    pub fn push_blocks(&mut self, c: &'static Content, from: IVec3, dir: u8) -> bool {
+        let Some(&step) = DIRS.get(dir as usize) else { return false };
+        let Some((moved, broken)) = self.gather_move(c, from - step, None, from, step) else { return false };
+        if moved.is_empty() {
+            return false;
+        }
+        self.break_for_body(c, broken);
+        let id = self.lift_for_mod(c, from, &moved);
+        let Some(e) = self.entities.get_mut(id) else { return false };
+        e.motion = super::entity::Motion::To { to: e.pos + step.as_dvec3(), left: MOVE_TICKS as u16 };
+        if let Some(b) = self.bodies.get_mut(&id) {
+            b.stopping = true;
+        }
+        true
+    }
+
     fn push_plan(&mut self, c: &Content, p: IVec3, extend: bool) -> Option<PushPlan> {
         let state = self.get(p)?;
         let s = c.states[state as usize].signal;
@@ -1799,7 +1817,7 @@ impl Dim {
         for &b in &plan.broken {
             if let Some(there) = self.get(b) {
                 if c.states[there as usize].liquid.is_none() {
-                    self.drop_block_loot(c, b, there, abi::ItemStack::EMPTY, false, None);
+                    self.drop_block_loot(c, b, there, abi::ItemStack::EMPTY, false, 0);
                 }
                 self.set(c, b, AIR);
             }
@@ -1991,7 +2009,7 @@ impl Dim {
             return false;
         }
         for _ in 0..(mask ^ left).count_ones() {
-            self.drop_block_loot(c, p, state, abi::ItemStack::EMPTY, false, None);
+            self.drop_block_loot(c, p, state, abi::ItemStack::EMPTY, false, 0);
         }
         self.block_dust(c, p, state);
         self.set(c, p, if left == 0 { AIR } else { c.block_of(state).first_state + left as u32 });

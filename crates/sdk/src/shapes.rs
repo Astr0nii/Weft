@@ -10,7 +10,7 @@ use crate::world::state_prop;
 /// How neighboring stairs find each other: every stair has it.
 static STAIRS: Tag = Tag::named("stairs");
 
-fn step(pos: [i32; 3], side: Dir) -> [i32; 3] {
+fn pos_step(pos: [i32; 3], side: Dir) -> [i32; 3] {
     let o = side.offset();
     [pos[0] + o[0], pos[1] + o[1], pos[2] + o[2]]
 }
@@ -38,18 +38,18 @@ fn upper_half(p: &Place) -> bool {
 fn stair_shape(w: &crate::World, pos: [i32; 3]) -> &'static str {
     let (Some(facing), Some(half)) = (w.prop(pos, "facing").and_then(Dir::from_name), w.prop(pos, "half")) else { return "straight" };
     let stair_at = |at: [i32; 3]| {
-        let s = w.get(at);
+        let s = w.block(at);
         (STAIRS.on_block(s) && state_prop(s, "half") == Some(half))
             .then(|| state_prop(s, "facing").and_then(Dir::from_name))
             .flatten()
     };
     let across = |side: Dir| side != facing && side != facing.opposite();
     // Nothing the same way on that side to keep in line with.
-    let free = |side: Dir| stair_at(step(pos, side)) != Some(facing);
-    if let Some(back) = stair_at(step(pos, facing)).filter(|&b| across(b) && free(b.opposite())) {
+    let free = |side: Dir| stair_at(pos_step(pos, side)) != Some(facing);
+    if let Some(back) = stair_at(pos_step(pos, facing)).filter(|&b| across(b) && free(b.opposite())) {
         return if back == facing.counter_clockwise() { "outer_left" } else { "outer_right" };
     }
-    if let Some(front) = stair_at(step(pos, facing.opposite())).filter(|&f| across(f) && free(f)) {
+    if let Some(front) = stair_at(pos_step(pos, facing.opposite())).filter(|&f| across(f) && free(f)) {
         return if front == facing.counter_clockwise() { "inner_left" } else { "inner_right" };
     }
     "straight"
@@ -64,7 +64,7 @@ impl Registry {
     /// `r.shaped(C, "#wall/{m}", 6, &["###", "###"], &[('#', "#wall_of/{m}")])`.
     pub fn shapes_of<'a>(&'a mut self, name: &str, sources: &str, suffix: &str) -> BlockBuilder<'a> {
         self.block(Block::generated(name.to_string()))
-            .made_of(sources, suffix)
+            .shapes_of(sources, suffix)
     }
 
     /// Stairs of `sources` (see `shapes_of`): `<name>_stairs`, turned the way the player looks,
@@ -72,8 +72,8 @@ impl Registry {
     pub fn stairs<'a>(&'a mut self, sources: &str) -> BlockBuilder<'a> {
         self.shapes_of("stairs", sources, "_stairs")
             .tag("stairs")
-            .redstone_blocker()
-            .holds_liquids()
+            .signal_blocker()
+            .holds_liquid()
             .prop("facing", ["north", "east", "south", "west"])
             .prop("half", ["bottom", "top"])
             .prop("shape", ["straight", "inner_left", "inner_right", "outer_left", "outer_right"])
@@ -94,16 +94,10 @@ impl Registry {
                 s
             })
             .placement(|p, props| {
-                props.set("facing", p.looking().name());
+                props.set("facing", p.look_facing().name());
                 props.set("half", if upper_half(p) { "top" } else { "bottom" });
             })
-            .on_neighbor(|e| {
-                let (w, pos) = (e.world(), e.pos());
-                let shape = stair_shape(&w, pos);
-                if w.prop(pos, "shape") != Some(shape) {
-                    w.set_prop(pos, "shape", shape);
-                }
-            })
+            .derived("shape", |n| stair_shape(&n.world(), n.pos()))
     }
 
     /// Slabs of `sources` (see `shapes_of`): `<name>_slab`, in the half of the block clicked. The
@@ -115,12 +109,12 @@ impl Registry {
             .states(|p: &Props, s| match p.get("type") {
                 "bottom" => s
                     .model_box([0.0, 0.0, 0.0], [16.0, 8.0, 16.0])
-                    .redstone_blocker()
-                    .holds_liquids(),
+                    .signal_blocker()
+                    .holds_liquid(),
                 "top" => s
                     .model_box([0.0, 8.0, 0.0], [16.0, 16.0, 16.0])
-                    .redstone_blocker()
-                    .holds_liquids(),
+                    .signal_blocker()
+                    .holds_liquid(),
                 _ => s.loot_rolls(2),
             })
             .placement(|p, props| props.set("type", if upper_half(p) { "top" } else { "bottom" }))
@@ -143,8 +137,8 @@ impl Registry {
                 side => {
                     let (x, z) = towards(Dir::from_name(side).unwrap_or(Dir::North), None);
                     s.model_box([x[0], 0.0, z[0]], [x[1], 16.0, z[1]])
-                        .redstone_blocker()
-                        .holds_liquids()
+                        .signal_blocker()
+                        .holds_liquid()
                 }
             })
             .placement(|p, props| {

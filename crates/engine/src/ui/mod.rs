@@ -230,14 +230,14 @@ pub enum Kind {
         dir: u32,
     },
     /// `count` icons showing `value` in half steps (hearts): textures `gui/<class>_full`, `_half`, `_empty`.
-    /// `shake`: at 4 or less they jump about, like hearts near the end.
+    /// `shake`: at this or less they jump about, like hearts near the end.
     Icons {
         class: String,
         count: u32,
         bind: FloatBind,
         value: f32,
         dir: u32,
-        shake: bool,
+        shake: Option<f32>,
     },
     /// Single-line text field; `caret` is a char index.
     Input {

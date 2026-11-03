@@ -79,7 +79,7 @@ What the part of a picture looks like is up to the files next to it:
 - **`<picture>_<frame>`:** when a number is over 1 they are frames of one turn, the share picks the nearest. `clock_0.png` to `clock_23.png` is a clock: 0.5 is `clock_12`.
 - **`<stem>_half`** is vanilla's name for the half of `<stem>_full`, so `food_full` and `food_half` work as they are.
 
-The same goes for the HUD's bars (`ui.icons(..)`, with `.rtl()` or `.dir(abi::ui_dir::UP)`) and for the fill of a progress bar. They have a direction of their own instead of a mirrored picture.
+The same goes for the HUD's bars (`ui.icons(..)`, with `.from_right()` or `.dir(abi::ui_dir::UP)`) and for the fill of a progress bar. They have a direction of their own instead of a mirrored picture.
 
 ## Item tooltips
 Hovering an item or block shows its name, and `<name key>.tooltip` under it if the language has one.\
@@ -128,7 +128,7 @@ Another mod adds its line to the same tag without replacing it, as with tooltips
 - **Settings:** `config.<mod>.<key>.tooltip` is shown over the setting's row in Mod Settings. Settings that the
   server overrides or that need a restart get a note added by the engine.
 - **Creative tabs:** show their name from `tab.<mod>.<name>`, or the mod's display name when there is no key.
-- **Your own screens:** any part with a style takes one, `S::col().tooltip("examplemod.hint")`.
+- **Your own screens:** any part with a style takes one, `S::column().tooltip("examplemod.hint")`.
 - **Slots:** a slot group's `tooltip(key)` shows over its empty slots ([machines guide](machines.md#creating-a-machine)).
 
 ## Adding from outside

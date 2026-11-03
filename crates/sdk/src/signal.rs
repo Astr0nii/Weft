@@ -3,35 +3,35 @@
 
 use crate::{Dir, abi};
 
-fn add(a: [i32; 3], b: [i32; 3], k: i32) -> [i32; 3] {
+fn pos_add(a: [i32; 3], b: [i32; 3], k: i32) -> [i32; 3] {
     [a[0] + b[0] * k, a[1] + b[1] * k, a[2] + b[2] * k]
 }
 
 /// How a block is turned, from a floor with its front to the north.
 #[derive(Clone, Copy)]
-pub struct Frame {
+pub struct Orientation {
     east: [i32; 3],
     up: [i32; 3],
     north: [i32; 3],
 }
 
-impl Frame {
+impl Orientation {
     /// `attach`: where what holds it is, `front`: where it faces, along that. One that can't be
     /// (front along attach) faces another way.
-    pub fn new(attach: Dir, front: Dir) -> Frame {
+    pub fn new(attach: Dir, front: Dir) -> Orientation {
         let (attach, front) = if attach.face() / 2 == front.face() / 2 {
             (attach, if attach.horizontal() { Dir::Up } else { Dir::North })
         } else {
             (attach, front)
         };
         let (up, n) = (attach.opposite().offset(), front.offset());
-        Frame { east: [n[1] * up[2] - n[2] * up[1], n[2] * up[0] - n[0] * up[2], n[0] * up[1] - n[1] * up[0]], up, north: n }
+        Orientation { east: [n[1] * up[2] - n[2] * up[1], n[2] * up[0] - n[0] * up[2], n[0] * up[1] - n[1] * up[0]], up, north: n }
     }
 
     /// For a torch on a wall: its own west toward what holds it, its top up.
-    pub fn leaning(attach: Dir) -> Frame {
+    pub fn leaning(attach: Dir) -> Orientation {
         let east = attach.opposite().offset();
-        Frame { east, up: [0, 1, 0], north: [east[2], 0, -east[0]] }
+        Orientation { east, up: [0, 1, 0], north: [east[2], 0, -east[0]] }
     }
 
     /// A point in texels, in the world's axes.
@@ -52,7 +52,7 @@ impl Frame {
 
     /// A vector in the block's own axes.
     fn vector(&self, v: [i32; 3]) -> [i32; 3] {
-        add(add(add([0; 3], self.east, v[0]), self.up, v[1]), self.north, -v[2])
+        pos_add(pos_add(pos_add([0; 3], self.east, v[0]), self.up, v[1]), self.north, -v[2])
     }
 
     /// A point in texels, 0..16.
@@ -102,7 +102,7 @@ impl Frame {
 }
 
 /// The direction along a face closest to where a player looks.
-pub(crate) fn along(attach: Dir, look: [f32; 3]) -> Dir {
+pub(crate) fn dir_along_face(attach: Dir, look: [f32; 3]) -> Dir {
     let mut best = (Dir::North, -1.0f32);
     for d in Dir::ALL {
         if d.face() / 2 != attach.face() / 2 {
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn the_floor_to_the_north_is_as_it_is() {
-        let f = Frame::new(Dir::Down, Dir::North);
+        let f = Orientation::new(Dir::Down, Dir::North);
         let (lo, hi, faces, turn) = f.place([1.0, 0.0, 2.0], [3.0, 4.0, 5.0], [0, 1, 2, 3, 4, 5]);
         assert_eq!((lo, hi), ([1.0, 0.0, 2.0], [3.0, 4.0, 5.0]));
         assert_eq!(faces, [0, 1, 2, 3, 4, 5]);
@@ -136,7 +136,7 @@ mod tests {
                 if attach.face() / 2 == front.face() / 2 {
                     continue;
                 }
-                let f = Frame::new(attach, front);
+                let f = Orientation::new(attach, front);
                 let (lo, hi, faces, _) = f.place([0.0, 0.0, 0.0], [16.0, 2.0, 16.0], [0, 1, 2, 3, 4, 5]);
                 // The slab lies against what holds it.
                 let axis = attach.face() as usize / 2;
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn along_stays_on_the_face() {
-        assert_eq!(along(Dir::Down, [0.0, -1.0, 0.1]), Dir::South);
-        assert_eq!(along(Dir::West, [-1.0, 0.9, 0.1]), Dir::Up);
+        assert_eq!(dir_along_face(Dir::Down, [0.0, -1.0, 0.1]), Dir::South);
+        assert_eq!(dir_along_face(Dir::West, [-1.0, 0.9, 0.1]), Dir::Up);
     }
 }

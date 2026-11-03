@@ -144,7 +144,7 @@ impl D {
             align: abi::ui_align::STRETCH,
             gap: 4.0,
             self_align: abi::ui_align::STRETCH,
-            ..node(k::PARTS)
+            ..node(k::SCREEN_PARTS)
         });
     }
 }

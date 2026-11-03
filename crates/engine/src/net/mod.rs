@@ -169,11 +169,10 @@ impl Shown {
         Shown::new(weft_abi::show_place::CHAT, msg)
     }
 
-    /// What its place is (`hud::PLACES`).
+    /// What its place is (`hud::places`).
     pub fn look(&self) -> &'static crate::hud::Place {
-        crate::hud::PLACES
-            .get(self.place as usize)
-            .unwrap_or(&crate::hud::PLACES[0])
+        let all = crate::hud::places();
+        all.get(self.place as usize).unwrap_or(&all[0])
     }
 
     /// With what was left open as its place has it.
@@ -324,9 +323,10 @@ messages! {
         /// Holding the use button started on an item that takes this many ticks, or it ended.
         /// Ticks it takes, and whether in the other hand.
         Using(Option<(u32, bool)>),
-        Weather { raining: bool, thunder: bool },
-        /// A white flash on an entity.
-        Flash(u64),
+        /// The dimension's weather now (`registry::WeatherDef` by id).
+        Weather(u32),
+
+
         /// Someone else's arm swings: a hit, a use, mining.
         /// Who, and whether with the other hand.
         EntitySwing { id: u64, off: bool },

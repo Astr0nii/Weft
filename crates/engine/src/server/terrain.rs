@@ -352,11 +352,11 @@ pub fn build(
                     d.features.push(o.feature);
                 }
             }
-            op::REMOVE_FEATURE => match d.features.iter().position(|f| f.name == o.anchor) {
+            op::FEATURE_REMOVE => match d.features.iter().position(|f| f.name == o.anchor) {
                 Some(i) => drop(d.features.remove(i)),
                 None => missing("feature"),
             },
-            op::MASK_FEATURE => match d.features.iter_mut().find(|f| f.name == o.anchor) {
+            op::FEATURE_MASK => match d.features.iter_mut().find(|f| f.name == o.anchor) {
                 Some(f) if f.mask.is_empty() => f.mask = o.feature.mask,
                 Some(f) => {
                     f.mask.extend(o.feature.mask);
@@ -377,7 +377,7 @@ pub fn build(
                 Some(_) => {}
                 None => missing("biome rule"),
             },
-            op::REPLACE_BIOME => match rule_at(&d.rules) {
+            op::BIOME_REPLACE => match rule_at(&d.rules) {
                 Some(i) => {
                     let old = d.rules.remove(i);
                     if new_rule(&d.rules, &o.rule, errors) {
@@ -388,16 +388,16 @@ pub fn build(
                 }
                 None => missing("biome rule"),
             },
-            op::REMOVE_BIOME => match rule_at(&d.rules) {
+            op::BIOME_REMOVE => match rule_at(&d.rules) {
                 Some(i) => drop(d.rules.remove(i)),
                 None => missing("biome rule"),
             },
-            op::EDIT_BIOME => match rule_at(&d.rules) {
+            op::BIOME_EDIT => match rule_at(&d.rules) {
                 Some(i) => d.rules[i].apply(&o.rule),
                 None => missing("biome rule"),
             },
             op::CAVE_BIOME => d.cave_biomes.push((o.rule.biome, o.level, o.size, o.value)),
-            op::REMOVE_CAVE_BIOME => match d.cave_biomes.iter().position(|c| c.0 == o.anchor) {
+            op::CAVE_BIOME_REMOVE => match d.cave_biomes.iter().position(|c| c.0 == o.anchor) {
                 Some(i) => drop(d.cave_biomes.remove(i)),
                 None => missing("cave biome"),
             },
@@ -1105,8 +1105,8 @@ mod tests {
         assert_eq!(built(ops), (vec![2, 1, 3, 0], vec![]));
 
         let mut ops = base();
-        ops.push(raw(1, op::REPLACE_BIOME, "a:desert", Some(("", "b:dunes"))));
-        ops.push(raw(1, op::REMOVE_BIOME, "a:plains", None));
+        ops.push(raw(1, op::BIOME_REPLACE, "a:desert", Some(("", "b:dunes"))));
+        ops.push(raw(1, op::BIOME_REMOVE, "a:plains", None));
         assert_eq!(built(ops).0, vec![3]);
 
         // A second rule of the same biome needs a name of its own.
@@ -1124,7 +1124,7 @@ mod tests {
 
         // Only the given fields change.
         let mut ops = base();
-        let mut edit = raw(1, op::EDIT_BIOME, "a:desert", None);
+        let mut edit = raw(1, op::BIOME_EDIT, "a:desert", None);
         edit.rule.fields = rf::HEIGHT;
         edit.rule.height = (0, 10);
         ops.push(edit);

@@ -90,7 +90,7 @@ impl Drop for ParticleBuilder<'_> {
         let textures: Vec<Str> = self.textures.iter().map(|t| Str::new(t)).collect();
         let desc = abi::ParticleDesc {
             name: Str::new(&self.name),
-            cell: self.handle.map_or(std::ptr::null(), |h| h.cell()),
+            cell: self.handle.map_or(std::ptr::null(), |h| h.id_cell()),
             textures: Slice::new(&textures),
             shader: Str::new(&self.shader),
             ..self.desc
@@ -129,11 +129,11 @@ impl SkyBuilder<'_> {
         self
     }
     /// Stays where its phase, tilt and heading put it.
-    pub fn still(self) -> Self {
+    pub fn orbit_still(self) -> Self {
         self.orbit(0.0)
     }
     /// Back to following the dimension's day, for changing another mod's object.
-    pub fn follow_day(self) -> Self {
+    pub fn orbit_day(self) -> Self {
         self.orbit(f32::INFINITY)
     }
     /// Where on its orbit it starts, in turns: 0 rising in the east, 0.25 overhead, 0.5 setting.
@@ -189,12 +189,12 @@ impl SkyBuilder<'_> {
     }
     /// Adds its light to what is behind it. Without it, it covers what is behind it, so a moon
     /// with an opaque picture hides any other that passes behind it.
-    pub fn additive(mut self) -> Self {
+    pub fn blend_add(mut self) -> Self {
         self.desc.additive = 1;
         self
     }
-    /// Covers what is behind it, for an object someone made `additive`.
-    pub fn covers(mut self) -> Self {
+    /// Covers what is behind it, for an object someone made `blend_add`.
+    pub fn blend_cover(mut self) -> Self {
         self.desc.additive = 0;
         self
     }
@@ -288,7 +288,7 @@ impl Registry {
     /// Takes something out of one dimension's sky, your own or another mod's (that mod has to load
     /// first: depend on it). The base game puts its sun, moon and stars in every dimension of its
     /// own, each to be taken out separately.
-    pub fn remove_sky(&mut self, dimension: &Dimension, object: &SkyObject) {
+    pub fn sky_remove(&mut self, dimension: &Dimension, object: &SkyObject) {
         let mut b = self.sky_object(dimension, object, u32::MAX);
         b.desc.remove = 1;
     }
@@ -310,9 +310,38 @@ impl Registry {
 
     /// `{if:<ns>:<name>}...{/if}` in any text shows its part while `f` says so; asked on the
     /// client every frame such a text is on screen.
-    pub fn text_condition(&mut self, condition: &TextCondition, f: impl Fn(&ClientView) -> bool + Send + Sync + 'static) {
-        let cb = callback(move |a: &mut abi::TextConditionArgs| a.result = f(&ClientView::from_raw(a.client)) as u32);
-        unsafe { (host().reg_text_condition)(self.raw, Str::new(condition.name()), cb) }
+    pub fn text_condition(&mut self, condition: &'static TextCondition, f: impl Fn(&ClientView) -> bool + Send + Sync + 'static) {
+        self.condition(condition, move |c| c.client().is_some_and(|v| f(&v)));
+    }
+
+    /// A condition music (`.when`), text (`{if:<ns>:<name>}`), loot (`Cond::Condition`) and
+    /// spawning (`.when`) can ask. `f` is answered on whichever side asks: on the server
+    /// (`c.world()`) for loot and spawning, on the client (`c.client()`) for music and text.
+    pub fn condition(&mut self, condition: &'static crate::Condition, f: impl Fn(&ConditionCtx) -> bool + Send + Sync + 'static) {
+        let cb = callback(move |a: &mut abi::ConditionArgs| a.result = f(&ConditionCtx(*a)) as u32);
+        unsafe { (host().reg_condition)(self.raw, Str::new(condition.name()), condition.id_cell(), cb) }
+    }
+}
+
+/// What a condition is asked about.
+pub struct ConditionCtx(abi::ConditionArgs);
+
+impl ConditionCtx {
+    /// The server's world, when the server asks (loot, spawning).
+    pub fn world(&self) -> Option<World> {
+        (!self.0.world.is_null()).then(|| World::from_raw(self.0.world))
+    }
+    /// The client, when it asks (music, text): its own player.
+    pub fn client(&self) -> Option<ClientView> {
+        (!self.0.client.is_null()).then(|| ClientView::from_raw(self.0.client))
+    }
+    /// The spot, the block, the player.
+    pub fn pos(&self) -> [f64; 3] {
+        self.0.pos
+    }
+    /// Who it is about (the killer or breaker for loot), 0 for nobody.
+    pub fn entity(&self) -> u64 {
+        self.0.entity
     }
 }
 
@@ -325,9 +354,16 @@ enum Target {
 pub struct Burst {
     target: Target,
     burst: abi::ParticleBurst,
+    area: Option<crate::Shape>,
 }
 
 impl Burst {
+    /// The particles start anywhere inside `shape` (a ring, a shell, a magic circle) instead
+    /// of a box around the position; `outward` sends them away from the position.
+    pub fn area(mut self, shape: &crate::Shape) -> Self {
+        self.area = Some(shape.clone());
+        self
+    }
     pub fn count(mut self, n: u32) -> Self {
         self.burst.count = n;
         self
@@ -347,7 +383,7 @@ impl Burst {
         self
     }
     /// Random extra velocity up to this, in any direction.
-    pub fn speed(mut self, s: f32) -> Self {
+    pub fn random_speed(mut self, s: f32) -> Self {
         self.burst.speed = s;
         self
     }
@@ -368,15 +404,46 @@ impl Drop for Burst {
         if std::thread::panicking() || self.burst.kind == u32::MAX {
             return;
         }
-        match &self.target {
-            Target::World(w) => unsafe { (host().particles)(w.raw(), &self.burst) },
-            Target::Client(c) => unsafe { (host().client_particles)(c.raw(), &self.burst) },
+        let send = |b: &abi::ParticleBurst| match &self.target {
+            Target::World(w) => unsafe { (host().particle_burst)(w.raw(), b) },
+            Target::Client(c) => unsafe { (host().client_particle_burst)(c.raw(), b) },
+        };
+        let Some(area) = &self.area else { return send(&self.burst) };
+        // One particle per point inside, found by trying points in the box around the shape.
+        let (lo, hi) = area.bounds();
+        let mut seed =
+            self.burst.pos[0].to_bits() ^ self.burst.pos[1].to_bits().rotate_left(21) ^ self.burst.pos[2].to_bits().rotate_left(42);
+        let mut next = || {
+            seed = abi::fnv(&seed.to_le_bytes());
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let c = self.burst.pos;
+        let speed = (self.burst.velocity.iter().map(|v| v * v).sum::<f32>())
+            .sqrt()
+            .max(1.0);
+        let mut placed = 0;
+        for _ in 0..self.burst.count.saturating_mul(20).min(20_000) {
+            if placed >= self.burst.count {
+                break;
+            }
+            let p = [0, 1, 2].map(|a| lo[a] + (hi[a] - lo[a]) * next());
+            if !area.contains(p) {
+                continue;
+            }
+            let mut one = abi::ParticleBurst { pos: p, count: 1, spread: [0.0; 3], outward: 0, ..self.burst };
+            if self.burst.outward != 0 {
+                let d = [0, 1, 2].map(|a| (p[a] - c[a]) as f32);
+                let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+                one.velocity = d.map(|x| x / len * speed);
+            }
+            send(&one);
+            placed += 1;
         }
     }
 }
 
 fn burst(target: Target, kind: &Particle, pos: [f64; 3]) -> Burst {
-    Burst { target, burst: abi::ParticleBurst { kind: kind.id(), pos, ..abi::ParticleBurst::DEFAULT } }
+    Burst { target, burst: abi::ParticleBurst { kind: kind.id(), pos, ..abi::ParticleBurst::DEFAULT }, area: None }
 }
 
 impl World {
@@ -395,7 +462,7 @@ impl Client {
     /// Turns screen effect `name` (`shaders/post/<name>.wgsl`) on at `strength` (0 turns it off).
     pub fn post_effect(&self, name: &str, strength: f32) -> bool {
         let name = qualify(crate::mod_id(), name);
-        unsafe { (host().client_command)(self.raw(), abi::client_op::POST_EFFECT, Str::new(&name), strength as f64) != 0 }
+        unsafe { (host().client_op)(self.raw(), abi::client_op::POST_EFFECT, Str::new(&name), strength as f64) != 0 }
     }
 }
 
@@ -435,6 +502,27 @@ impl SoundBuilder<'_> {
         self.desc.range = blocks;
         self
     }
+    /// Full volume within `full_within` blocks, then fading to nothing at `range` along `curve`
+    /// (by default within 1 block, evenly).
+    pub fn falloff(mut self, full_within: f32, curve: Falloff) -> Self {
+        self.desc.full_within = full_within;
+        self.desc.falloff = match curve {
+            Falloff::Even => 0,
+            Falloff::Late(n) => n.clamp(1, 8) as i32,
+            Falloff::Early(n) => -(n.clamp(1, 8) as i32),
+        };
+        self
+    }
+}
+
+/// How a sound fades with distance (`SoundBuilder::falloff`).
+#[derive(Clone, Copy, Debug)]
+pub enum Falloff {
+    Even,
+    /// Stays loud longer, then drops near the edge; the number is how sharply (1..8).
+    Late(u8),
+    /// Drops soon after `full_within`, then trails off.
+    Early(u8),
 }
 
 impl Drop for SoundBuilder<'_> {
@@ -445,7 +533,7 @@ impl Drop for SoundBuilder<'_> {
         let files: Vec<Str> = self.files.iter().map(|f| Str::new(f)).collect();
         let desc = abi::SoundDesc {
             name: Str::new(&self.name),
-            cell: self.handle.map_or(std::ptr::null(), |h| h.cell()),
+            cell: self.handle.map_or(std::ptr::null(), |h| h.id_cell()),
             files: Slice::new(&files),
             category_name: Str::new(&self.category_name),
             ..self.desc
@@ -459,7 +547,7 @@ pub struct MusicBuilder<'a> {
     name: String,
     tracks: Vec<String>,
     dimension: String,
-    when: u32,
+    when: String,
     _p: PhantomData<&'a mut Registry>,
 }
 
@@ -473,9 +561,10 @@ impl MusicBuilder<'_> {
         self.dimension = dimension.name().to_string();
         self
     }
-    /// `abi::music_when` flags.
-    pub fn when(mut self, flags: u32) -> Self {
-        self.when = flags;
+    /// Plays only while this condition holds (`conditions::NIGHT`, a mod's own); call again
+    /// for more, all of which have to hold.
+    pub fn when(mut self, condition: &crate::Condition) -> Self {
+        self.when = format!("{} {}", self.when, condition.name());
         self
     }
 }
@@ -490,7 +579,7 @@ impl Drop for MusicBuilder<'_> {
             name: Str::new(&self.name),
             tracks: Slice::new(&tracks),
             dimension: Str::new(&self.dimension),
-            when: self.when,
+            when: Str::new(&self.when),
             ..abi::MusicDesc::DEFAULT
         };
         unsafe { (host().reg_music)(self.raw, &desc) }
@@ -524,26 +613,62 @@ impl Registry {
             name: music.name().to_string(),
             tracks: Vec::new(),
             dimension: String::new(),
-            when: 0,
+            when: String::new(),
             _p: PhantomData,
         }
     }
 }
 
 impl World {
-    /// Sound event `sound` at `pos` for the players in its range.
-    pub fn play_sound(&self, sound: &crate::Sound, pos: [f64; 3], volume: f32) {
-        unsafe { (host().play_sound)(self.raw(), sound.id(), &pos, volume, 0.0) }
+    /// Sound event `sound` at `pos` for the players in its range, sent at the end of the
+    /// statement; `.pitch(p)` sets the playback speed.
+    pub fn play_sound(&self, sound: &crate::Sound, pos: [f64; 3], volume: f32) -> PlaySound {
+        PlaySound { to: Hearer::World(*self), sound: sound.id(), pos: Some(pos), volume, pitch: 0.0 }
     }
 }
 
 impl Client {
     /// Only this client hears it; `None` = not positioned (UI sounds).
-    pub fn play_sound(&self, sound: &crate::Sound, pos: Option<[f64; 3]>, volume: f32) {
-        let p = pos
+    pub fn play_sound(&self, sound: &crate::Sound, pos: Option<[f64; 3]>, volume: f32) -> PlaySound {
+        PlaySound { to: Hearer::Client(*self), sound: sound.id(), pos, volume, pitch: 0.0 }
+    }
+}
+
+enum Hearer {
+    World(World),
+    Client(Client),
+}
+
+/// A sound about to play (`World::play_sound`, `Client::play_sound`).
+pub struct PlaySound {
+    to: Hearer,
+    sound: u32,
+    pos: Option<[f64; 3]>,
+    volume: f32,
+    pitch: f32,
+}
+
+impl PlaySound {
+    /// Playback speed (1 = as recorded, 2 an octave up) instead of one picked from the sound's
+    /// range: a note block's `2f32.powf((key - 12) as f32 / 12.0)`.
+    pub fn pitch(mut self, pitch: f32) -> Self {
+        self.pitch = pitch.max(0.01);
+        self
+    }
+}
+
+impl Drop for PlaySound {
+    fn drop(&mut self) {
+        let p = self
+            .pos
             .as_ref()
             .map_or(std::ptr::null(), |p| p as *const [f64; 3]);
-        unsafe { (host().client_play_sound)(self.raw(), sound.id(), p, volume, 0.0) }
+        unsafe {
+            match self.to {
+                Hearer::World(w) => (host().play_sound)(w.raw(), self.sound, p, self.volume, self.pitch),
+                Hearer::Client(c) => (host().client_play_sound)(c.raw(), self.sound, p, self.volume, self.pitch),
+            }
+        }
     }
 }
 
