@@ -190,28 +190,23 @@ impl Drop for ConfigBuilder<'_> {
 impl Registry {
     /// A setting, see `ConfigBuilder` (a bool `false` unless told otherwise).
     pub fn config<'a, T: ConfigValue>(&'a mut self, config: &'static Config<T>) -> ConfigBuilder<'a> {
-        ConfigBuilder {
-            raw: self.raw,
-            name: config.h.name().to_string(),
-            choices: Vec::new(),
-            text: String::new(),
-            cell: config.h.id_cell(),
-            desc: abi::ConfigDesc::DEFAULT,
-            _p: PhantomData,
-        }
+        self.config_builder(&config.h)
     }
 
     /// A text setting, see `ConfigBuilder::text`.
     pub fn text_config<'a>(&'a mut self, config: &'static TextConfig, default: &str) -> ConfigBuilder<'a> {
+        self.config_builder(&config.h).text(default)
+    }
+
+    fn config_builder(&mut self, h: &'static Handle<kind::Config>) -> ConfigBuilder<'_> {
         ConfigBuilder {
             raw: self.raw,
-            name: config.h.name().to_string(),
+            name: h.name().to_string(),
             choices: Vec::new(),
             text: String::new(),
-            cell: config.h.id_cell(),
+            cell: h.id_cell(),
             desc: abi::ConfigDesc::DEFAULT,
             _p: PhantomData,
         }
-        .text(default)
     }
 }

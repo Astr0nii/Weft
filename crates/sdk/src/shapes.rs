@@ -32,7 +32,7 @@ fn towards(a: Dir, b: Option<Dir>) -> ([f32; 2], [f32; 2]) {
 
 /// Whether what is placed goes in the top half.
 fn upper_half(p: &Place) -> bool {
-    p.hit()[1] > 0.5
+    p.hit().y > 0.5
 }
 
 /// A stair's shape from the stairs around it, as vanilla has it.
@@ -143,7 +143,7 @@ impl Registry {
                 }
             })
             .placement(|p, props| {
-                let [x, _, z] = p.hit().map(|v| v - 0.5);
+                let (x, z) = (p.hit().x - 0.5, p.hit().z - 0.5);
                 let along_x = match p.face() {
                     Dir::West | Dir::East => true,
                     Dir::North | Dir::South => false,

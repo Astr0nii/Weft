@@ -563,11 +563,7 @@ impl crate::Registry {
 
 impl GameModeBuilder<'_> {
     fn flag(mut self, f: u32, on: bool) -> Self {
-        if on {
-            self.flags |= f;
-        } else {
-            self.flags &= !f;
-        }
+        self.flags = set_flag(self.flags, f, on);
         self
     }
     pub fn breaks(self, how: Breaking) -> Self {
@@ -743,6 +739,11 @@ pub type Question = Handle<kind::Question>;
 pub type Chain = Handle<kind::Chain>;
 pub type Attribute = Handle<kind::Attribute>;
 
+/// What puts a block or an item in `tab`.
+fn tab_tag(tab: &CreativeTab) -> String {
+    format!("tab/{}", tab.name())
+}
+
 /// The creative tab every entity's spawn egg goes to.
 pub static SPAWN_EGGS: CreativeTab = CreativeTab::named("core:spawn_eggs");
 pub type RecipeKind = Handle<kind::RecipeKind>;
@@ -819,6 +820,13 @@ macro_rules! with_components {
 }
 
 with_components!(BlockBuilder, ItemBuilder, BiomeBuilder, DimensionBuilder, LiquidBuilder);
+
+/// On one state only, on top of the block's.
+impl WithComponents for State<'_> {
+    fn pending(&mut self) -> &mut Vec<Pending> {
+        &mut self.def.components
+    }
+}
 
 /// A component value waiting to be sent with a descriptor. Text is kept as a `String` until then.
 #[derive(Clone)]
@@ -941,6 +949,21 @@ impl Registry {
         }
     }
 
+    /// The item placing `block`, named like it: the engine gives it the block's components, and
+    /// without `texture` it shows the block's model.
+    fn block_item(&mut self, block: &str, texture: String) -> ItemBuilder<'_> {
+        ItemBuilder {
+            _p: PhantomData,
+            raw: self.raw,
+            name: block.to_string(),
+            texture,
+            handle: None,
+            block: block.to_string(),
+            components: Vec::new(),
+            on_use: abi::Callback::NONE,
+        }
+    }
+
     pub fn biome<'a>(&'a mut self, biome: &'static Biome) -> BiomeBuilder<'a> {
         BiomeBuilder {
             _p: PhantomData,
@@ -960,9 +983,8 @@ impl Registry {
         unsafe { (host().reg_creative_tab)(self.raw, Str::new(tab.name()), Str::new(icon.name())) }
     }
 
-    /// Ore veins of `block` in any mod's dimension, e.g.
-    /// `r.ore(&OVERWORLD, &TIN_ORE).y(0, 64).veins(6).size(8).replace("#stone")`.
-    /// An ore, in every dimension whose ground it may `replace` (`.dimension(..)` limits it).
+    /// An ore, in every dimension whose ground it may `replace` (`.dimension(..)` limits it):
+    /// `r.ore(&TIN_ORE).y(0, 64).veins(6).vein_size(8).replace("#stone")`.
     pub fn ore<'a>(&'a mut self, block: &Block) -> OreBuilder<'a> {
         OreBuilder {
             raw: self.raw,
@@ -1215,32 +1237,26 @@ struct StateDef {
     layer: RenderLayer,
     model: BlockModel,
     textures: [String; 6],
-    boxes: Vec<([f32; 3], [f32; 3], [String; 6], [[f32; 4]; 6], [u8; 6], abi::BoxTilt)>,
-    /// In sixteenths of a block.
-    hitbox: Vec<[f32; 6]>,
+    boxes: Vec<ModelBox>,
+    /// Corners, in sixteenths of a block.
+    hitbox: Vec<([f32; 3], [f32; 3])>,
     /// What boxes from here on are turned by.
     orientation: Option<crate::signal::Orientation>,
     components: Vec<Pending>,
-    signal: SignalSpec,
+    /// What it is to redstone.
+    signal: abi::SignalDesc,
 }
 
-/// What a state is to redstone, see `abi::SignalDesc`.
-#[derive(Clone, Copy)]
-struct SignalSpec {
-    kind: u32,
-    attach: u32,
-    front: u32,
-    delay: u32,
-    flags: u32,
-    inputs: u32,
-    head: &'static str,
-}
-
-impl Default for SignalSpec {
-    fn default() -> Self {
-        let d = abi::SignalDesc::DEFAULT;
-        SignalSpec { kind: d.kind, attach: d.attach, front: d.front, delay: d.delay, flags: d.flags, inputs: d.inputs, head: "" }
-    }
+/// A box of a state's model, in 1/16 units.
+#[derive(Clone)]
+struct ModelBox {
+    min: [f32; 3],
+    max: [f32; 3],
+    textures: [String; 6],
+    uv: [[f32; 4]; 6],
+    /// Quarter turns of each face's picture.
+    turns: [u8; 6],
+    tilt: abi::BoxTilt,
 }
 
 impl StateDef {
@@ -1251,9 +1267,7 @@ impl StateDef {
     fn set_text(&mut self, name: &str, schema: &str, text: &str) {
         self.components.push(Pending::text_as(name, schema, text));
     }
-}
 
-impl StateDef {
     /// One more box, turned by its orientation if it has one. A model that isn't a cube doesn't hide
     /// what is behind it, so nothing else about a block says how it is to be drawn.
     fn add_box(&mut self, min: [f32; 3], max: [f32; 3], textures: [String; 6], uv: [[f32; 4]; 6]) {
@@ -1267,14 +1281,15 @@ impl StateDef {
         }
         let Some(o) = self.orientation else {
             self.boxes
-                .push((min, max, textures, uv, [0; 6], abi::BoxTilt::NONE));
+                .push(ModelBox { min, max, textures, uv, turns: [0; 6], tilt: abi::BoxTilt::NONE });
             return;
         };
         // From where the box is on the floor, before it turns.
         let uv: [[f32; 4]; 6] = std::array::from_fn(|i| if uv[i] == abi::UV_FROM_BOX { abi::box_face_uv(i, min, max) } else { uv[i] });
-        let (lo, hi, own, turn) = o.place(min, max, [0usize, 1, 2, 3, 4, 5]);
+        let (min, max, own, turns) = o.place(min, max, [0usize, 1, 2, 3, 4, 5]);
+        let textures = std::array::from_fn(|i| textures[own[i]].clone());
         self.boxes
-            .push((lo, hi, std::array::from_fn(|i| textures[own[i]].clone()), own.map(|i| uv[i]), turn, abi::BoxTilt::NONE));
+            .push(ModelBox { min, max, textures, uv: own.map(|i| uv[i]), turns, tilt: abi::BoxTilt::NONE });
     }
 
     fn new(tex: &str) -> Self {
@@ -1290,29 +1305,28 @@ impl StateDef {
             hitbox: Vec::new(),
             orientation: None,
             components: Vec::new(),
-            signal: SignalSpec::default(),
+            signal: abi::SignalDesc::DEFAULT,
         }
     }
 }
 
 #[derive(Default)]
 struct BlockCallbacks {
-    on_use: Option<abi::Callback>,
-    on_neighbor: Option<abi::Callback>,
-    on_scheduled: Option<abi::Callback>,
-    on_carried: Option<abi::Callback>,
-    signal_read: Option<abi::Callback>,
-    placement: Option<abi::Callback>,
-    merge: Option<abi::Callback>,
-    on_grow: Option<abi::Callback>,
-    on_signal: Option<abi::Callback>,
-    signal_gate: Option<abi::Callback>,
+    on_use: abi::Callback,
+    on_neighbor: abi::Callback,
+    on_scheduled: abi::Callback,
+    on_carried: abi::Callback,
+    signal_read: abi::Callback,
+    placement: abi::Callback,
+    merge: abi::Callback,
+    on_grow: abi::Callback,
+    on_signal: abi::Callback,
+    signal_gate: abi::Callback,
 }
 
 /// Per-state settings, used directly and through `BlockBuilder::states`.
 pub struct State<'a> {
     def: &'a mut StateDef,
-    ns: &'static str,
 }
 
 macro_rules! state_setters {
@@ -1320,7 +1334,7 @@ macro_rules! state_setters {
         /// Seconds to mine by hand: the `hardness` component, as are the light, friction, drag,
         /// support and tint setters (other mods change them with `r.set`).
         pub fn hardness(mut self, h: f32) -> Self {
-            self.each(|s, _| s.set(&c::HARDNESS, h));
+            self.each(|s| s.set(&c::HARDNESS, h));
             self
         }
         pub fn unbreakable(self) -> Self {
@@ -1331,35 +1345,35 @@ macro_rules! state_setters {
             self.light_rgb(level, level, level)
         }
         pub fn light_rgb(mut self, r: u8, g: u8, b: u8) -> Self {
-            self.each(|s, _| s.set(&c::LIGHT, [r, g, b]));
+            self.each(|s| s.set(&c::LIGHT, [r, g, b]));
             self
         }
         /// Per-channel absorption of passing light (stained glass).
         pub fn light_filter(mut self, r: u8, g: u8, b: u8) -> Self {
-            self.each(|s, _| s.filter = [r, g, b]);
+            self.each(|s| s.filter = [r, g, b]);
             self
         }
         /// Same texture on every face, relative names are under `block/`.
         pub fn texture(mut self, t: &str) -> Self {
-            self.each(|s, ns| s.textures = std::array::from_fn(|_| block_texture(ns, t)));
+            self.each(|s| s.textures = std::array::from_fn(|_| crate::asset("block", t)));
             self
         }
         /// Top, sides, bottom.
         pub fn textures(mut self, top: &str, side: &str, bottom: &str) -> Self {
-            self.each(|s, ns| {
-                let (t, si, b) = (block_texture(ns, top), block_texture(ns, side), block_texture(ns, bottom));
+            self.each(|s| {
+                let (t, si, b) = (crate::asset("block", top), crate::asset("block", side), crate::asset("block", bottom));
                 s.textures = [si.clone(), si.clone(), b, t, si.clone(), si];
             });
             self
         }
         /// Faces in -X, +X, -Y, +Y, -Z, +Z order.
         pub fn faces(mut self, f: [&str; 6]) -> Self {
-            self.each(|s, ns| s.textures = std::array::from_fn(|i| block_texture(ns, f[i])));
+            self.each(|s| s.textures = std::array::from_fn(|i| crate::asset("block", f[i])));
             self
         }
         /// Not opaque, rendered alpha-tested, lets light through (glass, leaves).
         pub fn cutout(mut self) -> Self {
-            self.each(|s, _| {
+            self.each(|s| {
                 s.flags &= !bf::OPAQUE;
                 s.layer = RenderLayer::Cutout;
             });
@@ -1367,17 +1381,17 @@ macro_rules! state_setters {
         }
         /// Hide faces between neighbors of the same block (glass panes of a window).
         pub fn cull_same(mut self) -> Self {
-            self.each(|s, _| s.flags |= bf::CULL_SAME);
+            self.each(|s| s.flags |= bf::CULL_SAME);
             self
         }
         /// Light it takes away, 0..15 (leaves 1, ice 2), when what it looks like isn't enough to
         /// go by: otherwise 15 for what is opaque and 0 for the rest.
         pub fn light_opacity(mut self, o: u8) -> Self {
-            self.each(|s, _| s.opacity = Some(o));
+            self.each(|s| s.opacity = Some(o));
             self
         }
         pub fn translucent(mut self) -> Self {
-            self.each(|s, _| {
+            self.each(|s| {
                 s.flags &= !bf::OPAQUE;
                 s.flags |= bf::CULL_SAME;
                 s.layer = RenderLayer::Translucent;
@@ -1392,7 +1406,7 @@ macro_rules! state_setters {
         /// Needs the neighbor that way to carry `tag` (`#plant_soil`), or to be solid if `tag` is
         /// empty.
         pub fn needs(mut self, side: crate::Dir, tag: &str) -> Self {
-            self.each(|s, _| {
+            self.each(|s| {
                 s.set(&c::SUPPORT_FACE, side.face() as u8);
                 if !tag.is_empty() {
                     s.set_text(abi::comp::SUPPORT, "tag", tag);
@@ -1403,12 +1417,12 @@ macro_rules! state_setters {
         /// The supporting block must have a block tagged `tag` beside it (sugar cane: `#water`),
         /// unless it is this same block.
         pub fn needs_near(mut self, tag: &str) -> Self {
-            self.each(|s, _| s.set_text(abi::comp::SUPPORT_NEAR, "tag", tag));
+            self.each(|s| s.set_text(abi::comp::SUPPORT_NEAR, "tag", tag));
             self
         }
         /// A plant: tagged `plantable`, cross model, no collision, replaced by placing a block.
         pub fn plant(mut self) -> Self {
-            self.each(|s, _| {
+            self.each(|s| {
                 s.flags = (s.flags & !(bf::SOLID | bf::OPAQUE)) | bf::REPLACEABLE;
                 s.model = BlockModel::Cross;
                 s.layer = RenderLayer::Cutout;
@@ -1419,46 +1433,46 @@ macro_rules! state_setters {
         }
         /// Keeps the liquid source it is placed in, and a bucket fills it: waterlogging.
         pub fn holds_liquid(mut self) -> Self {
-            self.each(|s, _| s.flags |= bf::HOLDS_LIQUID);
+            self.each(|s| s.flags |= bf::HOLDS_LIQUID);
             self
         }
         pub fn not_solid(mut self) -> Self {
-            self.each(|s, _| s.flags &= !bf::SOLID);
+            self.each(|s| s.flags &= !bf::SOLID);
             self
         }
         pub fn replaceable(mut self) -> Self {
-            self.each(|s, _| s.flags |= bf::REPLACEABLE);
+            self.each(|s| s.flags |= bf::REPLACEABLE);
             self
         }
         pub fn climbable(mut self) -> Self {
-            self.each(|s, _| s.flags |= bf::CLIMBABLE);
+            self.each(|s| s.flags |= bf::CLIMBABLE);
             self
         }
         /// Colored by the biome it stands in: `tints::GRASS`, `FOLIAGE`, `WATER` or a mod's own
         /// kind (`Registry::tint_kind`).
         pub fn tint(mut self, kind: &TintKind) -> Self {
-            self.each(|s, _| s.set_text(abi::comp::TINT, "tint", kind.name()));
+            self.each(|s| s.set_text(abi::comp::TINT, "tint", kind.name()));
             self
         }
         /// `tint` on the top face only (grass blocks: the sides carry their own color).
         pub fn tint_top(mut self, kind: &TintKind) -> Self {
-            self.each(|s, _| {
+            self.each(|s| {
                 s.set_text(abi::comp::TINT, "tint", kind.name());
                 s.set(&c::TINT_FACES, 1 << 3);
             });
             self
         }
         pub fn friction(mut self, f: f32) -> Self {
-            self.each(|s, _| s.set(&c::FRICTION, f));
+            self.each(|s| s.set(&c::FRICTION, f));
             self
         }
         pub fn drag(mut self, d: f32) -> Self {
-            self.each(|s, _| s.set(&c::DRAG, d));
+            self.each(|s| s.set(&c::DRAG, d));
             self
         }
         /// How many times its loot is rolled when it breaks: 2 for two slabs in one block.
         pub fn loot_rolls(mut self, n: u32) -> Self {
-            self.each(|s, _| s.set(&c::LOOT_ROLLS, n));
+            self.each(|s| s.set(&c::LOOT_ROLLS, n));
             self
         }
         /// Custom model made of boxes in 1/16 units, each face showing the state's texture of
@@ -1466,15 +1480,15 @@ macro_rules! state_setters {
         /// stair being one slab and a quarter, unless `hitbox` is set. A
         /// `models/block/<name>.json` (Blockbench's Java block model) does the same from a file.
         pub fn model_box(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
-            self.each(|s, _| s.add_box(min, max, Default::default(), [abi::UV_FROM_BOX; 6]));
+            self.each(|s| s.add_box(min, max, Default::default(), [abi::UV_FROM_BOX; 6]));
             self
         }
         /// `model_box` with its own textures and texel rectangles (u0, v0, u1, v1, 0..16) per face
         /// in -X, +X, -Y, +Y, -Z, +Z order, as a model file's element has; `UV_FROM_BOX` takes it
         /// from where the box is, `UV_NO_FACE` leaves a face out.
         pub fn model_box_faces(mut self, min: [f32; 3], max: [f32; 3], faces: [(&str, [f32; 4]); 6]) -> Self {
-            self.each(|s, ns| {
-                let textures = std::array::from_fn(|i| block_texture(ns, faces[i].0));
+            self.each(|s| {
+                let textures = std::array::from_fn(|i| crate::asset("block", faces[i].0));
                 s.add_box(min, max, textures, faces.map(|f| f.1));
             });
             self
@@ -1482,17 +1496,17 @@ macro_rules! state_setters {
         /// `model_box`, `model_box_faces` and `hitbox` from here on are written for a floor with
         /// the front to the north, and turned as `o` says (`Props::orientation`), pictures included.
         pub fn oriented(mut self, o: crate::signal::Orientation) -> Self {
-            self.each(|s, _| s.orientation = Some(o));
+            self.each(|s| s.orientation = Some(o));
             self
         }
         /// The last box's pictures get quarter turns of their own, per face.
         pub fn turned(mut self, turns: [u8; 6]) -> Self {
-            self.each(|s, _| {
+            self.each(|s| {
                 let o = s.orientation;
                 let Some(last) = s.boxes.last_mut() else { return };
                 for (own, t) in turns.iter().enumerate() {
                     let to = o.map_or(own, |f| f.face(own));
-                    last.4[to] = (last.4[to] + t) % 4;
+                    last.turns[to] = (last.turns[to] + t) % 4;
                 }
             });
             self
@@ -1500,29 +1514,29 @@ macro_rules! state_setters {
         /// The last box is tilted: around a point (texels) about an axis (its own -X, +X ... as a
         /// `Dir`) by degrees, right-handed, like a model file's element.
         pub fn tilted(mut self, origin: [f32; 3], axis: crate::Dir, degrees: f32) -> Self {
-            self.each(|s, _| {
+            self.each(|s| {
                 let o = s
                     .orientation
                     .unwrap_or(crate::signal::Orientation::new(crate::Dir::Down, crate::Dir::North));
                 let Some(last) = s.boxes.last_mut() else { return };
-                last.5 = abi::BoxTilt { origin: o.at(origin), axis: o.along(axis), degrees };
+                last.tilt = abi::BoxTilt { origin: o.at(origin), axis: o.along(axis), degrees };
             });
             self
         }
         /// Doesn't carry redstone power, the way glass doesn't. Wire can still lie on it.
         pub fn signal_blocker(mut self) -> Self {
-            self.each(|s, _| s.flags |= bf::SIGNAL_BLOCKER);
+            self.each(|s| s.flags |= bf::SIGNAL_BLOCKER);
             self
         }
         /// Pistons and floaters can't move it. A state with this on a platform stops the platform, if
         /// more of the platform is pushing it.
         pub fn immovable(mut self) -> Self {
-            self.each(|s, _| s.flags |= bf::IMMOVABLE);
+            self.each(|s| s.flags |= bf::IMMOVABLE);
             self
         }
         /// A piston moving it takes what touches it along, like slime.
         pub fn sticky(mut self) -> Self {
-            self.each(|s, _| s.flags |= bf::STICKY);
+            self.each(|s| s.flags |= bf::STICKY);
             self
         }
         /// Its shape, in 1/16 units like the model's (a slab: `[0.0; 3]` to `[16.0, 8.0, 16.0]`), one
@@ -1530,15 +1544,15 @@ macro_rules! state_setters {
         /// isn't solid (`not_solid`, `plant`), only the outline. Without any, the model's boxes,
         /// else a plant's cross, else the whole block.
         pub fn hitbox(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
-            self.each(|s, _| {
-                let (lo, hi) = s.orientation.map_or((min, max), |f| f.corners(min, max));
-                s.hitbox.push([lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]])
+            self.each(|s| {
+                s.hitbox
+                    .push(s.orientation.map_or((min, max), |f| f.corners(min, max)))
             });
             self
         }
         /// Air-like: invisible, no collision, not targetable.
         pub fn air(mut self) -> Self {
-            self.each(|s, _| {
+            self.each(|s| {
                 s.flags = (s.flags & !(bf::SOLID | bf::OPAQUE)) | bf::REPLACEABLE | bf::NOT_TARGETABLE;
                 s.model = BlockModel::None;
                 s.layer = RenderLayer::Opaque;
@@ -1546,19 +1560,15 @@ macro_rules! state_setters {
             self
         }
         pub fn flags(mut self, f: u32) -> Self {
-            self.each(|s, _| s.flags |= f);
+            self.each(|s| s.flags |= f);
             self
         }
     };
 }
 
-fn block_texture(_ns: &str, t: &str) -> String {
-    crate::asset("block", t)
-}
-
 impl<'a> State<'a> {
-    fn each(&mut self, f: impl Fn(&mut StateDef, &str)) {
-        f(self.def, self.ns)
+    fn each(&mut self, f: impl Fn(&mut StateDef)) {
+        f(self.def)
     }
     state_setters!();
     /// `front` toward `facing`, `side` around it and `top` above and below (a furnace).
@@ -1568,16 +1578,6 @@ impl<'a> State<'a> {
         f[3] = top;
         f[facing.face() as usize] = front;
         self.faces(f)
-    }
-
-    /// A component on this state only (on top of the block's).
-    pub fn set<T: Value>(self, comp: &Component<T>, v: T) -> Self {
-        self.def.components.push(comp.raw_value(&v));
-        self
-    }
-    pub fn tag(self, tag: &str) -> Self {
-        self.def.components.push(Pending::tag(tag));
-        self
     }
 }
 
@@ -1610,6 +1610,10 @@ pub struct BlockBuilder<'a> {
 }
 
 type NeighborFn = Box<dyn Fn(&mut BlockEvent) + Send + Sync>;
+
+fn block_event_cb(f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> abi::Callback {
+    callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a)))
+}
 
 /// The blocks around one (`BlockBuilder::derived`).
 pub struct Neighbors {
@@ -1735,10 +1739,9 @@ fn state_index(props: &[(String, Vec<String>)], p: &Props) -> u32 {
 }
 
 impl<'a> BlockBuilder<'a> {
-    fn each(&mut self, f: impl Fn(&mut StateDef, &str)) {
-        let ns = self.reg.ns;
+    fn each(&mut self, f: impl Fn(&mut StateDef)) {
         for s in &mut self.states {
-            f(s, ns);
+            f(s);
         }
     }
 
@@ -1787,10 +1790,8 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// Creative inventory tab of the block's item, see `Registry::creative_tab`.
-    pub fn tab(mut self, tab: &CreativeTab) -> Self {
-        let tag = format!("tab/{}", tab.name());
-        self.components.push(Pending::tag(&tag));
-        self
+    pub fn tab(self, tab: &CreativeTab) -> Self {
+        self.tag(&tab_tag(tab))
     }
 
     /// Sounds from the group `<ns>:block.<group>` (`.break`, `.place`, `.step`, `.hit` events);
@@ -1849,7 +1850,7 @@ impl<'a> BlockBuilder<'a> {
     /// the light is at least `min_light`: by default to the next state until the last. Timed by
     /// world time, so unloaded plants catch up when their area loads again.
     pub fn grows(mut self, mean_seconds: f32, min_light: u32) -> Self {
-        self.each(|s, _| {
+        self.each(|s| {
             s.set(&c::GROW_TIME, mean_seconds);
             s.set(&c::GROW_LIGHT, min_light);
         });
@@ -1859,7 +1860,7 @@ impl<'a> BlockBuilder<'a> {
     /// What a growth step does instead of moving to the next state (growing a tree, a block on
     /// top); it keeps growing as long as the block stays.
     pub fn on_grow(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
-        self.callbacks.on_grow = Some(callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a))));
+        self.callbacks.on_grow = block_event_cb(f);
         self
     }
 
@@ -1868,7 +1869,7 @@ impl<'a> BlockBuilder<'a> {
     /// top turns into this block in `mean_seconds` on average (sooner with more of this around),
     /// also while nobody is near (caught up on loading).
     pub fn spreads(mut self, tag: &str, mean_seconds: f32, min_light: u32) -> Self {
-        self.each(|s, _| {
+        self.each(|s| {
             s.set_text(abi::comp::SPREADS_TO, "tag", tag);
             s.set(&c::SPREAD_TIME, mean_seconds);
             s.set(&c::SPREAD_LIGHT, min_light);
@@ -1876,8 +1877,6 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// Turns into `block` in `mean_seconds` on average once something opaque covers it (grass
-    /// into dirt).
     /// Where `spreads` reaches, from this block to the target: min and max offsets, at most 4
     /// each way (grass: `[-1, -3, -1]` to `[1, 1, 1]`, the default). With `covered`, targets
     /// with something opaque on top count too, lit by their brightest side (moss up a wall).
@@ -1885,14 +1884,16 @@ impl<'a> BlockBuilder<'a> {
         let min = min.into();
         let max = max.into();
         let v = [min.x, min.y, min.z, max.x, max.y, max.z];
-        self.each(|s, _| {
+        self.each(|s| {
             s.set(&c::SPREAD_REACH, v);
         });
         if covered { self.tag(abi::comp::SPREADS_COVERED) } else { self }
     }
 
+    /// Turns into `block` in `mean_seconds` on average once something opaque covers it (grass
+    /// into dirt).
     pub fn smothered_into(mut self, block: &str, mean_seconds: f32) -> Self {
-        self.each(|s, _| {
+        self.each(|s| {
             s.set_text(abi::comp::SMOTHERED_INTO, "block", block);
             s.set(&c::SMOTHER_TIME, mean_seconds);
         });
@@ -1912,34 +1913,36 @@ impl<'a> BlockBuilder<'a> {
             .map(|k| crate::full_name(k))
             .collect::<Vec<_>>()
             .join(",");
-        self.each(|s, _| s.set_text(abi::comp::AMBIENT_PARTICLE, "str", &kinds));
+        self.each(|s| s.set_text(abi::comp::AMBIENT_PARTICLE, "str", &kinds));
         self
     }
 
     pub fn on_use(mut self, f: impl Fn(&mut Use) -> bool + Send + Sync + 'static) -> Self {
-        self.callbacks.on_use = Some(callback(move |a: &mut abi::UseArgs| {
+        self.callbacks.on_use = callback(move |a: &mut abi::UseArgs| {
             let handled = f(Use::wrap(a));
             a.handled = handled as u32;
-        }));
+        });
         self
     }
 
     /// One of these was placed: `actions::PLACE_BLOCK` for this block, at the end of the tick.
     pub fn on_placed(self, f: impl Fn(&World, &crate::BlockChange) + Send + Sync + 'static) -> Self {
-        let Some(block) = self.handle else { return self };
-        self.reg.on(&crate::actions::PLACE_BLOCK, move |b| {
-            let w = b.world();
-            for p in b.iter().filter(|p| block.is(p.state)) {
-                f(&w, p);
-            }
-        });
-        self
+        self.on_own(&crate::actions::PLACE_BLOCK, f)
     }
 
     /// One of these was broken, by a player (`player`) or by losing its support (0).
     pub fn on_broken(self, f: impl Fn(&World, &crate::BlockChange) + Send + Sync + 'static) -> Self {
+        self.on_own(&crate::actions::BREAK_BLOCK, f)
+    }
+
+    /// `action`'s changes of this block.
+    fn on_own(
+        self,
+        action: &'static crate::Action<crate::BlockChange>,
+        f: impl Fn(&World, &crate::BlockChange) + Send + Sync + 'static,
+    ) -> Self {
         let Some(block) = self.handle else { return self };
-        self.reg.on(&crate::actions::BREAK_BLOCK, move |b| {
+        self.reg.on(action, move |b| {
             let w = b.world();
             for p in b.iter().filter(|p| block.is(p.state)) {
                 f(&w, p);
@@ -2002,11 +2005,11 @@ impl<'a> BlockBuilder<'a> {
     /// On a moving body, it came to another cell of the world: a drill, a plow. `pos` is that cell,
     /// in the world's coordinates; `body_pos` where this is on the body, `entity` the body.
     pub fn on_carried(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
-        self.callbacks.on_carried = Some(callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a))));
+        self.callbacks.on_carried = block_event_cb(f);
         self
     }
     pub fn on_scheduled(mut self, f: impl Fn(&mut BlockEvent) + Send + Sync + 'static) -> Self {
-        self.callbacks.on_scheduled = Some(callback(move |a: &mut abi::BlockEventArgs| f(BlockEvent::wrap(a))));
+        self.callbacks.on_scheduled = block_event_cb(f);
         self
     }
 
@@ -2107,7 +2110,7 @@ impl<'a> BlockBuilder<'a> {
     /// Wire that lies on any face of a block, connecting to wire of the same block only; textures
     /// are the dot on top and the line on the sides. A property `faces` holds where it lies.
     pub fn wire(mut self) -> Self {
-        self.each(|s, _| {
+        self.each(|s| {
             s.flags &= !(bf::SOLID | bf::OPAQUE);
             s.model = BlockModel::Wire;
             s.layer = RenderLayer::Cutout;
@@ -2169,8 +2172,7 @@ impl<'a> BlockBuilder<'a> {
     /// What a comparator behind it reads, 0..15, instead of how full it is. It looks again when
     /// the block changes; for anything else it depends on, call `World::signal_read_changed`.
     pub fn signal_read(mut self, f: impl Fn(&World, BlockPos) -> u8 + Send + Sync + 'static) -> Self {
-        self.callbacks.signal_read =
-            Some(callback(move |a: &mut abi::SignalReadArgs| a.output = f(&World::from_raw(a.world), a.pos) as u32));
+        self.callbacks.signal_read = callback(move |a: &mut abi::SignalReadArgs| a.output = f(&World::from_raw(a.world), a.pos) as u32);
         self
     }
     /// Goes along its `facing` (after `facing`), any of the six ways. Its front is what sticks: with
@@ -2193,23 +2195,23 @@ impl<'a> BlockBuilder<'a> {
     }
     /// The moving part of a piston (after `facing`): it goes when the piston does.
     pub fn signal_piston_head(mut self) -> Self {
-        self.each(|s, _| s.flags |= bf::NOT_STOOD_ON);
+        self.each(|s| s.flags |= bf::NOT_STOOD_ON);
         self.signal_props(abi::signal_kind::PISTON_HEAD, 0, false, false)
     }
     /// A gate with logic of your own, on the clicked face: what comes out of the front a
     /// `gate`'s delay after what goes in at its inputs calls for it. Runs only when something
     /// around it changes.
     pub fn signal_gate(mut self, gate: Gate, f: impl Fn(&GateInputs) -> u8 + Send + Sync + 'static) -> Self {
-        self.callbacks.signal_gate = Some(callback(move |a: &mut abi::GateArgs| {
+        self.callbacks.signal_gate = callback(move |a: &mut abi::GateArgs| {
             a.output = f(GateInputs::wrap(a)) as u32;
-        }));
+        });
         // In redstone ticks, like a repeater's: two game ticks each.
         self.signal = Some(SignalBuild { delay: Some(gate.delay * 2), inputs: gate.inputs, ..self.signal.unwrap_or_default() });
         self.signal_props(abi::signal_kind::GATE, 16, true, true)
     }
     /// Called when the power around a `signal_sink` changes.
     pub fn on_signal(mut self, f: impl Fn(&SignalEvent) + Send + Sync + 'static) -> Self {
-        self.callbacks.on_signal = Some(callback(move |a: &mut abi::SignalArgs| f(SignalEvent::wrap(a))));
+        self.callbacks.on_signal = callback(move |a: &mut abi::SignalArgs| f(SignalEvent::wrap(a)));
         self
     }
 
@@ -2252,32 +2254,30 @@ impl Drop for BlockBuilder<'_> {
         let signal = self.signal;
         if !self.props.is_empty() || looks.is_some() {
             let template = self.states[0].clone();
-            let ns = self.reg.ns;
             self.states = state_combinations(&self.props)
                 .iter()
                 .map(|p| {
                     let mut d = template.clone();
                     if let Some(f) = &looks {
-                        f(p, State { def: &mut d, ns });
+                        f(p, State { def: &mut d });
                     }
                     if let Some(b) = &signal {
-                        b.apply(p, &mut d, ns);
+                        b.apply(p, &mut d);
                     }
                     d
                 })
                 .collect();
         } else if let Some(b) = &signal {
             let none = Props { values: Vec::new() };
-            let ns = self.reg.ns;
             for d in &mut self.states {
-                b.apply(&none, d, ns);
+                b.apply(&none, d);
             }
         }
         let attaches = signal.is_some_and(|b| b.attaches);
         let switch = signal.is_some_and(|b| b.kind == abi::signal_kind::SWITCH);
         if self.facing.is_some() || self.placement.is_some() || attaches {
             let (props, facing, user) = (self.props.clone(), self.facing, self.placement.take());
-            self.callbacks.placement = Some(callback(move |a: &mut abi::PlaceArgs| {
+            self.callbacks.placement = callback(move |a: &mut abi::PlaceArgs| {
                 let mut p = Props {
                     values: props
                         .iter()
@@ -2300,11 +2300,11 @@ impl Drop for BlockBuilder<'_> {
                     f(Place::wrap(a), &mut p);
                 }
                 a.state = first + state_index(&props, &p);
-            }));
+            });
         }
         if let Some(f) = self.merge.take() {
             let props = self.props.clone();
-            self.callbacks.merge = Some(callback(move |a: &mut abi::PlaceArgs| {
+            self.callbacks.merge = callback(move |a: &mut abi::PlaceArgs| {
                 let Some(mut p) = state_combinations(&props)
                     .into_iter()
                     .nth((a.state - a.first) as usize)
@@ -2313,7 +2313,7 @@ impl Drop for BlockBuilder<'_> {
                 };
                 f(Place::wrap(a), &mut p);
                 a.state = a.first + state_index(&props, &p);
-            }));
+            });
         }
         let shares_cell: Vec<Str> = self.shares_cell.iter().map(|x| Str::new(x)).collect();
         let prop_values: Vec<Vec<Str>> = self
@@ -2333,18 +2333,29 @@ impl Drop for BlockBuilder<'_> {
             .map(|s| {
                 s.boxes
                     .iter()
-                    .map(|(min, max, t, uv, turn, tilt)| abi::ModelBox {
-                        turn: *turn,
-                        tilt: *tilt,
-                        min: *min,
-                        max: *max,
-                        textures: std::array::from_fn(|i| Str::new(&t[i])),
-                        uv: *uv,
+                    .map(|b| abi::ModelBox {
+                        turn: b.turns,
+                        tilt: b.tilt,
+                        min: b.min,
+                        max: b.max,
+                        textures: std::array::from_fn(|i| Str::new(&b.textures[i])),
+                        uv: b.uv,
                     })
                     .collect()
             })
             .collect();
         let mut scratch: Vec<Vec<Vec<u8>>> = vec![Vec::new(); self.states.len()];
+        // The engine takes hitboxes as min and max in one array.
+        let hitboxes: Vec<Vec<[f32; 6]>> = self
+            .states
+            .iter()
+            .map(|s| {
+                s.hitbox
+                    .iter()
+                    .map(|(a, b)| [a[0], a[1], a[2], b[0], b[1], b[2]])
+                    .collect()
+            })
+            .collect();
         let state_values: Vec<Vec<abi::CompValue>> = self
             .states
             .iter()
@@ -2356,7 +2367,8 @@ impl Drop for BlockBuilder<'_> {
             .iter()
             .zip(&boxes)
             .zip(&state_values)
-            .map(|((s, b), v)| abi::StateDesc {
+            .zip(&hitboxes)
+            .map(|(((s, b), v), h)| abi::StateDesc {
                 flags: s.flags,
                 filter: s.filter,
                 opacity: s
@@ -2366,17 +2378,9 @@ impl Drop for BlockBuilder<'_> {
                 model: s.model,
                 textures: std::array::from_fn(|i| Str::new(&s.textures[i])),
                 boxes: Slice::new(b),
-                hitbox: Slice::new(&s.hitbox),
+                hitbox: Slice::new(h),
                 components: Slice::new(v),
-                signal: abi::SignalDesc {
-                    kind: s.signal.kind,
-                    attach: s.signal.attach,
-                    front: s.signal.front,
-                    delay: s.signal.delay,
-                    flags: s.signal.flags,
-                    inputs: s.signal.inputs,
-                    head: Str::new(s.signal.head),
-                },
+                signal: s.signal,
                 ..abi::StateDesc::DEFAULT
             })
             .collect();
@@ -2389,12 +2393,11 @@ impl Drop for BlockBuilder<'_> {
             .collect();
         if !self.neighbor_fns.is_empty() {
             let fns = std::mem::take(&mut self.neighbor_fns);
-            self.callbacks.on_neighbor = Some(callback(move |a: &mut abi::BlockEventArgs| {
-                let e = BlockEvent::wrap(a);
+            self.callbacks.on_neighbor = block_event_cb(move |e| {
                 for f in &fns {
                     f(e);
                 }
-            }));
+            });
         }
         let cb = &self.callbacks;
         let desc = abi::BlockDesc {
@@ -2403,21 +2406,20 @@ impl Drop for BlockBuilder<'_> {
             states: Slice::new(&states),
             props: Slice::new(&props),
             components: Slice::new(&values),
-            on_use: cb.on_use.unwrap_or(abi::Callback::NONE),
-
-            on_neighbor: cb.on_neighbor.unwrap_or(abi::Callback::NONE),
-            on_scheduled: cb.on_scheduled.unwrap_or(abi::Callback::NONE),
-            on_carried: cb.on_carried.unwrap_or(abi::Callback::NONE),
-            signal_read: cb.signal_read.unwrap_or(abi::Callback::NONE),
-            merge: cb.merge.unwrap_or(abi::Callback::NONE),
+            on_use: cb.on_use,
+            on_neighbor: cb.on_neighbor,
+            on_scheduled: cb.on_scheduled,
+            on_carried: cb.on_carried,
+            signal_read: cb.signal_read,
+            merge: cb.merge,
             shapes_of: self.made_of.as_ref().map_or(Str::EMPTY, |m| Str::new(&m.0)),
             shapes_suffix: self.made_of.as_ref().map_or(Str::EMPTY, |m| Str::new(&m.1)),
             shares_cell: Slice::new(&shares_cell),
-            placement: cb.placement.unwrap_or(abi::Callback::NONE),
+            placement: cb.placement,
             replacing: self.replace as u32,
-            on_grow: cb.on_grow.unwrap_or(abi::Callback::NONE),
-            on_signal: cb.on_signal.unwrap_or(abi::Callback::NONE),
-            signal_gate: cb.signal_gate.unwrap_or(abi::Callback::NONE),
+            on_grow: cb.on_grow,
+            on_signal: cb.on_signal,
+            signal_gate: cb.signal_gate,
             own_states: (self.own_states || !self.replace) as u32,
             retexture: Slice::new(&retexture),
             opens: Str::new(&self.opens),
@@ -2428,30 +2430,13 @@ impl Drop for BlockBuilder<'_> {
         }
         unsafe { (host().reg_block)(self.reg.raw, &desc) };
         if self.inventory > 0 {
-            let kind = crate::EntityKind::generated(self.name.clone());
-            drop(
-                self.reg
-                    .entity(kind)
-                    .no_egg()
-                    .flags(abi::entity_flags::NO_GRAVITY | abi::entity_flags::INVULNERABLE),
-            );
-            let block = crate::Block::generated(self.name.clone());
-            self.reg.block_entity(block, kind, self.inventory);
+            self.reg
+                .block_entity(Block::generated(self.name.clone()), self.inventory);
         }
 
         if self.item {
-            // The item gets the block's components from the engine.
-            let item = ItemBuilder {
-                _p: PhantomData,
-                raw: self.reg.raw,
-                name: self.name.clone(),
-                texture: std::mem::take(&mut self.item_texture),
-                handle: None,
-                block: self.name.clone(),
-                components: Vec::new(),
-                on_use: abi::Callback::NONE,
-            };
-            drop(item);
+            let texture = std::mem::take(&mut self.item_texture);
+            drop(self.reg.block_item(&self.name, texture));
         }
         if let Some((item, count)) = self.drops.take() {
             let pools = if item.is_empty() {
@@ -2574,8 +2559,7 @@ impl ItemBuilder<'_> {
 
     /// Creative inventory tab, see `Registry::creative_tab`.
     pub fn tab(self, tab: &CreativeTab) -> Self {
-        let tag = format!("tab/{}", tab.name());
-        self.tag(&tag)
+        self.tag(&tab_tag(tab))
     }
     /// Worn in equipment `slot` (any mod's), where it shows on the wearer's model over the parts
     /// the slot covers: `texture` (under `entity/`, like `armor/iron_1`) in the wearer's skin
@@ -2587,8 +2571,6 @@ impl ItemBuilder<'_> {
             .set_text(&c::WORN_TEXTURE, &tex)
     }
 
-    /// Used on a block, puts `entity` on that side of it. One is used up, outside creative. Entities
-    /// have an egg of their own without this; it is for something else that hatches one.
     /// Each stack carries an inventory of `slots` (`w.inventory(Holder::held(player, slot))`,
     /// `w.open_menu(player, &MENU, Holder::held(player, slot))`), saved in the stack. Stacks
     /// holding something only stack with stacks holding the same.
@@ -2596,6 +2578,8 @@ impl ItemBuilder<'_> {
         self.set(&crate::component::INVENTORY_SLOTS, slots)
     }
 
+    /// Used on a block, puts `entity` on that side of it. One is used up, outside creative. Entities
+    /// have an egg of their own without this; it is for something else that hatches one.
     pub fn spawns(mut self, entity: &'static crate::EntityKind) -> Self {
         self.components
             .push(Pending::text(abi::comp::SPAWN_EGG, entity.name()));
@@ -2997,25 +2981,26 @@ impl Height {
 #[derive(Clone, Copy, Debug)]
 pub struct Vein {
     kind: u32,
-    size: [f32; 2],
+    radius: f32,
+    thickness: f32,
     blocks: u32,
 }
 
 impl Vein {
     /// A random walk of `blocks` steps, the default.
     pub fn walk(blocks: u32) -> Vein {
-        Vein { kind: abi::vein_shape::WALK, size: [0.0; 2], blocks }
+        Vein { kind: abi::vein_shape::WALK, radius: 0.0, thickness: 0.0, blocks }
     }
     /// A lump of about `blocks`, like modern vanilla's.
     pub fn blob(blocks: u32) -> Vein {
-        Vein { kind: abi::vein_shape::BLOB, size: [0.0; 2], blocks }
+        Vein { kind: abi::vein_shape::BLOB, radius: 0.0, thickness: 0.0, blocks }
     }
     pub fn sphere(radius: f32) -> Vein {
-        Vein { kind: abi::vein_shape::SPHERE, size: [radius, 0.0], blocks: 0 }
+        Vein { kind: abi::vein_shape::SPHERE, radius, thickness: 0.0, blocks: 0 }
     }
     /// Flat and round (clay, gravel and sand under water).
     pub fn disk(radius: f32, thickness: f32) -> Vein {
-        Vein { kind: abi::vein_shape::DISK, size: [radius, thickness], blocks: 0 }
+        Vein { kind: abi::vein_shape::DISK, radius, thickness, blocks: 0 }
     }
 }
 
@@ -3054,7 +3039,7 @@ impl OreBuilder<'_> {
     /// What a vein looks like (a random walk of `size` blocks unless this says otherwise).
     pub fn shape(mut self, v: Vein) -> Self {
         self.desc.shape = v.kind;
-        self.desc.shape_size = v.size;
+        self.desc.shape_size = [v.radius, v.thickness];
         if v.blocks > 0 {
             self.desc.blocks = v.blocks;
         }
@@ -3145,14 +3130,20 @@ struct SignalBuild {
 }
 
 impl SignalBuild {
-    fn apply(&self, p: &Props, d: &mut StateDef, ns: &'static str) {
+    fn apply(&self, p: &Props, d: &mut StateDef) {
         let dir = |name: &str| crate::Dir::from_name(p.get(name));
         let front = dir("front").or(dir("facing"));
-        let mut s = SignalSpec { kind: self.kind, flags: self.flags, inputs: self.inputs, head: self.head, ..SignalSpec::default() };
+        let mut s = abi::SignalDesc {
+            kind: self.kind,
+            flags: self.flags,
+            inputs: self.inputs,
+            head: Str::new(self.head),
+            ..abi::SignalDesc::DEFAULT
+        };
         if let Some(a) = dir("attach") {
             s.attach = a.face();
             if self.attaches {
-                let _ = State { def: d, ns }.needs(a, "");
+                let _ = State { def: d }.needs(a, "");
             }
             // A torch powers the block on the far side of it, as high as it stands.
             if self.kind == abi::signal_kind::TORCH {
@@ -3176,13 +3167,13 @@ impl SignalBuild {
         if self.kind == abi::signal_kind::WIRE {
             let mask = p.int("faces");
             // A thin plate on each face it lies on.
-            const PLATES: [[f32; 6]; 6] = [
-                [0.0, 0.0, 0.0, 1.0, 16.0, 16.0],
-                [15.0, 0.0, 0.0, 16.0, 16.0, 16.0],
-                [0.0, 0.0, 0.0, 16.0, 1.0, 16.0],
-                [0.0, 15.0, 0.0, 16.0, 16.0, 16.0],
-                [0.0, 0.0, 0.0, 16.0, 16.0, 1.0],
-                [0.0, 0.0, 15.0, 16.0, 16.0, 16.0],
+            const PLATES: [([f32; 3], [f32; 3]); 6] = [
+                ([0.0, 0.0, 0.0], [1.0, 16.0, 16.0]),
+                ([15.0, 0.0, 0.0], [16.0, 16.0, 16.0]),
+                ([0.0, 0.0, 0.0], [16.0, 1.0, 16.0]),
+                ([0.0, 15.0, 0.0], [16.0, 16.0, 16.0]),
+                ([0.0, 0.0, 0.0], [16.0, 16.0, 1.0]),
+                ([0.0, 0.0, 15.0], [16.0, 16.0, 16.0]),
             ];
             d.hitbox = (0..6)
                 .filter(|f| mask & (1 << f) != 0)
@@ -3373,13 +3364,13 @@ impl Place {
     pub fn face(&self) -> crate::Dir {
         crate::Dir::from_face(self.args.face)
     }
-    pub fn look_dir(&self) -> [f32; 3] {
-        self.args.look
+    pub fn look_dir(&self) -> crate::Vec3 {
+        vec3(self.args.look)
     }
-    /// Just outside where it was clicked, 0..1 from this cell's corner: for a slab, `hit()[1] > 0.5`
+    /// Just outside where it was clicked, 0..1 from this cell's corner: for a slab, `hit().y > 0.5`
     /// is the upper half, on a floor, under a ceiling, against a wall or on another slab alike.
-    pub fn hit(&self) -> [f32; 3] {
-        self.args.hit
+    pub fn hit(&self) -> crate::Vec3 {
+        vec3(self.args.hit)
     }
     /// In `merge`: a property of how its item would go.
     pub fn placed(&self, prop: &str) -> Option<&'static str> {
@@ -3389,6 +3380,10 @@ impl Place {
     pub fn look_facing(&self) -> crate::Dir {
         crate::Dir::nearest(self.args.look, crate::Facings::HORIZONTAL)
     }
+}
+
+fn vec3(v: [f32; 3]) -> crate::Vec3 {
+    crate::Vec3 { x: v[0] as f64, y: v[1] as f64, z: v[2] as f64 }
 }
 
 pub struct ItemUse {
@@ -3532,7 +3527,7 @@ impl LiquidBuilder<'_> {
     /// Also registers `item`: `empty` (a container item, any mod's) filled with this liquid, in
     /// creative tab `tab` (any mod's). The engine fills and pours it; no code needed.
     pub fn bucket(mut self, item: &'static Item, empty: &Item, tab: &CreativeTab) -> Self {
-        self.bucket = Some((item, empty.name().to_string(), tab.name().to_string()));
+        self.bucket = Some((item, empty.name().to_string(), tab_tag(tab)));
         self
     }
 }
@@ -3590,30 +3585,34 @@ impl Drop for LiquidBuilder<'_> {
                 .max_stack(1)
                 .set_text(&c::LIQUID, &self.name)
                 .set_text(&c::REMAINDER, &empty)
-                .tag(&format!("tab/{tab}"));
+                .tag(&tab);
         }
     }
 }
 
 pub struct ReactionBuilder<'a> {
     reg: &'a mut Registry,
-    names: [String; 5],
+    liquid: String,
+    touching: String,
+    source: String,
+    flowing: String,
+    falls_into: String,
 }
 
 impl ReactionBuilder<'_> {
     /// What a source of the liquid becomes.
     pub fn source_turns_into(mut self, block: &str) -> Self {
-        self.names[2] = qualify(self.reg.ns, block);
+        self.source = qualify(self.reg.ns, block);
         self
     }
     /// What flowing liquid becomes.
     pub fn flowing_turns_into(mut self, block: &str) -> Self {
-        self.names[3] = qualify(self.reg.ns, block);
+        self.flowing = qualify(self.reg.ns, block);
         self
     }
     /// What the touched liquid becomes when this one flows down into it.
     pub fn below_turns_into(mut self, block: &str) -> Self {
-        self.names[4] = qualify(self.reg.ns, block);
+        self.falls_into = qualify(self.reg.ns, block);
         self
     }
 }
@@ -3623,13 +3622,12 @@ impl Drop for ReactionBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
-        let n = &self.names;
         let desc = abi::ReactionDesc {
-            liquid: Str::new(&n[0]),
-            touching: Str::new(&n[1]),
-            source: Str::new(&n[2]),
-            flowing: Str::new(&n[3]),
-            falls_into: Str::new(&n[4]),
+            liquid: Str::new(&self.liquid),
+            touching: Str::new(&self.touching),
+            source: Str::new(&self.source),
+            flowing: Str::new(&self.flowing),
+            falls_into: Str::new(&self.falls_into),
             ..abi::ReactionDesc::DEFAULT
         };
         unsafe { (host().reg_liquid_reaction)(self.reg.raw, &desc) }
@@ -3704,8 +3702,8 @@ impl Registry {
 
     /// When `liquid` touches `touching` (names or `#tags` of liquid blocks), see `ReactionBuilder`.
     pub fn liquid_reaction<'a>(&'a mut self, liquid: &str, touching: &str) -> ReactionBuilder<'a> {
-        let names = [qualify(self.ns, liquid), qualify(self.ns, touching), String::new(), String::new(), String::new()];
-        ReactionBuilder { reg: self, names }
+        let (liquid, touching) = (qualify(self.ns, liquid), qualify(self.ns, touching));
+        ReactionBuilder { reg: self, liquid, touching, source: String::new(), flowing: String::new(), falls_into: String::new() }
     }
 }
 
@@ -3721,7 +3719,7 @@ mod order_tests {
 
     fn built(f: impl FnOnce(State<'_>) -> State<'_>) -> StateDef {
         let mut d = StateDef::new("x");
-        f(State { def: &mut d, ns: "test" });
+        f(State { def: &mut d });
         d
     }
 
@@ -3744,7 +3742,7 @@ mod order_tests {
                 .hitbox([0.0; 3], [16.0, 16.0, 1.0])
         });
         // Its north end comes to the south.
-        assert_eq!((d.boxes[0].0, d.boxes[0].1), ([0.0, 0.0, 15.0], [16.0, 16.0, 16.0]));
-        assert_eq!(d.hitbox[0], [0.0, 0.0, 15.0, 16.0, 16.0, 16.0]);
+        assert_eq!((d.boxes[0].min, d.boxes[0].max), ([0.0, 0.0, 15.0], [16.0, 16.0, 16.0]));
+        assert_eq!(d.hitbox[0], ([0.0, 0.0, 15.0], [16.0, 16.0, 16.0]));
     }
 }

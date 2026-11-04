@@ -1513,10 +1513,17 @@ impl Registry {
         unsafe { (host().set_player_menu)(self.raw, Str::new(menu.name())) }
     }
 
-    /// Gives `block` a block entity of kind `entity` with an inventory of `slots` (what
-    /// `BlockBuilder::inventory` and `machine` do).
-    pub(crate) fn block_entity(&mut self, block: &Block, entity: &EntityKind, slots: u32) {
-        unsafe { (host().set_block_entity)(self.raw, Str::new(block.name()), Str::new(entity.name()), slots) }
+    /// Gives `block` a block entity of a kind of its own, named like the block, with an
+    /// inventory of `slots` (what `BlockBuilder::inventory` and `machine` do).
+    pub(crate) fn block_entity(&mut self, block: &Block, slots: u32) -> &'static EntityKind {
+        let kind = EntityKind::generated(block.name().to_string());
+        drop(
+            self.entity(kind)
+                .no_egg()
+                .flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE),
+        );
+        unsafe { (host().set_block_entity)(self.raw, Str::new(block.name()), Str::new(kind.name()), slots) }
+        kind
     }
 
     /// Every entity of `kind` (any mod's, `&PLAYER`) carries `component`, starting at its
@@ -2137,17 +2144,8 @@ impl Drop for MachineBuilder<'_> {
         }
         let (block, menu, reg) = (self.block_handle, self.menu, &mut *self.reg);
         let full = block.name().to_string();
-        let kind = EntityKind::generated(full.clone());
         let look = self.block.take().unwrap_or_else(|| Box::new(|b| b));
         look(reg.block(block)).opens(menu);
-        drop(
-            reg.entity(kind)
-                .no_egg()
-                .flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE),
-        );
-        for f in self.with.drain(..) {
-            f(reg, kind);
-        }
         // The inventory holds every group of the machine's own, wherever they start.
         let mut size = 0;
         let mut next = 0;
@@ -2158,7 +2156,10 @@ impl Drop for MachineBuilder<'_> {
                 size = size.max(next);
             }
         }
-        reg.block_entity(block, kind, size);
+        let kind = reg.block_entity(block, size);
+        for f in self.with.drain(..) {
+            f(reg, kind);
+        }
         if self.plain_screen {
             let names: Vec<String> = self.groups.iter().map(|g| g.0.clone()).collect();
             self.screen = Some(Box::new(move |ui| {

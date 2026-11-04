@@ -236,6 +236,12 @@ pub struct Callback {
 unsafe impl Send for Callback {}
 unsafe impl Sync for Callback {}
 
+impl Default for Callback {
+    fn default() -> Callback {
+        Callback::NONE
+    }
+}
+
 impl Callback {
     pub const NONE: Callback = Callback { func: None, data: core::ptr::null() };
 
