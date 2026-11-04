@@ -437,7 +437,9 @@ pub fn scatter_site(
         let state = def.surface_block(seed, x, z);
         if state == 0
             || state as usize >= c.states.len()
-            || s.ground.binary_search(&c.states[state as usize].block).is_err()
+            || s.ground
+                .binary_search(&c.states[state as usize].block)
+                .is_err()
         {
             return None;
         }

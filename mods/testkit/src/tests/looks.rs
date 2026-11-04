@@ -438,8 +438,8 @@ pub async fn clouds(t: T) -> R {
     Ok(())
 }
 
-/// By day a lamp's color still shows on what is around it, white light takes nothing away, and
-/// at night light alone is less than the sun.
+/// Light adds up and bends toward full: by day a lamp's color still shows on what is around it,
+/// over the sun's.
 pub async fn light_by_day(t: T) -> R {
     t.flat().await?;
     t.op("time 6000").await?;
@@ -467,7 +467,7 @@ pub async fn light_by_day(t: T) -> R {
     t.secs(0.4).await?;
     let lit = beside(&t.shot("lamp").await?);
     t.note(format!("snow {plain:?}, beside a blue lamp {lit:?}"));
-    t.probe("how much bluer the snow is than red, by a blue lamp at noon", lit[2] - lit[0], lit[2] - lit[0] > 25.0);
+    t.probe("how much bluer the snow is than red, by a blue lamp at noon", lit[2] - lit[0], lit[2] - lit[0] > 12.0);
     Ok(())
 }
 

@@ -37,9 +37,14 @@ fn lightmap(light: vec4<f32>, day: f32, ambient: f32, bright: f32) -> vec3<f32> 
         // level of its brightest channel so a colored lamp only grows brighter toward it.
         let level = max(max(block.x, block.y), block.z);
         let tint = vec3(1.0, (level * 0.6 + 0.4) * 0.6 + 0.4, level * level * 0.6 + 0.4);
-        // Added to the sky's, each channel on its own: a lamp only ever brightens.
+        // Added to the sky's, each channel on its own: a lamp only ever brightens, and a
+        // colored one shows by day too.
         c += min(tint * vec3(brightness_curve(block.x), brightness_curve(block.y), brightness_curve(block.z)) * 1.4, vec3(0.85));
     }
+    // Light adds up past what a screen shows: what is bright bends toward full instead of
+    // being cut there, so sun and lamp together are brighter than the sun alone.
+    let knee = 0.8;
+    c = select(c, knee + (1.0 - knee) * (1.0 - exp(-(c - knee) / (1.0 - knee))), c > vec3(knee));
     c = clamp(c, vec3(0.0), vec3(1.0));
     let m = max(max(c.x, c.y), c.z);
     if m > 1e-4 {
