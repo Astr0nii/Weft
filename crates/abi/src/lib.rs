@@ -2610,6 +2610,39 @@ pub struct UiNode {
     pub tooltip: Str,
     /// `ui_dir` for progress bars.
     pub dir: u32,
+    /// ICONS: how the row moves and lights up (`IconEffect`).
+    pub effects: Slice<IconEffect>,
+}
+
+/// Something a row of icons does (`UiNode::effects`), each by its own value read every frame.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IconEffect {
+    /// `icon_effect::*`.
+    pub kind: u32,
+    /// `UiBindArgs`: what it goes by, as each kind says; none: 1.
+    pub bind: Callback,
+    /// GUI pixels for moves, seconds for flashes and pulses.
+    pub amount: f32,
+}
+
+/// `IconEffect::kind`.
+pub mod icon_effect {
+    /// Icons jump about by up to the value times `amount` pixels (0: still).
+    pub const SHAKE: u32 = 0;
+    /// For `amount` seconds after the row's value goes up, what it gained blinks, and
+    /// `<class>_flash` lights the row where there is one (hearts healing).
+    pub const FLASH_GAIN: u32 = 1;
+    /// The same after it goes down, showing what was lost (hearts hurt).
+    pub const FLASH_LOSS: u32 = 2;
+    /// What the row would be at the value, fading in and out every `amount` seconds (what the
+    /// held food would fill); below the row's own value nothing.
+    pub const PREVIEW: u32 = 3;
+    /// A second row at the value, in `<class>_overlay` icons over the first (saturation).
+    pub const OVERLAY: u32 = 4;
+    /// While the value is above 0, a wave runs along the row, `amount` pixels high (hearts
+    /// regenerating).
+    pub const WAVE: u32 = 5;
 }
 defaults!(UiNode {
     kind: 0,
@@ -2640,6 +2673,7 @@ defaults!(UiNode {
     on_click: Callback::NONE,
     tooltip: Str::EMPTY,
     dir: 0,
+    effects: Slice::EMPTY,
 });
 
 #[repr(C)]

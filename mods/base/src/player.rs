@@ -125,7 +125,9 @@ pub fn register(r: &mut Registry) {
     // Survival bars; a negative value hides them (creative).
     r.hud_element(&HUD_HEALTH, hud_anchor::HOTBAR_LEFT, 0, |ui| {
         ui.icons("heart", 10, |c| if c.outside_survival() { -1.0 } else { c.player_state().map_or(20.0, |s| s.health.ceil()) })
-            .shaking();
+            .shaking()
+            .flash_on_gain(0.5)
+            .flash_on_loss(1.0);
     });
     r.hud_element(&HUD_ARMOR, hud_anchor::HOTBAR_LEFT, 1, |ui| {
         ui.icons("armor", 10, |c| {
@@ -141,7 +143,29 @@ pub fn register(r: &mut Registry) {
     });
     r.hud_element(&HUD_FOOD, hud_anchor::HOTBAR_RIGHT, 0, |ui| {
         ui.icons("food", 10, |c| if c.outside_survival() { -1.0 } else { c.component(&HUNGER).map_or(20.0, |h| h.food.ceil()) })
-            .from_right();
+            .from_right()
+            // With no saturation left the food shakes, harder when it is nearly gone.
+            .shaking_by(|c| match c.component(&HUNGER) {
+                Some(h) if h.saturation <= 0.0 => {
+                    if h.food <= 6.0 {
+                        2.0
+                    } else {
+                        1.0
+                    }
+                }
+                _ => 0.0,
+            })
+            .overlay(|c| c.component(&HUNGER).map_or(0.0, |h| h.saturation.ceil()))
+            // What the food in hand would fill, fading in and out.
+            .preview(1.6, |c| {
+                let held = c
+                    .player_state()
+                    .map_or(ItemStack::EMPTY, |s| c.inventory_slot(s.selected));
+                match (c.component(&HUNGER), FOOD.on_item(held.item)) {
+                    (Some(h), Some(f)) => (h.food + f.hunger as f32).min(20.0),
+                    _ => 0.0,
+                }
+            });
     });
     r.hud_element(&HUD_AIR, hud_anchor::HOTBAR_RIGHT, 1, |ui| {
         ui.icons("air", 10, |c| if c.outside_survival() { -1.0 } else { c.component(&HUNGER).map_or(-1.0, |h| air_bubbles(h.air)) })

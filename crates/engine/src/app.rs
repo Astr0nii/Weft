@@ -1445,9 +1445,18 @@ impl Running {
                         }
                         relayout |= text::refresh(&mut t.spans, &test);
                     }
-                    // Jumping about needs drawing again, whatever the value does.
-                    Kind::Icons { bind, value, shake: Some(s), .. } if (0.0..=*s).contains(value) => {
-                        *value = bind(&ctx);
+                    // Moving icons need drawing again, whatever the value does.
+                    Kind::Icons { bind, value, shake, effects, change, .. }
+                        if !effects.is_empty() || shake.is_some_and(|s| (0.0..=s).contains(value)) =>
+                    {
+                        let v = bind(&ctx);
+                        if (v - *value).abs() > 1e-4 && *value >= 0.0 && v >= 0.0 {
+                            *change = Some((*value, crate::shaders::clock(), v > *value));
+                        }
+                        *value = v;
+                        for e in effects.iter_mut() {
+                            e.value = e.bind.as_ref().map_or(1.0, |b| b(&ctx));
+                        }
                         redraw = true;
                     }
                     Kind::Progress { bind, value, .. } | Kind::Icons { bind, value, .. } => {

@@ -472,6 +472,7 @@ Inside any callback you get a `World` (`w`):
 
 - UI is built in code: `r.screen(&ABOUT, |ui| ui.panel(..)).pauses()`, the engine's screens are in `screens::*` and its pause, death and settings screens use the same parts (inputs, sliders, items, `S::mono()`, `.scroll()`...)
 - HUD elements are built with `r.hud_element(&MANA_BAR, hud_anchor::HOTBAR_LEFT, 0, |ui| ..)`
+- a bar of icons is `ui.icons("mana", 10, |c| value)` (`gui/mana_full`, `_half`, `_empty`; a negative value hides it, so it shows when you say), and it moves however you tell it, each by its own value read every frame: `.shaking_by(|c| ..)` (0 still, 2 hard), `.shaking_below(4.0)`, `.flash_on_gain(0.5)` / `.flash_on_loss(1.0)` (what changed blinks, `mana_flash` lights the bar), `.preview(1.6, |c| ..)` (what it would be, fading in and out), `.overlay(|c| ..)` (a second row in `mana_overlay_*` icons on top), `.wave_while(2.0, |c| ..)`. Base's hearts and food are made of these: food shakes with no saturation, shows the saturation outlined in gold and what the food in hand would fill
 - F3 panels are at `hud_anchor::DEBUG_LEFT`
 - Looks come from textures named after the class (`gui/button.png`, `_hover` ...) and named colors in the language files (`color.button`), so a resource pack can reskin screens ([UI guide](ui.md#looks))
 - Bind values instead of copying them: `ui.progress_bind("energy", style, |c| ..)`, `ui.text_bind(..)`

@@ -450,6 +450,18 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
                         value: -1.0,
                         dir: n.dir,
                         shake: if n.data == 0 { None } else { Some(f32::from_bits(n.data)) },
+                        effects: n
+                            .effects
+                            .as_slice()
+                            .iter()
+                            .map(|e| crate::ui::IconEffect {
+                                kind: e.kind,
+                                bind: e.bind.func.is_some().then(|| float_bind(owner, e.bind)),
+                                amount: e.amount,
+                                value: 0.0,
+                            })
+                            .collect(),
+                        change: None,
                     },
                     style,
                 )

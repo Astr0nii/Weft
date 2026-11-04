@@ -575,7 +575,7 @@ impl Ui {
         n.class = Str::new(class);
         n.count = count;
         n.bind = bind_cb(f);
-        Icons { ui: self, node: Some(n) }
+        Icons { ui: self, node: Some(n), effects: Vec::new() }
     }
 
     pub fn image(&mut self, texture: &str, w: f32, h: f32) {
@@ -665,6 +665,7 @@ impl TextOut {
 pub struct Icons<'a> {
     ui: &'a mut Ui,
     node: Option<Node>,
+    effects: Vec<abi::IconEffect>,
 }
 
 impl Icons<'_> {
@@ -690,11 +691,46 @@ impl Icons<'_> {
         }
         self
     }
+    /// Jumping about as much as `f` says (0 still, 1 a pixel, 2 two...): food with no
+    /// saturation left, harder when nearly empty.
+    pub fn shaking_by(self, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) -> Self {
+        self.effect(abi::icon_effect::SHAKE, 1.0, Some(Box::new(f)))
+    }
+    /// What it gains blinks for `secs`, and `<class>_flash` lights it where there is one
+    /// (hearts healing).
+    pub fn flash_on_gain(self, secs: f32) -> Self {
+        self.effect(abi::icon_effect::FLASH_GAIN, secs, None)
+    }
+    /// What it loses blinks for `secs` (hearts hurt).
+    pub fn flash_on_loss(self, secs: f32) -> Self {
+        self.effect(abi::icon_effect::FLASH_LOSS, secs, None)
+    }
+    /// What the row would be at `f`'s value, fading in and out every `secs` (what the held food
+    /// would fill, as AppleSkin shows it).
+    pub fn preview(self, secs: f32, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) -> Self {
+        self.effect(abi::icon_effect::PREVIEW, secs, Some(Box::new(f)))
+    }
+    /// A second row at `f`'s value in `<class>_overlay` icons over this one (saturation).
+    pub fn overlay(self, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) -> Self {
+        self.effect(abi::icon_effect::OVERLAY, 0.0, Some(Box::new(f)))
+    }
+    /// While `f` is above 0 a wave runs along the row, `pixels` high (hearts regenerating).
+    pub fn wave_while(self, pixels: f32, f: impl Fn(&ClientView) -> f32 + Send + Sync + 'static) -> Self {
+        self.effect(abi::icon_effect::WAVE, pixels, Some(Box::new(f)))
+    }
+    /// Any `abi::icon_effect` by `f`'s value (none: 1).
+    pub fn effect(mut self, kind: u32, amount: f32, f: Option<Box<dyn Fn(&ClientView) -> f32 + Send + Sync>>) -> Self {
+        let bind = f.map_or(abi::Callback::NONE, |f| bind_cb(move |c| f(c)));
+        self.effects.push(abi::IconEffect { kind, bind, amount });
+        self
+    }
 }
 
 impl Drop for Icons<'_> {
     fn drop(&mut self) {
-        if let Some(n) = self.node.take().filter(|_| !std::thread::panicking()) {
+        if let Some(mut n) = self.node.take().filter(|_| !std::thread::panicking()) {
+            // The engine copies the effects while this call lasts.
+            n.effects = Slice::new(&self.effects);
             self.ui.leaf(n);
         }
     }

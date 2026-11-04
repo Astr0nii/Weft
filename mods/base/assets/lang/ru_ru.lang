@@ -51,7 +51,7 @@ block.base.crafting_table = Верстак
 block.base.furnace = Печь
 block.base.furnace.tooltip = Плавит руду и готовит еду.
     {on_key:!core:sneak}{lang:tooltip.more}{/on_key}{on_key:core:sneak}Топливо ({item:base:coal} уголь, {item:base:oak_planks} доски и др.) кладётся в нижний слот.{/on_key}
-tagged.food = {icons:base:food_full value.hunger/2}
+tagged.food = {icons:base:food_full value.hunger/2 dir:left} {icons:base:food_overlay_full value.saturation/2 dir:left}
 tagged.armor = {#5555ff}Броня: +{value.points}{/}{if:value.toughness>0}\n{#5555ff}Стойкость брони: +{value.toughness}{/}{/if}
 tagged.fuel = Переплавляет предметов: {value/200}
 block.base.bed = Кровать

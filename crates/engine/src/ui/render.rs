@@ -466,9 +466,24 @@ impl UiRenderer {
     /// Share `v` of a picture in `r`: its nearest state, or cut off toward `dir` (`ui::meter`).
     #[allow(clippy::too_many_arguments)]
     fn meter_picture(&mut self, gpu: &mut dyn Backend, assets: &Assets, name: &str, v: f32, dir: u32, r: Rect, scale: f32) {
+        self.meter_picture_tinted(gpu, assets, name, v, dir, r, scale, 0xFFFFFFFF)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn meter_picture_tinted(
+        &mut self,
+        gpu: &mut dyn Backend,
+        assets: &Assets,
+        name: &str,
+        v: f32,
+        dir: u32,
+        r: Rect,
+        scale: f32,
+        color: u32,
+    ) {
         let Some((picture, crop)) = super::meter::part(name, v, dir) else { return };
         match self.texture(gpu, assets, &picture) {
-            Some((idx, _, _)) => self.image(cropped(r, crop), idx, crop, 0xFFFFFFFF),
+            Some((idx, _, _)) => self.image(cropped(r, crop), idx, crop, color),
             None => self.checker(cropped(r, crop), scale),
         }
     }
@@ -1069,27 +1084,89 @@ impl UiRenderer {
                     None => self.checker(cropped(r, super::meter::crop(v, *dir)), scale),
                 }
             }
-            Kind::Icons { class, count, value, dir, shake, .. } if *value >= 0.0 => {
-                use weft_abi::ui_dir;
-                let tick = (crate::shaders::clock() * crate::world::TPS as f32) as i64;
+            Kind::Icons { class, count, value, dir, shake, effects, change, .. } if *value >= 0.0 => {
+                use weft_abi::{icon_effect as fx, ui_dir};
+                let now = crate::shaders::clock();
+                let tick = (now * crate::world::TPS as f32) as i64;
                 let full = look.texture(class, "full");
                 let empty = look
                     .texture(class, "empty")
                     .and_then(|n| self.texture(gpu, assets, &n));
+                let overlay = look.texture(&format!("{class}_overlay"), "full");
+                let lit = look
+                    .texture(class, "flash")
+                    .and_then(|n| self.texture(gpu, assets, &n));
+                // A flash going on: what the row was, and whether this is a bright moment of it.
+                let flash = effects
+                    .iter()
+                    .filter_map(|e| {
+                        let (was, at, up) = (*change)?;
+                        let wanted = if up { fx::FLASH_GAIN } else { fx::FLASH_LOSS };
+                        (e.kind == wanted && e.value > 0.0 && now - at < e.amount).then_some(was)
+                    })
+                    .next();
+                // Vanilla's blink: three ticks on, three off.
+                let bright = flash.is_some() && (tick / 3) % 2 == 0;
+                let shown = flash.map_or(*value, |was| if bright { value.max(was) } else { value.min(was) });
+                let preview = effects
+                    .iter()
+                    .find(|e| e.kind == fx::PREVIEW && e.value > *value)
+                    .map(|e| (e.value, 0.5 - 0.5 * (now / e.amount.max(0.1) * std::f32::consts::TAU).cos()));
+                let wave = effects
+                    .iter()
+                    .find(|e| e.kind == fx::WAVE && e.value > 0.0)
+                    .map(|e| ((tick % (*count as i64 + 5)) as u32, e.amount));
+                let shaking = effects
+                    .iter()
+                    .filter(|e| e.kind == fx::SHAKE)
+                    .map(|e| e.value.max(0.0) * if e.amount > 0.0 { e.amount } else { 1.0 })
+                    .fold(if shake.is_some_and(|s| *value <= s) { 1.0f32 } else { 0.0 }, f32::max);
                 for i in 0..*count {
                     // A value counts halves of an icon, as vanilla's bars do.
-                    let v = *value / 2.0 - i as f32;
+                    let v = shown / 2.0 - i as f32;
                     let slot = if matches!(*dir, ui_dir::LEFT | ui_dir::UP) { count - 1 - i } else { i } as f32 * 8.0 * scale;
-                    let jump = if shake.is_some_and(|s| *value <= s) { (weft_noise::hash(0, tick, i as i64, 0) & 1) as f32 } else { 0.0 };
+                    let mut jump = if shaking > 0.0 {
+                        let h = weft_noise::hash(0, tick, i as i64, 0);
+                        ((h % 1000) as f32 / 1000.0 * (shaking + 1.0))
+                            .floor()
+                            .min(shaking)
+                    } else {
+                        0.0
+                    };
+                    if let Some((at, high)) = wave
+                        && at == i
+                    {
+                        jump -= high.max(1.0);
+                    }
                     let (dx, dy) = if matches!(*dir, ui_dir::UP | ui_dir::DOWN) { (0.0, slot) } else { (slot, 0.0) };
                     let rr = Rect { x: r.x + dx, y: r.y + dy + jump * scale, w: 9.0 * scale, h: 9.0 * scale };
                     if let Some((idx, _, _)) = empty {
                         self.image(rr, idx, [0.0, 0.0, 1.0, 1.0], 0xFFFFFFFF);
                     }
+                    if let Some((p, alpha)) = preview {
+                        let pv = p / 2.0 - i as f32;
+                        if pv > 0.0 && pv > v {
+                            let a = (alpha * 255.0) as u32;
+                            if let Some(full) = &full {
+                                self.meter_picture_tinted(gpu, assets, full, pv.min(1.0), *dir, rr, scale, 0xFFFFFF00 | a);
+                            }
+                        }
+                    }
                     if v > 0.0 {
                         match &full {
                             Some(full) => self.meter_picture(gpu, assets, full, v.min(1.0), *dir, rr, scale),
                             None => self.checker(rr, scale),
+                        }
+                    }
+                    if bright && let Some((idx, _, _)) = lit {
+                        self.image(rr, idx, [0.0, 0.0, 1.0, 1.0], 0xFFFFFFFF);
+                    }
+                    for e in effects.iter().filter(|e| e.kind == fx::OVERLAY) {
+                        let ov = e.value / 2.0 - i as f32;
+                        if ov > 0.0
+                            && let Some(o) = &overlay
+                        {
+                            self.meter_picture(gpu, assets, o, ov.min(1.0), *dir, rr, scale);
                         }
                     }
                 }
