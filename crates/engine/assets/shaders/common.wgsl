@@ -33,12 +33,12 @@ fn lightmap(light: vec4<f32>, day: f32, ambient: f32, bright: f32) -> vec3<f32> 
     var c = max(vec3(0.04), vec3(brightness_curve(ambient))) + mix(vec3(0.478, 0.478, 1.0), vec3(1.0), d) * sky;
     let block = light.yzw;
     if any(block > vec3(0.0)) {
-        let p = (2.0 * block - 1.0) * (2.0 * block - 1.0);
-        let tint = mix(vec3(1.0, 0.847, 0.549), vec3(1.0), 0.9 * p);
-        // No lamp is as bright as the sun, and over the sun it still shows: the sum comes back
-        // down as a whole, keeping its color, where clamping it would give plain white by day.
+        // Vanilla's warmth of block light: yellower the dimmer it is, white at full, by the
+        // level of its brightest channel so a colored lamp only grows brighter toward it.
+        let level = max(max(block.x, block.y), block.z);
+        let tint = vec3(1.0, (level * 0.6 + 0.4) * 0.6 + 0.4, level * level * 0.6 + 0.4);
+        // Added to the sky's, each channel on its own: a lamp only ever brightens.
         c += min(tint * vec3(brightness_curve(block.x), brightness_curve(block.y), brightness_curve(block.z)) * 1.4, vec3(0.85));
-        c /= max(1.0, max(max(c.x, c.y), c.z));
     }
     c = clamp(c, vec3(0.0), vec3(1.0));
     let m = max(max(c.x, c.y), c.z);
