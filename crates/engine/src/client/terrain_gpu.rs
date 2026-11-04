@@ -142,7 +142,9 @@ fn steps(w: &mut Vec<i32>, e: &Expr, seed: u64) -> (i32, i32) {
 /// `describe` for distant terrain, with the dimension's scattered things (trees) after it
 /// (`d::SCATTER_OFF` points there): per scatter its cell, reach and hash seed, then per biome the chance
 /// as a threshold on the site's bits (`dim::scatter_site`'s test, exactly), and the canopy its
-/// shape callback makes there (radius, top above the site, block), from a few sample runs.
+/// shape callback makes there (radius, top above the site, block), from a few sample runs; then
+/// the ground it stands on (`ScatterDef::ground`) as state ranges (count, then first and count
+/// each), none for any.
 pub fn describe_lod(c: &Content, dim: u32, seed: u64) -> Option<Vec<i32>> {
     let mut w = describe(c, dim, seed)?;
     let def = &c.dims[dim as usize];
@@ -199,6 +201,11 @@ pub fn describe_lod(c: &Content, dim: u32, seed: u64) -> Option<Vec<i32>> {
             let entry: [i32; words::SCATTER_BIOME as usize] =
                 [threshold as u32 as i32, (threshold >> 32) as u32 as i32, radii[radii.len() / 2], tops[tops.len() / 2], state as i32];
             w.extend_from_slice(&entry);
+        }
+        w.push(sc.ground.len() as i32);
+        for &b in &sc.ground {
+            let bd = &c.blocks[b as usize];
+            w.extend_from_slice(&[bd.first_state as i32, bd.states as i32]);
         }
     }
     Some(w)

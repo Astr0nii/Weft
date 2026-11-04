@@ -848,6 +848,9 @@ pub struct StateDesc {
     /// are components too, `comp::HARDNESS` ...).
     pub components: Slice<CompValue>,
     pub signal: SignalDesc,
+    /// Sides a liquid in its cell can't pass, a bit per `FACE_DIRS` direction; `u8::MAX`: the
+    /// ones its hitbox covers whole.
+    pub liquid_walls: u8,
 }
 defaults!(StateDesc {
     flags: block_flags::SOLID | block_flags::OPAQUE,
@@ -862,6 +865,7 @@ defaults!(StateDesc {
     outline: Slice::EMPTY,
     components: Slice::EMPTY,
     signal: SignalDesc::DEFAULT,
+    liquid_walls: u8::MAX,
 });
 
 #[repr(C)]
@@ -1611,6 +1615,17 @@ pub mod camera_flags {
     /// The player may turn it on only if the server lets it (`action::CAMERA`): by default in a
     /// game mode that flies (creative, spectator).
     pub const ASK: u32 = 1024;
+}
+
+/// How cubes kept loaded with no player near go on (`Host::force_load`).
+pub mod force_load {
+    /// Let go.
+    pub const OFF: u32 = 0;
+    /// Machines: block entities, systems, scheduled ticks and redstone; mobs stand still and
+    /// nothing grows (vanilla's lazy chunks).
+    pub const MACHINES: u32 = 1;
+    /// All of it, as near a player.
+    pub const ALL: u32 = 2;
 }
 
 /// How a move goes from start to end (`CameraDesc::easing`, `Host::player_camera`).
@@ -3405,6 +3420,11 @@ pub struct Host {
     /// (NaN: as the mode says).
     /// `t` (0..1) eased by `kind` (`easing::*`).
     pub ease: unsafe extern "C" fn(kind: u32, t: f32) -> f32,
+    /// Keeps the cubes from block `from` to `to` loaded for `ticks` more, as `mode`
+    /// (`force_load::*`, `OFF` lets them go), under ticket `key`: the same key again moves or
+    /// renews it. 0 when `action::FORCE_LOAD` was denied.
+    pub force_load:
+        unsafe extern "C" fn(world: *mut WorldCtx, key: u64, from: *const BlockPos, to: *const BlockPos, mode: u32, ticks: u32) -> u32,
     pub player_camera: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, mode: u32, locked: u32, transition: f32, easing: u32),
 }
 
@@ -4169,6 +4189,9 @@ pub mod action {
     /// `Query`: player `entity` turning on camera mode `amount` (`Host::camera_id`), one with
     /// `camera_flags::ASK`. With nobody allowing or denying, it may in a game mode that flies.
     pub const CAMERA: &str = "core:camera";
+    /// `Query`: cubes from `pos` kept loaded (`Host::force_load`), `amount` the mode, `other`
+    /// the ticket's key.
+    pub const FORCE_LOAD: &str = "core:force_load";
 }
 
 pub mod question {
@@ -4600,6 +4623,8 @@ pub struct ClientState {
     pub sounds: u32,
     /// Where the player is drawn this frame (between physics ticks), unlike `pos`.
     pub shown: Vec3,
+    /// Columns distant terrain takes from saved cubes, not the terrain (`ToClient::LodColumns`).
+    pub lod_columns: u32,
     /// The camera mode on (`Host::camera_id`) and where the camera is this frame.
     pub camera: u32,
     pub camera_pos: Vec3,
@@ -4616,6 +4641,7 @@ pub struct ClientState {
     pub lod_pending: u32,
 }
 defaults!(ClientState {
+    lod_columns: 0,
     camera: 0,
     camera_pos: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
     flags: 0,

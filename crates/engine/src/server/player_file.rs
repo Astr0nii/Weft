@@ -101,6 +101,8 @@ impl Server {
         let p = &mut self.players[pi];
         p.conn
             .send(ToClient::Welcome { player: id, dim, pos, seed: self.cfg.seed, look, selected, flying });
+        self.send_lod_columns(pi, dim);
+        let p = &mut self.players[pi];
         p.conn.send(ToClient::Edits {
             dim,
             specs: self.dims[dim as usize]

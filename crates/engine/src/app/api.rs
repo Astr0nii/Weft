@@ -242,6 +242,7 @@ pub unsafe extern "C" fn client_state(c: *mut abi::ClientCtx, out: *mut abi::Cli
             s.bob = r.game.as_ref().map_or(0.0, |g| g.client.bob());
             if let Some(g) = &r.game {
                 s.camera = g.client.cameras.mode;
+                s.lod_columns = g.client.lod_columns() as u32;
                 s.camera_pos = g.client.cameras.shown.pos.to_array().into();
             }
             (s.benches, [s.bench_fps, s.bench_avg_ms, s.bench_p99_ms, s.bench_gpu_ms, s.bench_server_ms]) = (r.benches, r.bench_last);

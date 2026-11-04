@@ -55,6 +55,15 @@ pub enum DimEvent {
     StopSprint {
         player: u64,
     },
+    /// `Host::force_load`.
+    ForceLoad {
+        dim: u32,
+        key: u64,
+        min: IVec3,
+        max: IVec3,
+        mode: u32,
+        ticks: u32,
+    },
     /// `ToClient::Camera` to it.
     Camera {
         player: u64,
@@ -140,6 +149,8 @@ pub struct Dim {
     /// Cubes whose copy on disk holds entities or ticks, written again even if nothing else
     /// changed: what left them must not come back from there.
     pub on_disk: FxHashSet<IVec3>,
+    /// Cubes only machines tickets keep (`server::forced`): mobs stand still, nothing grows.
+    pub idle: FxHashSet<IVec3>,
     /// Players mods see this tick (not spectators), listed once on first use.
     players: Option<Vec<u64>>,
     pub entities: Entities,
@@ -733,6 +744,7 @@ impl Dim {
             day_offset: 0,
             weather: 0,
             on_disk: Default::default(),
+            idle: Default::default(),
             rng: Rng(weft_noise::mix(seed ^ id as u64)),
             players: None,
             entities: Entities::default(),
@@ -2200,8 +2212,14 @@ impl Dim {
     fn tick_entities(&mut self, c: &'static Content) {
         // Mod logic: one call per kind and callback with every entity of that kind.
         let mut by_kind: FxHashMap<(u64, u32), Vec<u64>> = FxHashMap::default();
+        // Copied, mods' calls borrow the region; empty but where only machines are kept.
+        let idle = (!self.idle.is_empty()).then(|| self.idle.clone());
+        let still = |e: &super::entity::Entity| {
+            idle.as_ref()
+                .is_some_and(|i| !e.player && e.anchor.is_none() && i.contains(&cube_of(e.pos.floor().as_ivec3())))
+        };
         for e in &self.entities.list {
-            if !e.removed && (!e.player || e.alive()) {
+            if !e.removed && (!e.player || e.alive()) && !still(e) {
                 by_kind
                     .entry((e.block_frame(), e.kind))
                     .or_default()
@@ -2278,7 +2296,7 @@ impl Dim {
             .par_iter_mut()
             .with_min_len(64)
             .filter_map(|e| {
-                if e.removed {
+                if e.removed || still(e) {
                     return None;
                 }
                 e.age += 1;
@@ -3232,6 +3250,10 @@ impl Dim {
             self.space.growth_queue.pop();
             let p = IVec3::new(x, y, z);
             if self.space.growth.get(&p) != Some(&at) {
+                continue;
+            }
+            // Where only machines are kept, it waits as in an unloaded cube.
+            if self.idle.contains(&cube_of(p)) {
                 continue;
             }
             self.space.growth.remove(&p);

@@ -277,6 +277,7 @@ pub static HOST: Host = Host {
     reg_camera,
     camera_id,
     ease,
+    force_load,
     player_camera,
 };
 
@@ -1212,6 +1213,36 @@ unsafe extern "C" fn reg_camera(r: *mut abi::Registrar, d: *const abi::CameraDes
             transition: d.transition,
             easing: d.easing,
         });
+    }
+}
+
+unsafe extern "C" fn force_load(
+    w: *mut abi::WorldCtx,
+    key: u64,
+    from: *const abi::BlockPos,
+    to: *const abi::BlockPos,
+    mode: u32,
+    ticks: u32,
+) -> u32 {
+    unsafe {
+        let d = dim(w);
+        let (a, b) = (crate::world::ivec(*from), crate::world::ivec(*to));
+        if mode != abi::force_load::OFF {
+            let mut q = abi::Query { other: key, pos: *from, amount: mode as f64, ..abi::Query::DEFAULT };
+            if !d.ask(content(), abi::action::FORCE_LOAD, &mut q) {
+                return 0;
+            }
+        }
+        let (a, b) = (d.place.to_world(a.as_dvec3()).floor().as_ivec3(), d.place.to_world(b.as_dvec3()).floor().as_ivec3());
+        d.events.push(crate::server::DimEvent::ForceLoad {
+            dim: d.id,
+            key,
+            min: crate::world::cube_of(a.min(b)),
+            max: crate::world::cube_of(a.max(b)),
+            mode,
+            ticks,
+        });
+        1
     }
 }
 

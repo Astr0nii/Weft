@@ -847,7 +847,7 @@ impl Client {
             mode: GameMode::SURVIVAL,
             cameras: camera::Cameras::default(),
             hide_gui: false,
-            first_person_model: false,
+            first_person_model: true,
             hand_swing: None,
             hand_swing_off: false,
             using_off: false,
@@ -2321,6 +2321,11 @@ impl Client {
         me.sprinting = self.player.sprinting && self.player.on_ground;
         me.age = self.start.elapsed().as_secs_f32();
         self.player.swims_in = swims_in(content(), self.me.kind, &self.worn());
+    }
+
+    /// Columns distant terrain takes from saved cubes.
+    pub fn lod_columns(&self) -> usize {
+        self.lod.columns_len()
     }
 
     pub fn set_view_distance(&mut self, r: i32) {

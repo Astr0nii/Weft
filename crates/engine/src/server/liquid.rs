@@ -46,28 +46,21 @@ impl Dim {
         self.fluid(c, p).filter(|_| !self.sealed(c, p, d))
     }
 
-    /// Whether what shares the cell at `p` with a liquid closes all of its side towards `d`.
+    /// Whether what shares the cell at `p` with a liquid closes its side towards `d`: what its
+    /// shape covers whole there (a stair's back), or what its block says (`liquid_walls`).
     fn sealed(&self, c: &Content, p: IVec3, d: IVec3) -> bool {
         if self.space.extras(p).is_empty() {
             return false;
         }
-        let axis = if d.x != 0 {
-            0
-        } else if d.y != 0 {
-            1
-        } else {
-            2
+        let Some(dir) = weft_abi::FACE_DIRS
+            .iter()
+            .position(|f| IVec3::from_array(*f) == d)
+        else {
+            return false;
         };
-        let up = d[axis] > 0;
-        self.parts(p).into_iter().any(|s| {
-            c.states[s as usize].collision.iter().any(|b| {
-                let at_side = if up { b[axis + 3] >= 1.0 } else { b[axis] <= 0.0 };
-                at_side
-                    && (0..3)
-                        .filter(|&a| a != axis)
-                        .all(|a| b[a] <= 0.0 && b[a + 3] >= 1.0)
-            })
-        })
+        self.parts(p)
+            .into_iter()
+            .any(|s| c.liquid_walls[s as usize] & 1 << dir != 0)
     }
 
     /// Room for liquid: neither solid nor a ladder (unloaded counts as solid).

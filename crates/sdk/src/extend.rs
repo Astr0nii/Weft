@@ -35,6 +35,9 @@ pub mod question {
     /// Player `entity` turning on a camera mode that asks (`camera_flags::ASK`), which one
     /// `Ask::is_camera` tells. `Allow` lets it where the game mode wouldn't.
     pub static CAMERA: Question = Question::named(crate::abi::action::CAMERA);
+    /// Cubes kept loaded (`World::keep_loaded`) from block `pos`, `amount` the mode
+    /// (`force_load::*`), `other` the ticket's key: deny one in someone else's claim.
+    pub static FORCE_LOAD: Question = Question::named(crate::abi::action::FORCE_LOAD);
 }
 
 /// The engine's value chains (`Registry::modify`, `World::chain_compute`).

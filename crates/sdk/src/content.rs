@@ -933,6 +933,7 @@ impl Registry {
             shares_cell: Vec::new(),
             signal: None,
             inventory: 0,
+            entity: false,
             model_file: String::new(),
             model_textures: Vec::new(),
             neighbor_fns: Vec::new(),
@@ -1265,6 +1266,8 @@ struct StateDef {
     components: Vec<Pending>,
     /// What it is to redstone.
     signal: abi::SignalDesc,
+    /// `abi::StateDesc::liquid_walls`, already turned.
+    liquid_walls: u8,
 }
 
 /// A box of a state's model, in 1/16 units.
@@ -1328,7 +1331,20 @@ impl StateDef {
             orientation: None,
             components: Vec::new(),
             signal: abi::SignalDesc::DEFAULT,
+            liquid_walls: u8::MAX,
         }
+    }
+
+    /// Sides a liquid in its cell can't pass, before its orientation turns them.
+    fn set_liquid_walls(&mut self, sides: &[crate::Dir]) {
+        let mask = sides.iter().fold(0u8, |m, d| m | 1 << d.face());
+        self.liquid_walls = match self.orientation {
+            Some(o) => {
+                let (_, _, own, _) = o.place([0.0; 3], [16.0; 3], [0usize, 1, 2, 3, 4, 5]);
+                (0..6).fold(0, |m, i| if mask & 1 << own[i] != 0 { m | 1 << i } else { m })
+            }
+            None => mask,
+        };
     }
 }
 
@@ -1588,6 +1604,13 @@ macro_rules! state_setters {
             });
             self
         }
+        /// The sides a liquid in it can't pass (`.holds_liquid()`), turned by `oriented`: without
+        /// this, the ones its hitbox covers whole (a stair's back holds water, a hollow log's
+        /// open ends don't). `&[]` lets it out everywhere.
+        pub fn liquid_walls(mut self, sides: &[crate::Dir]) -> Self {
+            self.each(|s| s.set_liquid_walls(sides));
+            self
+        }
         /// Air-like: invisible, no collision, not targetable.
         pub fn air(mut self) -> Self {
             self.each(|s| {
@@ -1643,6 +1666,8 @@ pub struct BlockBuilder<'a> {
     made_of: Option<(String, String)>,
     shares_cell: Vec<String>,
     inventory: u32,
+    /// A block entity even with no slots (`block_entity`).
+    entity: bool,
     model_file: String,
     model_textures: Vec<(String, String)>,
     /// What its `on_neighbor` does, `joins` and `derived` included, run in order.
@@ -2116,6 +2141,14 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
+    /// Each placed block gets a block entity, `EntityKind::named` like the block, with no slots
+    /// and no screen: for state of its own (`r.attach(..)` on that kind, ticked by a system), an
+    /// engine that has energy and nothing to hold.
+    pub fn block_entity(mut self) -> Self {
+        self.entity = true;
+        self
+    }
+
     /// Using it opens `menu`, on the block's block entity if it has one (machines), else a menu
     /// of its own (a crafting table). A menu with `.recipes(..)` makes the block a station of
     /// those recipes in the recipe viewer.
@@ -2442,6 +2475,7 @@ impl Drop for BlockBuilder<'_> {
                 outline: Slice::new(o),
                 components: Slice::new(v),
                 signal: s.signal,
+                liquid_walls: s.liquid_walls,
                 ..abi::StateDesc::DEFAULT
             })
             .collect();
@@ -2492,7 +2526,7 @@ impl Drop for BlockBuilder<'_> {
             h.set_count(self.states.len() as u32);
         }
         unsafe { (host().reg_block)(self.reg.raw, &desc) };
-        if self.inventory > 0 {
+        if self.inventory > 0 || self.entity {
             self.reg
                 .block_entity(Block::generated(self.name.clone()), self.inventory);
         }

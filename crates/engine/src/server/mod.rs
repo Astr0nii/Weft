@@ -8,9 +8,11 @@ pub mod dim;
 pub mod energy;
 pub mod entity;
 pub(crate) mod extend;
+pub mod forced;
 pub mod holder;
 mod liquid;
 mod load;
+pub mod lod_tops;
 pub mod path;
 mod player_file;
 pub mod signal;
@@ -175,6 +177,8 @@ pub struct Shared {
     /// Where players load cubes (dim, center, radius, up, down), for generation jobs to skip
     /// cubes a fast player already left behind.
     pub views: parking_lot::RwLock<Vec<(u32, View)>>,
+    /// Boxes of cubes tickets keep loaded (dim, lowest, highest cube), for the same.
+    pub forced: parking_lot::RwLock<Vec<(u32, IVec3, IVec3)>>,
 }
 
 pub const PHASES: [&str; 6] = ["insert", "messages", "regions", "request", "sync", "rest"];
@@ -213,6 +217,8 @@ pub struct Server {
     /// World rule values by rule id.
     /// Synced config values as players last got them.
     configs: Vec<(u32, f64)>,
+    /// Per dimension, cubes kept loaded with no player near (`forced`), by ticket key.
+    forced: Vec<forced::Tickets>,
 }
 
 /// Handle the client side uses to reach a running server thread.
@@ -401,7 +407,10 @@ impl Server {
         }
         let (gen_tx, gen_rx) = unbounded();
         crate::config::load_world(storage.as_ref().map_or(&[][..], |s| &s.meta.configs));
-        Server {
+        let forced_specs = storage
+            .as_ref()
+            .map_or(Vec::new(), |s| s.meta.forced.clone());
+        let mut server = Server {
             cfg,
             dims,
             players: Vec::new(),
@@ -422,7 +431,10 @@ impl Server {
             sprint: None,
             load_seen: (0, 0),
             configs: crate::config::synced(),
-        }
+            forced: vec![Default::default(); c.dims.len()],
+        };
+        server.read_forced(c, &forced_specs);
+        server
     }
 
     /// Synced settings the host changed since the last tick, to everyone.
@@ -520,6 +532,9 @@ impl Server {
         lap(0, &self.shared);
         self.handle_messages(c);
         self.send_configs();
+        if self.tick % 20 == 0 {
+            self.send_lod_changes();
+        }
         lap(1, &self.shared);
 
         // Every region of every dimension is independent: tick them all in parallel. A frozen
@@ -744,6 +759,7 @@ impl Server {
                         p.conn.send(ToClient::EntitySwing { id, off });
                     }
                 }
+                DimEvent::ForceLoad { dim, key, min, max, mode, ticks } => self.force_load(dim, key, min, max, mode, ticks),
                 DimEvent::Camera { player, mode, locked, transition, easing } => {
                     if let Some(p) = self
                         .players
@@ -841,6 +857,36 @@ impl Server {
         p.menu = Some(m);
     }
 
+    /// Every column of `dim` distant terrain shows other than the terrain says, to player `pi`.
+    pub(super) fn send_lod_columns(&mut self, pi: usize, dim: u32) {
+        if let Some(s) = &self.storage {
+            let cols = lod_columns(s.lock().lod[dim as usize].columns.values());
+            self.players[pi]
+                .conn
+                .send(ToClient::LodColumns { dim, all: true, cols });
+        }
+    }
+
+    /// Columns whose distant top changed as cubes were saved, to the players in their dimension.
+    fn send_lod_changes(&mut self) {
+        let Some(s) = &self.storage else { return };
+        let changed: Vec<(u32, Vec<lod_tops::LodColumn>)> = s
+            .lock()
+            .lod
+            .iter_mut()
+            .enumerate()
+            .map(|(d, t)| (d as u32, t.take_changed()))
+            .filter(|(_, c)| !c.is_empty())
+            .collect();
+        for (dim, cols) in changed {
+            let cols = lod_columns(cols.iter());
+            for p in self.players.iter_mut().filter(|p| p.joined && p.dim == dim) {
+                p.conn
+                    .send(ToClient::LodColumns { dim, all: false, cols: cols.clone() });
+            }
+        }
+    }
+
     fn save_all(&mut self, players: bool) {
         for r in self.dims.iter_mut().flat_map(|d| d.regions.iter_mut()) {
             r.finish_moving(crate::content::content());
@@ -913,6 +959,7 @@ impl Server {
             })
             .collect();
         s.meta.configs = crate::config::world_values();
+        s.meta.forced = self.forced_specs(c);
         s.meta.next_entity = self.next_id.load(Ordering::Relaxed);
         for p in &mut self.players {
             if p.joined || players {
@@ -969,7 +1016,7 @@ impl Server {
     /// Moves a player (with inventory and components) to a position, possibly in another
     /// dimension or region, without reloading anything.
     pub fn change_dim(&mut self, c: &'static Content, pi: usize, to: u32, pos: DVec3) {
-        let Server { players, dims, .. } = self;
+        let Server { players, dims, storage, .. } = self;
         let p = &mut players[pi];
         let from = p.dim as usize;
         if let Some(r) = dims[from].entity_region(p.entity) {
@@ -1008,6 +1055,13 @@ impl Server {
         p.last_place = (None, pos);
         p.teleported = Some(pos);
         p.conn.send(ToClient::Teleport { dim: to, pos, frame });
+        if let Some(s) = storage {
+            let cols = lod_columns(s.lock().lod[to as usize].columns.values());
+            players[pi]
+                .conn
+                .send(ToClient::LodColumns { dim: to, all: true, cols });
+        }
+        let p = &mut players[pi];
         p.conn
             .send(ToClient::Edits { dim: to, specs: dims[to as usize].edits.iter().map(|e| e.spec(c)).collect(), all: true });
         p.conn
@@ -1386,4 +1440,8 @@ fn death_message(c: &Content, cause: u32, killer: Option<u32>, name: String) -> 
 
 fn void_note(c: &Content) -> Msg {
     Msg::new(if c.spawn_dim == c.void_dim { "void.no_dimension" } else { "void.here" }, Vec::new())
+}
+
+fn lod_columns<'a>(cols: impl Iterator<Item = &'a lod_tops::LodColumn>) -> Vec<(i32, i32, i32, u32, u32)> {
+    cols.map(|c| (c.x, c.z, c.y, c.top, c.under)).collect()
 }

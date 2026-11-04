@@ -348,6 +348,25 @@ fn surface(x: u32, z: u32) -> i32 {
     return (c00 * (4 - fx) + c10 * fx) * (4 - fz) + (c01 * (4 - fx) + c11 * fx) * fz;
 }
 
+fn lerp2(a: vec2<i32>, b: vec2<i32>, t: i32) -> vec2<i32> {
+    return vec2<i32>(lerp(a.x, b.x, t), lerp(a.y, b.y, t));
+}
+
+// Whether caves take block (x, y, z) of a column standing alone, `ground` its smoothed height
+// (Q4): as `block` does with a cube's nodes, as `Terrain::surface_carved` does on the CPU.
+fn carved_at(x: i32, y: i32, z: i32, ground: i32) -> bool {
+    let gx = div_floor(x, 4).x * 4;
+    let gy = div_floor(y, 4).x * 4;
+    let gz = div_floor(z, 4).x * 4;
+    let fx = (x - gx) * 1024;
+    let fy = (y - gy) * 1024;
+    let fz = (z - gz) * 1024;
+    let a = lerp2(lerp2(cave_node(gx, gy, gz), cave_node(gx + 4, gy, gz), fx), lerp2(cave_node(gx, gy, gz + 4), cave_node(gx + 4, gy, gz + 4), fx), fz);
+    let b = lerp2(lerp2(cave_node(gx, gy + 4, gz), cave_node(gx + 4, gy + 4, gz), fx), lerp2(cave_node(gx, gy + 4, gz + 4), cave_node(gx + 4, gy + 4, gz + 4), fx), fz);
+    let n = lerp2(a, b, fy);
+    return carves(n.x > 0, n.y, cavern_roof(x, z), ground - y * 16);
+}
+
 // The block at local (x, y, z) of column `i`, as `Terrain::generate`.
 fn block(x: u32, y: u32, z: u32, ox: i32, oy: i32, oz: i32, cave: bool) -> u32 {
     let i = z * 16u + x;
@@ -605,6 +624,27 @@ fn lod(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t:
             }
             under = top;
         }
+        // Where caves open the ground, the floor they leave, as far down as distance shows.
+        if (desc[D_HAS_CAVES] != 0 && (desc[D_HAS_SEA] == 0 || c.height > desc[D_SEA])) {
+            let gx = div_floor(bx, 4).x * 4;
+            let gz = div_floor(bz, 4).x * 4;
+            let fx = bx - gx;
+            let fz = bz - gz;
+            let c00 = column(gx, gz).height;
+            let c10 = column(gx + 4, gz).height;
+            let c01 = column(gx, gz + 4).height;
+            let c11 = column(gx + 4, gz + 4).height;
+            let ground = (c00 * (4 - fx) + c10 * fx) * (4 - fz) + (c01 * (4 - fx) + c11 * fx) * fz;
+            var wy = c.height;
+            while (wy > c.height - 48 && carved_at(bx, wy, bz, ground)) {
+                wy -= 1;
+            }
+            if (wy < c.height) {
+                y = wy;
+                top = stone;
+                under = stone;
+            }
+        }
         let o = (tile * LOD_SAMPLES + k) * 2u;
         outp[o] = (u32(y) & 65535u) | (u32(top) << 16u);
         outp[o + 1u] = (u32(c.biome) & 65535u) | (u32(under) << 16u);
@@ -612,6 +652,8 @@ fn lod(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t:
         atomicStore(&canopy[k], 0u);
         atomicStore(&cover[k], 0u);
     }
+    // The samples' tops in `outp` are read back below.
+    storageBarrier();
     workgroupBarrier();
     // Trees: every site whose canopy may reach the samples, found as `dim::scatter_site` does
     // (standing on the nearest sample's ground), its canopy laid over the samples it covers.
@@ -628,7 +670,9 @@ fn lod(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t:
         let key = vec2<u32>(u32(desc[at + 2u]), u32(desc[at + 3u]));
         let nb = u32(desc[at + 4u]);
         let table = at + 5u;
-        at = table + nb * WORDS_SCATTER_BIOME;
+        let ng = u32(desc[table + nb * WORDS_SCATTER_BIOME]);
+        let ground = table + nb * WORDS_SCATTER_BIOME + 1u;
+        at = ground + ng * 2u;
         let c0 = div_floor(ox - s - reach, cell).x;
         let c1 = div_floor(ox + LOD_LAST * s + reach, cell).x;
         let d0 = div_floor(oz - s - reach, cell).x;
@@ -648,6 +692,19 @@ fn lod(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) t:
             let biome = g >> 16u;
             if (gh < sea || biome >= nb) {
                 continue;
+            }
+            // Only on its ground, as `dim::scatter_site`: the sample's top, which is stone where
+            // caves opened it.
+            if (ng > 0u) {
+                let top = i32(outp[(tile * LOD_SAMPLES + u32(sj) * LOD_SIDE + u32(si)) * 2u] >> 16u);
+                var on = false;
+                for (var q = 0u; q < ng; q++) {
+                    let first = desc[ground + q * 2u];
+                    on = on || (top >= first && top < first + desc[ground + q * 2u + 1u]);
+                }
+                if (!on) {
+                    continue;
+                }
             }
             let b = table + biome * WORDS_SCATTER_BIOME;
             let limit = vec2<u32>(u32(desc[b]), u32(desc[b + 1u]));

@@ -422,7 +422,13 @@ fn liquid(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm, mesh: &mut Mesh,
     let ts = info.textures[0];
     let (fx, fy, fz) = (x as f32, y as f32, z as f32);
     let layer = info.layer as usize;
-    if !same(x, y + 1, z) {
+    // In a block (waterlogged): its sides it covers whole stand where the liquid's would, which
+    // would fight them.
+    let parts = std::iter::once(n.states[i]).chain(n.extras.get(&i).into_iter().flatten().copied());
+    let walls = parts
+        .filter(|&p| c.states[p as usize].liquid.is_none())
+        .fold(0u8, |m, p| m | c.liquid_walls[p as usize]);
+    if !same(x, y + 1, z) && walls & 1 << 3 == 0 {
         let corners = [
             [fx, fy + hat(0, 1), fz + 1.0],
             [fx + 1.0, fy + hat(1, 1), fz + 1.0],
@@ -436,7 +442,7 @@ fn liquid(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm, mesh: &mut Mesh,
     }
     for dir in [0usize, 1, 4, 5] {
         let [dx, _, dz] = NORMALS[dir];
-        if same(x + dx, y, z + dz) {
+        if same(x + dx, y, z + dz) || walls & 1 << dir != 0 {
             continue;
         }
         let ni = pidx(x + dx, y, z + dz);
@@ -452,7 +458,7 @@ fn liquid(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm, mesh: &mut Mesh,
         mesh.quads[layer].push(quad(corners, WHOLE, ts, biome, info.tint, [nl; 4]));
     }
     let below = pidx(x, y - 1, z);
-    if !same(x, y - 1, z) && !ctm.hides(c.states[n.states[below] as usize].flags, n.states[below]) {
+    if !same(x, y - 1, z) && walls & 1 << 2 == 0 && !ctm.hides(c.states[n.states[below] as usize].flags, n.states[below]) {
         let corners = CORNERS[2].map(|p| [fx + p[0] as f32, fy, fz + p[2] as f32]);
         mesh.quads[layer].push(quad(corners, WHOLE, t, biome, info.tint, [light16(n.light[below]); 4]));
     }

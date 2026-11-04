@@ -547,6 +547,31 @@ pub async fn crater(t: T) -> R {
     Ok(())
 }
 
+/// Distant terrain shows what was built: a tower's columns reach the client once its cubes are
+/// saved (left behind), and again after reopening; the untouched land around costs nothing.
+pub async fn lod_columns(t: T) -> R {
+    t.world(5).await?;
+    t.op("mode creative").await?;
+    let f = t.feet();
+    t.check_eq(t.state().lod_columns, 0, "nothing built, nothing sent");
+    t.op(&format!("fill {} {} {} {} {} {} base:stone", f[0] + 4, f[1], f[2] + 4, f[0] + 6, f[1] + 40, f[2] + 6))
+        .await?;
+    t.cmd(&format!("/tp {} 200 {}", f[0] + 3000, f[2])).await?;
+    t.until("the tower's columns sent", Duration::from_secs(30), |t| t.state().lod_columns >= 9)
+        .await?;
+    let n = t.state().lod_columns;
+    t.probe("columns sent", n as f32, n < 64);
+    let name = format!("test-{}", t.name());
+    t.c().world_leave();
+    t.screen("core:title").await?;
+    t.c().world_open(&name, 5);
+    t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED))
+        .await?;
+    t.until("the columns again after reopening", Duration::from_secs(5), |t| t.state().lod_columns >= 9)
+        .await?;
+    Ok(())
+}
+
 /// A crater bigger than what is loaded survives closing the world: the part never loaded gets
 /// it when visited after reopening, and what was built in the crater since stays.
 pub async fn crater_saved(t: T) -> R {

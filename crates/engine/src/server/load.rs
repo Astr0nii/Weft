@@ -225,6 +225,16 @@ impl Server {
             }
             self.players[pi].gen_done = missing.is_empty().then_some(key);
         }
+        // What tickets keep, after what players see.
+        for d in 0..self.dims.len() as u32 {
+            let dim = &self.dims[d as usize];
+            for pos in self.forced_missing(d, |p| dim.has(p)) {
+                if !dim.generating.contains(&pos) && !queued.contains(&(d, pos)) {
+                    wanted.push((i32::MAX, d, pos));
+                    self.wanted.insert((d, pos));
+                }
+            }
+        }
         if wanted.is_empty() {
             return;
         }
@@ -248,7 +258,11 @@ impl Server {
             let wanted = shared.views.read().iter().any(|&(d, v)| {
                 let v = v.grown(2);
                 d == dim && v.column(pos) && pos.y >= v.center.y - v.down
-            });
+            }) || shared
+                .forced
+                .read()
+                .iter()
+                .any(|&(d, lo, hi)| d == dim && pos.cmpge(lo).all() && pos.cmple(hi).all());
             if !wanted {
                 let _ = tx.send(Generated { dim, pos, cube: None, entities: Vec::new(), conn: 0 });
                 return;
@@ -271,6 +285,7 @@ impl Server {
         if self.tick % 10 != 0 {
             return;
         }
+        self.expire_forced();
         for di in 0..self.dims.len() {
             let def = &c.dims[di];
             let views: Vec<(View, i32, i32)> = self
@@ -283,14 +298,25 @@ impl Server {
                     (view.grown(3), lo - 3, hi + 3)
                 })
                 .collect();
+            let near = |pos: IVec3| {
+                views
+                    .iter()
+                    .any(|&(v, lo, hi)| v.column(pos) && pos.y >= lo && pos.y <= hi)
+            };
+            let idle = self.idle_cubes(di as u32, near);
+            let tickets: Vec<super::forced::Ticket> = self.forced[di].values().copied().collect();
             let storage = self.storage.clone();
             let d = &mut self.dims[di];
+            for r in &mut d.regions {
+                r.idle = idle.clone();
+            }
             let before: usize = d.regions.iter().map(|r| r.space.cubes.len()).sum();
             for r in &mut d.regions {
                 let removed = r.retain_cubes(c, |pos| {
                     views
                         .iter()
                         .any(|&(v, lo, hi)| v.column(pos) && pos.y >= lo && pos.y <= hi)
+                        || tickets.iter().any(|t| t.contains(pos))
                 });
                 for (pos, cube, inside) in removed {
                     if let Some(s) = &storage {

@@ -71,6 +71,8 @@ pub struct StateInfo {
     pub boxes: Vec<ModelBox>,
     /// In block units.
     pub collision: Vec<[f32; 6]>,
+    /// `abi::StateDesc::liquid_walls`; `Content::liquid_walls` has them worked out.
+    pub liquid_walls: u8,
     /// What rays pick and what is outlined and cracked, in block units: worked out once at
     /// freeze, so all three agree.
     pub selection: Vec<[f32; 6]>,
@@ -748,22 +750,39 @@ impl Tight {
     }
 }
 
-/// The faces a state's collision covers whole, for `Tight::seals`; none for a block light
-/// doesn't pass at all.
-fn seals_of(s: &StateInfo) -> u8 {
-    if s.opacity >= 15 {
-        return 0;
-    }
-    let full = |lo: f32, hi: f32| lo <= 1e-4 && hi >= 1.0 - 1e-4;
+/// The faces a state's collision covers whole (bit per `FACE_DIRS` direction), by all its boxes
+/// together (a stair's back is two): what a slab keeps light out of and what holds a liquid in.
+pub fn covered_faces(s: &StateInfo) -> u8 {
     (0..6).fold(0, |m, dir| {
         let (axis, top) = (dir / 2, dir % 2 == 1);
         let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
-        let covers = s.collision.iter().any(|bx| {
+        // The face in sixteenths: each cell covered by some box lying on it.
+        let mut cells = [false; 256];
+        for bx in &s.collision {
             let on_face = if top { bx[axis + 3] >= 1.0 - 1e-4 } else { bx[axis] <= 1e-4 };
-            on_face && full(bx[a], bx[a + 3]) && full(bx[b], bx[b + 3])
-        });
-        if covers { m | 1 << dir } else { m }
+            if !on_face {
+                continue;
+            }
+            let span = |lo: f32, hi: f32| ((lo * 16.0).round().max(0.0) as usize, (hi * 16.0).round().min(16.0) as usize);
+            let ((a0, a1), (b0, b1)) = (span(bx[a], bx[a + 3]), span(bx[b], bx[b + 3]));
+            for u in a0..a1 {
+                for v in b0..b1 {
+                    cells[u * 16 + v] = true;
+                }
+            }
+        }
+        if cells.iter().all(|&c| c) { m | 1 << dir } else { m }
     })
+}
+
+/// The faces a state keeps light out of, for `Tight::seals`: as vanilla's
+/// `useShapeForLightOcclusion`, only blocks drawn solid (slabs, stairs) do it by their shape; what
+/// is seen through (glass, leaves, ice) doesn't, and a block light doesn't pass at all needs none.
+fn seals_of(s: &StateInfo) -> u8 {
+    if s.opacity >= 15 || s.layer != RenderLayer::Opaque {
+        return 0;
+    }
+    covered_faces(s)
 }
 
 pub struct Content {
@@ -771,6 +790,8 @@ pub struct Content {
     pub states: Vec<StateInfo>,
     /// `states`, the parts read per block (`Tight`).
     pub tight: Vec<Tight>,
+    /// Per state, the sides a liquid in its cell can't pass (`abi::StateDesc::liquid_walls`).
+    pub liquid_walls: Vec<u8>,
     pub blocks: Vec<BlockDef>,
     pub items: Vec<ItemDef>,
     pub biomes: Vec<BiomeDef>,
@@ -1151,6 +1172,8 @@ pub struct RawState {
     pub hitbox: Vec<[f32; 6]>,
     /// What is outlined instead of `hitbox`; empty: `hitbox`.
     pub outline: Vec<[f32; 6]>,
+    /// `abi::StateDesc::liquid_walls`.
+    pub liquid_walls: u8,
     pub signal: RawSignal,
     pub components: Vec<RawValue>,
 }
@@ -1477,6 +1500,7 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                     .iter()
                     .map(|b| b.map(|v| v / 16.0))
                     .collect(),
+                liquid_walls: s.liquid_walls,
                 signal: RawSignal {
                     kind: s.signal.kind,
                     attach: s.signal.attach as u8,
@@ -2104,7 +2128,12 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         .iter()
         .map(|s| Tight { flags: s.flags, opacity: s.opacity, light: s.light, absorb: s.absorb, seals: seals_of(s) })
         .collect();
+    let liquid_walls = states
+        .iter()
+        .map(|s| if s.liquid_walls == u8::MAX { covered_faces(s) } else { s.liquid_walls })
+        .collect();
     Ok(Content {
+        liquid_walls,
         spread_tags,
         spread_search,
         mods,
@@ -2303,6 +2332,7 @@ fn check_unique(
 fn number_blocks(mods: &[ModMeta], blocks: Vec<(ModId, RawBlock)>, textures: &mut TextureList, errors: &mut Vec<String>) -> BlockTables {
     let mut tex = |name: &str| textures.intern(name);
     let mut states = vec![StateInfo {
+        liquid_walls: u8::MAX,
         grow: None,
         signal: Signal::default(),
         block: 0,
@@ -2409,6 +2439,7 @@ fn number_blocks(mods: &[ModMeta], blocks: Vec<(ModId, RawBlock)>, textures: &mu
                 vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
             };
             states.push(StateInfo {
+                liquid_walls: s.liquid_walls,
                 block: index,
                 flags: s.flags,
                 // Light, tint, hardness, friction, drag and support come from components.

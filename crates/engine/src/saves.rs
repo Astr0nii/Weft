@@ -45,6 +45,8 @@ pub struct WorldMeta {
     pub ops: Vec<(String, u32)>,
     /// Area edits per dimension (`server::area::AreaFill::spec`), in order.
     pub edits: Vec<(String, String)>,
+    /// Cubes kept loaded per dimension (`server::forced`).
+    pub forced: Vec<(String, String)>,
     pub next_entity: u64,
     /// The world's settings (`config_scope::WORLD`: game rules, `/rule`).
     pub configs: Vec<(String, f64)>,
@@ -72,6 +74,7 @@ impl WorldMeta {
             ops: Vec::new(),
             weather: Vec::new(),
             edits: Vec::new(),
+            forced: Vec::new(),
             next_entity: 1,
             configs: Vec::new(),
             mods: Vec::new(),
@@ -100,6 +103,9 @@ impl WorldMeta {
                         // `edit.<dimension>.<n>`: the dimension's name has a colon, not a dot.
                         let d = d.rsplit_once('.').map_or(d, |(d, _)| d);
                         m.edits.push((d.to_string(), v.to_string()));
+                    } else if let Some(d) = k.strip_prefix("forced.") {
+                        let d = d.rsplit_once('.').map_or(d, |(d, _)| d);
+                        m.forced.push((d.to_string(), v.to_string()));
                     } else if let Some(r) = k.strip_prefix("config.") {
                         m.configs.push((r.to_string(), v.parse().unwrap_or(0.0)));
                     } else if let Some(id) = k.strip_prefix("mod.") {
@@ -130,6 +136,9 @@ impl WorldMeta {
         }
         for (i, (d, e)) in self.edits.iter().enumerate() {
             s.push_str(&format!("edit.{d}.{i} = {e}\n"));
+        }
+        for (i, (d, f)) in self.forced.iter().enumerate() {
+            s.push_str(&format!("forced.{d}.{i} = {f}\n"));
         }
         for (r, v) in &self.configs {
             s.push_str(&format!("config.{r} = {v}\n"));
@@ -185,6 +194,7 @@ pub fn create(saves: &Path, name: &str, seed: u64) -> WorldMeta {
         ops: Vec::new(),
         weather: Vec::new(),
         edits: Vec::new(),
+        forced: Vec::new(),
         next_entity: 1,
         configs: Vec::new(),
         mods: Vec::new(),
@@ -400,6 +410,8 @@ pub struct Storage {
     saved: Vec<FxHashSet<IVec3>>,
     /// What was last written for a cube this session: an unchanged one is not appended again.
     last_written: FxHashMap<(u32, IVec3), u64>,
+    /// Per dimension, what distant terrain needs of the saved cubes (`lod_tops`).
+    pub lod: Vec<crate::server::lod_tops::DimTops>,
 }
 
 fn region_of(cube: IVec3) -> (IVec3, usize) {
@@ -449,7 +461,14 @@ impl Storage {
                 }
             }
         }
-        Storage { meta, ids, regions: FxHashMap::default(), dim_dirs, on_disk, saved, last_written: FxHashMap::default() }
+        let lod = dim_dirs
+            .iter()
+            .enumerate()
+            .map(|(dim, dir)| {
+                crate::server::lod_tops::DimTops::read(&dir.join("lod.bin"), c, dim as u32, meta.seed, &mut |w| ids.runtime_id(w))
+            })
+            .collect();
+        Storage { meta, ids, regions: FxHashMap::default(), dim_dirs, on_disk, saved, last_written: FxHashMap::default(), lod }
     }
 
     fn region(&mut self, dim: u32, r: IVec3) -> Option<&mut Region> {
@@ -535,9 +554,16 @@ impl Storage {
             }
         }
         self.saved[dim as usize].insert(pos);
+        let seed = self.meta.seed;
+        self.lod[dim as usize].saved(c, dim, seed, pos, &cube);
     }
 
     pub fn flush(&mut self) {
+        let c = crate::content::content();
+        for (dim, tops) in self.lod.iter_mut().enumerate() {
+            let ids = &mut self.ids;
+            tops.write(&self.dim_dirs[dim].join("lod.bin"), &mut |s| ids.world_id(c, s));
+        }
         self.ids.save(&self.meta.dir);
         self.meta.last_played = now_secs();
         self.meta.save();

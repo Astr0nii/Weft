@@ -2191,7 +2191,7 @@ type BlockLook = Box<dyn for<'r> FnOnce(crate::BlockBuilder<'r>) -> crate::Block
 pub struct MachineBuilder<'a> {
     reg: &'a mut Registry,
     block_handle: &'static Block,
-    menu: &'static Menu,
+    menu: Option<&'static Menu>,
     block: Option<BlockLook>,
     groups: Vec<(String, Slots)>,
     recipes: Vec<String>,
@@ -2203,10 +2203,18 @@ pub struct MachineBuilder<'a> {
 impl Registry {
     /// The machine's entity kind is named like its block: `EntityKind::named("furnace")`.
     pub fn machine<'a>(&'a mut self, block: &'static Block, menu: &'static Menu) -> MachineBuilder<'a> {
+        let mut m = self.machine_without_menu(block);
+        m.menu = Some(menu);
+        m
+    }
+
+    /// A machine with no screen: using it opens nothing (a spring engine with its state and
+    /// energy). Its groups are still its inventory, for pipes and hoppers.
+    pub fn machine_without_menu<'a>(&'a mut self, block: &'static Block) -> MachineBuilder<'a> {
         MachineBuilder {
             block_handle: block,
             reg: self,
-            menu,
+            menu: None,
             block: None,
             groups: Vec::new(),
             recipes: Vec::new(),
@@ -2268,7 +2276,11 @@ impl Drop for MachineBuilder<'_> {
         let (block, menu, reg) = (self.block_handle, self.menu, &mut *self.reg);
         let full = block.name().to_string();
         let look = self.block.take().unwrap_or_else(|| Box::new(|b| b));
-        look(reg.block(block)).opens(menu);
+        let b = look(reg.block(block));
+        drop(match menu {
+            Some(menu) => b.opens(menu),
+            None => b,
+        });
         // The inventory holds every group of the machine's own, wherever they start.
         let mut size = 0;
         let mut next = 0;
@@ -2283,6 +2295,7 @@ impl Drop for MachineBuilder<'_> {
         for f in self.with.drain(..) {
             f(reg, kind);
         }
+        let Some(menu) = menu else { return };
         if self.plain_screen {
             let names: Vec<String> = self.groups.iter().map(|g| g.0.clone()).collect();
             self.screen = Some(Box::new(move |ui| {

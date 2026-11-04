@@ -1,16 +1,22 @@
 //! Distant terrain beyond the view: made on the GPU straight from the dimension's terrain at a
-//! coarser step (`shaders/terrain.wgsl`'s `lod`), never from cubes, so it reaches as far as wanted
-//! for a few kilobytes a tile. A tile is 32x32 cells of 2^level blocks; each cell is the column
-//! at its middle: its top block, the one under it, its biome, and tree canopies over it (no
-//! caves or edits).
+//! coarser step (`shaders/terrain.wgsl`'s `lod`), so it reaches as far as wanted for a few
+//! kilobytes a tile. A tile is 32x32 cells of 2^level blocks; each cell is the column at its
+//! middle: its top block, the one under it, its biome, and tree canopies over it. Where saved
+//! cubes made a column's top other than the terrain's (a town, a crater), the server says so
+//! (`server::lod_tops`) and that column is taken instead.
 //! Tiles are picked by distance, nearer ones split into the four of the level below; one is
 //! shown once made, its parent or children standing in until then. Where a column of real cubes
 //! shows its ground the tiles' pixels are dropped (`fs_lod`, `Lod::mask`), so they fill in for
 //! cubes not made or meshed yet (flying fast), and nowhere stand through them.
 
+use std::sync::Arc;
+
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use glam::{DVec3, IVec2};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
+
+/// Columns whose top isn't the terrain's: height, top block, the one under it.
+pub type Columns = FxHashMap<IVec2, (i32, u32, u32)>;
 
 use crate::content::{Content, content};
 use crate::gpu_layout::face;
@@ -74,6 +80,8 @@ pub struct LodJob {
     pub seed: u64,
     pub key: TileKey,
     pub done: Sender<LodMesh>,
+    /// What the server said of columns, taken over the terrain's where the tile samples them.
+    pub columns: Arc<Columns>,
 }
 
 /// A made tile's quads (`mesh`) and the heights they span.
@@ -86,8 +94,19 @@ pub struct LodMesh {
 }
 
 /// What came back for `job`, meshed on a worker.
-pub fn made(job: LodJob, words: Vec<u32>) {
+pub fn made(job: LodJob, mut words: Vec<u32>) {
     crate::background().spawn(move || {
+        if !job.columns.is_empty() {
+            let (s, o) = (1 << job.key.level, job.key.origin());
+            for k in 0..SAMPLES {
+                let (i, j) = ((k as i32 % SIDE) - 1, (k as i32 / SIDE) - 1);
+                let col = o + IVec2::new(i * s + s / 2, j * s + s / 2);
+                if let Some(&(y, top, under)) = job.columns.get(&col) {
+                    words[k * 2] = (y as u32 & 0xFFFF) | (top << 16);
+                    words[k * 2 + 1] = (words[k * 2 + 1] & 0xFFFF) | (under << 16);
+                }
+            }
+        }
         let (quads, y) = mesh(content(), job.key, &words);
         let _ = job
             .done
@@ -174,16 +193,20 @@ pub fn mesh(c: &Content, key: TileKey, words: &[u32]) -> (Vec<[u32; 4]>, (i32, i
                 } else {
                     y.min(y - 1) - 2 * s
                 };
-                if ny >= y {
+                // Past a neighbor as high, real cubes may stand in for it lower than its sample
+                // says (it is interpolated): a skirt down below that, or the sky shows through
+                // between them.
+                if ny > y {
                     continue;
                 }
-                let (tex, tint) = face_of(top, 3);
-                out.push(quad(dir as u32, i * s, y, j * s, (s, 1, s), tex, tint, biome));
-                if y - 1 > ny {
-                    let (tex, tint) = face_of(under, dir);
-                    out.push(quad(dir as u32, i * s, ny + 1, j * s, (s, y - 1 - ny, s), tex, tint, biome));
+                let skirt = ny.min(y - 1) - s - 2;
+                if ny < y {
+                    let (tex, tint) = face_of(top, 3);
+                    out.push(quad(dir as u32, i * s, y, j * s, (s, 1, s), tex, tint, biome));
                 }
-                lo = lo.min(ny + 1);
+                let (tex, tint) = face_of(under, dir);
+                out.push(quad(dir as u32, i * s, skirt + 1, j * s, (s, y - 1 - skirt, s), tex, tint, biome));
+                lo = lo.min(skirt + 1);
             }
         }
     }
@@ -213,6 +236,11 @@ pub struct Lod {
     half: i32,
     center: IVec2,
     mask_changed: bool,
+    /// What the server said of columns of `columns_dim`.
+    columns: Arc<Columns>,
+    columns_dim: u32,
+    /// Made tiles to make again for columns that changed, shown as they are till then.
+    stale: FxHashSet<TileKey>,
 }
 
 /// Columns the mask reaches past the view radius (cubes are kept that far).
@@ -235,7 +263,50 @@ impl Lod {
             half: 0,
             center: IVec2::ZERO,
             mask_changed: false,
+            columns: Arc::default(),
+            columns_dim: u32::MAX,
+            stale: FxHashSet::default(),
         }
+    }
+
+    /// `ToClient::LodColumns`: tiles with those columns are made again.
+    pub fn set_columns(&mut self, dim: u32, all: bool, cols: &[(i32, i32, i32, u32, u32)]) {
+        if all || dim != self.columns_dim {
+            self.columns = Arc::default();
+            self.columns_dim = dim;
+            self.stale.extend(self.ready.iter().copied());
+        }
+        let map = Arc::make_mut(&mut self.columns);
+        for &(x, z, y, top, under) in cols {
+            let p = IVec2::new(x, z);
+            if top == u32::MAX {
+                map.remove(&p);
+            } else {
+                map.insert(p, (y, top, under));
+            }
+            if !all {
+                // Every level's tile with it, and the ones beside that sample it for their walls.
+                for level in 0..=MAX_LEVEL {
+                    let size = CELLS << level;
+                    for dz in -1..=1 {
+                        for dx in -1..=1 {
+                            let key = TileKey {
+                                level,
+                                x: (x + dx * (size / CELLS)).div_euclid(size),
+                                z: (z + dz * (size / CELLS)).div_euclid(size),
+                            };
+                            if self.ready.contains(&key) {
+                                self.stale.insert(key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn columns_len(&self) -> usize {
+        self.columns.len()
     }
 
     /// Tiles asked for and not back yet.
@@ -460,19 +531,22 @@ impl Lod {
         self.wanted = out.into_iter().map(|t| t.1).collect();
     }
 
-    /// Asks for the nearest wanted tiles not made yet.
+    /// Asks for the nearest wanted tiles not made yet, or made before columns changed.
     fn request(&mut self) {
+        let columns = if self.columns_dim == self.dim { self.columns.clone() } else { Arc::default() };
         for &key in &self.wanted {
             if self.pending.len() >= IN_FLIGHT {
                 break;
             }
-            if self.ready.contains(&key) || self.pending.contains(&key) {
+            let again = self.stale.remove(&key);
+            if (self.ready.contains(&key) && !again) || self.pending.contains(&key) {
                 continue;
             }
             self.pending.insert(key);
             let _ = self
                 .jobs
-                .send(LodJob { dim: self.dim, seed: self.seed, key, done: self.done.0.clone() });
+                .send(LodJob { dim: self.dim, seed: self.seed, key, done: self.done.0.clone(), columns: columns.clone() });
         }
+        self.stale.retain(|k| self.ready.contains(k));
     }
 }

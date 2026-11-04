@@ -57,6 +57,8 @@ value! {
 ```
 The flags say who gets it. `SAVE` writes it with the world, `SYNC_MENU` sends it to players who have this machine's menu open (progress bars need that), `SYNC_OWNER` sends it to the player who owns the entity (HUD values) and `SYNC_WATCHERS` to everyone who can see it. Since components are named, another mod that declares `base:smelting` with the same layout can read the furnace's state, see "Components and tags" in the [cheat sheet](modding.md#components-and-tags-as-inter-mod-communication).
 
+A machine with nothing to show (a spring engine: state and energy, no items) is `r.machine_without_menu(&BLOCK)`: the same builder, using it opens nothing. And a block that only needs state of its own, no machine at all, gets `.block_entity()` on its block builder: an entity named like the block, no slots, no screen, for `r.attach(..)` and a system to tick.
+
 ## The tick
 A machine works through its state component: `r.system(&BURNER, f)` hands `f` every loaded machine with that component, their values side by side in one slice, changed in place (and saved and synced like any change). Measured on a thousand machines, that costs a few hundredths of what asking for each machine's component costs, so it is the one way machines tick:
 ```rust
@@ -89,6 +91,9 @@ which keeps the way it faces.
 
 ### Catching up
 The third value is how many ticks the call stands for. It's 1 almost always. When a machine's area was unloaded, or the world's time jumped (someone slept, `/time`), the engine doesn't load anything extra and doesn't tick the machine thousands of times: it hands over the missed ticks instead, right away, in at most twenty calls however long the gap was. After each of those the energy network moves that many ticks' worth, so a generator and its furnace keep up with each other.So a machine that should keep working while nobody watches does `ticks` ticks of work in one go. For a furnace that's simple arithmetic: as many items as the fuel, the input and the output slot allow, see base's `catch_up` in `machines.rs` and testmod's generator. A machine that doesn't care can ignore the number, it just loses the missed time.
+
+### Keeping cubes loaded
+Catching up is enough for one machine. A network that has to run while nobody is there (a generator in one cube, its consumers in others, a quarry digging far below) keeps its cubes loaded: `w.keep_loaded(machine_id, from, to, Loading::Machines, 200)` keeps the cubes from block `from` to block `to` for 200 ticks under that key. Call it again before it runs out, with other blocks to move it; `w.release_loaded(machine_id)` lets go. `Loading::Machines` runs block entities, systems, scheduled ticks and redstone there while mobs stand still and nothing grows, as vanilla's lazy chunks; `Loading::All` runs everything as if a player stood there. Tickets survive a restart, all of them together keep at most `core:max_forced_cubes` cubes, and `question::FORCE_LOAD` lets a mod refuse one (someone else's claim).
 
 ## The screen
 `screen(|ui| ..)` builds the window. `ui.group("input")` draws a group as its grid, `ui.group_slot("input", 1)` a single slot of it when a layout places them apart, and `ui.player_inventory(true)` the player's inventory and hotbar, every machine menu has them:
