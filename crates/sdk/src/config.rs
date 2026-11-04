@@ -110,6 +110,7 @@ pub mod settings {
     pub static VOLUME_MASTER: Config<u32> = Config::named("core:volume_master");
     /// A world's: mobs appear by themselves.
     pub static MOB_SPAWNING: Config<bool> = Config::named("core:mob_spawning");
+    pub static KEEP_INVENTORY: Config<bool> = Config::named("core:keep_inventory");
 }
 
 pub struct ConfigBuilder<'a> {

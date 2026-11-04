@@ -707,7 +707,12 @@ impl Server {
                                 menu::close(m, r, c, player);
                                 p.conn.send(ToClient::CloseMenu);
                             }
-                            r.drop_inventory(c, player);
+                            // check keep_inventory rule
+                            // if not enabled, drop inventory on the ground
+                            let keep_inventory = crate::config::get(c.game.keep_inventory) != 0.0;
+                            if !keep_inventory {
+                                r.drop_inventory(c, player);
+                            }
                         }
                         p.conn.send(ToClient::Died);
                         log::info!("{} died", p.name);
