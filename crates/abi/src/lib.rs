@@ -1554,6 +1554,129 @@ impl Schema for Mounting {
     const SCHEMA: &'static str = "{rider:u64,mount:u64,seat:u32,pad:u32}";
 }
 
+/// A way to look at the world (`Host::reg_camera`): each frame on the client its `call`
+/// (`CameraArgs`) says where the camera is, and `flags` what goes with it. The engine's are
+/// `core:first_person`, `core:behind`, `core:front` (F5 goes through those `camera_flags::CYCLE`
+/// has) and `core:free` (`core:freecam`, P). Registering one by a name that is there already
+/// edits it: `flags` added, `flags_off` taken away, a `call` replacing its own, a `transition`
+/// that isn't NaN replacing its.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CameraDesc {
+    pub name: Str,
+    pub flags: u32,
+    pub flags_off: u32,
+    /// An action that turns it on, and back to where it was (`Host::reg_key`'s); empty: none.
+    pub key: Str,
+    pub call: Callback,
+    /// Seconds from the camera before to this one, eased by `easing` (`easing::*`); 0 at once.
+    pub transition: f32,
+    pub easing: u32,
+}
+
+defaults!(CameraDesc {
+    name: Str::EMPTY,
+    flags: 0,
+    flags_off: 0,
+    key: Str::EMPTY,
+    call: Callback::NONE,
+    transition: f32::NAN,
+    easing: easing::IN_OUT,
+});
+
+/// What a camera mode is and does (`CameraDesc::flags`).
+pub mod camera_flags {
+    /// The player's own body is drawn.
+    pub const BODY: u32 = 1;
+    /// The first-person hand is drawn.
+    pub const HAND: u32 = 2;
+    /// The HUD and crosshair are drawn.
+    pub const HUD: u32 = 4;
+    /// The player's effects move it: walking bob, the wider view sprinting and flying, the tilt
+    /// when hurt, what is over the screen inside a block or a liquid.
+    pub const EFFECTS: u32 = 8;
+    /// Pulled in towards `CameraArgs::anchor` where a block is in the way (third person).
+    pub const CLIP: u32 = 16;
+    /// A small box that bumps into blocks, moved from where it was to where `call` says, and
+    /// stopped where the world isn't loaded yet.
+    pub const SOLID: u32 = 32;
+    /// One of the modes `core:perspective` (F5) goes through.
+    pub const CYCLE: u32 = 64;
+    /// Movement keys and the mouse are the camera's (`CameraArgs::keys`); the player stands.
+    pub const DETACHED: u32 = 128;
+    /// The crosshair aims from the camera, not the eyes.
+    pub const AIM: u32 = 256;
+    /// No hitting, using or picking.
+    pub const NO_INTERACT: u32 = 512;
+    /// The player may turn it on only if the server lets it (`action::CAMERA`): by default in a
+    /// game mode that flies (creative, spectator).
+    pub const ASK: u32 = 1024;
+}
+
+/// How a move goes from start to end (`CameraDesc::easing`, `Host::player_camera`).
+pub mod easing {
+    pub const LINEAR: u32 = 0;
+    /// Slow at first.
+    pub const IN: u32 = 1;
+    /// Slow at the end.
+    pub const OUT: u32 = 2;
+    /// Slow at both.
+    pub const IN_OUT: u32 = 3;
+    /// Smoothstep: gentler than `IN_OUT`.
+    pub const SMOOTH: u32 = 4;
+    /// Smootherstep: no jolt at either end.
+    pub const SMOOTHER: u32 = 5;
+    pub const SINE: u32 = 6;
+    /// Fast, then a long settle.
+    pub const EXPO_OUT: u32 = 7;
+    /// Goes a little past the end and comes back.
+    pub const BACK_OUT: u32 = 8;
+    /// Springs about the end before it settles.
+    pub const ELASTIC_OUT: u32 = 9;
+    /// Lands and bounces.
+    pub const BOUNCE_OUT: u32 = 10;
+}
+
+/// Where a camera is and looks.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct CameraPose {
+    pub pos: Vec3,
+    /// Radians, as the player's.
+    pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32,
+    /// Times the field of view the player set.
+    pub fov: f32,
+}
+
+defaults!(CameraPose { pos: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, yaw: 0.0, pitch: 0.0, roll: 0.0, fov: 1.0 });
+
+/// A camera mode's frame (`CameraDesc::call`), on the client.
+#[repr(C)]
+pub struct CameraArgs {
+    /// The keys, and in `yaw`/`pitch` the look: the camera's own, turned by the mouse, when
+    /// it's `camera_flags::DETACHED`, the player's otherwise. Its tick counts are frames here.
+    pub keys: MountInput,
+    /// The player's eyes and where they look.
+    pub eye: Vec3,
+    pub eye_yaw: f32,
+    pub eye_pitch: f32,
+    /// What it rides, 0 for nothing, and how far back third person sits for that: 4 blocks
+    /// and the mount's `EntityDesc::ride_camera`.
+    pub vehicle: u64,
+    pub back: f32,
+    /// Seconds since the last frame, and since this mode came on.
+    pub dt: f32,
+    pub time: f32,
+    /// 1 the first frame of the mode: `out` is the camera before it then.
+    pub first: u32,
+    /// Where a `camera_flags::CLIP` camera is pulled in towards; the eyes unless changed.
+    pub anchor: Vec3,
+    /// Comes in as last frame's, to be changed.
+    pub out: CameraPose,
+}
+
 /// Eye height as a share of an entity's height unless it says otherwise (vanilla's default).
 pub const EYE_SHARE: f32 = 0.85;
 
@@ -3239,6 +3362,16 @@ pub struct Host {
     /// The state the terrain leaves at the top of column (`x`, `z`): 0 where caves took it or the
     /// dimension has no terrain.
     pub dim_surface_block: unsafe extern "C" fn(dim: u32, seed: u64, x: i32, z: i32) -> u32,
+    /// A camera mode, or edits to one by its name (`CameraDesc`).
+    pub reg_camera: unsafe extern "C" fn(reg: *mut Registrar, desc: *const CameraDesc),
+    /// The id of camera mode `name`, `u32::MAX` if there's none.
+    pub camera_id: unsafe extern "C" fn(name: Str) -> u32,
+    /// Puts `player` in camera mode `mode` (`u32::MAX`: back to its own choice); `locked`, it
+    /// can't leave it until told. The change takes `transition` seconds eased by `easing`
+    /// (NaN: as the mode says).
+    /// `t` (0..1) eased by `kind` (`easing::*`).
+    pub ease: unsafe extern "C" fn(kind: u32, t: f32) -> f32,
+    pub player_camera: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, mode: u32, locked: u32, transition: f32, easing: u32),
 }
 
 /// Natural spawning around players (`Host::reg_spawn`). Every two seconds the engine tries a few
@@ -3999,6 +4132,9 @@ pub mod action {
     pub const MOUNT: &str = "core:mount";
     /// `Mounting`. `entity` getting off `other` (`amount` its seat).
     pub const DISMOUNT: &str = "core:dismount";
+    /// `Query`: player `entity` turning on camera mode `amount` (`Host::camera_id`), one with
+    /// `camera_flags::ASK`. With nobody allowing or denying, it may in a game mode that flies.
+    pub const CAMERA: &str = "core:camera";
 }
 
 pub mod question {
@@ -4430,6 +4566,9 @@ pub struct ClientState {
     pub sounds: u32,
     /// Where the player is drawn this frame (between physics ticks), unlike `pos`.
     pub shown: Vec3,
+    /// The camera mode on (`Host::camera_id`) and where the camera is this frame.
+    pub camera: u32,
+    pub camera_pos: Vec3,
     /// The block looked at and the structure (entity) it is part of, 0 for the world;
     /// `target_body` `u64::MAX` when nothing is looked at.
     pub target: BlockPos,
@@ -4443,6 +4582,8 @@ pub struct ClientState {
     pub lod_pending: u32,
 }
 defaults!(ClientState {
+    camera: 0,
+    camera_pos: Vec3 { x: 0.0, y: 0.0, z: 0.0 },
     flags: 0,
     frame: 0,
     dt: 0.0,

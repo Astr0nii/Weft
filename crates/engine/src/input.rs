@@ -43,6 +43,8 @@ pub const ENGINE_KEYS: &[(&str, &str)] = &[
     ("core:debug", "F3"),
     ("core:screenshot", "F2"),
     ("core:perspective", "F5"),
+    // Away from the keys a hand rests on.
+    ("core:freecam", "KeyP"),
     ("core:fullscreen", "F11"),
     ("core:player_list", "Tab"),
     ("core:hide_hud", "F1"),
@@ -64,6 +66,23 @@ pub const ENGINE_KEYS: &[(&str, &str)] = &[
     ("core:hotbar8", "Digit8"),
     ("core:hotbar9", "Digit9"),
 ];
+
+/// What a detached camera takes for itself (`Input::mute_moves`).
+pub const MOVE_KEYS: &[&str] = &[
+    "core:forward",
+    "core:back",
+    "core:left",
+    "core:right",
+    "core:jump",
+    "core:sneak",
+    "core:sprint",
+    "core:crawl",
+    "core:fly",
+    "core:dismount",
+];
+
+/// What a camera that doesn't interact turns off (`Input::mute_hands`).
+pub const HAND_KEYS: &[&str] = &["core:attack", "core:use", "core:pick", "core:drop", "core:swap_hands"];
 
 /// Two presses closer than this are a double tap (vanilla's 7 ticks).
 pub const DOUBLE_TAP: Duration = Duration::from_millis(350);
@@ -195,6 +214,11 @@ impl Bind {
 
 pub struct Input {
     pub captured: bool,
+    /// The movement keys (`MOVE_KEYS`) are the camera's, and the mouse too: `held`, `pressed`
+    /// and the look don't see them.
+    pub mute_moves: bool,
+    /// Hitting, using and picking (`HAND_KEYS`) are off.
+    pub mute_hands: bool,
     pub mouse_delta: Vec2,
     pub cursor: Vec2,
     pub scroll: f32,
@@ -213,6 +237,8 @@ impl Default for Input {
     fn default() -> Self {
         let mut i = Input {
             captured: false,
+            mute_moves: false,
+            mute_hands: false,
             mouse_delta: Vec2::ZERO,
             cursor: Vec2::ZERO,
             scroll: 0.0,
@@ -268,7 +294,21 @@ impl Input {
             .and_then(|&i| self.binds[i].keys.iter().flatten().next().copied())
     }
 
+    /// Whether a camera mode has `action` for itself now (`muted`).
+    fn muted(&self, action: &str) -> bool {
+        (self.mute_moves && MOVE_KEYS.contains(&action)) || (self.mute_hands && HAND_KEYS.contains(&action))
+    }
+
     pub fn held(&self, action: &str) -> bool {
+        !self.muted(action) && self.held_raw(action)
+    }
+
+    pub fn pressed(&self, action: &str) -> bool {
+        !self.muted(action) && self.pressed_raw(action)
+    }
+
+    /// `held` even while muted: the camera's own reading of the keys.
+    pub fn held_raw(&self, action: &str) -> bool {
         self.lookup.get(action).is_some_and(|&i| {
             let b = &self.binds[i];
             (0..SLOTS).any(|s| match b.keys[s] {
@@ -279,7 +319,7 @@ impl Input {
         })
     }
 
-    pub fn pressed(&self, action: &str) -> bool {
+    pub fn pressed_raw(&self, action: &str) -> bool {
         self.lookup.get(action).is_some_and(|&i| {
             let b = &self.binds[i];
             (0..SLOTS).any(|s| match b.keys[s] {

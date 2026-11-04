@@ -315,6 +315,21 @@ impl Server {
                 let Some((r, entity)) = self.region(pi) else { return };
                 r.dismount(c, entity);
             }
+            ToServer::Camera(mode) => {
+                let Some(m) = c.game.cameras.get(mode as usize) else { return };
+                let Some((r, entity)) = self.region(pi) else { return };
+                let flies = r
+                    .entities
+                    .get(entity)
+                    .is_some_and(|e| e.mode.has(weft_abi::game_mode_flags::CAN_FLY));
+                let mut q = weft_abi::Query { entity, amount: mode as f64, ..weft_abi::Query::DEFAULT };
+                let may = !m.has(weft_abi::camera_flags::ASK) || r.ask_or(c, weft_abi::action::CAMERA, &mut q, flies);
+                if may {
+                    self.players[pi]
+                        .conn
+                        .send(ToClient::Camera { mode, locked: false, transition: f32::NAN, easing: 0 });
+                }
+            }
 
             ToServer::Break { pos, part, face, frame } => {
                 let Some((r, _)) = self.region(pi) else { return };

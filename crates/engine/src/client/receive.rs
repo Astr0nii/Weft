@@ -195,6 +195,7 @@ impl Client {
             }
             ToClient::Cracks(list) => self.others_mining = list,
             ToClient::StopSprint => self.sprint_stopped = true,
+            ToClient::Camera { mode, locked, transition, easing } => self.camera_from_server(mode, locked, transition, easing),
             ToClient::Knock { away } => {
                 let away = Vec3::from_array(away).as_dvec3();
                 self.player.vel = physics::knock(self.player.vel, away, self.player.on_ground);

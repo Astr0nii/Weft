@@ -32,6 +32,9 @@ pub mod question {
     use crate::Question;
     /// `entity` attacking `other` with `item`.
     pub static ATTACK: Question = Question::named(crate::abi::question::ATTACK);
+    /// Player `entity` turning on a camera mode that asks (`camera_flags::ASK`), which one
+    /// `Ask::is_camera` tells. `Allow` lets it where the game mode wouldn't.
+    pub static CAMERA: Question = Question::named(crate::abi::action::CAMERA);
 }
 
 /// The engine's value chains (`Registry::modify`, `World::chain_compute`).
@@ -271,6 +274,10 @@ impl Ask {
     }
     pub fn item(&self) -> u32 {
         self.query().item
+    }
+    /// Whether `question::CAMERA` asks about `mode`.
+    pub fn is_camera(&self, mode: &crate::CameraMode) -> bool {
+        self.query().amount == mode.camera_id() as f64
     }
 }
 

@@ -776,6 +776,24 @@ const OPS: &[(&str, &str, Run)] = &[
         Ok(String::new())
     }),
     // What `id` (the player by default) rides and its seat, "0 0" for nothing.
+    // The player's camera: a mode by name, held there with `locked` 1; `release` gives it back.
+    ("camera", "<which:word> [locked:int]", |w, cmd, player, _| {
+        let name = word(cmd, "which")?;
+        if name == "release" {
+            w.release_camera(player, None);
+        } else {
+            let m = CameraMode::generated(name.to_string());
+            if m.camera_id() == u32::MAX {
+                return Err(format!("no camera {name}"));
+            }
+            if cmd.int("locked") == Some(1) {
+                w.force_camera(player, m, None);
+            } else {
+                w.set_camera(player, m, None);
+            }
+        }
+        Ok(String::new())
+    }),
     ("vehicle", "[id:int]", |w, cmd, player, _| {
         let id = cmd.int("id").map_or(player, |r| r as u64);
         Ok(w.vehicle(id)

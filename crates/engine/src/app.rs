@@ -2115,7 +2115,12 @@ fn build_ui_quads(r: &mut Running, scale: f32) {
     let preview_tex = r.preview_tex;
     let mut layers: Vec<&Ui> = Vec::new();
     let mut animated = Vec::new();
-    if r.game.is_some() && !hud_hidden() && !(r.hud_off && r.screens.is_empty()) {
+    let hud = r
+        .game
+        .as_ref()
+        .is_some_and(|g| g.client.camera_has(weft_abi::camera_flags::HUD))
+        || !r.screens.is_empty();
+    if r.game.is_some() && hud && !hud_hidden() && !(r.hud_off && r.screens.is_empty()) {
         layers.push(&r.hud.ui);
     }
     // Only the top screen shows, like vanilla: the ones under it are not drawn through its

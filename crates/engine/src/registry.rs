@@ -312,6 +312,9 @@ pub struct RawRecipeKind {
 
 #[derive(Default)]
 pub struct Game {
+    /// Camera modes by id (`abi::CameraDesc`): the engine's (`camera::*`) first.
+    pub cameras: Vec<CameraMode>,
+    pub camera_names: FxHashMap<String, u32>,
     pub entities: Vec<EntityKind>,
     pub entity_names: FxHashMap<String, u32>,
     pub components: Vec<ComponentDef>,
@@ -743,6 +746,7 @@ pub struct RawRecipe {
 
 #[derive(Default)]
 pub struct RawGame {
+    pub cameras: Vec<RawCamera>,
     pub entities: Vec<RawEntity>,
     pub components: Vec<RawComponent>,
     /// (owner, kind, hook, callback); hook 0 is the tick.
@@ -1743,6 +1747,7 @@ pub fn freeze(
     let mut entity_watchers: Vec<(ModId, String, Callback)> = Vec::new();
     let mut attached_models: Vec<(String, String, String)> = Vec::new();
     let mut item_models: Vec<(ModId, String, Callback)> = Vec::new();
+    let mut cameras: Vec<RawCamera> = Vec::new();
     for r in raws {
         entity_ticks.extend(r.client_entity_ticks);
         entity_watchers.extend(r.client_entity_watchers);
@@ -1758,6 +1763,7 @@ pub fn freeze(
         g.client_hooks.extend(r.client_hooks);
         packets.extend(r.packets);
         g.keys.extend(r.keys);
+        cameras.extend(r.cameras);
         spawns.extend(r.spawns);
         event_handlers.extend(r.event_handlers);
         systems.extend(r.systems);
@@ -1885,6 +1891,7 @@ pub fn freeze(
         }
         g.music.push(m);
     }
+    freeze_cameras(&mut g, cameras);
     // The engine's settings, with a binding per key: the engine's and the mods'.
     let mut keys: Vec<(String, String)> = crate::input::ENGINE_KEYS
         .iter()
@@ -3015,4 +3022,86 @@ mod sky_tests {
         assert_eq!((m.name.as_str(), m.size, m.phase), ("moon", 40f32.to_radians(), 0.5));
         assert!(m.orbit.is_infinite(), "nobody set an orbit, so it follows the day");
     }
+}
+
+/// A camera mode as frozen; `call` none for the engine's own, which it moves itself.
+#[derive(Clone)]
+pub struct CameraMode {
+    pub name: String,
+    pub flags: u32,
+    pub key: Option<String>,
+    pub call: Option<(ModId, Callback)>,
+    pub transition: f32,
+    pub easing: u32,
+}
+
+impl CameraMode {
+    pub fn has(&self, f: u32) -> bool {
+        self.flags & f != 0
+    }
+}
+
+/// A `Host::reg_camera` call: a new mode or edits to one.
+pub struct RawCamera {
+    pub owner: ModId,
+    pub name: String,
+    pub flags: u32,
+    pub flags_off: u32,
+    pub key: String,
+    pub call: Callback,
+    pub transition: f32,
+    pub easing: u32,
+}
+
+/// The engine's camera modes, in id order.
+pub mod camera {
+    pub const FIRST_PERSON: u32 = 0;
+    pub const BEHIND: u32 = 1;
+    pub const FRONT: u32 = 2;
+    pub const FREE: u32 = 3;
+}
+
+fn freeze_cameras(g: &mut Game, raws: Vec<RawCamera>) {
+    use abi::camera_flags as cf;
+    let builtin = |name: &str, flags: u32, key: Option<&str>| CameraMode {
+        name: name.to_string(),
+        flags,
+        key: key.map(str::to_string),
+        call: None,
+        transition: 0.0,
+        easing: abi::easing::IN_OUT,
+    };
+    g.cameras = vec![
+        builtin("core:first_person", cf::HAND | cf::HUD | cf::EFFECTS | cf::CYCLE, None),
+        builtin("core:behind", cf::BODY | cf::HUD | cf::CLIP | cf::CYCLE, None),
+        builtin("core:front", cf::BODY | cf::HUD | cf::CLIP | cf::CYCLE, None),
+        builtin("core:free", cf::BODY | cf::SOLID | cf::DETACHED | cf::NO_INTERACT | cf::ASK, Some("core:freecam")),
+    ];
+    for r in raws {
+        let i = match g.cameras.iter().position(|m| m.name == r.name) {
+            Some(i) => i,
+            None => {
+                g.cameras
+                    .push(CameraMode { name: r.name.clone(), flags: 0, key: None, call: None, transition: 0.0, easing: r.easing });
+                g.cameras.len() - 1
+            }
+        };
+        let m = &mut g.cameras[i];
+        m.flags = (m.flags | r.flags) & !r.flags_off;
+        if !r.key.is_empty() {
+            m.key = Some(r.key);
+        }
+        if r.call.func.is_some() {
+            m.call = Some((r.owner, r.call));
+        }
+        if r.transition.is_finite() {
+            (m.transition, m.easing) = (r.transition.max(0.0), r.easing);
+        }
+    }
+    g.camera_names = g
+        .cameras
+        .iter()
+        .enumerate()
+        .map(|(i, m)| (m.name.clone(), i as u32))
+        .collect();
 }

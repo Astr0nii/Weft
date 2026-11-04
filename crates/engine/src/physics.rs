@@ -449,6 +449,29 @@ fn each_solid(c: &Content, block: &impl Cells, area: Aabb, mut f: impl FnMut(Aab
     false
 }
 
+/// How far along `from`..`to` (0..1) a cube `half` each way around `from` goes before something
+/// solid stops it; what it starts inside of doesn't.
+pub fn sweep(c: &Content, block: &impl Cells, from: DVec3, to: DVec3, half: f64) -> f64 {
+    let d = to - from;
+    if d.length_squared() < 1e-12 {
+        return 1.0;
+    }
+    let h = DVec3::splat(half);
+    let area = Aabb { min: from.min(to) - h, max: from.max(to) + h };
+    let mut t = 1.0f64;
+    each_solid(c, block, area, |b| {
+        let grown = Aabb { min: b.min - h, max: b.max + h };
+        let inside = from.cmpgt(grown.min).all() && from.cmplt(grown.max).all();
+        if !inside {
+            if let Some(hit) = ray_aabb(from, d, &grown, 1.0) {
+                t = t.min(hit);
+            }
+        }
+        false
+    });
+    t
+}
+
 /// Whether `area` overlaps anything solid.
 pub fn collides(c: &Content, block: &impl Cells, area: Aabb) -> bool {
     each_solid(c, block, area, |s| s.intersects(&area))

@@ -53,6 +53,7 @@ pub mod kind {
     named_kinds!(
         SkyObject,
         Key,
+        CameraMode,
         Screen,
         HudElement,
         GizmoGroup,
@@ -225,6 +226,7 @@ impl<K: kind::HasId> From<&Handle<K>> for Id<Handle<K>> {
 }
 pub type Menu = Handle<kind::Menu>;
 pub type Key = Handle<kind::Key>;
+pub type CameraMode = Handle<kind::CameraMode>;
 
 pub type Screen = Handle<kind::Screen>;
 pub type HudElement = Handle<kind::HudElement>;

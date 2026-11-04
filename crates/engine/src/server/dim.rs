@@ -55,6 +55,14 @@ pub enum DimEvent {
     StopSprint {
         player: u64,
     },
+    /// `ToClient::Camera` to it.
+    Camera {
+        player: u64,
+        mode: u32,
+        locked: bool,
+        transition: f32,
+        easing: u32,
+    },
     Packet {
         player: u64,
         channel: u32,

@@ -1,3 +1,4 @@
+pub mod camera;
 pub mod ctm;
 pub mod entity_render;
 pub mod gizmo;
@@ -516,7 +517,7 @@ pub struct Client {
     /// The server ended the sprint; `update` switches the key off.
     sprint_stopped: bool,
     /// 0 first person, 1 third person from behind, 2 from the front.
-    pub view: u8,
+    pub cameras: camera::Cameras,
     /// F1: no hand and no block outline.
     pub hide_gui: bool,
     /// Show your own body in first person instead of just the hand.
@@ -844,7 +845,7 @@ impl Client {
             sent: Vec::new(),
             held_name: (ItemStack::EMPTY, Instant::now()),
             mode: GameMode::SURVIVAL,
-            view: 0,
+            cameras: camera::Cameras::default(),
             hide_gui: false,
             first_person_model: false,
             hand_swing: None,
@@ -934,7 +935,7 @@ impl Client {
 
     /// What the main hand shows: from the eyes the old stack, until the hand has gone down with it.
     pub fn shown_held(&self) -> ItemStack {
-        if self.view == 0 { self.hand_stack } else { self.held() }
+        if self.camera_has(weft_abi::camera_flags::HAND) { self.hand_stack } else { self.held() }
     }
 
     pub fn off_held(&self) -> ItemStack {
@@ -982,6 +983,9 @@ impl Client {
         if std::mem::take(&mut self.sprint_stopped) {
             input.stop("core:sprint");
         }
+        let m = self.camera_mode();
+        input.mute_moves = m.has(weft_abi::camera_flags::DETACHED);
+        input.mute_hands = m.has(weft_abi::camera_flags::NO_INTERACT);
         let input = &*input;
         self.take_messages(dt);
         self.read_look(input);
@@ -1002,6 +1006,7 @@ impl Client {
             self.conn.send(ToServer::OpenInventory);
         }
         self.step_physics(input, dt);
+        self.update_camera(input, dt as f32);
         let look = self.aim(input);
         self.act(input, dt, look);
         self.send_move(dt);
@@ -1033,7 +1038,7 @@ impl Client {
     }
 
     fn read_look(&mut self, input: &Input) {
-        if input.captured {
+        if input.captured && !input.mute_moves {
             let sens = 0.0022 * input.sensitivity;
             self.player.yaw -= input.mouse_delta.x * sens;
             let look = input.mouse_delta.y * sens * if input.invert_y { -1.0 } else { 1.0 };
@@ -1103,9 +1108,7 @@ impl Client {
         let fov_target =
             if self.player.flying { 1.1 } else { 1.0 } + if input.held("core:sprint") && moving && !sneaking { 0.15 } else { 0.0 };
         self.player.fov_mul += (fov_target - self.player.fov_mul) * k as f32;
-        if input.pressed("core:perspective") && input.captured {
-            self.view = (self.view + 1) % 3;
-        }
+        self.camera_keys(input);
     }
 
     /// The player's body, the camera's bob and the hand in first person. Returns how far it
@@ -1314,8 +1317,8 @@ impl Client {
         let spectator = self.mode.has(weft_abi::game_mode_flags::NO_INTERACT);
         // From the eye as drawn, the moment structures are drawn at too, so a block on a
         // structure the player rides stays the one aimed at.
-        let eye = self.camera().pos;
-        let look = self.camera().forward().as_dvec3();
+        let from = if self.camera_has(weft_abi::camera_flags::AIM) { self.cameras.shown } else { self.camera() };
+        let (eye, look) = (from.pos, from.forward().as_dvec3());
         use crate::server::extend::{BLOCK_REACH, ENTITY_REACH};
         let reach = self.attribute(BLOCK_REACH) as f64;
         self.target = if spectator { None } else { self.raycast(eye, look, reach) };
@@ -1812,7 +1815,7 @@ impl Client {
     fn overlays(&self, textures: &GameTextures) -> Vec<sky::Overlay> {
         let c = content();
         let mut out = Vec::new();
-        if self.view != 0 || self.hide_gui {
+        if !self.camera_has(weft_abi::camera_flags::EFFECTS) || self.hide_gui {
             return out;
         }
         let light = self.daylight().max(0.25);
@@ -2043,7 +2046,7 @@ impl Client {
     /// What the ears need from the camera this frame.
     pub fn listener(&self) -> crate::audio::Listener {
         let c = content();
-        let cam = self.camera();
+        let cam = self.render_camera();
         let eye = cam.pos.floor().as_ivec3();
         crate::audio::Listener {
             pos: cam.pos,
@@ -2237,9 +2240,15 @@ impl Client {
         self.player.prev.lerp(self.player.pos, t)
     }
 
+    /// From inside a liquid everything looks closer, vanilla's 60 degrees for 70.
+    fn inside_fov(&self) -> f32 {
+        if self.eye_liquid().is_some() { 6.0 / 7.0 } else { 1.0 }
+    }
+
+    /// Where the player's eyes are and look; what the camera mode starts from.
     pub fn camera(&self) -> Camera {
         // From inside a liquid everything looks closer, vanilla's 60 degrees for 70.
-        let inside = if self.eye_liquid().is_some() { 6.0 / 7.0 } else { 1.0 };
+        let inside = self.inside_fov();
         // Lying on its back the head is behind the middle of the body (on a bed's pillow).
         let pillow = match self.player.forced {
             Some((pose, Some(yaw))) if pose.def().tilt == weft_abi::pose_tilt::ON_BACK => {
@@ -2288,27 +2297,9 @@ impl Client {
         self.hand_swing_off = false;
     }
 
-    /// The camera drawn from: the eye, or up to 4 blocks behind or in front of it in third person,
-    /// pulled in where a block is in the way.
+    /// The camera drawn from, as its mode put it this frame (`camera::Cameras`).
     pub fn render_camera(&self) -> Camera {
-        let eye = self.camera();
-        if self.view == 0 {
-            return self.bobbed(eye);
-        }
-        let front = self.view == 2;
-        let mut cam = eye;
-        if front {
-            cam.yaw += std::f32::consts::PI;
-            cam.pitch = -cam.pitch;
-        }
-        let back = -cam.forward().as_dvec3();
-        let c = content();
-        let world = &self.world;
-        let block = |p: IVec3| world.block_or_air(p);
-        let dist = physics::raycast(c, &block, eye.pos, back, 4.0, false)
-            .map_or(4.0, |h| ((h.block.as_dvec3() + DVec3::splat(0.5) - eye.pos).length() - 0.8).clamp(0.3, 4.0));
-        cam.pos = eye.pos + back * dist;
-        self.bobbed(cam)
+        self.cameras.shown
     }
 
     /// The local player as an entity.
@@ -2522,13 +2513,12 @@ impl Client {
         );
         self.render.draw_translucent(&mut late);
         let alive = !self.dead && !self.mode.has(weft_abi::game_mode_flags::NO_INTERACT);
-        let first_person = self.view == 0;
-        let hand = (alive && first_person && !self.hide_gui).then(|| entity_render::Hand {
+        let hand = (alive && self.camera_has(weft_abi::camera_flags::HAND) && !self.hide_gui).then(|| entity_render::Hand {
             lowered: 1.0 - self.hand_height,
             lag: (self.player.pitch - self.hand_view.0, angle_diff(self.player.yaw, self.hand_view.1)),
             body: self.first_person_model,
         });
-        let me = (alive && (!first_person || hand.is_some())).then_some(&self.me);
+        let me = (alive && (self.camera_has(weft_abi::camera_flags::BODY) || hand.is_some())).then_some(&self.me);
         let world = &self.world;
         let light = |p: IVec3| world.light(p);
         let mut hand_late = std::mem::take(&mut self.hand_late);

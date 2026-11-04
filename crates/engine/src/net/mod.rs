@@ -360,6 +360,9 @@ messages! {
         Permission(u32),
         /// A sprinting hit landed, which ends the sprint.
         StopSprint,
+        /// Camera mode `mode` (`u32::MAX`: the player's own again), `locked` till told; the
+        /// change over `transition` seconds (NaN: the mode's).
+        Camera { mode: u32, locked: bool, transition: f32, easing: u32 },
         /// `block`: the state it was opened on (0: none), `name`: what it belongs to is called.
         OpenMenu { kind: u32, window: u32, slots: u32, owner: u64, block: u32, name: String },
         MenuSlots(Vec<(u32, ItemStack)>),
@@ -405,6 +408,8 @@ messages! {
         MountMove { pos: DVec3, yaw: f32, vel: DVec3, on_ground: bool },
         /// Off what the player rides (`core:dismount`).
         Dismount,
+        /// May it turn on camera mode `mode` (`camera_flags::ASK`)? Answered with `Camera`.
+        Camera(u32),
         /// Started mining this block (`frame` and `part` like `Break`'s).
         StartBreak { pos: IVec3, part: u32, frame: u64 },
         /// Stopped mining without finishing.

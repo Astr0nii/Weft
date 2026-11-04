@@ -744,6 +744,16 @@ impl Server {
                         p.conn.send(ToClient::EntitySwing { id, off });
                     }
                 }
+                DimEvent::Camera { player, mode, locked, transition, easing } => {
+                    if let Some(p) = self
+                        .players
+                        .iter_mut()
+                        .find(|p| p.joined && p.entity == player)
+                    {
+                        p.conn
+                            .send(ToClient::Camera { mode, locked, transition, easing });
+                    }
+                }
                 DimEvent::StopSprint { player } => {
                     if let Some(p) = self
                         .players

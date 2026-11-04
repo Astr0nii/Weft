@@ -274,6 +274,10 @@ pub static HOST: Host = Host {
     dim_column,
     dim_surface_carved,
     dim_surface_block,
+    reg_camera,
+    camera_id,
+    ease,
+    player_camera,
 };
 
 unsafe extern "C" fn fall_block(w: *mut abi::WorldCtx, pos: *const abi::BlockPos) -> u64 {
@@ -1191,6 +1195,46 @@ unsafe extern "C" fn shape_bounds(shape: abi::Slice<abi::ShapeStep>, min: *mut a
         let (lo, hi) = s.bounds();
         (*min, *max) = (lo.to_array().into(), hi.to_array().into());
         1
+    }
+}
+
+unsafe extern "C" fn reg_camera(r: *mut abi::Registrar, d: *const abi::CameraDesc) {
+    unsafe {
+        let r = reg(r);
+        let d = &*d;
+        r.game.cameras.push(registry::RawCamera {
+            owner: r.owner,
+            name: d.name.as_str().to_string(),
+            flags: d.flags,
+            flags_off: d.flags_off,
+            key: d.key.as_str().to_string(),
+            call: d.call,
+            transition: d.transition,
+            easing: d.easing,
+        });
+    }
+}
+
+unsafe extern "C" fn ease(kind: u32, t: f32) -> f32 {
+    crate::client::camera::ease(kind, t)
+}
+
+unsafe extern "C" fn camera_id(name: Str) -> u32 {
+    unsafe {
+        content()
+            .game
+            .camera_names
+            .get(name.as_str())
+            .copied()
+            .unwrap_or(u32::MAX)
+    }
+}
+
+unsafe extern "C" fn player_camera(w: *mut abi::WorldCtx, player: u64, mode: u32, locked: u32, transition: f32, easing: u32) {
+    unsafe {
+        dim(w)
+            .events
+            .push(crate::server::DimEvent::Camera { player, mode, locked: locked != 0, transition, easing })
     }
 }
 

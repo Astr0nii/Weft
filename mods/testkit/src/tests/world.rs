@@ -139,6 +139,96 @@ pub async fn riding(t: T) -> R {
     Ok(())
 }
 
+/// Camera modes: F5 through the three, third person kept out of a wall and sliding along it
+/// smoothly, the free camera only in a game mode that flies and moving while the player stands,
+/// a mod's own on its key, and a mode the server holds.
+pub async fn camera(t: T) -> R {
+    t.flat().await?;
+    t.op("mode survival").await?;
+    let f = t.feet();
+    // From the eyes to the camera.
+    let back = |t: &T| {
+        let s = t.state();
+        let (c, p) = (s.camera_pos, s.shown);
+        ((c.x - p.x).powi(2) + (c.y - p.y - 1.62).powi(2) + (c.z - p.z).powi(2)).sqrt() as f32
+    };
+    t.c().set_look(0.0, 0.0);
+    t.secs(0.3).await?;
+    t.check_eq(t.state().camera, 0, "first person to begin with");
+    t.press("core:perspective");
+    t.secs(0.3).await?;
+    t.check_eq(t.state().camera, 1, "F5: from behind");
+    let d = back(&t);
+    t.probe("blocks from the eyes behind", d, (d - 4.0).abs() < 0.2);
+
+    // A wall 1.5 blocks behind the eyes (looking north, behind is south).
+    t.op(&format!("fill {} {} {} {} {} {} base:stone", f[0] - 6, f[1], f[2] + 2, f[0] + 6, f[1] + 5, f[2] + 2))
+        .await?;
+    t.secs(0.3).await?;
+    let d = back(&t);
+    t.probe("blocks back with a wall at 1.5", d, d > 1.3 && d < 1.5);
+    // Turning, it slides along the wall: no jumps from one block to the next.
+    let mut last = d;
+    let mut worst = 0.0f32;
+    for i in 1..=30 {
+        t.c().set_look(i as f32, 0.0);
+        t.frames(2).await?;
+        let d = back(&t);
+        worst = worst.max((d - last).abs());
+        last = d;
+    }
+    t.probe("biggest step along the wall, blocks", worst, worst < 0.08);
+    t.op(&format!("fill {} {} {} {} {} {} core:air", f[0] - 6, f[1], f[2] + 2, f[0] + 6, f[1] + 5, f[2] + 2))
+        .await?;
+    for _ in 0..2 {
+        t.press("core:perspective");
+        t.frames(2).await?;
+    }
+    t.secs(0.2).await?;
+    t.check_eq(t.state().camera, 0, "F5 comes round to first person");
+
+    t.press("core:freecam");
+    t.secs(0.4).await?;
+    t.check_eq(t.state().camera, 0, "no free camera in survival");
+    t.op("mode creative").await?;
+    t.secs(0.2).await?;
+    t.press("core:freecam");
+    t.secs(0.4).await?;
+    t.check_eq(t.state().camera, 3, "the free camera in creative");
+    let pos = t.state().pos;
+    t.c().set_look(0.0, 0.0);
+    t.hold("core:forward", 1.0);
+    t.secs(1.3).await?;
+    let d = back(&t);
+    t.probe("blocks the free camera flew", d, d > 5.0);
+    let s = t.state().pos;
+    let stood = ((s.x - pos.x).powi(2) + (s.z - pos.z).powi(2)).sqrt() as f32;
+    t.probe("blocks the player moved meanwhile", stood, stood < 0.05);
+    t.press("core:freecam");
+    t.secs(0.3).await?;
+    t.check_eq(t.state().camera, 0, "its key again comes back");
+
+    let orbit = CameraMode::generated("testmod:orbit".to_string()).camera_id();
+    t.press("testmod:orbit");
+    t.secs(0.8).await?;
+    t.check_eq(t.state().camera, orbit, "a mod's camera on its key");
+    let d = back(&t);
+    t.probe("blocks the orbit is out", d, (d - 6.0).abs() < 0.3);
+    t.press("testmod:orbit");
+    t.secs(0.8).await?;
+
+    t.op("camera core:behind 1").await?;
+    t.secs(0.3).await?;
+    t.check_eq(t.state().camera, 1, "the server puts it behind");
+    t.press("core:perspective");
+    t.secs(0.2).await?;
+    t.check_eq(t.state().camera, 1, "and holds it there");
+    t.op("camera release").await?;
+    t.secs(0.3).await?;
+    t.check_eq(t.state().camera, 0, "released, back to its own");
+    Ok(())
+}
+
 /// Mods change a player's state from the server, and its client follows: a mace's smash by the
 /// fall it reads, then the look, the hand, flight and fire set from outside.
 pub async fn entity_edit(t: T) -> R {

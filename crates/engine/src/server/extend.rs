@@ -146,6 +146,28 @@ impl Dim {
         allowed
     }
 
+    /// `ask` where an interceptor may also allow outright: with every one abstaining, `default`.
+    pub fn ask_or(&mut self, c: &'static Content, question: &str, q: &mut abi::Query, default: bool) -> bool {
+        let Some(list) = c.game.interceptors.get(question) else { return default };
+        let mut allowed = None;
+        for &(owner, cb) in list {
+            q.verdict = verdict::ABSTAIN;
+            let qp = q as *mut abi::Query;
+            self.call(owner, cb, |w| abi::InterceptArgs { world: w, question: abi::Str::new(question), query: qp });
+            match q.verdict {
+                verdict::DENY => {
+                    allowed = Some(false);
+                    break;
+                }
+                verdict::ALLOW => allowed = Some(true),
+                _ => {}
+            }
+        }
+        let allowed = allowed.unwrap_or(default);
+        q.verdict = if allowed { verdict::ALLOW } else { verdict::DENY };
+        allowed
+    }
+
     /// Runs value chain `chain` from `base`; with `explain` the steps go to `explanation`.
     pub fn compute(&mut self, c: &'static Content, chain: &str, base: f64, q: &abi::Query, explain: bool) -> f64 {
         let Some(list) = c.game.modifiers.get(chain) else {

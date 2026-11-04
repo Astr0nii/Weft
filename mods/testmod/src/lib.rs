@@ -13,6 +13,7 @@
 //! - shows off particles, shaders, text effects and glow masks (`looks`).
 
 mod bodies;
+mod camera;
 mod looks;
 mod mace;
 mod riding;
@@ -95,6 +96,7 @@ fn init(r: &mut Registry) {
     looks::register(r);
     mace::register(r);
     riding::register(r);
+    camera::register(r);
     bodies::register(r);
     debug_panel(r);
     about_screen(r);
