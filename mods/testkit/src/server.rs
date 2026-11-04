@@ -55,11 +55,11 @@ pub fn register(r: &mut Registry) {
         .model(humanoid(true))
         .attack_damage(1.0)
         .goals(
-            weft_sdk::ai::Goals::new()
-                .then(weft_sdk::ai::melee_within(1.3))
-                .then(weft_sdk::ai::chase_target(20.0, 1.0)),
-        )
-        .neutral(|_, mob, player| (mob.pos.x - player.pos.x).hypot(mob.pos.z - player.pos.z) > 5.0);
+            ai::Goals::new()
+                .aggressive(5.0)
+                .then(ai::melee_within(1.3))
+                .then(ai::chase_target(20.0, 1.0)),
+        );
     // A random `.ctm` with tiles of two colors, on what isn't a cube.
     static VARIED_PLANT: Block = Block::named("varied_plant");
     static VARIED_BOX: Block = Block::named("varied_box");

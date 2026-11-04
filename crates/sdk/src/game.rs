@@ -957,21 +957,11 @@ impl EntityBuilder<'_> {
         self.on_tick = tick_cb(f);
         self
     }
-    /// Behavior from goals (`ai::Goals`), run every tick; replaces `on_tick`.
+    /// Behavior from goals and what sets it off (`ai::Goals`), run every tick; replaces `on_tick`.
     pub fn goals(self, goals: crate::ai::Goals) -> Self {
-        self.on_tick(move |t| goals.tick(t))
-    }
-    /// Leaves a player alone while `calm(world, the mob, the player)` holds, unless they hit it
-    /// in the last 20 seconds: a spider by day, or one that only minds you within so many
-    /// blocks. The kind's goals go by it through `ai::melee`, `ai::chase_target` and `ai::target`.
-    pub fn neutral(self, calm: impl Fn(&World, &EntityState, &EntityState) -> bool + Send + Sync + 'static) -> Self {
-        let Some(kind) = self.handle else { return self };
-        if crate::ai::set_neutral(kind, Box::new(calm)) {
-            self.reg
-                .entity_component(&crate::ai::ANGER, crate::ai::Anger::default(), 0);
-        }
-        self.attach(&crate::ai::ANGER)
-            .on_hurt(crate::ai::provoke_on_hurt)
+        let hurt = goals.reactions.clone();
+        self.on_hurt(move |w, h| crate::ai::Goals::hurt(&hurt, w, h))
+            .on_tick(move |t| goals.tick(t))
     }
     /// One of these was hurt: `actions::HURT` for this kind, after the damage, with the other
     /// events at the end of the tick. Changing the damage is `r.modify(&chain::DAMAGE, ..)`,

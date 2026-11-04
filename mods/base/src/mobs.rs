@@ -3,15 +3,6 @@
 use weft_sdk::ai;
 use weft_sdk::*;
 
-value! {
-    #[derive(Default)]
-    /// 1 while it runs about after being hurt.
-    pub struct Brain { pub panicking: u32 }
-}
-
-pub static BRAIN: Component<Brain> = Component::named("base:brain");
-/// Three seconds after being hurt an animal calms down.
-static CALM: Event<u64> = Event::named("calm");
 pub static ZOMBIE: EntityKind = EntityKind::named("zombie");
 pub static SPIDER: EntityKind = EntityKind::named("spider");
 pub static PIG: EntityKind = EntityKind::named("pig");
@@ -157,15 +148,6 @@ pub static COW: EntityKind = EntityKind::named("cow");
 pub fn register(r: &mut Registry) {
     // The engine's player kind, drawn as the same humanoid as the zombie.
     r.set_model(&PLAYER, humanoid(false));
-    r.entity_component(&BRAIN, Brain::default(), 0);
-    r.on(&CALM, |b| {
-        let w = b.world();
-        for &id in b.iter() {
-            if let Some(brain) = w.component_mut(id, &BRAIN) {
-                brain.panicking = 0;
-            }
-        }
-    });
     r.entity(&ZOMBIE)
         .tag("hostile")
         .sound("ambient")
@@ -177,10 +159,9 @@ pub fn register(r: &mut Registry) {
         .hostile()
         .flags(entity_flags::BURNS_IN_SUN)
         .model(humanoid(true))
-        .attach(&BRAIN)
         .attack_damage(3.0)
         .reach(1.3)
-        .goals(hostile());
+        .goals(hostile(ai::Goals::new().aggressive(35.0)));
     r.entity(&SPIDER)
         .tag("hostile")
         .sound("ambient")
@@ -191,12 +172,15 @@ pub fn register(r: &mut Registry) {
         .walk_speed(3.6)
         .hostile()
         .model(spider())
-        .attach(&BRAIN)
         .attack_damage(2.0)
         // Vanilla's reach goes by a mob's width: a body this wide stops further off.
         .reach(2.4)
-        .goals(hostile())
-        .neutral(in_daylight);
+        // In daylight it only fights back.
+        .goals(hostile(
+            ai::Goals::new()
+                .react(ai::Trigger::sight(35.0).only_if(|w, st| !in_daylight(w, st)), ai::react::anger(2.0, 1))
+                .neutral(),
+        ));
     r.entity_component(&FUSE, 0u32, 0);
     r.entity_component(&SHOOTER, 0u64, 0);
     r.entity(&CREEPER)
@@ -206,7 +190,6 @@ pub fn register(r: &mut Registry) {
         .walk_speed(2.5)
         .hostile()
         .model(creeper_model())
-        .attach(&BRAIN)
         .attach(&FUSE)
         .goals(creeper());
     r.entity(&SKELETON)
@@ -217,7 +200,6 @@ pub fn register(r: &mut Registry) {
         .hostile()
         .flags(entity_flags::BURNS_IN_SUN)
         .model(skeleton_model())
-        .attach(&BRAIN)
         .attach(&FUSE)
         .goals(skeleton());
     r.entity(&ARROW)
@@ -236,9 +218,7 @@ pub fn register(r: &mut Registry) {
         .walk_speed(2.3)
         .passive()
         .model(sheep_model())
-        .attach(&BRAIN)
-        .goals(passive())
-        .on_hurt(panic);
+        .goals(passive());
     r.entity(&CHICKEN)
         .tag("livestock")
         .size(0.4, 0.7)
@@ -246,10 +226,8 @@ pub fn register(r: &mut Registry) {
         .walk_speed(2.5)
         .passive()
         .model(chicken_model())
-        .attach(&BRAIN)
         .attach(&FUSE)
-        .goals(passive_chicken())
-        .on_hurt(panic);
+        .goals(passive_chicken());
     r.entity(&PIG)
         .tag("livestock")
         .sound("ambient")
@@ -260,9 +238,7 @@ pub fn register(r: &mut Registry) {
         .walk_speed(2.5)
         .passive()
         .model(pig_model())
-        .attach(&BRAIN)
-        .goals(passive())
-        .on_hurt(panic);
+        .goals(passive());
     r.entity(&COW)
         .tag("livestock")
         .sound("ambient")
@@ -273,9 +249,7 @@ pub fn register(r: &mut Registry) {
         .walk_speed(2.2)
         .passive()
         .model(cow_model())
-        .attach(&BRAIN)
-        .goals(passive())
-        .on_hurt(panic);
+        .goals(passive());
     // Vanilla amounts; meat comes out cooked when the animal burns.
     r.loot(&ZOMBIE)
         .pool(Pool::new().items("rotten_flesh", 0, 2));
@@ -347,8 +321,9 @@ pub fn register(r: &mut Registry) {
 /// runs back down once the player is 7 away. A radius 3 blast at the end.
 fn creeper() -> ai::Goals {
     ai::Goals::new()
+        .aggressive(16.0)
         .then(|w: &World, id: u64, st: &EntityState| {
-            let near = ai::nearest_player(w, st, 7.0);
+            let near = ai::target(w, id, st, 7.0);
             let d2 = near
                 .as_ref()
                 .map_or(f64::MAX, |(_, p)| (p.pos - st.pos).length_squared());
@@ -399,9 +374,10 @@ fn blast(w: &World, id: u64, at: Vec3, radius: f64) {
 /// Vanilla's skeleton: keeps to about 10 blocks and shoots once in two seconds.
 fn skeleton() -> ai::Goals {
     ai::Goals::new()
+        .aggressive(16.0)
         .then(ai::watch_player(16.0))
         .then(|w: &World, id: u64, st: &EntityState| {
-            let Some((_, p)) = ai::nearest_player(w, st, 15.0) else { return false };
+            let Some((_, p)) = ai::target(w, id, st, 15.0) else { return false };
             let Some(reload) = w.component_mut(id, &FUSE) else { return false };
             *reload = (*reload + 1) % 40;
             if *reload == 0 {
@@ -476,17 +452,10 @@ fn passive_chicken() -> ai::Goals {
     with_passive(goals)
 }
 
-fn panic(w: &World, h: &Hurt) {
-    if let Some(b) = w.component_mut(h.entity, &BRAIN) {
-        b.panicking = 1;
-        w.emit_after(h.entity, 60, &CALM, h.entity);
-    }
-}
-
-/// Monsters chase the player they are after and hit it when in reach (`ai::melee`, once a
-/// second). Otherwise they wander.
-fn hostile() -> ai::Goals {
-    ai::Goals::new()
+/// Monsters chase the player they are after (what `goals` sets them off by) and hit it when in
+/// reach (`ai::melee`, once a second). Otherwise they wander.
+fn hostile(goals: ai::Goals) -> ai::Goals {
+    goals
         .then(ai::watch_player(8.0))
         .then(ai::melee())
         .then(ai::chase_target(35.0, 1.0))
@@ -494,7 +463,7 @@ fn hostile() -> ai::Goals {
 }
 
 /// A spider's peace: out in daylight.
-fn in_daylight(w: &World, st: &EntityState, _player: &EntityState) -> bool {
+fn in_daylight(w: &World, st: &EntityState) -> bool {
     let feet = [st.pos.x.floor() as i32, (st.pos.y + 0.5).floor() as i32, st.pos.z.floor() as i32];
     w.daylight() >= 0.5 && w.sky_light(feet) >= 10
 }
@@ -506,17 +475,8 @@ fn passive() -> ai::Goals {
 
 fn with_passive(goals: ai::Goals) -> ai::Goals {
     goals
+        .timid(3.0)
         .then(ai::watch_player(6.0))
-        .then(|w: &World, id: u64, st: &EntityState| {
-            if w.component(id, &BRAIN).is_none_or(|b| b.panicking == 0) {
-                return false;
-            }
-            // A new direction every second.
-            if w.game_time() % 20 == id % 20 || !w.navigating(id) {
-                let a = w.random_below(628) as f64 / 100.0;
-                w.navigate(id, [st.pos.x + a.cos() * 8.0, st.pos.y, st.pos.z + a.sin() * 8.0], 1.6);
-            }
-            true
-        })
+        .then(ai::panic(1.6))
         .then(ai::wander(0.5, 10.0))
 }
