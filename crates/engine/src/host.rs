@@ -136,7 +136,6 @@ pub static HOST: Host = Host {
     reg_mistake,
     launch_option: crate::app::api::launch_option,
     send_packet,
-    loose_inventory,
     entity_teleport,
     set_day_time,
     day_time,
@@ -191,6 +190,7 @@ pub static HOST: Host = Host {
     roll_loot,
     break_block,
     reg_stack_component,
+    reg_storage,
     client_menu_owner: crate::client::modui::client_menu_owner,
     reg_system,
     set_weather,
@@ -940,12 +940,17 @@ unsafe fn held(w: *mut abi::WorldCtx, h: *const abi::Holder) -> Option<crate::se
     unsafe { crate::server::holder::resolve(dim(w), &*h) }
 }
 
+/// The inventory `holder` points at here, `None` (and nothing done) when there is none.
+unsafe fn inventory(w: *mut abi::WorldCtx, h: *const abi::Holder) -> Option<crate::server::holder::Inv> {
+    unsafe { crate::server::holder::inventory(dim(w), content(), &*h) }
+}
+
 unsafe extern "C" fn inventory_len(w: *mut abi::WorldCtx, h: *const abi::Holder) -> u32 {
-    unsafe { held(w, h).map_or(0, |at| crate::server::holder::len(dim(w), content(), at)) }
+    unsafe { inventory(w, h).map_or(0, |inv| crate::server::holder::len(dim(w), content(), inv)) }
 }
 
 unsafe extern "C" fn inventory_get(w: *mut abi::WorldCtx, h: *const abi::Holder, slot: u32) -> ItemStack {
-    unsafe { held(w, h).map_or(ItemStack::EMPTY, |at| crate::server::holder::get(dim(w), content(), at, slot)) }
+    unsafe { inventory(w, h).map_or(ItemStack::EMPTY, |inv| crate::server::holder::get(dim(w), content(), inv, slot)) }
 }
 
 /// A stack from a mod: anything it says goes into saves and on screen, where a wrong id would
@@ -961,8 +966,8 @@ pub(crate) fn known_item(what: &'static str, stack: &ItemStack) -> bool {
 unsafe extern "C" fn inventory_set(w: *mut abi::WorldCtx, h: *const abi::Holder, slot: u32, stack: ItemStack) {
     if known_item("inventory_set", &stack) {
         unsafe {
-            if let Some(at) = held(w, h) {
-                crate::server::holder::set(dim(w), content(), at, slot, stack)
+            if let Some(inv) = inventory(w, h) {
+                crate::server::holder::set(dim(w), content(), inv, slot, stack)
             }
         }
     }
@@ -973,8 +978,8 @@ unsafe extern "C" fn inventory_insert(w: *mut abi::WorldCtx, h: *const abi::Hold
         return ItemStack::EMPTY;
     }
     unsafe {
-        match held(w, h) {
-            Some(at) => crate::server::holder::insert(dim(w), content(), at, stack),
+        match inventory(w, h) {
+            Some(inv) => crate::server::holder::insert(dim(w), content(), inv, stack),
             None => stack,
         }
     }
@@ -989,7 +994,7 @@ unsafe extern "C" fn block_entity(w: *mut abi::WorldCtx, pos: *const abi::BlockP
 }
 
 unsafe extern "C" fn open_menu(w: *mut abi::WorldCtx, player: u64, menu: u32, h: *const abi::Holder) -> u32 {
-    use crate::server::holder::At;
+    use crate::server::holder::{self, At};
     unsafe {
         let d = dim(w);
         let c = content();
@@ -998,12 +1003,19 @@ unsafe extern "C" fn open_menu(w: *mut abi::WorldCtx, player: u64, menu: u32, h:
             return 0;
         };
         let h = &*h;
-        let (owner, held) = match crate::server::holder::resolve(d, h) {
-            _ if h.kind == abi::holder::NONE => (0, None),
-            Some(At::Entity(id)) => (id, None),
-            Some(At::Stack { entity, slot }) if crate::server::holder::len(d, c, At::Stack { entity, slot }) > 0 => (entity, Some(slot)),
+        let on = match holder::inventory(d, c, h) {
+            _ if h.kind == abi::holder::NONE => None,
+            Some(inv) if matches!(inv.at, At::Entity(_)) || holder::len(d, c, inv) > 0 => Some(inv),
             found => {
                 let what = match h.kind {
+                    _ if h.storage != 0 && holder::resolve(d, h).is_some() => {
+                        let name = c
+                            .game
+                            .components
+                            .get(h.storage as usize)
+                            .map_or("?", |d| d.name.as_str());
+                        format!("storage {name}, which isn't one or isn't carried there")
+                    }
                     abi::holder::BLOCK => {
                         let p = crate::world::ivec(h.pos);
                         d.get(p)
@@ -1020,24 +1032,8 @@ unsafe extern "C" fn open_menu(w: *mut abi::WorldCtx, player: u64, menu: u32, h:
             }
         };
         d.events
-            .push(crate::server::DimEvent::OpenMenu { player, menu, owner, block: 0, held });
+            .push(crate::server::DimEvent::OpenMenu { player, menu, on, block: 0 });
         1
-    }
-}
-
-unsafe extern "C" fn loose_inventory(w: *mut abi::WorldCtx, slots: u32, pos: *const abi::Vec3) -> u64 {
-    unsafe {
-        let d = dim(w);
-        let c = content();
-        let id = d.new_id();
-        let p = crate::world::dvec(*pos);
-        let e =
-            crate::server::entity::Entity::new(id, c.game.virtual_kind, if p.is_finite() { d.place.to_world(p) } else { DVec3::ZERO }, 1.0);
-        d.entities.insert(c, e);
-        d.entities
-            .inventories
-            .insert(id, vec![ItemStack::EMPTY; slots.min(1 << 16) as usize]);
-        id
     }
 }
 
@@ -1273,7 +1269,7 @@ unsafe extern "C" fn inventory_group(w: *mut abi::WorldCtx, h: *const abi::Holde
     unsafe {
         let c = content();
         let entity = match held(w, h) {
-            Some(crate::server::holder::At::Entity(id)) => id,
+            Some(crate::server::holder::At::Entity(id)) if (*h).storage == 0 => id,
             _ => return 0,
         };
         let Some(e) = dim(w).entities.get(entity) else { return 0 };
@@ -2554,6 +2550,33 @@ unsafe extern "C" fn reg_stack_component(r: *mut abi::Registrar, name: Str, sche
             .push((name.as_str().to_string(), schema.as_str().to_string(), flags))
     }
 }
+
+unsafe extern "C" fn reg_storage(r: *mut abi::Registrar, name: Str, slots: u32) {
+    use abi::component_flags as cf;
+    unsafe {
+        let r = reg(r);
+        let name = name.as_str().to_string();
+        // One `ItemStack` per slot, empty ones all zero.
+        let size = slots.min(1 << 12) * size_of::<ItemStack>() as u32;
+        r.game.components.push(registry::RawComponent {
+            owner: r.owner,
+            def: registry::ComponentDef {
+                name: name.clone(),
+                size,
+                flags: cf::SAVE | cf::KEEP_ON_RESPAWN | cf::STORAGE,
+                default: vec![0; size as usize],
+                runtime: true,
+            },
+            schema: STORAGE_SCHEMA.into(),
+        });
+        r.game
+            .stack_components
+            .push((name, STORAGE_SCHEMA.into(), 0));
+    }
+}
+
+/// What storages say they hold, for mods that look one up by name.
+pub const STORAGE_SCHEMA: &str = "storage";
 
 unsafe extern "C" fn reg_client_hook(r: *mut abi::Registrar, hook: u32, cb: Callback) {
     unsafe {

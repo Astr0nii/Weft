@@ -1,6 +1,6 @@
 use crate::abi::{self, Holder, ItemStack, Slice, Str};
 use crate::abi::{BlockPos, Vec3};
-use crate::component::{Component, Value};
+use crate::component::{Component, Storage, Value};
 use crate::content::{
     Biome, Block, EntityCategory, EntityKind, EquipmentSlot, GizmoGroup, HudElement, Menu, Pending, RecipeKind, Screen, TintKind,
 };
@@ -348,13 +348,6 @@ impl World {
         let min = min.into();
         let max = max.into();
         self.draw(group, abi::gizmo_kind::FILL, min, max, color, ticks);
-    }
-    /// An inventory of `slots` belonging to nothing in the world (a shared stash, a test):
-    /// menus open on it like on a chest. Never saved; remove it with `despawn`. Items that keep
-    /// what they hold are `ItemBuilder::inventory`.
-    pub fn loose_inventory(&self, slots: u32, pos: impl Into<Vec3>) -> u64 {
-        let pos = pos.into();
-        unsafe { (host().loose_inventory)(self.raw(), slots, &pos) }
     }
 
     /// Moves an entity (players included) at the end of the tick, to `dim` or the same dimension.
@@ -830,6 +823,11 @@ impl EntityBuilder<'_> {
             .push((component.name(), crate::component::value_bytes(&value)));
         self
     }
+    /// Every entity of the kind carries `storage` (declared with `r.storage`), empty at first.
+    pub fn storage(mut self, storage: &'static Storage) -> Self {
+        self.attached.push((storage.name(), Vec::new()));
+        self
+    }
     /// A solid body: others stand on it and ride along, bump into it and get pushed by it
     /// (platforms, boats, lifts). Not pushed around itself.
     pub fn solid(mut self) -> Self {
@@ -855,12 +853,6 @@ impl EntityBuilder<'_> {
     /// A solid body that hurts what it squeezes into blocks instead of only pushing it.
     pub fn crushing(mut self) -> Self {
         self.flags |= entity_flags::CRUSHES;
-        self
-    }
-    /// Only what it holds, components or an inventory: nothing sees, hits or saves it, and it stays
-    /// until removed wherever it was put.
-    pub fn not_in_world(mut self) -> Self {
-        self.flags |= entity_flags::NOT_IN_WORLD;
         self
     }
     /// Riders up to `blocks` above the body (jumping, flying around inside it) keep moving with
@@ -1531,6 +1523,16 @@ impl Registry {
     /// declared value.
     pub fn attach<T: Value>(&mut self, kind: &EntityKind, component: &Component<T>) {
         unsafe { (host().reg_attach)(self.raw, Str::new(kind.name()), Str::new(component.name()), Slice::EMPTY) }
+    }
+
+    /// Every entity of `kind` (any mod's, `&PLAYER`) carries `storage`, empty at first.
+    pub fn attach_storage(&mut self, kind: &EntityKind, storage: &Storage) {
+        unsafe { (host().reg_attach)(self.raw, Str::new(kind.name()), Str::new(storage.name()), Slice::EMPTY) }
+    }
+
+    /// An inventory of `slots` a holder can keep besides its own (`Storage`).
+    pub fn storage(&mut self, storage: &Storage, slots: u32) {
+        unsafe { (host().reg_storage)(self.raw, Str::new(storage.name()), slots) }
     }
 
     /// `attach` with another starting value (a battery's capacity).

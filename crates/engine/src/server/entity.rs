@@ -188,21 +188,20 @@ impl Entity {
         self.pos + DVec3::Y * (self.eye(c) - 0.3)
     }
 
-    /// A thing of its own in the world, for others to see: not a block's entity, and not what is
-    /// only something it holds (`NOT_IN_WORLD`).
-    pub fn in_world(&self, c: &Content) -> bool {
-        !self.removed && self.anchor.is_none() && !c.game.entities[self.kind as usize].is(ef::NOT_IN_WORLD)
+    /// A thing of its own in the world, for others to see: not a block's entity.
+    pub fn in_world(&self) -> bool {
+        !self.removed && self.anchor.is_none()
     }
 
     /// Something that stands in the world and can be hit: not a dropped item or a spectator either.
-    pub fn is_body(&self, c: &Content) -> bool {
-        self.in_world(c) && self.item.is_empty() && !self.mode.has(weft_abi::game_mode_flags::HIDDEN)
+    pub fn is_body(&self) -> bool {
+        self.in_world() && self.item.is_empty() && !self.mode.has(weft_abi::game_mode_flags::HIDDEN)
     }
 
     /// It comes and goes with the world's cube it is in: players have a file of their own, what is
     /// on a body goes with the body.
-    pub fn saved_with_cube(&self, c: &Content) -> bool {
-        !self.removed && !self.player && self.block_frame() == 0 && !c.game.entities[self.kind as usize].is(ef::NOT_IN_WORLD)
+    pub fn saved_with_cube(&self) -> bool {
+        !self.removed && !self.player && self.block_frame() == 0
     }
 
     pub fn state(&self, c: &Content, max_health: f32) -> weft_abi::EntityState {
@@ -546,8 +545,7 @@ impl Entities {
         self.list
             .iter()
             .filter(|e| !e.removed && (kind == u32::MAX || e.kind == kind))
-            .filter(|e| !c.game.entities[e.kind as usize].is(ef::NOT_IN_WORLD))
-            .filter(|e| !targets || (e.is_body(c) && e.alive()))
+            .filter(|e| !targets || (e.is_body() && e.alive()))
             .filter(|e| {
                 if touching {
                     let b = e.aabb(c);
@@ -605,7 +603,7 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl physics::Cel
     const DT: f64 = crate::world::TICK;
     let k = &c.game.entities[e.kind as usize];
     let mut out = Stepped { land: None, crushed: false };
-    if e.anchor.is_some() || k.is(ef::NOT_IN_WORLD) {
+    if e.anchor.is_some() {
         return out;
     }
     if (k.is(ef::KINEMATIC) && !e.falls) || e.motion == Motion::Parked {
@@ -692,7 +690,7 @@ const MAX_CRAMMING: u32 = 24;
 pub fn soft_push(c: &Content, list: &[Entity]) -> Vec<(usize, DVec3)> {
     let soft = |e: &Entity| {
         let k = &c.game.entities[e.kind as usize];
-        k.is(ef::PUSHABLE) && !k.is(ef::SOLID) && e.is_body(c) && e.alive()
+        k.is(ef::PUSHABLE) && !k.is(ef::SOLID) && e.is_body() && e.alive()
     };
     let mut cells: FxHashMap<(i32, i32), Vec<usize>> = FxHashMap::default();
     for (i, e) in list.iter().enumerate().filter(|(_, e)| soft(e)) {

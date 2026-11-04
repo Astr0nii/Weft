@@ -392,6 +392,39 @@ fn tag_schema() -> String {
     String::new()
 }
 
+fn storage_schema() -> String {
+    "storage".into()
+}
+
+/// An inventory a holder keeps besides its own, under a name: each player's ender chest, a
+/// second pocket of a backpack. Declared with `r.storage(&S, slots)`; entity kinds carry it with
+/// `.storage(&S)` (`r.attach_storage(&PLAYER, &S)` for another mod's kind), stacks always can.
+/// `w.inventory(S.of(holder))` reaches it and `w.open_menu(player, &MENU, S.of(holder))` shows
+/// it, its `.machine()` groups being the storage's slots. Saved with its holder, and kept when a
+/// player respawns.
+pub struct Storage {
+    name: &'static str,
+    lookup: Lookup,
+}
+
+impl Storage {
+    pub const fn named(name: &'static str) -> Self {
+        Storage { name, lookup: Lookup::new() }
+    }
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+    /// `u32::MAX` before the registries are frozen or if nothing declared it.
+    #[inline]
+    pub fn id(&self) -> u32 {
+        self.lookup.id(self.name, &storage_schema)
+    }
+    /// This storage of `h` (an entity, a block, a held stack), for inventory calls and menus.
+    pub fn of(&self, h: impl Into<crate::Holder>) -> crate::Holder {
+        crate::Holder { storage: self.id(), ..h.into() }
+    }
+}
+
 /// A component without a value: membership in a group (`plant_soil`, `logs`, `ingots/iron`).
 pub struct Tag {
     name: &'static str,

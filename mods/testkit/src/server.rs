@@ -17,6 +17,8 @@ static GOLD: Block = Block::named("base:gold_block");
 pub static MARK: Component<u32> = Component::named("testkit:mark");
 /// Server-side stack data that is not saved either.
 pub static SECRET: Component<u32> = Component::named("testkit:secret");
+/// A stash every player carries, for menus on an inventory that is no block's or entity's own.
+static STASH: Storage = Storage::named("testkit:stash");
 static PIG: EntityKind = EntityKind::named("base:pig");
 pub static COUNT_MARKS: Config<bool> = Config::named("count_marks");
 pub static PROTECT_GOLD: Config<bool> = Config::named("protect_gold");
@@ -80,6 +82,8 @@ pub fn register(r: &mut Registry) {
     // A suit to swim in lava with (`swimming`).
     r.set_text_on(Target::Name("base:diamond_chestplate"), &SWIMS_IN, "#lava");
     r.attach(&PIG, &MARK);
+    r.storage(&STASH, 54);
+    r.attach_storage(&PLAYER, &STASH);
     r.config(&COUNT_MARKS).bool(false).world();
     // While the rule is on, every marked pig counts up once a tick.
     r.system(&MARK, |b| {
@@ -734,22 +738,25 @@ const OPS: &[(&str, &str, Run)] = &[
         held.set(int(cmd, "index")?, ItemStack::new(id(cmd, "item")?, int(cmd, "count").unwrap_or(1)));
         Ok(held.len().to_string())
     }),
-    ("vmenu", "<which:word> <slots:int> [items:text]", |w, cmd, player, _| {
+    ("stash", "<which:word> [items:text]", |w, cmd, player, _| {
         let name = word(cmd, "which")?;
         let m = Menu::lookup(name).ok_or_else(|| format!("no menu {name}"))?;
-        let pos = w.entity(player).map_or([0.0; 3], |e| e.pos.to_array());
-        let id = w.loose_inventory(int(cmd, "slots")?, pos);
-        let inv = w.inventory(id);
-        // Pairs of item and count.
+        let inv = w.inventory(STASH.of(player));
+        // Pairs of item and count, the rest emptied.
         let words: Vec<&str> = cmd.text("items").unwrap_or("").split_whitespace().collect();
-        for (i, pair) in words.chunks(2).enumerate() {
-            if let [n, c] = pair {
-                inv.set(i as u32, ItemStack::new(item(n)?, c.parse().map_err(|_| format!("bad count {c}"))?));
-            }
+        for i in 0..inv.len() {
+            let stack = match words.chunks(2).nth(i as usize) {
+                Some([n, c]) => ItemStack::new(item(n)?, c.parse().map_err(|_| format!("bad count {c}"))?),
+                _ => ItemStack::EMPTY,
+            };
+            inv.set(i, stack);
         }
-        w.open_menu(player, m, id);
-        Ok(id.to_string())
+        if !w.open_menu(player, m, STASH.of(player)) {
+            return Err(format!("cannot open {name} on the stash"));
+        }
+        Ok(inv.len().to_string())
     }),
+    ("stashed", "<index:int>", |w, cmd, player, _| Ok(stack_text(w.inventory(STASH.of(player)).get(int(cmd, "index")?)))),
     ("remove", "<id:int>", |w, cmd, _, _| {
         w.despawn(int(cmd, "id")?);
         Ok(String::new())

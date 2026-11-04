@@ -258,7 +258,7 @@ fn send_entities(
             .entities
             .list
             .iter()
-            .filter(|e| e.in_world(c) && e.id != p.entity && (!e.player || e.alive()))
+            .filter(|e| e.in_world() && e.id != p.entity && (!e.player || e.alive()))
             .filter(shown)
         {
             if (e.pos - me).length_squared() > range2 {
@@ -431,7 +431,7 @@ fn send_own_state(c: &'static Content, p: &mut Player, dim: &mut DimSet) {
     p.first_sync = false;
     if let Some(m) = &mut p.menu {
         // The machine's menu-synced components, all at first, then what changed.
-        let owner = m.owner;
+        let owner = m.owner();
         let first = !std::mem::replace(&mut m.comps_sent, true);
         let comps: Vec<(u64, u32, Vec<u8>)> = c
             .game

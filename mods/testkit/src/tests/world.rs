@@ -8,11 +8,15 @@ use super::probe;
 use super::{add, at};
 use crate::runner::{R, T};
 
-/// A player saved in a dimension that is gone (its mod removed) keeps everything and starts at
-/// the spawn; the world remembers the mods it was played with.
+/// A player saved in a dimension that is gone (its mod removed) keeps everything, storages too,
+/// and starts at the spawn; the world remembers the mods it was played with.
 pub async fn missing_dimension(t: T) -> R {
     t.world(7).await?;
     t.op("put me 3 diamond 5").await?;
+    t.op("stash base:chest stick 7").await?;
+    t.screen("core:menu").await?;
+    t.c().screen_close();
+    t.no_screen().await?;
     let flat = Dimension::lookup("base:flatlands").ok_or("no flatlands")?;
     t.cmd("/dim base:flatlands").await?;
     t.until("in the flatlands", Duration::from_secs(20), |t| t.state().dim == flat)
@@ -48,23 +52,23 @@ pub async fn missing_dimension(t: T) -> R {
     t.loaded().await?;
     t.check_eq(t.state().dim, Dimension::lookup("base:overworld").unwrap_or(u32::MAX), "the player is in the spawn dimension");
     t.check_eq(t.slot("me", 3).await?, ("base:diamond".into(), 5, 0), "and kept the inventory");
+    t.check_eq(t.op("stashed 0").await?, "base:stick 7 0".to_string(), "and the stash");
     Ok(())
 }
 
-/// Menus open on virtual inventories and on far away blocks; a menu for a block without an
-/// entity is refused with a reason instead of opening something broken.
+/// Menus open on a storage a player carries and on far away blocks; a menu for a block without
+/// an entity is refused with a reason instead of opening something broken.
 pub async fn virtual_menus(t: T) -> R {
     t.flat().await?;
-    let id = t.op("vmenu base:chest 27 diamond 3 stick 10").await?;
+    t.check_eq(t.op("stash base:chest diamond 3 stick 10").await?, "54".to_string(), "stash slots");
     t.screen("core:menu").await?;
     let diamond = Item::lookup("base:diamond").ok_or("no item base:diamond")?;
     t.until("chest contents on the client", Duration::from_secs(5), |t| t.c().menu_slot(0).item == diamond)
         .await?;
-    t.check_eq(t.c().menu_slot(1).count, 10, "second virtual slot");
+    t.check_eq(t.c().menu_slot(1).count, 10, "second stash slot");
     t.shot("virtual_chest").await?;
     t.c().screen_close();
     t.no_screen().await?;
-    t.op(&format!("remove {id}")).await?;
 
     // On a held stack: what goes in stays in that stack, and the menu closes when it goes.
     t.op("put me 8 testmod:pouch").await?;

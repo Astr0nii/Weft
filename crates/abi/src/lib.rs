@@ -1202,7 +1202,8 @@ impl ItemStack {
 
 /// What holds an inventory, energy or other per-instance data: an entity, the block entity at a
 /// block, or the stack in one slot of an entity's inventory (a backpack, a battery). The same
-/// calls take any of them.
+/// calls take any of them. Inventory calls reach its own inventory, or with `storage` set one of
+/// the storages it carries (`reg_storage`: a player's ender chest).
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug, Hash)]
 pub struct Holder {
@@ -1213,6 +1214,9 @@ pub struct Holder {
     pub entity: u64,
     /// `BLOCK`: the block, in the caller's frame (a body's coordinates on a body).
     pub pos: BlockPos,
+    /// Inventory calls: the storage (its component id) instead of the holder's own inventory,
+    /// 0 for that.
+    pub storage: u32,
 }
 
 pub mod holder {
@@ -1224,7 +1228,7 @@ pub mod holder {
 }
 
 impl Holder {
-    pub const NONE: Holder = Holder { kind: holder::NONE, slot: 0, entity: 0, pos: BlockPos::ZERO };
+    pub const NONE: Holder = Holder { kind: holder::NONE, slot: 0, entity: 0, pos: BlockPos::ZERO, storage: 0 };
 
     pub fn entity(id: u64) -> Holder {
         Holder { kind: if id == 0 { holder::NONE } else { holder::ENTITY }, entity: id, ..Holder::NONE }
@@ -1273,8 +1277,6 @@ pub mod entity_flags {
     pub const KINEMATIC: u32 = 128;
     /// A solid body hurts what it squeezes against blocks instead of only pushing.
     pub const CRUSHES: u32 = 256;
-    /// Only what it holds: nothing sees, hits or saves it, and no cube owns it (a virtual inventory).
-    pub const NOT_IN_WORLD: u32 = 512;
     /// Not a kind flag: set in `EntityState::flags` when its last move ran into a wall.
     pub const BLOCKED: u32 = 1 << 31;
 }
@@ -1889,6 +1891,8 @@ pub mod component_flags {
     /// Goes from a block entity onto its block's item when the block breaks, and back onto the
     /// block entity when that item is placed (a machine's charge, a renamed chest's name).
     pub const CARRIED: u32 = 32;
+    /// An inventory (`reg_storage`), its value one `ItemStack` per slot.
+    pub const STORAGE: u32 = 64;
 }
 
 /// Per-entity data storage (hunger, machine state): created with `default` on spawn of the kinds
@@ -2671,9 +2675,6 @@ pub struct Host {
 
     /// Server: sends `data` on channel `name` to `player`'s client (after this tick's changes).
     pub send_packet: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, name: Str, schema: Str, data: Slice<u8>),
-    /// An inventory of `slots` belonging to nothing in the world (an invisible entity at `pos`,
-    /// never saved) that menus open on like on a chest. Remove it with `entity_despawn`.
-    pub loose_inventory: unsafe extern "C" fn(world: *mut WorldCtx, slots: u32, pos: *const Vec3) -> u64,
     /// Moves an entity (players too, their client follows) at the end of the tick; `dim` is a
     /// dimension id, `u32::MAX` = the same one.
     pub entity_teleport: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, dim: u32, pos: *const Vec3),
@@ -2808,6 +2809,10 @@ pub struct Host {
     pub break_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos, tool: ItemStack, player: u64, drops: u32) -> u32,
     /// Declares a stack component's flags (`stack_flags`).
     pub reg_stack_component: unsafe extern "C" fn(reg: *mut Registrar, name: Str, schema: Str, flags: u32),
+    /// A storage of `slots`: an inventory a holder keeps besides its own, reached with
+    /// `Holder::storage`. Entity kinds carry it like a component (`reg_attach`), stacks always
+    /// can. Saved, and kept when a player respawns.
+    pub reg_storage: unsafe extern "C" fn(reg: *mut Registrar, name: Str, slots: u32),
     /// Client: the entity the open menu belongs to (a machine), 0 if none.
     pub client_menu_owner: unsafe extern "C" fn(client: *mut ClientCtx) -> u64,
     /// A system: once per tick and region `cb` gets `SystemArgs` with every entity that has the

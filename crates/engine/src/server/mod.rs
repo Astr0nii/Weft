@@ -692,9 +692,9 @@ impl Server {
                         }
                     }
                 }
-                DimEvent::OpenMenu { player, menu, owner, block, held } => {
+                DimEvent::OpenMenu { player, menu, on, block } => {
                     if let Some(pi) = self.players.iter().position(|p| p.entity == player) {
-                        self.open_menu(c, pi, menu, owner, block, held);
+                        self.open_menu(c, pi, menu, on, block);
                     }
                 }
                 DimEvent::Died { player, cause, killer } => {
@@ -785,7 +785,7 @@ impl Server {
         }
     }
 
-    fn open_menu(&mut self, c: &'static Content, pi: usize, kind: u32, owner: u64, block: u32, held: Option<u32>) {
+    fn open_menu(&mut self, c: &'static Content, pi: usize, kind: u32, on: Option<holder::Inv>, block: u32) {
         if kind as usize >= c.game.menus.len() {
             return;
         }
@@ -796,12 +796,15 @@ impl Server {
             menu::close(m, r, c, p.entity);
         }
         p.window += 1;
-        let mut m = menu::open(r, c, p.entity, kind, owner, held);
+        let mut m = menu::open(r, c, p.entity, kind, on);
         m.on_block = block != 0;
+        let owner = m.owner();
         // The title: the owner's own name (the held stack's), else the block it stands on.
-        let name = match held {
-            Some(slot) => crate::stack::name(&holder::get(r, c, holder::At::Entity(owner), slot)).unwrap_or_default(),
-            None => r
+        let name = match on.map(|inv| inv.at) {
+            Some(holder::At::Stack { entity, slot }) => {
+                crate::stack::name(&holder::get(r, c, holder::Inv::own(holder::At::Entity(entity)), slot)).unwrap_or_default()
+            }
+            _ => r
                 .entities
                 .comps
                 .get(&(owner, c.game.name_comp))
@@ -841,7 +844,7 @@ impl Server {
                     r.entities
                         .list
                         .iter()
-                        .filter(|e| e.saved_with_cube(c))
+                        .filter(|e| e.saved_with_cube())
                         .map(|e| cube_of(e.pos.floor().as_ivec3())),
                 );
                 cubes.sort_unstable_by_key(|p| (p.x, p.y, p.z));
@@ -854,7 +857,7 @@ impl Server {
                             .entities
                             .list
                             .iter()
-                            .any(|e| e.saved_with_cube(c) && cube_of(e.pos.floor().as_ivec3()) == pos);
+                            .any(|e| e.saved_with_cube() && cube_of(e.pos.floor().as_ivec3()) == pos);
                         persist::append_ticks(&mut bytes, &ticks);
                         s.save(c, r.id, pos, cube, &bytes);
                         if holds || !ticks.is_empty() {
@@ -1075,7 +1078,7 @@ impl Server {
         let mut found: Vec<(u32, u64, f64)> = Vec::new();
         let mut consider = |dim: u32, e: &Entity| {
             // Block entities and virtual ones are parts of things, not things to point at.
-            if !e.in_world(content()) {
+            if !e.in_world() {
                 return;
             }
             if let Some((kind, neg)) = s.kind {
@@ -1305,10 +1308,7 @@ fn serialize(c: &Content, d: &Dim, ids: &[u64]) -> Vec<u8> {
     let list: Vec<persist::ToSave> = ids
         .iter()
         .filter_map(|&id| {
-            let e = d
-                .entities
-                .get(id)
-                .filter(|e| !c.game.entities[e.kind as usize].is(abi::entity_flags::NOT_IN_WORLD))?;
+            let e = d.entities.get(id)?;
             let comps = d
                 .entities
                 .comps
@@ -1329,7 +1329,7 @@ fn entities_in(c: &Content, d: &Dim, cube: IVec3) -> Vec<u8> {
         .entities
         .list
         .iter()
-        .filter(|e| e.saved_with_cube(c) && cube_of(e.pos.floor().as_ivec3()) == cube)
+        .filter(|e| e.saved_with_cube() && cube_of(e.pos.floor().as_ivec3()) == cube)
         .map(|e| e.id)
         .collect();
     serialize(c, d, &ids)

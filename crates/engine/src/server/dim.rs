@@ -22,14 +22,13 @@ const CATCH_UP_PARTS: u64 = 20;
 const ITEM_LIFETIME: u64 = crate::world::TPS as u64 * 60 * 5;
 
 pub enum DimEvent {
+    /// `on`: the inventory it opened on, `None` for a menu of its own (a crafting table).
     /// `block`: the state it was opened on, 0 when opened from code.
-    /// `held`: opened on the stack in that slot of `owner`'s inventory.
     OpenMenu {
         player: u64,
         menu: u32,
-        owner: u64,
+        on: Option<crate::server::holder::Inv>,
         block: u32,
-        held: Option<u32>,
     },
     /// `killer`: the kind of what did it.
     Died {
@@ -644,7 +643,7 @@ impl Dim {
             .map(|id| (id, self.max_health(c, id)))
             .collect();
         let Entities { list, comps, inventories, .. } = &mut self.entities;
-        for e in list.iter().filter(|e| e.in_world(c)) {
+        for e in list.iter().filter(|e| e.in_world()) {
             let put = |comps: &mut FxHashMap<(u64, u32), Box<[u8]>>, comp: u32, bytes: &[u8]| match comps.get_mut(&(e.id, comp)) {
                 Some(v) if **v != *bytes => *v = bytes.into(),
                 Some(_) => {}
@@ -864,7 +863,7 @@ impl Dim {
         // One pass over entities and growth for all cubes leaving, not one per cube (a crowd of
         // mobs times thousands of cubes).
         let mut inside: FxHashMap<IVec3, Vec<u64>> = FxHashMap::default();
-        for e in self.entities.list.iter().filter(|e| e.saved_with_cube(c)) {
+        for e in self.entities.list.iter().filter(|e| e.saved_with_cube()) {
             let cp = cube_of(e.pos.floor().as_ivec3());
             if gone.contains(&cp) {
                 inside.entry(cp).or_default().push(e.id);
@@ -1387,7 +1386,7 @@ impl Dim {
     /// between hits, like vanilla's; players are only held back by the target's hurt time.
     pub fn attack(&mut self, c: &'static Content, attacker: u64, target: u64, held: ItemStack) -> bool {
         let (Some(me), Some(t)) = (self.entities.get(attacker), self.entities.get(target)) else { return false };
-        if target == attacker || !t.is_body(c) || me.attack_cooldown > 0 {
+        if target == attacker || !t.is_body() || me.attack_cooldown > 0 {
             return false;
         }
         let (kind, player) = (me.kind, me.player);
@@ -1483,7 +1482,7 @@ impl Dim {
                 .list
                 .iter()
                 .filter(|e| {
-                    e.is_body(c)
+                    e.is_body()
                         && e.id != attacker
                         && e.id != target
                         && (e.pos - center).length_squared() <= 2.0
@@ -1572,7 +1571,7 @@ impl Dim {
     pub fn damage(&mut self, c: &'static Content, id: u64, amount: f32, source: u64, cause: u32) -> bool {
         let Some(e) = self.entities.get(id) else { return false };
         let k = &c.game.entities[e.kind as usize];
-        if k.is(ef::NOT_IN_WORLD) || !e.alive() || amount.is_nan() {
+        if !e.alive() || amount.is_nan() {
             return false;
         }
         if amount < 0.0 {
@@ -1712,7 +1711,7 @@ impl Dim {
             .entities
             .list
             .iter()
-            .filter(|e| e.is_body(c) && !e.flying)
+            .filter(|e| e.is_body() && !e.flying)
             .filter(|e| {
                 let head = (e.pos + DVec3::Y * e.eye(c)).floor().as_ivec3();
                 self.get(head)
@@ -1736,7 +1735,7 @@ impl Dim {
             .entities
             .list
             .iter()
-            .filter(|e| e.in_world(c) && e.pos.y < limit && !e.mode.has(weft_abi::game_mode_flags::NOCLIP))
+            .filter(|e| e.in_world() && e.pos.y < limit && !e.mode.has(weft_abi::game_mode_flags::NOCLIP))
             .map(|e| e.id)
             .collect();
         for id in falling {
@@ -2011,7 +2010,7 @@ impl Dim {
                 .entities
                 .list
                 .iter()
-                .filter(|e| e.is_body(c) && !e.player)
+                .filter(|e| e.is_body() && !e.player)
             {
                 let cat = c.game.entities[e.kind as usize].category as usize;
                 if (e.pos - p).length_squared() < cats[cat].cap_radius * cats[cat].cap_radius {
@@ -2261,9 +2260,6 @@ impl Dim {
                     return None;
                 }
                 let k = &c.game.entities[e.kind as usize];
-                if k.is(ef::NOT_IN_WORLD) {
-                    return None;
-                }
                 let (mut land, mut fell, mut splash) = (None, None, false);
                 let mut crushed = false;
                 // Players move on their client, bodies moved above; the rest here.
@@ -3013,7 +3009,7 @@ impl Dim {
             self.entities
                 .list
                 .iter()
-                .any(|e| e.is_body(c) && e.id != self.frame && !self.bodies.contains_key(&e.id) && e.aabb(c).intersects(&part))
+                .any(|e| e.is_body() && e.id != self.frame && !self.bodies.contains_key(&e.id) && e.aabb(c).intersects(&part))
         });
         if taken {
             return false;
@@ -3070,9 +3066,11 @@ impl Dim {
         }
         if let Some(menu) = opens {
             // Its block entity's menu, or one of its own (a crafting table).
-            let owner = self.anchored(p).unwrap_or(0);
+            let on = self
+                .anchored(p)
+                .map(|id| crate::server::holder::Inv::own(crate::server::holder::At::Entity(id)));
             self.events
-                .push(crate::server::DimEvent::OpenMenu { player, menu, owner, block: state, held: None });
+                .push(DimEvent::OpenMenu { player, menu, on, block: state });
             return true;
         }
         let r = self.as_part(p, state, |d| {

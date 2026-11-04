@@ -471,7 +471,7 @@ impl Server {
             }
             ToServer::OpenInventory => {
                 if let Some(m) = c.game.player_menu {
-                    self.open_menu(c, pi, m, 0, 0, None);
+                    self.open_menu(c, pi, m, None, 0);
                 }
             }
             ToServer::Click { slot, button, shift } => {

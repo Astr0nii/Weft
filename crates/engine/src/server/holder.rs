@@ -1,6 +1,7 @@
 //! What any `abi::Holder` holds, reached one way: an entity's inventory and components, a
 //! block's through its block entity, a stack's through its `contents` and stack components,
-//! written back into the slot the stack sits in.
+//! written back into the slot the stack sits in. Storages are more inventories, kept in a
+//! component of whoever carries them.
 
 use weft_abi::{self as abi, ItemStack};
 
@@ -36,6 +37,40 @@ pub fn resolve(d: &Dim, h: &abi::Holder) -> Option<At> {
     }
 }
 
+/// An inventory: the one a holder has itself (`storage` 0), or one of the storages it carries.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Inv {
+    pub at: At,
+    pub storage: u32,
+}
+
+impl Inv {
+    pub fn own(at: At) -> Inv {
+        Inv { at, storage: 0 }
+    }
+}
+
+/// The inventory `h` points at, `None` when it isn't there: a storage that isn't one, or an
+/// entity that doesn't carry it. Stacks can carry any storage.
+pub fn inventory(d: &Dim, c: &Content, h: &abi::Holder) -> Option<Inv> {
+    let inv = Inv { at: resolve(d, h)?, storage: h.storage };
+    let carried = match inv.at {
+        _ if h.storage == 0 => true,
+        At::Entity(id) => storage_slots(c, h.storage).is_some() && d.entities.comps.contains_key(&(id, h.storage)),
+        At::Stack { .. } => storage_slots(c, h.storage).is_some(),
+    };
+    carried.then_some(inv)
+}
+
+/// Slots of storage `comp`, `None` if it isn't one.
+pub fn storage_slots(c: &Content, comp: u32) -> Option<u32> {
+    c.game
+        .components
+        .get(comp as usize)
+        .filter(|d| d.flags & abi::component_flags::STORAGE != 0)
+        .map(|d| d.size / STACK_BYTES as u32)
+}
+
 /// Slots each stack of `item` carries (its `inventory` component), 0 for most items.
 pub fn item_slots(c: &Content, item: u32) -> u32 {
     c.item_value::<u32>(item, c.ids.inventory)
@@ -43,39 +78,33 @@ pub fn item_slots(c: &Content, item: u32) -> u32 {
         .min(1 << 12)
 }
 
+/// Bytes of one stack in a component holding stacks: item, count, data.
+const STACK_BYTES: usize = 12;
+
 fn read_u32(b: &[u8], i: usize) -> u32 {
     b.get(i..i + 4)
         .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
-/// What `stack` holds, one entry per slot of its item.
-pub fn contents(c: &Content, stack: &ItemStack) -> Vec<ItemStack> {
-    let n = item_slots(c, stack.item) as usize;
-    let bytes = c
-        .ids
-        .contents
-        .and_then(|comp| stack::value(stack.data, comp))
-        .unwrap_or(&[]);
-    (0..n)
+/// `n` stacks out of a component's bytes; what is missing or unknown is empty.
+fn decode(c: &Content, bytes: &[u8], n: u32) -> Vec<ItemStack> {
+    (0..n as usize)
         .map(|i| {
-            let s = ItemStack { item: read_u32(bytes, i * 12), count: read_u32(bytes, i * 12 + 4), data: read_u32(bytes, i * 12 + 8) };
+            let at = i * STACK_BYTES;
+            let s = ItemStack { item: read_u32(bytes, at), count: read_u32(bytes, at + 4), data: read_u32(bytes, at + 8) };
             if s.is_empty() || s.item as usize >= c.items.len() { ItemStack::EMPTY } else { s }
         })
         .collect()
 }
 
-pub fn with_contents(c: &Content, stack: ItemStack, list: &[ItemStack]) -> ItemStack {
-    let Some(comp) = c.ids.contents else { return stack };
-    let empty = list.iter().all(ItemStack::is_empty);
-    let bytes: Vec<u8> = list
-        .iter()
+fn encode(list: &[ItemStack]) -> Vec<u8> {
+    list.iter()
         .flat_map(|s| {
             let s = if s.is_empty() { ItemStack::EMPTY } else { *s };
             [s.item, s.count, s.data]
         })
         .flat_map(u32::to_le_bytes)
-        .collect();
-    ItemStack { data: stack::with(stack.data, comp, (!empty).then_some(&bytes[..])), ..stack }
+        .collect()
 }
 
 fn stack_at(d: &Dim, entity: u64, slot: u32) -> ItemStack {
@@ -87,53 +116,69 @@ fn stack_at(d: &Dim, entity: u64, slot: u32) -> ItemStack {
         .unwrap_or_default()
 }
 
-pub fn len(d: &Dim, c: &Content, at: At) -> u32 {
-    match at {
-        At::Entity(id) => d
+/// The component an inventory other than an entity's own is kept in: a stack's own is its
+/// `contents`.
+fn kept_in(c: &Content, inv: Inv) -> Option<u32> {
+    if inv.storage == 0 { c.ids.contents } else { Some(inv.storage) }
+}
+
+fn stored(d: &Dim, c: &Content, inv: Inv) -> Vec<ItemStack> {
+    let bytes = kept_in(c, inv).and_then(|comp| component(d, inv.at, comp));
+    decode(c, bytes.as_deref().unwrap_or(&[]), len(d, c, inv))
+}
+
+/// Writes back what `stored` read; a stack holding nothing drops the component.
+fn store(d: &mut Dim, c: &Content, inv: Inv, list: &[ItemStack]) {
+    let Some(comp) = kept_in(c, inv) else { return };
+    let bytes = encode(list);
+    let empty = matches!(inv.at, At::Stack { .. }) && list.iter().all(ItemStack::is_empty);
+    set_component(d, c, inv.at, comp, (!empty).then_some(&bytes[..]));
+}
+
+pub fn len(d: &Dim, c: &Content, inv: Inv) -> u32 {
+    match (inv.at, inv.storage) {
+        (At::Entity(id), 0) => d
             .entities
             .inventories
             .get(&id)
             .map_or(0, |i| i.len() as u32),
-        At::Stack { entity, slot } => item_slots(c, stack_at(d, entity, slot).item),
+        (At::Stack { entity, slot }, 0) => item_slots(c, stack_at(d, entity, slot).item),
+        (_, comp) => storage_slots(c, comp).unwrap_or(0),
     }
 }
 
-pub fn get(d: &Dim, c: &Content, at: At, i: u32) -> ItemStack {
-    match at {
-        At::Entity(id) => stack_at(d, id, i),
-        At::Stack { entity, slot } => contents(c, &stack_at(d, entity, slot))
+pub fn get(d: &Dim, c: &Content, inv: Inv, i: u32) -> ItemStack {
+    match (inv.at, inv.storage) {
+        (At::Entity(id), 0) => stack_at(d, id, i),
+        _ => stored(d, c, inv)
             .get(i as usize)
             .copied()
             .unwrap_or_default(),
     }
 }
 
-pub fn set(d: &mut Dim, c: &Content, at: At, i: u32, s: ItemStack) {
-    match at {
-        At::Entity(id) => d.entities.set_slot(id, i, s),
-        At::Stack { entity, slot } => {
-            let holder = stack_at(d, entity, slot);
-            let mut list = contents(c, &holder);
+pub fn set(d: &mut Dim, c: &Content, inv: Inv, i: u32, s: ItemStack) {
+    match (inv.at, inv.storage) {
+        (At::Entity(id), 0) => d.entities.set_slot(id, i, s),
+        _ => {
+            let mut list = stored(d, c, inv);
             if let Some(e) = list.get_mut(i as usize) {
                 *e = s;
-                d.entities
-                    .set_slot(entity, slot, with_contents(c, holder, &list));
+                store(d, c, inv, &list);
             }
         }
     }
 }
 
 /// Merges into matching stacks, then empty slots. Returns the rest.
-pub fn insert(d: &mut Dim, c: &Content, at: At, stack: ItemStack) -> ItemStack {
-    match at {
-        At::Entity(id) => d.entities.insert_item(c, id, stack),
-        At::Stack { entity, slot } => {
-            let holder = stack_at(d, entity, slot);
-            let mut list = contents(c, &holder);
+pub fn insert(d: &mut Dim, c: &Content, inv: Inv, stack: ItemStack) -> ItemStack {
+    match (inv.at, inv.storage) {
+        (At::Entity(id), 0) => d.entities.insert_item(c, id, stack),
+        _ => {
+            let mut list = stored(d, c, inv);
             let rest = merge_into(c, &mut list, stack, |_| true);
             if rest != stack {
-                d.entities
-                    .set_slot(entity, slot, with_contents(c, holder, &list));
+                store(d, c, inv, &list);
             }
             rest
         }

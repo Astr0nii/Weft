@@ -115,6 +115,8 @@ pub fn write(c: &Content, out: &mut Vec<u8>, list: &[ToSave<'_>]) {
         w.u16(saved.len() as u16);
         for (id, bytes) in saved {
             w.str(&c.game.components[*id as usize].name);
+            let named = crate::stack::holds_stacks(c, *id).then(|| crate::stack::contents_to_names(c, bytes));
+            let bytes = named.as_deref().unwrap_or(bytes);
             // Component values over 64 KB say so with a marker, older saves never have it.
             if bytes.len() >= u16::MAX as usize {
                 w.u16(u16::MAX);
@@ -215,6 +217,7 @@ fn read_one(c: &Content, r: &mut R) -> Option<Option<Saved>> {
         let len = if len == u16::MAX as usize { r.u32()? as usize } else { len };
         let bytes = r.take(len)?.to_vec();
         if let Some(id) = c.game.component(&name) {
+            let bytes = if crate::stack::holds_stacks(c, id) { crate::stack::contents_from_names(c, &bytes) } else { bytes };
             comps.push((id, c.game.fit_component(id, bytes)));
         }
     }

@@ -1,12 +1,12 @@
-//! Container menus: a list of slots pointing into inventories (the player's, a block entity's or
-//! the menu's own temporary grid), the cursor stack, and synced integers. The slots come from the
+//! Container menus: a list of slots pointing into inventories (the player's, the one it opened
+//! on or the menu's own temporary grid), the cursor stack, and synced integers. The slots come from the
 //! menu's groups; click handling is generic, mods only describe groups and react to changes
 //! (crafting).
 
 use weft_abi::{self as abi, ItemStack, slot_flags as sf};
 
 use super::dim::Dim;
-use super::holder::{self, At};
+use super::holder::{self, At, Inv};
 use crate::content::Content;
 use crate::host;
 
@@ -14,12 +14,8 @@ use crate::host;
 pub enum Owner {
     Temp,
     Player,
-    Entity(u64),
-    /// The contents of the stack in `slot` of `entity`'s inventory.
-    Held {
-        entity: u64,
-        slot: u32,
-    },
+    /// The inventory the menu opened on.
+    On(Inv),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -39,10 +35,9 @@ pub struct OpenMenu {
     /// code (a remote terminal) means it to work from anywhere.
     pub on_block: bool,
     pub kind: u32,
-    pub owner: u64,
-    /// Opened on the stack in this slot of `owner`'s inventory, and the item it was: the menu
-    /// closes once that stack is gone.
-    pub held: Option<(u32, u32)>,
+    pub on: Option<Inv>,
+    /// Opened on a stack: the item it was, the menu closes once that stack is gone.
+    pub held_item: u32,
     pub slots: Vec<SlotRef>,
     pub temp: Vec<ItemStack>,
     pub cursor: ItemStack,
@@ -86,25 +81,23 @@ impl MenuCall {
     }
 }
 
+impl OpenMenu {
+    /// The entity it opened on (holding the stack it opened on), 0 for none.
+    pub fn owner(&self) -> u64 {
+        match self.on.map(|inv| inv.at) {
+            Some(At::Entity(id) | At::Stack { entity: id, .. }) => id,
+            None => 0,
+        }
+    }
+}
+
 fn get(m: &OpenMenu, dim: &Dim, player: u64, slot: u32) -> ItemStack {
     let Some(r) = m.slots.get(slot as usize) else { return ItemStack::EMPTY };
+    let c = crate::content::content();
     match r.owner {
         Owner::Temp => m.temp.get(r.index as usize).copied().unwrap_or_default(),
-        Owner::Player => dim
-            .entities
-            .inventories
-            .get(&player)
-            .and_then(|i| i.get(r.index as usize))
-            .copied()
-            .unwrap_or_default(),
-        Owner::Entity(id) => dim
-            .entities
-            .inventories
-            .get(&id)
-            .and_then(|i| i.get(r.index as usize))
-            .copied()
-            .unwrap_or_default(),
-        Owner::Held { entity, slot } => holder::get(dim, crate::content::content(), At::Stack { entity, slot }, r.index),
+        Owner::Player => holder::get(dim, c, Inv::own(At::Entity(player)), r.index),
+        Owner::On(inv) => holder::get(dim, c, inv, r.index),
     }
 }
 
@@ -118,8 +111,7 @@ fn set(m: &mut OpenMenu, dim: &mut Dim, player: u64, slot: u32, stack: ItemStack
             }
         }
         Owner::Player => dim.entities.set_slot(player, r.index, stack),
-        Owner::Entity(id) => dim.entities.set_slot(id, r.index, stack),
-        Owner::Held { entity, slot } => holder::set(dim, crate::content::content(), At::Stack { entity, slot }, r.index, stack),
+        Owner::On(inv) => holder::set(dim, crate::content::content(), inv, r.index, stack),
     }
 }
 
@@ -133,10 +125,10 @@ fn call(
 ) {
     let def = &c.game.menus[m.kind as usize];
     let Some(cb) = pick(def) else { return };
-    let owner = match (m.owner, m.held) {
-        (0, _) => abi::Holder::NONE,
-        (id, Some((slot, _))) => abi::Holder::held(id, slot),
-        (id, None) => abi::Holder::entity(id),
+    let owner = match m.on {
+        None => abi::Holder::NONE,
+        Some(Inv { at: At::Entity(id), storage }) => abi::Holder { storage, ..abi::Holder::entity(id) },
+        Some(Inv { at: At::Stack { entity, slot }, storage }) => abi::Holder { storage, ..abi::Holder::held(entity, slot) },
     };
     let mut call = MenuCall { menu: m as *mut OpenMenu, dim: dim as *mut Dim, player };
     let mut ctx = host::CallCtx { dim: dim as *mut Dim };
@@ -144,9 +136,8 @@ fn call(
     host::invoke(def.owner, cb, &mut args);
 }
 
-/// The slots of menu `kind` opened on `owner` (on the stack in slot `held` of its inventory),
-/// from its groups.
-pub fn slots(c: &Content, kind: u32, owner: u64, held: Option<u32>, player: u64) -> Vec<SlotRef> {
+/// The slots of menu `kind` opened on `on`, from its groups.
+pub fn slots(c: &Content, kind: u32, on: Option<Inv>, player: u64) -> Vec<SlotRef> {
     use abi::slot_owner as so;
     let def = &c.game.menus[kind as usize];
     let layout = &c.game.player_layout;
@@ -159,16 +150,15 @@ pub fn slots(c: &Content, kind: u32, owner: u64, held: Option<u32>, player: u64)
                 u32::MAX - 1
             }),
         };
-        let o = match (g.owner, held) {
-            (so::MENU, _) => Owner::Temp,
-            (so::MACHINE, None) => Owner::Entity(owner),
-            (so::MACHINE, Some(slot)) => Owner::Held { entity: owner, slot },
+        let o = match g.owner {
+            so::MENU => Owner::Temp,
+            so::MACHINE => Owner::On(on.unwrap_or(Inv::own(At::Entity(0)))),
             _ => Owner::Player,
         };
         for i in 0..n {
             let index = g.index(layout, i);
             // The stack the menu is open on can't be moved while it is.
-            let locked = o == Owner::Player && owner == player && held == Some(index);
+            let locked = o == Owner::Player && on.is_some_and(|inv| inv.at == At::Stack { entity: player, slot: index });
             let flags = if locked { g.flags | sf::LOCKED } else { g.flags };
             out.push(SlotRef { owner: o, index, flags, accepts, limit: g.limit, priority: g.priority });
         }
@@ -176,15 +166,18 @@ pub fn slots(c: &Content, kind: u32, owner: u64, held: Option<u32>, player: u64)
     out
 }
 
-pub fn open(dim: &mut Dim, c: &Content, player: u64, kind: u32, owner: u64, held: Option<u32>) -> OpenMenu {
+pub fn open(dim: &mut Dim, c: &Content, player: u64, kind: u32, on: Option<Inv>) -> OpenMenu {
     let def = &c.game.menus[kind as usize];
-    let held_item = held.map(|slot| (slot, holder::get(dim, c, At::Entity(owner), slot).item));
+    let held_item = match on.map(|inv| inv.at) {
+        Some(At::Stack { entity, slot }) => holder::get(dim, c, Inv::own(At::Entity(entity)), slot).item,
+        _ => 0,
+    };
     let mut m = OpenMenu {
         on_block: false,
         kind,
-        owner,
-        held: held_item,
-        slots: slots(c, kind, owner, held, player),
+        on,
+        held_item,
+        slots: slots(c, kind, on, player),
         temp: vec![ItemStack::EMPTY; def.temp_slots as usize],
         cursor: ItemStack::EMPTY,
         sent_slots: Vec::new(),
@@ -198,14 +191,11 @@ pub fn open(dim: &mut Dim, c: &Content, player: u64, kind: u32, owner: u64, held
 /// Whether what the menu is on is gone or too far away: modern's reach to a block plus 4. Virtual
 /// inventories have no place to walk away from.
 pub fn out_of_reach(m: &OpenMenu, dim: &Dim, player: u64) -> bool {
-    if m.owner == 0 {
-        return false;
-    }
-    let Some(owner) = dim.entities.get(m.owner).filter(|o| !o.removed) else { return true };
-    if let Some((slot, item)) = m.held {
-        let c = crate::content::content();
-        let now = holder::get(dim, c, At::Entity(m.owner), slot);
-        return now.item != item || now.is_empty();
+    let Some(on) = m.on else { return false };
+    let Some(owner) = dim.entities.get(m.owner()).filter(|o| !o.removed) else { return true };
+    if let At::Stack { entity, slot } = on.at {
+        let now = holder::get(dim, crate::content::content(), Inv::own(At::Entity(entity)), slot);
+        return now.item != m.held_item || now.is_empty();
     }
     if owner.anchor.is_none() || !m.on_block {
         return false;
@@ -255,7 +245,7 @@ fn fits(c: &Content, s: &SlotRef, item: u32) -> bool {
         return false;
     }
     // A stack holding items doesn't go into another one.
-    if matches!(s.owner, Owner::Held { .. }) && holder::item_slots(c, item) > 0 {
+    if matches!(s.owner, Owner::On(Inv { at: At::Stack { .. }, .. })) && holder::item_slots(c, item) > 0 {
         return false;
     }
     s.accepts == u32::MAX || item == 0 || c.components.has(crate::components::ITEM, item, s.accepts)

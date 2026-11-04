@@ -149,14 +149,23 @@ pub fn to_names(data: u32) -> Vec<(String, Vec<u8>)> {
     get(data)
         .iter()
         .map(|(id, b)| {
-            let bytes = if Some(*id) == c.ids.contents { contents_to_names(c, b) } else { b.to_vec() };
+            let bytes = if holds_stacks(c, *id) { contents_to_names(c, b) } else { b.to_vec() };
             (c.components.names[*id as usize].clone(), bytes)
         })
         .collect()
 }
 
+/// Whether component `id` holds stacks: `contents`, and storages.
+pub fn holds_stacks(c: &crate::content::Content, id: u32) -> bool {
+    Some(id) == c.ids.contents
+        || c.game
+            .components
+            .get(id as usize)
+            .is_some_and(|d| d.flags & weft_abi::component_flags::STORAGE != 0)
+}
+
 /// `contents` holds stacks by item id and data handle, both per process: written out by name.
-fn contents_to_names(c: &crate::content::Content, b: &[u8]) -> Vec<u8> {
+pub fn contents_to_names(c: &crate::content::Content, b: &[u8]) -> Vec<u8> {
     use crate::net::codec::{W, Wire};
     let mut w = W(Vec::new());
     let n = b.len() / 12;
@@ -175,7 +184,7 @@ fn contents_to_names(c: &crate::content::Content, b: &[u8]) -> Vec<u8> {
     w.0
 }
 
-fn contents_from_names(c: &crate::content::Content, b: &[u8]) -> Vec<u8> {
+pub fn contents_from_names(c: &crate::content::Content, b: &[u8]) -> Vec<u8> {
     use crate::net::codec::{R, Wire};
     let mut r = R(b);
     let mut out = Vec::new();
@@ -238,7 +247,7 @@ pub fn from_names(list: Vec<(String, Vec<u8>)>) -> u32 {
         list.into_iter()
             .filter_map(|(name, b)| {
                 let id = c.components.id(&name)?;
-                let b = if Some(id) == c.ids.contents { contents_from_names(c, &b) } else { b };
+                let b = if holds_stacks(c, id) { contents_from_names(c, &b) } else { b };
                 Some((id, b.into_boxed_slice()))
             })
             .collect(),

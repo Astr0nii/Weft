@@ -178,6 +178,8 @@ pub(super) fn save_player(s: &Storage, p: &Player, d: &Dim) {
     }
     for ((id, comp), bytes) in &d.entities.comps {
         if *id == p.entity && c.game.components[*comp as usize].flags & cf::SAVE != 0 {
+            let named = crate::stack::holds_stacks(c, *comp).then(|| crate::stack::contents_to_names(c, bytes));
+            let bytes = named.as_deref().unwrap_or(bytes);
             text.push_str(&format!("comp.{} = {}\n", c.game.components[*comp as usize].name, crate::kv::hex(bytes)));
         }
     }
@@ -266,7 +268,9 @@ pub(super) fn load_player(c: &Content, s: &Storage, key: &str) -> Option<PlayerD
                         log::warn!("player {key}: dropped component {name} (not registered now)");
                     }
                     if let Some(id) = id {
-                        comps.push((id, c.game.fit_component(id, crate::kv::unhex(v))));
+                        let bytes = crate::kv::unhex(v);
+                        let bytes = if crate::stack::holds_stacks(c, id) { crate::stack::contents_from_names(c, &bytes) } else { bytes };
+                        comps.push((id, c.game.fit_component(id, bytes)));
                     }
                 }
             }

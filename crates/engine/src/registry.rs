@@ -22,8 +22,6 @@ pub struct HudElement {
     pub cb: Callback,
 }
 pub const ITEM: &str = "core:item";
-/// Holder of virtual inventories (`Host::inventory_create`).
-pub const VIRTUAL: &str = "core:virtual";
 /// A block falling as an entity (`Host::fall_block`), placed again where it lands.
 pub const FALLING: &str = "core:falling_block";
 pub const MOVING: &str = "core:moving_blocks";
@@ -343,7 +341,6 @@ pub struct Game {
     pub block_entities: FxHashMap<u32, u32>,
     pub player_kind: u32,
     pub item_kind: u32,
-    pub virtual_kind: u32,
     pub falling_kind: u32,
     /// Blocks a piston is moving, an entity while they do.
     pub moving_kind: u32,
@@ -1538,13 +1535,6 @@ pub fn freeze_entities(raws: &mut [RawGame], errors: &mut Vec<String>) -> Entiti
         components: Vec::new(),
     });
     entities.push(RawEntity {
-        name: VIRTUAL.into(),
-        cell: 0,
-        desc: builtin(VIRTUAL, 0.0, 0.0, ef::INVULNERABLE | ef::NO_GRAVITY | ef::NOT_IN_WORLD),
-        replace: false,
-        components: Vec::new(),
-    });
-    entities.push(RawEntity {
         name: FALLING.into(),
         cell: 0,
         desc: builtin(FALLING, 0.98, 1.0, ef::INVULNERABLE | ef::SOLID),
@@ -1742,7 +1732,6 @@ pub fn freeze(
     g.falling_kind = g.entity_names[FALLING];
     g.moving_kind = g.entity_names[MOVING];
     g.platform_kind = g.entity_names[PLATFORM];
-    g.virtual_kind = g.entity_names[VIRTUAL];
     g.client_hooks.sort_by_key(|h| order(h.0));
     entity_ticks.sort_by_key(|t| order(t.0));
     for (owner, kind, cb) in entity_ticks {
