@@ -922,6 +922,19 @@ impl VulkanBackend {
         };
     }
 
+    /// Orders copies: those recorded after it start once those before it are written.
+    unsafe fn copy_barrier(&self, cmd: vk::CommandBuffer) {
+        let b = [vk::MemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::COPY)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::COPY)
+            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)];
+        unsafe {
+            self.device
+                .cmd_pipeline_barrier2(cmd, &vk::DependencyInfo::default().memory_barriers(&b))
+        };
+    }
+
     unsafe fn record_uploads(&mut self, cmd: vk::CommandBuffer) {
         if self.uploads.is_empty() {
             return;
@@ -935,10 +948,26 @@ impl VulkanBackend {
                 .map(|c| c.0)
                 .collect();
             let uploads = std::mem::take(&mut self.uploads);
+            // Byte ranges copied into each buffer since the last barrier. Copies are unordered
+            // without one, so a later write to the same bytes could land first and be overwritten
+            // by the older data; a copy that overlaps one of these waits for them. Keyed by
+            // (buffer, start) to the end; the ranges never overlap, so only the one starting
+            // last before a copy's end can overlap it.
+            let mut written: std::collections::BTreeMap<(u32, u64), u64> = Default::default();
             for u in &uploads {
                 match *u {
                     Upload::Buffer { src, dst, offset, size } => {
                         let Some(Some(b)) = self.buffers.items.get(dst as usize) else { continue };
+                        let end = offset + size;
+                        if written
+                            .range(..(dst, end))
+                            .next_back()
+                            .is_some_and(|(&(d, _), &e)| d == dst && e > offset)
+                        {
+                            self.copy_barrier(cmd);
+                            written.clear();
+                        }
+                        written.insert((dst, offset), end);
                         let region = [vk::BufferCopy { src_offset: src.1, dst_offset: offset, size }];
                         self.device
                             .cmd_copy_buffer(cmd, chunks[src.0 as usize], b.raw, &region);
@@ -1205,6 +1234,10 @@ impl Backend for VulkanBackend {
 
     fn destroy_buffer(&mut self, buffer: BufferId) {
         if let Some(b) = self.buffers.remove(buffer.0) {
+            // Writes still queued for it go with it: its slot is free at once, and a buffer made
+            // before the uploads run (a reload makes many) would take them, past its end.
+            self.uploads
+                .retain(|u| !matches!(u, Upload::Buffer { dst, .. } if *dst == buffer.0));
             self.defer(Deferred::Buffer(b.raw, b.alloc));
         }
     }
@@ -1304,6 +1337,13 @@ impl Backend for VulkanBackend {
 
     fn destroy_texture(&mut self, texture: TextureId) {
         if let Some(t) = self.textures.remove(texture.0) {
+            // As for buffers: uploads still queued for it must not reach a texture that takes its
+            // slot.
+            self.uploads.retain(|u| match u {
+                Upload::Texture { dst, .. } => *dst != texture.0,
+                Upload::InitTexture(id) => *id != texture.0,
+                Upload::Buffer { .. } => true,
+            });
             self.defer(Deferred::Texture(t.image, t.view, t.alloc, t.index));
         }
     }

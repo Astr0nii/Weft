@@ -431,6 +431,17 @@ pub fn scatter_site(
     if col.height == i32::MIN || def.sea_level().is_some_and(|l| col.height < l) {
         return None;
     }
+    if !s.ground.is_empty() {
+        // The terrain surface is a state ID; the scatter constraint stores block IDs.
+        // A zero surface state means there is no usable terrain surface.
+        let state = def.surface_block(seed, x, z);
+        if state == 0
+            || state as usize >= c.states.len()
+            || s.ground.binary_search(&c.states[state as usize].block).is_err()
+        {
+            return None;
+        }
+    }
     let density = s
         .density
         .and_then(|d| c.components.get::<f32>(comps::BIOME, col.biome, d))

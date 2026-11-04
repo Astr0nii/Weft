@@ -189,6 +189,7 @@ pub fn register(r: &mut Registry) {
         .cell(5)
         .reach(3)
         .density(&TREES)
+        .ground("#plant_soil")
         .shape(|s| {
             let BlockPos { x, y, z } = s.pos();
             let log = TREE_KINDS
@@ -361,13 +362,11 @@ fn decorate(g: &mut Gen) {
             let y = y as usize;
             let (wx, wz) = (ox + x as i32, oz + z as i32);
             // Clay patch size based on noise scale
-            let clay = Fields { seed }.fbm(0xC1A7, wx * 16, wz * 16, 18 * 16, 3);
+            let clay = fixed::fbm(fixed::seed32(seed, 0xC1A7), wx * 16, wz * 16, 18 * 16, 3);
             // Threshold for clay generation
-            if clay > ONE / 4 {
+            if clay > fixed::ONE / 4 {
                 let surface = g.get(x, y, z);
-                if SAND.is(surface)
-                    || GRAVEL.is(surface)
-                {
+                if SAND.is(surface) || GRAVEL.is(surface) {
                     g.set(x, y, z, CLAY.id());
                 }
             }
