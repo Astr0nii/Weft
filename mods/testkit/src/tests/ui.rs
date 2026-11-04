@@ -46,7 +46,7 @@ pub async fn screens(t: T) -> R {
     t.shot("about").await?;
     t.laid_out(&["text:Test Mod", "text:opened by name"]);
     // A part of a mod's screen with a tooltip of its own.
-    let [x, y, w, h] = t.c().ui_rect("text:Hover me").ok_or("no part to hover")?;
+    let Rect { x, y, w, h } = t.c().ui_rect("text:Hover me").ok_or("no part to hover")?;
     t.c().input_cursor(x + w / 2.0, y + h / 2.0);
     t.frames(4).await?;
     let shot = t.shot("about_tooltip").await?;
@@ -59,7 +59,7 @@ pub async fn screens(t: T) -> R {
     t.c().input_type("Steve");
     t.until("the typed name", Duration::from_secs(3), |t| t.c().ui_rect("text:Hello, Steve").is_some())
         .await?;
-    let [x, y, w, h] = t.c().ui_rect("slider").ok_or("no slider")?;
+    let Rect { x, y, w, h } = t.c().ui_rect("slider").ok_or("no slider")?;
     t.c().input_cursor(x + w * 0.75, y + h / 2.0);
     t.c().input_click(0, 0.1);
     t.until("the slider moved", Duration::from_secs(3), |t| (70..=80).any(|v| t.c().ui_rect(&format!("text:Volume: {v}")).is_some()))
@@ -96,7 +96,7 @@ pub async fn hud_editor(t: T) -> R {
         "id:hud_tools",
     ]);
     // A drag takes the hotbar to the top left corner.
-    let [x, y, w, h] = rect(&t, "core:hotbar").ok_or("no hotbar in the editor")?;
+    let Rect { x, y, w, h } = rect(&t, "core:hotbar").ok_or("no hotbar in the editor")?;
     t.c().input_cursor(x + w / 2.0, y + h / 2.0);
     t.frames(3).await?;
     t.c().input_click(0, 0.4);
@@ -107,13 +107,13 @@ pub async fn hud_editor(t: T) -> R {
     t.secs(0.5).await?;
     let moved = rect(&t, "core:hotbar").ok_or("no hotbar after the drag")?;
     t.check(
-        (moved[0] + moved[2] / 2.0 - 0.25).abs() < 0.02 && (moved[1] + moved[3] / 2.0 - 0.2).abs() < 0.02,
+        (moved.x + moved.w / 2.0 - 0.25).abs() < 0.02 && (moved.y + moved.h / 2.0 - 0.2).abs() < 0.02,
         format!("the hotbar under the cursor: {moved:?}"),
     );
     let saved = std::fs::read_to_string(&file).unwrap_or_default();
     t.check(saved.contains("core:hotbar = at"), format!("saved: {saved:?}"));
     // The right button hides what is under it.
-    let [x, y, w, h] = rect(&t, "core:crosshair").ok_or("no crosshair")?;
+    let Rect { x, y, w, h } = rect(&t, "core:crosshair").ok_or("no crosshair")?;
     t.c().input_cursor(x + w / 2.0, y + h / 2.0);
     t.frames(3).await?;
     t.c().input_click(1, 0.1);
@@ -126,7 +126,7 @@ pub async fn hud_editor(t: T) -> R {
     t.shot("arranged").await?;
     t.check(rect(&t, "core:crosshair").is_none(), "the crosshair hidden in the game");
     let kept = rect(&t, "core:hotbar").ok_or("no hotbar in the game")?;
-    t.check((kept[0] - moved[0]).abs() < 0.01, "the hotbar stays where it was put");
+    t.check((kept.x - moved.x).abs() < 0.01, "the hotbar stays where it was put");
     // Reset all brings back the first picture.
     t.c().screen_open(&screens::HUD_EDITOR);
     t.screen("core:hud_editor").await?;
@@ -138,7 +138,7 @@ pub async fn hud_editor(t: T) -> R {
     t.frames(3).await?;
     let back = rect(&t, "core:hotbar").ok_or("no hotbar after the reset")?;
     t.check(
-        (back[0] - before[0]).abs() < 0.001 && (back[1] - before[1]).abs() < 0.001,
+        (back.x - before.x).abs() < 0.001 && (back.y - before.y).abs() < 0.001,
         format!("the hotbar back in place: {back:?} {before:?}"),
     );
     t.check(rect(&t, "core:crosshair").is_some(), "the crosshair back");
@@ -205,10 +205,10 @@ pub async fn f3(t: T) -> R {
     t.shot("f3").await?;
     let sides = |t: &T| {
         for q in ["text:XYZ", "text:base:overworld"] {
-            t.check(t.c().ui_rect(q).is_some_and(|r| r[0] < 0.5), format!("{q} on the left"));
+            t.check(t.c().ui_rect(q).is_some_and(|r| r.x < 0.5), format!("{q} on the left"));
         }
         for q in ["text:calls", "text:1600x900"] {
-            t.check(t.c().ui_rect(q).is_some_and(|r| r[0] + r[2] > 0.5), format!("{q} on the right"));
+            t.check(t.c().ui_rect(q).is_some_and(|r| r.x + r.w > 0.5), format!("{q} on the right"));
         }
     };
     t.laid_out(&["text:XYZ", "text:base:overworld", "text:calls", "text:1600x900"]);
@@ -306,13 +306,13 @@ pub async fn chat_overflow(t: T) -> R {
     t.frames(4).await?;
     let out = async {
         let line = t.c().ui_rect("id:chat").ok_or("no chat line")?;
-        t.check(line[1] + line[3] <= 1.0 && line[1] > 0.5, format!("its line at the bottom of the screen: {line:?}"));
+        t.check(line.y + line.h <= 1.0 && line.y > 0.5, format!("its line at the bottom of the screen: {line:?}"));
         t.shot("full").await?;
         // With the completions up, it stays there.
         t.c().input_type("/setblock 0 0 0 ");
         t.frames(4).await?;
         let shown = t.c().ui_rect("id:chat").ok_or("no chat line")?;
-        t.check(shown[1] == line[1], format!("it doesn't move for completions: {shown:?}"));
+        t.check(shown.y == line.y, format!("it doesn't move for completions: {shown:?}"));
         t.shot("completing").await?;
         for _ in 0.."/setblock 0 0 0 ".len() {
             t.c().input_key("Backspace", 0.0);
@@ -321,16 +321,16 @@ pub async fn chat_overflow(t: T) -> R {
         // As narrow as set, and dark behind the text.
         let area = t.c().ui_rect("id:chat_lines").ok_or("no chat lines")?;
         let window = t.state().window[0] as f32 / t.state().gui_scale;
-        t.check((area[2] - 320.0 / window).abs() < 0.01, format!("as wide as the setting: {area:?}"));
+        t.check((area.w - 320.0 / window).abs() < 0.01, format!("as wide as the setting: {area:?}"));
         let beside = t.shot("dark").await?;
         // A spot right of the text, inside the chat and outside it.
-        let (right, y) = (area[0] + area[2], area[1] + area[3] / 2.0);
+        let (right, y) = (area.x + area.w, area.y + area.h / 2.0);
         let (dark, plain) = (beside.avg(right - 0.02, y, right - 0.01, y + 0.01), beside.avg(right + 0.01, y, right + 0.02, y + 0.01));
         t.check(crate::runner::lum(dark) < crate::runner::lum(plain) * 0.8, format!("dark behind it: {dark:?} beside {plain:?}"));
         // The first thing said is out of sight, then scrolled to.
         let area = t.c().ui_rect("id:chat_lines").ok_or("no chat lines")?;
         t.c()
-            .input_cursor(area[0] + area[2] / 2.0, area[1] + area[3] / 2.0);
+            .input_cursor(area.x + area.w / 2.0, area.y + area.h / 2.0);
         t.frames(1).await?;
         let first = "line39";
         let last = t.c().ui_rect(&format!("text:{first}"));
@@ -339,8 +339,8 @@ pub async fn chat_overflow(t: T) -> R {
             t.frames(1).await?;
         }
         t.frames(2).await?;
-        t.check(t.c().ui_rect(&format!("text:{first}")).map(|r| r[1]) != last.map(|r| r[1]), "the wheel moves what was said");
-        t.check(t.c().ui_rect("id:chat").is_some_and(|r| r[1] == line[1]), "and not its line");
+        t.check(t.c().ui_rect(&format!("text:{first}")).map(|r| r.y) != last.map(|r| r.y), "the wheel moves what was said");
+        t.check(t.c().ui_rect("id:chat").is_some_and(|r| r.y == line.y), "and not its line");
         t.shot("scrolled").await?;
         Ok::<(), String>(())
     }
@@ -380,7 +380,7 @@ pub async fn text_on_screen(t: T) -> R {
     t.until("the hint", Duration::from_secs(5), |t| t.c().ui_rect("text:a_hint").is_some())
         .await?;
     let hint = seen(&t, "text:a_hint").unwrap_or_default();
-    t.check(hint[1] > 0.7, format!("a hint is above the hotbar, at {hint:?}"));
+    t.check(hint.y > 0.7, format!("a hint is above the hotbar, at {hint:?}"));
     t.until("the hint to go", Duration::from_secs(6), |t| t.c().ui_rect("text:a_hint").is_none())
         .await?;
     t.op("show far hint not_here").await?;
@@ -393,8 +393,8 @@ pub async fn text_on_screen(t: T) -> R {
         .await?;
     t.frames(2).await?;
     let (title, sub) = (seen(&t, "text:a_title").ok_or("no title text")?, seen(&t, "text:a_subtitle").ok_or("no subtitle text")?);
-    t.check(title[3] > sub[3], "a title is bigger than a subtitle");
-    t.check(title[1] + title[3] <= 0.5 && sub[1] >= 0.5, format!("the crosshair is between them: {title:?} {sub:?}"));
+    t.check(title.h > sub.h, "a title is bigger than a subtitle");
+    t.check(title.y + title.h <= 0.5 && sub.y >= 0.5, format!("the crosshair is between them: {title:?} {sub:?}"));
     t.cmd("/title @a title {#ff5555}Red {#ffffff}and white")
         .await?;
     t.op("show me corner a_corner").await?;
@@ -409,7 +409,7 @@ pub async fn text_on_screen(t: T) -> R {
     t.until("the free text", Duration::from_secs(5), |t| t.c().ui_rect("text:a_corner").is_some())
         .await?;
     let corner = seen(&t, "text:a_corner").unwrap_or_default();
-    t.check(corner[0] + corner[2] > 0.99 && corner[1] < 0.01, format!("at(1, 0) is the corner: {corner:?}"));
+    t.check(corner.x + corner.w > 0.99 && corner.y < 0.01, format!("at(1, 0) is the corner: {corner:?}"));
 
     let line = |t: &T, i| t.c().chat_line(i);
     t.c().chat("before", &[]);
@@ -593,7 +593,7 @@ pub async fn mod_settings(t: T) -> R {
     t.frames(3).await?;
     t.shot("sound").await?;
     t.laid_out(&["text:Master Volume", "text:Blocks", "text:Done"]);
-    let y = |t: &T, q: &str| t.c().ui_rect(q).map_or(0.0, |r| r[1]);
+    let y = |t: &T, q: &str| t.c().ui_rect(q).map_or(0.0, |r| r.y);
     t.check(y(&t, "text:Master Volume") < y(&t, "text:Ambient"), "the master volume comes first");
     for other in ["text:config.core", "text:Field of view", "text:Generator hum"] {
         t.check(t.c().ui_rect(other).is_none(), format!("{other} on the Sound screen"));
@@ -609,7 +609,7 @@ pub async fn recipe_viewer(t: T) -> R {
     t.op("put me 0 iron_ingot 3").await?;
     t.press("core:inventory");
     t.screen("core:menu").await?;
-    let Some([x, y, w, h]) = t.c().ui_rect("slot:36") else { return Err("no hotbar slot".into()) };
+    let Some(Rect { x, y, w, h }) = t.c().ui_rect("slot:36") else { return Err("no hotbar slot".into()) };
     t.c().input_cursor(x + w / 2.0, y + h / 2.0);
     t.frames(3).await?;
     t.press("core:recipes");
@@ -655,7 +655,7 @@ pub async fn recipe_viewer(t: T) -> R {
     // A kind laid out by its mod, with a fluid.
     t.op("put me 1 diamond 1").await?;
     t.frames(3).await?;
-    let Some([x, y, w, h]) = t.c().ui_rect("slot:37") else { return Err("no hotbar slot".into()) };
+    let Some(Rect { x, y, w, h }) = t.c().ui_rect("slot:37") else { return Err("no hotbar slot".into()) };
     t.c().input_cursor(x + w / 2.0, y + h / 2.0);
     t.frames(3).await?;
     t.press("core:uses");
@@ -669,7 +669,7 @@ pub async fn recipe_viewer(t: T) -> R {
     t.c().screen_close();
     t.screen("core:menu").await?;
     // The arrow of a menu that crafts opens its recipes.
-    let Some([x, y, w, h]) = t.c().ui_rect("class:arrow") else { return Err("no arrow in the inventory".into()) };
+    let Some(Rect { x, y, w, h }) = t.c().ui_rect("class:arrow") else { return Err("no arrow in the inventory".into()) };
     t.c().input_cursor(x + w / 2.0, y + h / 2.0);
     t.frames(2).await?;
     t.c().input_click(0, 0.05);
@@ -705,7 +705,7 @@ pub async fn inventory_hotkeys(t: T) -> R {
     t.press("core:inventory");
     t.screen("core:menu").await?;
     let hover = |slot: u32| -> R {
-        let Some([x, y, w, h]) = t.c().ui_rect(&format!("slot:{slot}")) else { return Err(format!("no slot {slot}")) };
+        let Some(Rect { x, y, w, h }) = t.c().ui_rect(&format!("slot:{slot}")) else { return Err(format!("no slot {slot}")) };
         t.c().input_cursor(x + w / 2.0, y + h / 2.0);
         Ok(())
     };

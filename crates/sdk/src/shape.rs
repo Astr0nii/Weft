@@ -57,8 +57,7 @@ impl Shape {
     /// A crater like vanilla's explosions leave, without their rays: a ball of radius `power`
     /// with a ragged edge.
     pub fn blast(center: impl Into<Vec3>, power: f64, seed: u64) -> Shape {
-        let center = center.into();
-        Shape::noisy(center, power, 0.25, 1.5, seed)
+        Shape::noisy(center.into(), power, 0.25, 1.5, seed)
     }
 
     fn join(mut self, other: Shape, op: u32) -> Shape {
@@ -278,14 +277,12 @@ impl crate::World {
     }
     /// Entity ids whose feet are within `radius`; `kind` None = any kind.
     pub fn entities_near(&self, pos: impl Into<Vec3>, radius: f64, kind: Option<&crate::EntityKind>) -> Vec<u64> {
-        let pos = pos.into();
         let f = kind.map_or(EntityFilter::any(), EntityFilter::kind);
-        self.entities_in(&Shape::ball(pos, radius), f)
+        self.entities_in(&Shape::ball(pos.into(), radius), f)
     }
     /// Like `entities_near`, only what can be hit.
     pub fn targets_near(&self, pos: impl Into<Vec3>, radius: f64, kind: Option<&crate::EntityKind>) -> Vec<u64> {
-        let pos = pos.into();
         let f = kind.map_or(EntityFilter::any(), EntityFilter::kind);
-        self.entities_in(&Shape::ball(pos, radius), f.targets())
+        self.entities_in(&Shape::ball(pos.into(), radius), f.targets())
     }
 }

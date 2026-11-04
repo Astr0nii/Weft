@@ -13,6 +13,15 @@ use std::time::{Duration, Instant};
 use weft_sdk::client::{self, ClientState, client_flags as cf};
 use weft_sdk::*;
 
+/// The key of an action tests and scripts name as text, one handle per name.
+fn key_named(action: &str) -> &'static Key {
+    static KEYS: std::sync::Mutex<Option<HashMap<String, &'static Key>>> = std::sync::Mutex::new(None);
+    let mut keys = KEYS.lock().unwrap();
+    keys.get_or_insert_with(HashMap::new)
+        .entry(action.to_string())
+        .or_insert_with(|| Key::generated(action.to_string()))
+}
+
 pub type R = Result<(), String>;
 pub type BoxTest = Pin<Box<dyn Future<Output = R>>>;
 
@@ -316,7 +325,7 @@ impl T {
     // ------------------------------------------------ input
 
     pub fn press(&self, action: &str) {
-        if !self.c().input_action(action, 0.0) {
+        if !self.c().input_action(key_named(action), 0.0) {
             self.fail(format!("no action {action}"));
         }
     }
@@ -331,7 +340,7 @@ impl T {
     }
 
     pub fn hold(&self, action: &str, secs: f32) {
-        if !self.c().input_action(action, secs) {
+        if !self.c().input_action(key_named(action), secs) {
             self.fail(format!("no action {action}"));
         }
     }
@@ -341,7 +350,7 @@ impl T {
         for q in queries {
             match self.c().ui_rect(q) {
                 None => self.fail(format!("no UI element {q} on {}", self.0.borrow().screen)),
-                Some([x, y, w, h]) => {
+                Some(Rect { x, y, w, h }) => {
                     self.check(
                         x >= 0.0 && y >= 0.0 && x + w <= 1.001 && y + h <= 1.001,
                         format!("{q} sticks out of the window ({x:.3} {y:.3} {w:.3} {h:.3})"),

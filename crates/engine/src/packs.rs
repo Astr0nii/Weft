@@ -135,6 +135,11 @@ pub fn compose(
 
 pub(crate) fn open_folder(dir: &Path) {
     let _ = std::fs::create_dir_all(dir);
+    open_path(dir);
+}
+
+/// Opens a file or folder the way the system does (Explorer, Finder, xdg-open).
+pub(crate) fn open_path(path: &Path) {
     let opener = if cfg!(windows) {
         "explorer"
     } else if cfg!(target_os = "macos") {
@@ -142,8 +147,8 @@ pub(crate) fn open_folder(dir: &Path) {
     } else {
         "xdg-open"
     };
-    if let Err(e) = std::process::Command::new(opener).arg(dir).spawn() {
-        log::warn!("opening {}: {e}", dir.display());
+    if let Err(e) = std::process::Command::new(opener).arg(path).spawn() {
+        log::warn!("opening {}: {e}", path.display());
     }
 }
 

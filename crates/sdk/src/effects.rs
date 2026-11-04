@@ -442,16 +442,14 @@ fn burst(target: Target, kind: &Particle, pos: Vec3) -> Burst {
 impl World {
     /// Particles every player near `pos` sees (one by default).
     pub fn spawn_particles(&self, kind: &Particle, pos: impl Into<Vec3>) -> Burst {
-        let pos = pos.into();
-        burst(Target::World(*self), kind, pos)
+        burst(Target::World(*self), kind, pos.into())
     }
 }
 
 impl Client {
     /// Particles only this client shows.
     pub fn spawn_particles(&self, kind: &Particle, pos: impl Into<Vec3>) -> Burst {
-        let pos = pos.into();
-        burst(Target::Client(*self), kind, pos)
+        burst(Target::Client(*self), kind, pos.into())
     }
 
     /// Turns screen effect `name` (`shaders/post/<name>.wgsl`) on at `strength` (0 turns it off).

@@ -118,6 +118,7 @@ pub static HOST: Host = Host {
     chat_format_set,
     gizmo_shown,
     gizmo,
+    gizmo_text,
     reg_client_hook,
     reg_client_entity_cosmetics,
     reg_client_entity_frame,
@@ -159,6 +160,8 @@ pub static HOST: Host = Host {
     client_entities: crate::app::api::client_entities,
     client_ui_rect: crate::app::api::client_ui_rect,
     client_draw: crate::app::api::client_draw,
+    client_draw_text: crate::app::api::client_draw_text,
+    client_screen_text: crate::app::api::client_screen_text,
     client_send_packet: crate::app::api::client_send_packet,
     image_pixels: crate::app::api::image_get,
     image_load: crate::app::api::image_load,
@@ -1210,12 +1213,25 @@ unsafe extern "C" fn gizmo_shown(w: *mut abi::WorldCtx, group: Str) -> u32 {
     unsafe { dim(w).gizmo_groups.iter().any(|g| g == group.as_str()) as u32 }
 }
 
-unsafe extern "C" fn gizmo(
+unsafe extern "C" fn gizmo(w: *mut abi::WorldCtx, group: Str, kind: u32, a: *const abi::Vec3, b: *const abi::Vec3, color: u32, ticks: u32) {
+    unsafe {
+        let d = dim(w);
+        let group = group.as_str();
+        if kind > abi::gizmo_kind::FILL || !d.gizmo_groups.iter().any(|g| g == group) {
+            return;
+        }
+        let (a, b) = (d.place.to_world(crate::world::dvec(*a)), d.place.to_world(crate::world::dvec(*b)));
+        d.gizmos
+            .push(crate::net::GizmoShape::shape(group, kind as u8, a, b, color, ticks.max(1)));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe extern "C" fn gizmo_text(
     w: *mut abi::WorldCtx,
     group: Str,
-    kind: u32,
-    a: *const abi::Vec3,
-    b: *const abi::Vec3,
+    pos: *const abi::Vec3,
+    size: f32,
     color: u32,
     ticks: u32,
     key: Str,
@@ -1224,19 +1240,13 @@ unsafe extern "C" fn gizmo(
     unsafe {
         let d = dim(w);
         let group = group.as_str();
-        if kind > abi::gizmo_kind::FILL || !d.gizmo_groups.iter().any(|g| g == group) {
+        if !d.gizmo_groups.iter().any(|g| g == group) {
             return;
         }
-        let place = d.place;
-        d.gizmos.push(crate::net::GizmoShape {
-            group: group.to_string(),
-            kind: kind as u8,
-            a: place.to_world(crate::world::dvec(*a)),
-            b: place.to_world(crate::world::dvec(*b)),
-            color,
-            ticks: ticks.max(1),
-            text: crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(args)),
-        });
+        let at = d.place.to_world(crate::world::dvec(*pos));
+        let text = crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(args));
+        d.gizmos
+            .push(crate::net::GizmoShape::text(group, at, size, color, ticks.max(1), text));
     }
 }
 

@@ -47,8 +47,7 @@ impl Spawn {
     }
     /// Blocks per second.
     pub fn velocity(mut self, v: impl Into<Vec3>) -> Self {
-        let v = v.into();
-        self.desc.velocity = v;
+        self.desc.velocity = v.into();
         self.desc.set |= abi::spawn_set::VELOCITY;
         self
     }
@@ -104,13 +103,11 @@ impl World {
     }
     /// Sky light level at `pos` (0..15).
     pub fn sky_light(&self, pos: impl Into<BlockPos>) -> u32 {
-        let pos = pos.into();
-        abi::light::sky(self.light(pos))
+        abi::light::sky(self.light(pos.into()))
     }
     /// Strongest block light channel at `pos`.
     pub fn block_light(&self, pos: impl Into<BlockPos>) -> u32 {
-        let pos = pos.into();
-        abi::light::block(self.light(pos))
+        abi::light::block(self.light(pos.into()))
     }
     pub fn daylight(&self) -> f32 {
         unsafe { (host().daylight)(self.raw()) }
@@ -339,36 +336,103 @@ impl World {
     pub fn draw_line(&self, group: &GizmoGroup, a: impl Into<Vec3>, b: impl Into<Vec3>, color: u32, ticks: u32) {
         let a = a.into();
         let b = b.into();
-        self.draw(group, abi::gizmo_kind::LINE, a, b, color, ticks, "", &[]);
+        self.draw(group, abi::gizmo_kind::LINE, a, b, color, ticks);
     }
     pub fn draw_box(&self, group: &GizmoGroup, min: impl Into<Vec3>, max: impl Into<Vec3>, color: u32, ticks: u32) {
         let min = min.into();
         let max = max.into();
-        self.draw(group, abi::gizmo_kind::BOX, min, max, color, ticks, "", &[]);
+        self.draw(group, abi::gizmo_kind::BOX, min, max, color, ticks);
     }
     /// See-through by `color`'s alpha.
     pub fn draw_fill(&self, group: &GizmoGroup, min: impl Into<Vec3>, max: impl Into<Vec3>, color: u32, ticks: u32) {
         let min = min.into();
         let max = max.into();
-        self.draw(group, abi::gizmo_kind::FILL, min, max, color, ticks, "", &[]);
+        self.draw(group, abi::gizmo_kind::FILL, min, max, color, ticks);
     }
+    /// An inventory of `slots` belonging to nothing in the world (a shared stash, a test):
+    /// menus open on it like on a chest. Never saved; remove it with `despawn`. Items that keep
+    /// what they hold are `ItemBuilder::inventory`.
+    pub fn loose_inventory(&self, slots: u32, pos: impl Into<Vec3>) -> u64 {
+        let pos = pos.into();
+        unsafe { (host().loose_inventory)(self.raw(), slots, &pos) }
+    }
+
+    /// Moves an entity (players included) at the end of the tick, to `dim` or the same dimension.
+    pub fn teleport(&self, id: u64, dim: Option<&crate::Dimension>, pos: impl Into<Vec3>) {
+        let pos = pos.into();
+        let d = dim.map_or(u32::MAX, |d| d.id());
+        unsafe { (host().entity_teleport)(self.raw(), id, d, &pos) }
+    }
+
+    /// Rain or thunder in this dimension for `ticks`, after which it changes by itself.
+    pub fn set_weather(&self, weather: impl Into<crate::Id<crate::Weather>>, ticks: u32) {
+        unsafe { (host().set_weather)(self.raw(), weather.into().raw(), ticks) }
+    }
+
+    /// The weather's id now (`weathers::RAIN.id()`).
+    pub fn weather(&self) -> u32 {
+        unsafe { (host().weather_now)(self.raw()) }
+    }
+
+    /// Shader effect `effect` on an entity for everyone who sees it, at `strength` (0..1) for
+    /// `ticks` (0 ends it): `w.entity_effect(id, &entity_effects::GLOW, 1.0, 200)`, or one of
+    /// your own (`Registry::entity_effect`). A new one replaces the last.
+    pub fn entity_effect(&self, id: u64, effect: impl Into<crate::Id<crate::EntityEffect>>, strength: f32, ticks: u32) {
+        unsafe { (host().entity_effect)(self.raw(), id, effect.into().raw(), strength, ticks) }
+    }
+
+    /// A white flash on an entity for everyone who sees it (a creeper about to go off).
+    pub fn flash(&self, id: u64) {
+        self.entity_effect(id, &crate::entity_effects::FLASH, 1.0, 2)
+    }
+
+    /// A player's `abi::permission` level: ask it before anything only some may do.
+    pub fn permission(&self, player: u64) -> u32 {
+        unsafe { (host().player_permission)(self.raw(), player) }
+    }
+
+    /// Gives a player a level, remembered with the world.
+    pub fn set_permission(&self, player: u64, level: u32) {
+        unsafe { (host().set_player_permission)(self.raw(), player, level) }
+    }
+
+    /// Sets this dimension's time of day (0 sunrise, 6000 noon, 18000 midnight). Only the sky and
+    /// what follows the day move: what waits on ticks keeps its pace.
+    pub fn set_day_time(&self, time: u64) {
+        unsafe { (host().set_day_time)(self.raw(), time) }
+    }
+
+    /// This dimension's time of day, counting on past a day. `w.time()` is another clock: ticks
+    /// the world has run, which nothing moves.
+    pub fn day_time(&self) -> u64 {
+        unsafe { (host().day_time)(self.raw()) }
+    }
+
+    /// As if `ticks` passed at once: the day moves on, and growth, machines and timers catch up.
+    pub fn skip_ticks(&self, ticks: u64) {
+        unsafe { (host().skip_ticks)(self.raw(), ticks) }
+    }
+
+    /// `w.set_game_mode(player, &game_modes::CREATIVE)`, or a mod's own mode.
+    pub fn set_game_mode(&self, player: u64, mode: impl Into<crate::Id<crate::GameMode>>) {
+        unsafe { (host().set_game_mode)(self.raw(), player, mode.into().raw()) }
+    }
+
     /// The outline of a shape: where a fill or a search will reach, before it does.
     pub fn draw_shape(&self, group: &GizmoGroup, shape: &crate::Shape, color: u32, ticks: u32) {
         for (a, b) in shape.outline() {
             self.draw_line(group, a, b, color, ticks);
         }
     }
-    /// The translation `key` with `args` at `pos`, in each viewer's language.
-    /// `size` times as big as menu text.
+    /// The translation `key` with `args` at `pos`, in each viewer's language, `size` times as
+    /// big as menu text.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_text(&self, group: &GizmoGroup, pos: impl Into<Vec3>, key: &str, args: &[crate::Arg], color: u32, size: f32, ticks: u32) {
-        let pos = pos.into();
-        self.draw(group, abi::gizmo_kind::TEXT, pos, [size as f64, 0.0, 0.0].into(), color, ticks, key, args);
+        let (pos, raw) = (pos.into(), crate::ui::raw_args(args));
+        unsafe { (host().gizmo_text)(self.raw(), Str::new(group.name()), &pos, size, color, ticks, Str::new(key), abi::Slice::new(&raw)) }
     }
-    #[allow(clippy::too_many_arguments)]
-    fn draw(&self, group: &GizmoGroup, kind: u32, a: Vec3, b: Vec3, color: u32, ticks: u32, key: &str, args: &[crate::Arg]) {
-        let raw = crate::ui::raw_args(args);
-        unsafe { (host().gizmo)(self.raw(), Str::new(group.name()), kind, &a, &b, color, ticks, Str::new(key), abi::Slice::new(&raw)) }
+    fn draw(&self, group: &GizmoGroup, kind: u32, a: Vec3, b: Vec3, color: u32, ticks: u32) {
+        unsafe { (host().gizmo)(self.raw(), Str::new(group.name()), kind, &a, &b, color, ticks) }
     }
 }
 

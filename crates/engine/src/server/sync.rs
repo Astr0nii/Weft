@@ -546,15 +546,7 @@ pub(super) fn gizmos_for(p: &Player, dim: &DimSet, tick: u64, me: DVec3) -> Vec<
         return out;
     }
     let on = |g: &str| p.gizmos.iter().any(|x| x == g);
-    let shape = |group: &str, kind: u8, a: DVec3, b: DVec3, color: u32| GizmoShape {
-        group: group.into(),
-        kind,
-        a,
-        b,
-        color,
-        ticks: TPS + 2,
-        text: Msg::default(),
-    };
+    let shape = |group: &str, kind: u8, a: DVec3, b: DVec3, color: u32| GizmoShape::shape(group, kind, a, b, color, TPS + 2);
     if on("regions") {
         const COLORS: [u32; 6] = [0xFF4040FF, 0x40FF40FF, 0x4080FFFF, 0xFFFF40FF, 0xFF40FFFF, 0x40FFFFFF];
         for (i, r) in dim.regions.iter().enumerate() {

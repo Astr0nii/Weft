@@ -18,8 +18,7 @@ impl World {
     }
 
     pub fn block(&self, pos: impl Into<BlockPos>) -> u32 {
-        let pos = pos.into();
-        self.block_loaded(pos).unwrap_or(0)
+        self.block_loaded(pos.into()).unwrap_or(0)
     }
 
     /// `block` that tells air from what isn't loaded here: `None` for that. A callback sees the
@@ -112,8 +111,7 @@ impl World {
     }
 
     pub fn block_flags(&self, pos: impl Into<BlockPos>) -> u32 {
-        let pos = pos.into();
-        state_flags(self.block(pos))
+        state_flags(self.block(pos.into()))
     }
 
     /// The strongest redstone power coming into a cell, 0..15.
@@ -134,8 +132,7 @@ impl World {
 
     /// A number property of the block at `pos` (`age`, `fuse`).
     pub fn prop_int(&self, pos: impl Into<BlockPos>, name: &str) -> Option<u32> {
-        let pos = pos.into();
-        self.prop(pos, name)?.parse().ok()
+        self.prop(pos.into(), name)?.parse().ok()
     }
 
     /// The block at `pos` goes on to the next value of a property, the first after the last: a
@@ -194,8 +191,7 @@ impl World {
 
     /// Takes one block out of a cell, the others staying. False if it isn't there.
     pub fn part_remove(&self, pos: impl Into<BlockPos>, state: u32) -> bool {
-        let pos = pos.into();
-        self.part_replace(pos, state, 0)
+        self.part_replace(pos.into(), state, 0)
     }
 
     /// One block of a cell becomes another state, the others staying. False if it isn't there.

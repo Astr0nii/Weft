@@ -252,7 +252,7 @@ pub async fn liquid_slot(t: T) -> R {
     let at = format!("{} {} {}", p[0], p[1], p[2]);
     // A click held a moment, as a hand does: with something on the cursor a press starts a drag.
     let click = |slot: u32| -> Result<(), String> {
-        let [x, y, w, h] = t
+        let Rect { x, y, w, h } = t
             .c()
             .ui_rect(&format!("slot:{slot}"))
             .ok_or(format!("no slot {slot}"))?;
@@ -342,7 +342,7 @@ pub async fn advancements(t: T) -> R {
     t.laid_out(&["text:Advancements", "text:Getting Started", "text:Exploration", "text:2 of 19 made"]);
     t.shot("list").await?;
     // The first tile of a group, right of its 90 pixel wide name, tells its details on hover.
-    if let Some([x, y, w, h]) = t.c().ui_rect("text:Making Progress") {
+    if let Some(Rect { x, y, w, h }) = t.c().ui_rect("text:Making Progress") {
         let st = t.state();
         t.c()
             .input_cursor(x + w + 13.0 * st.gui_scale / st.window[0] as f32, y + h / 2.0);

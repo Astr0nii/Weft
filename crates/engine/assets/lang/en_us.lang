@@ -449,3 +449,6 @@ hud.options.line.cpu_name = CPU name
 hud.options.line.memory = Memory
 hud.options.line.window = Window
 hud.options.line.help = Help
+chat.screenshot = Screenshot saved: {0}, {1}
+chat.screenshot.picture = open picture
+chat.screenshot.folder = open folder

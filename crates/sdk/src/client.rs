@@ -64,9 +64,10 @@ impl Client {
         unsafe { (host().client_input)(self.raw, op, abi_str(text), x, y) != 0 }
     }
 
-    /// Presses the key bound to `action` for `secs` (0 = a tap). False for an unknown action.
-    pub fn input_action(&self, action: &str, secs: f32) -> bool {
-        self.input(abi::client_input::ACTION, action, secs, 0.0)
+    /// Presses the key bound to `key` (yours from `Registry::key`, or one of `keys::*`) for
+    /// `secs` (0 = a tap). False for a key nobody registered.
+    pub fn input_action(&self, key: &Key, secs: f32) -> bool {
+        self.input(abi::client_input::ACTION, key.name(), secs, 0.0)
     }
 
     /// A key by its settings name (`Enter`, `Tab`, `KeyE`, `F3`).
@@ -127,10 +128,10 @@ impl Client {
         (secs >= 0.0).then_some(secs)
     }
 
-    /// The item id in `entity`'s hand, the other hand with `off_hand`; 0 for none. Other players'
-    /// stacks aren't sent, so this is the item without what is in it.
-    pub fn held_item(&self, entity: u64, off_hand: bool) -> u32 {
-        unsafe { (host().client_held_item)(self.raw, entity, off_hand as u32) }
+    /// The item id in `entity`'s `hand`; 0 for none. Other players' stacks aren't sent, so this
+    /// is the item without what is in it.
+    pub fn held_item(&self, entity: u64, hand: Hand) -> u32 {
+        unsafe { (host().client_held_item)(self.raw, entity, hand as u32) }
     }
 
     /// Where a bone of `entity`'s model or of what it has on was in the world the last frame: for
@@ -287,12 +288,10 @@ impl Client {
 
     /// The block the client has at `pos`, `None` while that cube is not loaded.
     pub fn block(&self, pos: impl Into<BlockPos>) -> Option<u32> {
-        let pos = pos.into();
-        let b = unsafe { (host().client_block_in)(self.raw, 0, &pos) };
-        (b != u32::MAX).then_some(b)
+        self.body_block(0, pos)
     }
 
-    /// The block the client has at `pos` of moving body `entity`.
+    /// The block the client has at `pos` of moving body `entity` (0: the world).
     pub fn body_block(&self, entity: u64, pos: impl Into<BlockPos>) -> Option<u32> {
         let pos = pos.into();
         let b = unsafe { (host().client_block_in)(self.raw, entity, &pos) };
@@ -321,9 +320,9 @@ impl Client {
         unsafe { (host().client_slot)(self.raw, abi::slot_container::CURSOR, 0) }
     }
 
-    /// The open menu as (kind, window, slot count).
-    pub fn menu(&self) -> Option<[u32; 3]> {
-        let mut out = [0; 3];
+    /// The open menu.
+    pub fn menu(&self) -> Option<abi::OpenMenu> {
+        let mut out = abi::OpenMenu::default();
         (unsafe { (host().client_menu)(self.raw, &mut out) } != 0).then_some(out)
     }
 
@@ -344,57 +343,38 @@ impl Client {
         (unsafe { (host().client_entity)(self.raw, id, &mut st) } != 0).then_some(st)
     }
 
-    /// Where an element of the top screen is (fractions of the window: x, y, w, h):
+    /// Where an element of the top screen is (fractions of the window):
     /// `slot:N`, `item:N` (creative list), `entity` (the entity figure), `scrollbar` (the first scroll bar's track), `class:name` (the first part of that theme class), `id:name` or `text:words`.
-    pub fn ui_rect(&self, query: &str) -> Option<[f32; 4]> {
-        let mut r = [0.0; 4];
+    pub fn ui_rect(&self, query: &str) -> Option<abi::Rect> {
+        let mut r = abi::Rect::default();
         (unsafe { (host().client_ui_rect)(self.raw, abi_str(query), &mut r) } != 0).then_some(r)
     }
 
     /// Moves the mouse to the middle of a UI element and clicks it with `button`.
     pub fn ui_click(&self, query: &str, button: u32) -> bool {
-        let Some([x, y, w, h]) = self.ui_rect(query) else { return false };
-        self.input_cursor(x + w / 2.0, y + h / 2.0);
+        let Some(r) = self.ui_rect(query) else { return false };
+        self.input_cursor(r.x + r.w / 2.0, r.y + r.h / 2.0);
         self.input_click(button, 0.0);
         true
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw(&self, group: Option<&crate::GizmoGroup>, kind: u32, a: Vec3, b: Vec3, color: u32, key: &str, args: &[crate::Arg]) {
-        let raw = crate::ui::raw_args(args);
-        unsafe {
-            (host().client_draw)(
-                self.raw,
-                abi_str(group.map_or("", |g| g.name())),
-                kind,
-                &a,
-                &b,
-                color,
-                abi_str(key),
-                crate::abi::Slice::new(&raw),
-            )
-        }
+    fn draw(&self, group: Option<&crate::GizmoGroup>, kind: u32, a: Vec3, b: Vec3, color: u32) {
+        unsafe { (host().client_draw)(self.raw, abi_str(group.map_or("", |g| g.name())), kind, &a, &b, color) }
     }
 
     /// The server's `draw_*` for this frame only: always, or with a `group` while the player
     /// shows it (`/gizmo <group>`). Colors are 0xRRGGBBAA.
     pub fn draw_line(&self, group: Option<&crate::GizmoGroup>, a: impl Into<Vec3>, b: impl Into<Vec3>, color: u32) {
-        let a = a.into();
-        let b = b.into();
-        self.draw(group, gk::LINE, a, b, color, "", &[]);
+        self.draw(group, gk::LINE, a.into(), b.into(), color);
     }
 
     pub fn draw_box(&self, group: Option<&crate::GizmoGroup>, min: impl Into<Vec3>, max: impl Into<Vec3>, color: u32) {
-        let min = min.into();
-        let max = max.into();
-        self.draw(group, gk::BOX, min, max, color, "", &[]);
+        self.draw(group, gk::BOX, min.into(), max.into(), color);
     }
 
     /// See-through by `color`'s alpha (range previews, blueprints).
     pub fn draw_fill(&self, group: Option<&crate::GizmoGroup>, min: impl Into<Vec3>, max: impl Into<Vec3>, color: u32) {
-        let min = min.into();
-        let max = max.into();
-        self.draw(group, gk::FILL, min, max, color, "", &[]);
+        self.draw(group, gk::FILL, min.into(), max.into(), color);
     }
     /// The outline of a shape, this frame.
     pub fn draw_shape(&self, group: Option<&crate::GizmoGroup>, shape: &crate::Shape, color: u32) {
@@ -414,15 +394,16 @@ impl Client {
         color: u32,
         size: f32,
     ) {
-        let pos = pos.into();
-        self.draw(group, gk::TEXT, pos, [size as f64, 0.0, 0.0].into(), color, key, args);
+        let (pos, raw) = (pos.into(), crate::ui::raw_args(args));
+        let group = abi_str(group.map_or("", |g| g.name()));
+        unsafe { (host().client_draw_text)(self.raw, group, &pos, size, color, abi_str(key), Slice::new(&raw)) }
     }
 
     /// The translation `key` with `args`, centered at fractions of the window, `size` times as
     /// big as menu text. Part of the GUI: F1 hides it with the rest.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_screen_text(&self, x: f32, y: f32, key: &str, args: &[crate::Arg], color: u32, size: f32) {
-        self.draw(None, gk::SCREEN_TEXT, [x as f64, y as f64, 0.0].into(), [size as f64, 0.0, 0.0].into(), color, key, args);
+        let raw = crate::ui::raw_args(args);
+        unsafe { (host().client_screen_text)(self.raw, x, y, size, color, abi_str(key), Slice::new(&raw)) }
     }
 
     /// Sends `value` on `channel` to the server.
@@ -444,6 +425,14 @@ impl Client {
         let got = unsafe { (host().client_command_reply)(self.raw, id, &mut out) } != 0;
         got.then(|| unsafe { out.as_str() }.to_string())
     }
+}
+
+/// Which hand.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hand {
+    Main = abi::hand::MAIN,
+    Off = abi::hand::OFF,
 }
 
 /// What a channel carries: a `value!` struct or number (checked by its layout like events),
@@ -580,75 +569,13 @@ impl World {
         let data = value.encode();
         unsafe { (host().send_packet)(self.raw(), player, abi_str(channel.name()), abi_str(&T::schema()), Slice::new(&data)) }
     }
+}
 
-    /// An inventory of `slots` belonging to nothing in the world (a shared stash, a test):
-    /// menus open on it like on a chest. Never saved; remove it with `despawn`. Items that keep
-    /// what they hold are `ItemBuilder::inventory`.
-    pub fn loose_inventory(&self, slots: u32, pos: impl Into<Vec3>) -> u64 {
-        let pos = pos.into();
-        unsafe { (host().loose_inventory)(self.raw(), slots, &pos) }
-    }
-
-    /// Moves an entity (players included) at the end of the tick, to `dim` or the same dimension.
-    pub fn teleport(&self, id: u64, dim: Option<&crate::Dimension>, pos: impl Into<Vec3>) {
-        let pos = pos.into();
-        let d = dim.map_or(u32::MAX, |d| d.id());
-        unsafe { (host().entity_teleport)(self.raw(), id, d, &pos) }
-    }
-
-    /// Rain or thunder in this dimension for `ticks`, after which it changes by itself.
-    pub fn set_weather(&self, weather: impl Into<crate::Id<crate::Weather>>, ticks: u32) {
-        unsafe { (host().set_weather)(self.raw(), weather.into().raw(), ticks) }
-    }
-
-    /// The weather's id now (`weathers::RAIN.id()`).
-    pub fn weather(&self) -> u32 {
-        unsafe { (host().weather_now)(self.raw()) }
-    }
-
-    /// Shader effect `effect` on an entity for everyone who sees it, at `strength` (0..1) for
-    /// `ticks` (0 ends it): `w.entity_effect(id, &entity_effects::GLOW, 1.0, 200)`, or one of
-    /// your own (`Registry::entity_effect`). A new one replaces the last.
-    pub fn entity_effect(&self, id: u64, effect: impl Into<crate::Id<crate::EntityEffect>>, strength: f32, ticks: u32) {
-        unsafe { (host().entity_effect)(self.raw(), id, effect.into().raw(), strength, ticks) }
-    }
-
-    /// A white flash on an entity for everyone who sees it (a creeper about to go off).
-    pub fn flash(&self, id: u64) {
-        self.entity_effect(id, &crate::entity_effects::FLASH, 1.0, 2)
-    }
-
-    /// A player's `abi::permission` level: ask it before anything only some may do.
-    pub fn permission(&self, player: u64) -> u32 {
-        unsafe { (host().player_permission)(self.raw(), player) }
-    }
-
-    /// Gives a player a level, remembered with the world.
-    pub fn set_permission(&self, player: u64, level: u32) {
-        unsafe { (host().set_player_permission)(self.raw(), player, level) }
-    }
-
-    /// Sets this dimension's time of day (0 sunrise, 6000 noon, 18000 midnight). Only the sky and
-    /// what follows the day move: what waits on ticks keeps its pace.
-    pub fn set_day_time(&self, time: u64) {
-        unsafe { (host().set_day_time)(self.raw(), time) }
-    }
-
-    /// This dimension's time of day, counting on past a day. `w.time()` is another clock: ticks
-    /// the world has run, which nothing moves.
-    pub fn day_time(&self) -> u64 {
-        unsafe { (host().day_time)(self.raw()) }
-    }
-
-    /// As if `ticks` passed at once: the day moves on, and growth, machines and timers catch up.
-    pub fn skip_ticks(&self, ticks: u64) {
-        unsafe { (host().skip_ticks)(self.raw(), ticks) }
-    }
-
-    /// `w.set_game_mode(player, &game_modes::CREATIVE)`, or a mod's own mode.
-    pub fn set_game_mode(&self, player: u64, mode: impl Into<crate::Id<crate::GameMode>>) {
-        unsafe { (host().set_game_mode)(self.raw(), player, mode.into().raw()) }
-    }
+/// A client callback for one entity (`ClientEntityArgs`).
+fn entity_callback(f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) -> abi::Callback {
+    callback(move |a: &mut abi::ClientEntityArgs| {
+        f(&Client::from_raw(a.client), unsafe { &*(a as *const abi::ClientEntityArgs as *const ClientEntity) })
+    })
 }
 
 impl Registry {
@@ -662,19 +589,13 @@ impl Registry {
     /// instead of the engine's steps, idle noises and death smoke; `e.run_engine_effects()` keeps
     /// those. One per kind: a later mod's replaces an earlier one's.
     pub fn client_entity_cosmetics(&mut self, kind: &crate::EntityKind, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
-        let cb = callback(move |a: &mut abi::ClientEntityArgs| {
-            f(&Client::from_raw(a.client), unsafe { &*(a as *const abi::ClientEntityArgs as *const ClientEntity) })
-        });
-        unsafe { (host().reg_client_entity_cosmetics)(self.raw, abi_str(kind.name()), cb) }
+        unsafe { (host().reg_client_entity_cosmetics)(self.raw, abi_str(kind.name()), entity_callback(f)) }
     }
 
     /// Every frame on the client for each entity of `kind`, the local player too, beside whatever
     /// else runs for them: any number of mods may watch one kind, and steps and such go on.
     pub fn client_entity_frame(&mut self, kind: &crate::EntityKind, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
-        let cb = callback(move |a: &mut abi::ClientEntityArgs| {
-            f(&Client::from_raw(a.client), unsafe { &*(a as *const abi::ClientEntityArgs as *const ClientEntity) })
-        });
-        unsafe { (host().reg_client_entity_frame)(self.raw, abi_str(kind.name()), cb) }
+        unsafe { (host().reg_client_entity_frame)(self.raw, abi_str(kind.name()), entity_callback(f)) }
     }
 
     /// When the top screen changes; the name is empty back in the world.
@@ -683,7 +604,6 @@ impl Registry {
         unsafe { (host().reg_client_hook)(self.raw, abi::client_hook::SCREEN, cb) }
     }
 
-    /// Server side of `channel`: called when a client sends on it.
     /// Server side of a channel: `f` gets every value a client sends on it, with who sent it.
     pub fn packet<T: Payload>(&mut self, channel: &Channel<T>, f: impl Fn(&Packet, T) + Send + Sync + 'static) {
         let name = channel.name();
@@ -695,7 +615,7 @@ impl Registry {
         unsafe { (host().reg_packet)(self.raw, abi_str(name), abi_str(&T::schema()), 0, cb) }
     }
 
-    /// Client side of channel `name`: called when the server sends on it.
+    /// Client side of `channel`: called when the server sends on it.
     pub fn client_packet<T: Payload>(&mut self, channel: &Channel<T>, f: impl Fn(&Client, T) + Send + Sync + 'static) {
         let name = channel.name();
         let cb = callback(move |a: &mut abi::ClientPacketArgs| {

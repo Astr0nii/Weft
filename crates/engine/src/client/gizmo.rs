@@ -176,7 +176,7 @@ pub fn shape(s: &GizmoShape, lines: &mut Vec<Line>, fills: &mut Vec<Fill>, label
         weft_abi::gizmo_kind::LINE => lines.push((s.a, s.b, s.color)),
         weft_abi::gizmo_kind::BOX => cuboid(lines, s.a.min(s.b), s.a.max(s.b), s.color),
         weft_abi::gizmo_kind::FILL => fills.push((s.a.min(s.b), s.a.max(s.b), s.color)),
-        _ => labels.push((s.a, s.text.clone(), s.color, if s.b.x > 0.0 { s.b.x as f32 } else { 1.0 })),
+        _ => labels.push((s.a, s.text.clone(), s.color, if s.size > 0.0 { s.size } else { 1.0 })),
     }
 }
 

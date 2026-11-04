@@ -409,3 +409,6 @@ hud.options.line.cpu_name = Название CPU
 hud.options.line.memory = Память
 hud.options.line.window = Окно
 hud.options.line.help = Справка
+chat.screenshot = Скриншот сохранён: {0}, {1}
+chat.screenshot.picture = открыть картинку
+chat.screenshot.folder = открыть папку

@@ -1036,8 +1036,15 @@ impl Running {
                         .iter()
                         .find(|(_, b)| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3])
                         .map(|l| l.0.clone());
-                    if let Some(n) = target.and_then(|t| ui.find(&t)) {
-                        ui.focused = Some(n);
+                    match target.as_deref().map(|t| t.strip_prefix("open:").ok_or(t)) {
+                        // A file or folder, opened with what the system opens it with.
+                        Some(Ok(path)) => crate::packs::open_path(std::path::Path::new(path)),
+                        Some(Err(t)) => {
+                            if let Some(n) = ui.find(t) {
+                                ui.focused = Some(n);
+                            }
+                        }
+                        None => {}
                     }
                 }
             }
@@ -2329,6 +2336,8 @@ fn report_frame(r: &mut Running, dt: f64) {
 fn save_screenshot(r: &mut Running) {
     r.shot_pending = false;
     if let Some(cap) = r.gpu.take_capture() {
+        // The player's own (F2) says where it went; a mod's knows.
+        let own = r.shot_path.is_none();
         let path = r.shot_path.take().unwrap_or_else(|| {
             r.settings
                 .run_dir
@@ -2339,7 +2348,19 @@ fn save_screenshot(r: &mut Running) {
             let _ = std::fs::create_dir_all(dir);
         }
         match crate::assets::encode_png(&path, cap.width, cap.height, &cap.rgba) {
-            Ok(()) => log::info!("screenshot saved to {}", path.display()),
+            Ok(()) => {
+                log::info!("screenshot saved to {}", path.display());
+                if let Some(g) = r.game.as_mut().filter(|_| own) {
+                    let open = |p: &std::path::Path, label: &str| {
+                        Arg::Msg(Msg::template(&format!("{{link:open:{}}}{{lang:{label}}}{{/link}}", p.display())))
+                    };
+                    let folder = path.parent().unwrap_or(&path);
+                    g.client.chat_line(Msg::new(
+                        "chat.screenshot",
+                        vec![open(&path, "chat.screenshot.picture"), open(folder, "chat.screenshot.folder")],
+                    ));
+                }
+            }
             Err(e) => log::error!("screenshot: {e}"),
         }
         if let Some(id) = r.shot_image.take() {

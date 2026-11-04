@@ -239,8 +239,9 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// A debug shape for a gizmo group (`client::gizmo`): `kind` 0 is a line from `a` to `b`, 1 a box
-    /// between corners `a` and `b`, 2 `text` at `a`. Shown for `ticks` server ticks.
+    /// A debug shape for a gizmo group (`client::gizmo`): `kind` a `gizmo_kind` from `a` to `b`, or
+    /// `GizmoShape::TEXT`, `text` at `a` `size` times as big as menu text. Shown for `ticks`
+    /// server ticks.
     #[derive(Clone, Debug, PartialEq)]
     pub struct GizmoShape {
         pub group: String,
@@ -249,7 +250,21 @@ wire_struct! {
         pub b: DVec3,
         pub color: u32,
         pub ticks: u32,
+        pub size: f32,
         pub text: crate::ui::text::Msg,
+    }
+}
+
+impl GizmoShape {
+    /// Not a `gizmo_kind`: a label.
+    pub const TEXT: u8 = u8::MAX;
+
+    pub fn shape(group: &str, kind: u8, a: DVec3, b: DVec3, color: u32, ticks: u32) -> GizmoShape {
+        GizmoShape { group: group.into(), kind, a, b, color, ticks, size: 0.0, text: crate::ui::text::Msg::default() }
+    }
+
+    pub fn text(group: &str, at: DVec3, size: f32, color: u32, ticks: u32, text: crate::ui::text::Msg) -> GizmoShape {
+        GizmoShape { group: group.into(), kind: GizmoShape::TEXT, a: at, b: at, color, ticks, size, text }
     }
 }
 

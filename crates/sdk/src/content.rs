@@ -2926,8 +2926,8 @@ impl TemplateBuilder<'_> {
     /// A box of `block` from `from` to `to`, inclusive (a moving body's deck).
     pub fn fill(mut self, block: &str, from: impl Into<BlockPos>, to: impl Into<BlockPos>) -> Self {
         let from = from.into();
-        let to = to.into();
-        self.fills.push((qualify_block(self.ns, block), from, to));
+        self.fills
+            .push((qualify_block(self.ns, block), from, to.into()));
         self
     }
 }

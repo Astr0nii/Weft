@@ -863,13 +863,11 @@ impl Site {
     }
     /// `state` at `pos` where there is air.
     pub fn put(&mut self, pos: impl Into<BlockPos>, state: u32) {
-        let pos = pos.into();
-        self.push(pos, state, 0);
+        self.push(pos.into(), state, 0);
     }
     /// `state` at `pos` whatever is there (a trunk through another tree's leaves).
     pub fn put_force(&mut self, pos: impl Into<BlockPos>, state: u32) {
-        let pos = pos.into();
-        self.push(pos, state, 1);
+        self.push(pos.into(), state, 1);
     }
     fn push(&mut self, pos: BlockPos, state: u32, force: u32) {
         let a = &mut self.args;

@@ -449,3 +449,6 @@ hud.options.line.cpu_name = Nom du CPU
 hud.options.line.memory = Mémoire
 hud.options.line.window = Fenètre
 hud.options.line.help = Aide
+chat.screenshot = Capture d'écran enregistrée : {0}, {1}
+chat.screenshot.picture = ouvrir l'image
+chat.screenshot.folder = ouvrir le dossier

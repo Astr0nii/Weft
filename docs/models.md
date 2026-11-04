@@ -208,7 +208,7 @@ c.bone_scale(e.id(), "hat", [0.0; 3]);                                    // 0 h
 c.bone_position(e.id(), "tip");                                           // where it was in the world, for sparks off a sword
 c.action_current(e.id());                                                 // what `action_play` has it doing, until its clip is over
 c.clip_length(e.id(), "bow");                                             // seconds
-c.held_item(e.id(), false);                                        // the item id in a hand
+c.held_item(e.id(), Hand::Main);                                    // the item id in a hand
 ```
 The bones are looked for in the entity's model and in what it holds and has on. An entity out of the view isn't posed, so `bone_position` has nothing for it, and far away a pose lasts a few frames. This runs on each client by itself, so nobody else's swing is exactly yours. `r.client_entity_frame` is the other hook: one per kind, for a mob's own cosmetics, and it replaces the engine's steps and such unless you call `e.run_engine_effects()`.
 

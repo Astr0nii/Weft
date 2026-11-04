@@ -383,6 +383,7 @@ mod tests {
             b: DVec3::splat(-4.5),
             color: 0xFF8000FF,
             ticks: 21,
+            size: 1.5,
             text: Msg::new("gizmo.value", vec![Arg::Text("r0".into())]),
         };
         let Some(ToClient::Gizmos(back)) = decode_client(&encode_client(&ToClient::Gizmos(vec![g.clone()]))) else { panic!("not decoded") };

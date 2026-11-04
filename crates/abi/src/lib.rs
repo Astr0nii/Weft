@@ -2613,15 +2613,16 @@ pub struct Host {
     pub chat_format_set: unsafe extern "C" fn(args: *mut ChatFormatArgs, key: Str, list: Slice<UiArg>),
     /// Non-zero when a player in this world shows gizmo group `group` (`/gizmo <group>`).
     pub gizmo_shown: unsafe extern "C" fn(world: *mut WorldCtx, group: Str) -> u32,
-    /// Debug shape for players showing `group`: `kind` 0 line from `a` to `b`, 1 box between
-    /// corners `a` and `b`, 2 the translation `key` with `args` at `a`, 3 filled box; `color` is
+    /// Debug shape (`gizmo_kind`) for players showing `group`, from `a` to `b`; `color` is
     /// 0xRRGGBBAA, kept for `ticks`.
-    pub gizmo: unsafe extern "C" fn(
+    pub gizmo: unsafe extern "C" fn(world: *mut WorldCtx, group: Str, kind: u32, a: *const Vec3, b: *const Vec3, color: u32, ticks: u32),
+    /// The translation `key` with `args` at `pos` for players showing `group`, `size` times as
+    /// big as menu text (0 counts as 1), in each viewer's language.
+    pub gizmo_text: unsafe extern "C" fn(
         world: *mut WorldCtx,
         group: Str,
-        kind: u32,
-        a: *const Vec3,
-        b: *const Vec3,
+        pos: *const Vec3,
+        size: f32,
         color: u32,
         ticks: u32,
         key: Str,
@@ -2649,8 +2650,8 @@ pub struct Host {
     pub client_action_current: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, out: *mut Str) -> u32,
     /// Seconds a clip of an action takes on `entity`; below 0 if it has none.
     pub client_clip_length: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, name: Str) -> f32,
-    /// The item in `entity`'s hand, the other hand with `off` set; 0 for none.
-    pub client_held_item: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, off: u32) -> u32,
+    /// The item in `entity`'s `hand`; 0 for none.
+    pub client_held_item: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, hand: u32) -> u32,
     /// Where a bone of what `entity` is or has on was, the last frame. 0 if there is none.
     pub client_bone_position: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, bone: Str, out: *mut Vec3) -> u32,
     /// The engine's own cosmetics for this entity, what a kind without a tick gets.
@@ -2722,29 +2723,24 @@ pub struct Host {
     pub player_inventory_group: unsafe extern "C" fn(name: Str, out: *mut SlotGroup) -> u32,
     /// `container` is a `slot_container`.
     pub client_slot: unsafe extern "C" fn(client: *mut ClientCtx, container: u32, slot: u32) -> ItemStack,
-    /// Open menu as (kind, window, slot count); 0 if none.
-    pub client_menu: unsafe extern "C" fn(client: *mut ClientCtx, out: *mut [u32; 3]) -> u32,
+    /// The open menu; 0 if none.
+    pub client_menu: unsafe extern "C" fn(client: *mut ClientCtx, out: *mut OpenMenu) -> u32,
     /// Ids of entities the client knows (the local player not included), returns how many.
     pub client_entities: unsafe extern "C" fn(client: *mut ClientCtx, out: *mut u64, max: usize) -> usize,
-    /// Where a UI element of the top screen is, as fractions of the window (x, y, w, h):
+    /// Where a UI element of the top screen is, as fractions of the window:
     /// `slot:N` a menu slot, `item:N` a creative inventory entry of item id N, `id:name` a node
     /// id, `text:words` the first text containing them (case-insensitive).
-    pub client_ui_rect: unsafe extern "C" fn(client: *mut ClientCtx, query: Str, out: *mut [f32; 4]) -> u32,
-    /// Client: draws for this frame only. `kind` 0 line, 1 box outline, 2 the translation `key`
-    /// with `args` at a world position, 3 the same on screen at `a[0], a[1]` (fractions of the
-    /// window), 4 filled box (see-through by its alpha: range previews, blueprints); color
-    /// 0xRRGGBBAA.
-    /// A `gizmo_kind` shape for this frame; with a `group` only while the player shows it.
-    pub client_draw: unsafe extern "C" fn(
-        client: *mut ClientCtx,
-        group: Str,
-        kind: u32,
-        a: *const Vec3,
-        b: *const Vec3,
-        color: u32,
-        key: Str,
-        args: Slice<UiArg>,
-    ),
+    pub client_ui_rect: unsafe extern "C" fn(client: *mut ClientCtx, query: Str, out: *mut Rect) -> u32,
+    /// Client: a `gizmo_kind` shape for this frame (0xRRGGBBAA); with a `group` only while the
+    /// player shows it.
+    pub client_draw: unsafe extern "C" fn(client: *mut ClientCtx, group: Str, kind: u32, a: *const Vec3, b: *const Vec3, color: u32),
+    /// The translation `key` with `args` at `pos` this frame, `size` times as big as menu text.
+    pub client_draw_text:
+        unsafe extern "C" fn(client: *mut ClientCtx, group: Str, pos: *const Vec3, size: f32, color: u32, key: Str, args: Slice<UiArg>),
+    /// The translation `key` with `args` this frame, centered at (`x`, `y`) in fractions of the
+    /// window, `size` times as big as menu text: part of the GUI, F1 hides it.
+    pub client_screen_text:
+        unsafe extern "C" fn(client: *mut ClientCtx, x: f32, y: f32, size: f32, color: u32, key: Str, args: Slice<UiArg>),
     /// Client: sends `data` on channel `name` to the server.
     pub client_send_packet: unsafe extern "C" fn(client: *mut ClientCtx, name: Str, schema: Str, data: Slice<u8>),
 
@@ -3109,13 +3105,35 @@ pub mod gizmo_kind {
     pub const LINE: u32 = 0;
     /// Edges of the box `a`..`b`.
     pub const BOX: u32 = 1;
-    /// `text` at `a`, `b.x` times the size of menu text (0 counts as 1).
-    pub const TEXT: u32 = 2;
     /// The box `a`..`b` filled, see-through by the color's alpha.
-    pub const FILL: u32 = 3;
-    /// Client only: `text` centered at fractions of the window (`a[0]`, `a[1]`), sized like
-    /// `TEXT`.
-    pub const SCREEN_TEXT: u32 = 4;
+    pub const FILL: u32 = 2;
+}
+
+/// Which hand (`Host::client_held_item`).
+pub mod hand {
+    pub const MAIN: u32 = 0;
+    pub const OFF: u32 = 1;
+}
+
+/// The menu a client has open (`Host::client_menu`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OpenMenu {
+    /// The menu kind's id.
+    pub kind: u32,
+    /// Which window of the client's this is (the server counts them).
+    pub window: u32,
+    pub slots: u32,
+}
+
+/// A rectangle on the screen: its top left corner and its size.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
 }
 
 /// `Host::reg_entity_hook`.

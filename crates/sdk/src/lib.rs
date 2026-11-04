@@ -23,9 +23,9 @@ mod ui;
 mod view;
 mod world;
 
-pub use abi::{BlockPos, EntitySize, Holder, ItemStack, UV_FROM_BOX, UV_NO_FACE, Vec3, Who, hud_anchor, tool_tier};
+pub use abi::{BlockPos, EntitySize, Holder, ItemStack, OpenMenu, Rect, UV_FROM_BOX, UV_NO_FACE, Vec3, Who, hud_anchor, tool_tier};
 pub use cache::ColumnCache;
-pub use client::{Channel, Client, Packet, Payload, keys, launch_option, screens};
+pub use client::{Channel, Client, Hand, Packet, Payload, keys, launch_option, screens};
 pub use command::{ClientCommand, Command, CommandOptions, ServerCommand};
 pub use component::*;
 pub use config::*;

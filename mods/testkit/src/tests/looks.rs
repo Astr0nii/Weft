@@ -277,7 +277,7 @@ pub async fn rich_text(t: T) -> R {
         .await?;
     t.press("core:inventory");
     t.screen("core:menu").await?;
-    let Some([x, y, w, h]) = t.c().ui_rect("slot:36") else { return Err("no hotbar slot in the inventory".into()) };
+    let Some(Rect { x, y, w, h }) = t.c().ui_rect("slot:36") else { return Err("no hotbar slot in the inventory".into()) };
     t.c().input_cursor(x + w / 2.0, y + h / 2.0);
     t.frames(4).await?;
     let rune = t.shot("rune").await?;

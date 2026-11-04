@@ -444,12 +444,17 @@ pub fn format(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>) {
 /// A translation `key` with `args`; an empty key shows its one argument as it is (ready text
 /// from code, like a ticket or a profile line).
 pub fn message(key: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>) {
+    format(template_of(key, cx), args, cx, out);
+}
+
+/// What a message's key stands for: its translation, the template it carries, or its one argument.
+fn template_of<'a>(key: &'a str, cx: &Ctx<'a>) -> &'a str {
     if key.is_empty() {
-        format("{0}", args, cx, out);
+        "{0}"
     } else if let Some(template) = key.strip_prefix(TEMPLATE) {
-        format(template, args, cx, out);
+        template
     } else {
-        format(cx.lang.get(key), args, cx, out);
+        cx.lang.get(key)
     }
 }
 
@@ -651,7 +656,7 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
                 Some(Arg::Name(n)) => push_name(n, cx, out, st, depth),
                 Some(Arg::Msg(m)) if depth < 4 => {
                     let color = st.color;
-                    format_depth(cx.lang.get(&m.key), &m.args, cx, out, st, color, depth + 1);
+                    format_depth(template_of(&m.key, cx), &m.args, cx, out, st, color, depth + 1);
                     st.color = color;
                 }
                 Some(Arg::Key(k)) if depth < 4 => {

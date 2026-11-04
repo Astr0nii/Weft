@@ -533,11 +533,11 @@ pub unsafe extern "C" fn client_slot(c: *mut abi::ClientCtx, container: u32, slo
     }
 }
 
-pub unsafe extern "C" fn client_menu(c: *mut abi::ClientCtx, out: *mut [u32; 3]) -> u32 {
+pub unsafe extern "C" fn client_menu(c: *mut abi::ClientCtx, out: *mut abi::OpenMenu) -> u32 {
     unsafe {
         match client(c).and_then(|cl| cl.menu.as_ref()) {
             Some(m) => {
-                *out = [m.kind, m.window, m.slots.len() as u32];
+                *out = abi::OpenMenu { kind: m.kind, window: m.window, slots: m.slots.len() as u32 };
                 1
             }
             None => 0,
@@ -557,7 +557,7 @@ pub unsafe extern "C" fn client_entities(c: *mut abi::ClientCtx, out: *mut u64, 
     }
 }
 
-pub unsafe extern "C" fn client_ui_rect(c: *mut abi::ClientCtx, query: Str, out: *mut [f32; 4]) -> u32 {
+pub unsafe extern "C" fn client_ui_rect(c: *mut abi::ClientCtx, query: Str, out: *mut abi::Rect) -> u32 {
     unsafe {
         let Some(r) = run(c) else { return 0 };
         let q = query.as_str();
@@ -618,17 +618,35 @@ pub unsafe extern "C" fn client_ui_rect(c: *mut abi::ClientCtx, query: Str, out:
         let Some(rect) = bar.or_else(|| found.map(|i| ui.nodes[i].rect)) else { return 0 };
         let scale = r.gui_scale();
         let (w, h) = r.gpu.surface_size();
-        *out = [rect.x * scale / w as f32, rect.y * scale / h as f32, rect.w * scale / w as f32, rect.h * scale / h as f32];
+        let (w, h) = (w as f32 / scale, h as f32 / scale);
+        *out = abi::Rect { x: rect.x / w, y: rect.y / h, w: rect.w / w, h: rect.h / h };
         1
     }
 }
 
-pub unsafe extern "C" fn client_draw(
+/// Whether a mod's drawing this frame shows: no group, or one the player shows.
+fn drawn(r: &Running, group: &str) -> bool {
+    group.is_empty() || r.game.as_ref().is_some_and(|g| g.client.gizmos.on(group))
+}
+
+pub unsafe extern "C" fn client_draw(c: *mut abi::ClientCtx, group: Str, kind: u32, a: *const abi::Vec3, b: *const abi::Vec3, color: u32) {
+    unsafe {
+        let Some(r) = run(c) else { return };
+        let group = group.as_str();
+        if kind > abi::gizmo_kind::FILL || !drawn(r, group) {
+            return;
+        }
+        let (a, b) = (crate::world::dvec(*a), crate::world::dvec(*b));
+        r.mod_gizmos
+            .push(crate::net::GizmoShape::shape(group, kind as u8, a, b, color, 0));
+    }
+}
+
+pub unsafe extern "C" fn client_draw_text(
     c: *mut abi::ClientCtx,
     group: Str,
-    kind: u32,
-    a: *const abi::Vec3,
-    b: *const abi::Vec3,
+    pos: *const abi::Vec3,
+    size: f32,
     color: u32,
     key: Str,
     args: Slice<abi::UiArg>,
@@ -636,22 +654,29 @@ pub unsafe extern "C" fn client_draw(
     unsafe {
         let Some(r) = run(c) else { return };
         let group = group.as_str();
-        if !group.is_empty() && !r.game.as_ref().is_some_and(|g| g.client.gizmos.on(group)) {
+        if !drawn(r, group) {
             return;
         }
-        let (a, b, text) =
-            (crate::world::dvec(*a), crate::world::dvec(*b), crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(args)));
-        match kind {
-            abi::gizmo_kind::SCREEN_TEXT => {
-                r.mod_screen_text
-                    .push((a.x as f32, a.y as f32, text, color, if b.x > 0.0 { b.x as f32 } else { 1.0 }))
-            }
-            k if k <= abi::gizmo_kind::FILL => {
-                r.mod_gizmos
-                    .push(crate::net::GizmoShape { group: group.to_string(), kind: k as u8, a, b, color, ticks: 0, text })
-            }
-            _ => {}
-        }
+        let text = crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(args));
+        r.mod_gizmos
+            .push(crate::net::GizmoShape::text(group, crate::world::dvec(*pos), size, color, 0, text));
+    }
+}
+
+pub unsafe extern "C" fn client_screen_text(
+    c: *mut abi::ClientCtx,
+    x: f32,
+    y: f32,
+    size: f32,
+    color: u32,
+    key: Str,
+    args: Slice<abi::UiArg>,
+) {
+    unsafe {
+        let Some(r) = run(c) else { return };
+        let text = crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(args));
+        r.mod_screen_text
+            .push((x, y, text, color, if size > 0.0 { size } else { 1.0 }));
     }
 }
 
@@ -745,8 +770,8 @@ pub unsafe extern "C" fn client_clip_length(c: *mut abi::ClientCtx, entity: u64,
     }
 }
 
-pub unsafe extern "C" fn client_entity_held(c: *mut abi::ClientCtx, entity: u64, off: u32) -> u32 {
-    unsafe { with_entity(c, entity, |_, e| if off != 0 { e.off_held } else { e.held }).unwrap_or(0) }
+pub unsafe extern "C" fn client_entity_held(c: *mut abi::ClientCtx, entity: u64, hand: u32) -> u32 {
+    unsafe { with_entity(c, entity, |_, e| if hand == abi::hand::OFF { e.off_held } else { e.held }).unwrap_or(0) }
 }
 
 pub unsafe extern "C" fn client_bone_position(c: *mut abi::ClientCtx, entity: u64, bone: Str, out: *mut abi::Vec3) -> u32 {

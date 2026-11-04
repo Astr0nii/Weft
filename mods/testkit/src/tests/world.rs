@@ -109,7 +109,7 @@ pub async fn virtual_menus(t: T) -> R {
         t.op(&format!("menu {menu} {} {} {}", p[0], p[1], p[2]))
             .await?;
         let want = Menu::lookup(menu).unwrap_or(u32::MAX);
-        t.until(&format!("{menu} open"), Duration::from_secs(5), |t| t.c().menu().is_some_and(|m| m[0] == want))
+        t.until(&format!("{menu} open"), Duration::from_secs(5), |t| t.c().menu().is_some_and(|m| m.kind == want))
             .await?;
         t.screen("core:menu").await?;
     }
