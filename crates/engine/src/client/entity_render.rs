@@ -1546,7 +1546,10 @@ impl EntityRenderer {
         };
         let act = |a: Act| if e.swaps.is_empty() { m.act(a) } else { m.action(0, swapped(0, a.name())) };
         m.play(&mut clips, act(Act::Idle), &Play { looping: true, ..how });
-        if lying.is_none() {
+        // A rider sits, whatever its mount's walking does to where it is.
+        if e.vehicle.is_some() {
+            m.play(&mut clips, m.action(0, swapped(0, "ride")), &Play { looping: true, ..how });
+        } else if lying.is_none() {
             m.play(&mut clips, act(Act::Walk), &Play { drive: Drive::Distance, by_speed: true, ..how });
         }
         if e.crouched > 0.0 {

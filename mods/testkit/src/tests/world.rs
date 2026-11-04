@@ -113,6 +113,26 @@ pub async fn riding(t: T) -> R {
     t.probe("blocks the player rode it in a second", rode as f32, rode > 2.0);
     let seat = t.op("vehicle").await?;
     t.check(seat.starts_with(&d), format!("still on it: {seat}"));
+    // From behind: sitting, legs forward.
+    t.press("core:perspective");
+    t.c().set_look(180.0, -35.0);
+    t.secs(0.6).await?;
+    t.shot("seated").await?;
+    t.press("core:perspective");
+    t.press("core:perspective");
+
+    // Sent away, the steed takes its rider: in this dimension, then to another.
+    t.op(&format!("send {d} here {} {} {}", f[0] + 40, f[1] + 3, f[2]))
+        .await?;
+    t.until("the rider came along", Duration::from_secs(5), |t| (t.state().pos.x - (f[0] + 40) as f64).abs() < 3.0)
+        .await?;
+    t.check(t.op("vehicle").await?.starts_with(&d), "still in the saddle after a teleport");
+    let over = Dimension::lookup("base:overworld").ok_or("no overworld")?;
+    t.op(&format!("send {d} base:overworld 0 200 0")).await?;
+    t.until("the rider came to the other dimension", Duration::from_secs(10), |t| t.state().dim == over)
+        .await?;
+    t.secs(0.5).await?;
+    t.check(t.op("vehicle").await?.starts_with(&d), "still in the saddle in the other dimension");
     t.press("core:dismount");
     t.secs(0.5).await?;
     t.check_eq(t.op("vehicle").await?, "0 0".to_string(), "the dismount key gets off");

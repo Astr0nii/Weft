@@ -1187,6 +1187,22 @@ impl Server {
                 r.emit_engine(c, abi::action::ENTER_DIMENSION, &abi::DimensionChange { entity: id, from: dim, to: to_dim });
             }
         }
+        // Off what it rides, as in vanilla; what rides it comes along.
+        let riders = match self.dims[dim as usize].entity_region(id) {
+            Some(r) => {
+                r.leave(c, id);
+                r.riders_of(id)
+            }
+            None => Vec::new(),
+        };
+        self.move_entity(c, dim, id, to_dim, pos);
+        for rider in riders {
+            self.move_entity(c, dim, rider, to_dim, pos);
+        }
+    }
+
+    /// `id` to `pos` in `to_dim`, a player's client told; riding or carried, it stays so.
+    fn move_entity(&mut self, c: &'static Content, dim: u32, id: u64, to_dim: u32, pos: DVec3) {
         if let Some(pi) = self.player_index(id) {
             self.change_dim(c, pi, to_dim, pos);
             return;

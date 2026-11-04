@@ -1218,6 +1218,8 @@ pub mod action {
     pub const SWIM: &str = "swim";
     pub const CRAWL: &str = "crawl";
     pub const DEATH: &str = "death";
+    /// Sitting on a mount, instead of walking.
+    pub const RIDE: &str = "ride";
     pub const HOLD: &str = "hold";
     pub const HOLD_TOOL: &str = "hold_tool";
     pub const HOLD_EMPTY: &str = "hold_empty";
