@@ -1205,6 +1205,10 @@ impl Backend for VulkanBackend {
 
     fn destroy_buffer(&mut self, buffer: BufferId) {
         if let Some(b) = self.buffers.remove(buffer.0) {
+            // Writes still queued for it go with it: its slot is free at once, and a buffer made
+            // before the uploads run (a reload makes many) would take them, past its end.
+            self.uploads
+                .retain(|u| !matches!(u, Upload::Buffer { dst, .. } if *dst == buffer.0));
             self.defer(Deferred::Buffer(b.raw, b.alloc));
         }
     }
@@ -1304,6 +1308,13 @@ impl Backend for VulkanBackend {
 
     fn destroy_texture(&mut self, texture: TextureId) {
         if let Some(t) = self.textures.remove(texture.0) {
+            // As for buffers: uploads still queued for it must not reach a texture that takes its
+            // slot.
+            self.uploads.retain(|u| match u {
+                Upload::Texture { dst, .. } => *dst != texture.0,
+                Upload::InitTexture(id) => *id != texture.0,
+                Upload::Buffer { .. } => true,
+            });
             self.defer(Deferred::Texture(t.image, t.view, t.alloc, t.index));
         }
     }
