@@ -66,6 +66,8 @@ pub struct StateInfo {
     pub model: BlockModel,
     /// Texture ids (`Content::textures`) per face.
     pub textures: [u32; 6],
+    /// Cube model: quarter turns of each face's picture.
+    pub turns: [u8; 6],
     pub boxes: Vec<ModelBox>,
     /// In block units.
     pub collision: Vec<[f32; 6]>,
@@ -1062,6 +1064,8 @@ pub struct RawState {
     pub layer: RenderLayer,
     pub model: BlockModel,
     pub textures: [String; 6],
+    /// Quarter turns of a cube's face pictures.
+    pub turns: [u8; 6],
     /// (min, max, textures, uv, turn, tilt) per box, see `abi::ModelBox`.
     pub boxes: Vec<([f32; 3], [f32; 3], [String; 6], [[f32; 4]; 6], [u8; 6], weft_abi::BoxTilt)>,
     pub hitbox: Vec<[f32; 6]>,
@@ -1371,6 +1375,7 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 layer: s.layer,
                 model: s.model,
                 textures: std::array::from_fn(|i| s.textures[i].as_str().to_string()),
+                turns: s.turns.map(|t| t % 4),
                 boxes,
                 hitbox: s
                     .hitbox
@@ -2209,6 +2214,7 @@ fn number_blocks(mods: &[ModMeta], blocks: Vec<(ModId, RawBlock)>, textures: &mu
         level: 0,
         model: BlockModel::None,
         textures: [0; 6],
+        turns: [0; 6],
         boxes: Vec::new(),
         collision: Vec::new(),
         selection: Vec::new(),
@@ -2322,6 +2328,7 @@ fn number_blocks(mods: &[ModMeta], blocks: Vec<(ModId, RawBlock)>, textures: &mu
                     ..Signal::default()
                 },
                 textures: if s.model == BlockModel::None { [0; 6] } else { std::array::from_fn(|i| tex(&s.textures[i])) },
+                turns: s.turns,
                 boxes,
                 collision,
                 selection,

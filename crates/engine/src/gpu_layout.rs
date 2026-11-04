@@ -29,6 +29,9 @@ shared! {
         AO_SHIFT = 16,
         AO_MASK = 3,
         TINT_SHIFT = 24,
+        /// Quarter turns of the picture.
+        TURN_SHIFT = 28,
+        TURN_MASK = 3,
         TEX_MASK = 0xFFFF,
         BIOME_SHIFT = 16,
         /// Corner light: a channel per 4 bits, a corner per 16.
@@ -246,13 +249,14 @@ pub const CORNERS: [[[i32; 3]; 4]; 6] = weft_abi::FACE_CORNERS;
 /// A block face record (`face`): (x, y, z) in the cube, `ao` 2 bits per corner, `light` per
 /// corner (`corner_light`).
 #[inline]
-pub fn face_record(pos: [i32; 3], dir: u32, ao: u32, tint: u32, tex: u32, biome: u32, light: [u32; 4]) -> [u32; 4] {
+pub fn face_record(pos: [i32; 3], dir: u32, ao: u32, tint: u32, turn: u32, tex: u32, biome: u32, light: [u32; 4]) -> [u32; 4] {
     let w0 = pos[0] as u32
         | (pos[1] as u32) << face::Y_SHIFT
         | (pos[2] as u32) << face::Z_SHIFT
         | dir << face::DIR_SHIFT
         | ao << face::AO_SHIFT
-        | tint << face::TINT_SHIFT;
+        | tint << face::TINT_SHIFT
+        | (turn & face::TURN_MASK) << face::TURN_SHIFT;
     [w0, tex | biome << face::BIOME_SHIFT, light[0] | light[1] << face::CORNER_SHIFT, light[2] | light[3] << face::CORNER_SHIFT]
 }
 
@@ -1026,7 +1030,7 @@ mod tests {
     /// compile against the same constants (the pictures of the visual tests check the rest).
     #[test]
     fn records_round_trip() {
-        let f = face_record([3, 14, 9], 5, 0b10_01_11_00, 7, 1234, 42, [0x1234, 0xFFFF, 0, 0xABCD]);
+        let f = face_record([3, 14, 9], 5, 0b10_01_11_00, 7, 2, 1234, 42, [0x1234, 0xFFFF, 0, 0xABCD]);
         assert_eq!(face_dir(&f), 5);
         assert_eq!(f[0] & face::POS_MASK, 3);
         assert_eq!((f[0] >> face::Y_SHIFT) & face::POS_MASK, 14);

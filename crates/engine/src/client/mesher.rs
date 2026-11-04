@@ -177,6 +177,7 @@ fn draw_block(
                         dir as u32,
                         ao,
                         tint as u32,
+                        info.turns[dir] as u32,
                         tex,
                         biome,
                         light,

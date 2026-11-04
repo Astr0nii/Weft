@@ -143,7 +143,7 @@ fn vs_face(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     var out: VOut;
     out.clip = scene.view_proj * pos;
     out.dist = length(pos.xyz);
-    out.uv = UVS[c];
+    out.uv = UVS[(c + ((w0 >> FACE_TURN_SHIFT) & FACE_TURN_MASK)) % 4u];
     let tex_id = w1 & FACE_TEX_MASK;
     let fr = texture_frame(tex_id);
     out.size = fr.size;

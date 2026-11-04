@@ -84,8 +84,13 @@ fn log(r: &mut Registry, handle: &'static Block, wood: &str, leaves: &str, cone:
         .prop("axis", ["y", "x", "z"])
         .states(move |p, s| match p.get("axis") {
             "y" => s.textures(&top, &side, &top),
-            "x" => s.faces([&top, &top, &side, &side, &side, &side]),
-            _ => s.faces([&side, &side, &side, &side, &top, &top]),
+            // The bark runs along the log.
+            "x" => s
+                .faces([&top, &top, &side, &side, &side, &side])
+                .face_turns([0, 0, 1, 1, 1, 1]),
+            _ => s
+                .faces([&side, &side, &side, &side, &top, &top])
+                .face_turns([1, 1, 0, 0, 0, 0]),
         })
         .placement(axis_placement)
         .tab(&crate::tabs::NATURAL);

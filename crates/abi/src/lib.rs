@@ -784,6 +784,8 @@ pub struct StateDesc {
     pub layer: RenderLayer,
     pub model: BlockModel,
     pub textures: [Str; 6],
+    /// Cube model: quarter turns of each face's picture, as a model box's `turn` (a log on its side).
+    pub turns: [u8; 6],
     pub boxes: Slice<ModelBox>,
     /// Its shape in fractions of a block: what stops a walker if it is solid, and what the
     /// crosshair picks, outlines and cracks. Empty: the model's boxes, else a plant's cross, else
@@ -801,6 +803,7 @@ defaults!(StateDesc {
     layer: RenderLayer::Opaque,
     model: BlockModel::Cube,
     textures: [Str::EMPTY; 6],
+    turns: [0; 6],
     boxes: Slice::EMPTY,
     hitbox: Slice::EMPTY,
     components: Slice::EMPTY,

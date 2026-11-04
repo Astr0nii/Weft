@@ -1237,6 +1237,8 @@ struct StateDef {
     layer: RenderLayer,
     model: BlockModel,
     textures: [String; 6],
+    /// Quarter turns of each cube face's picture.
+    turns: [u8; 6],
     boxes: Vec<ModelBox>,
     /// Corners, in sixteenths of a block.
     hitbox: Vec<([f32; 3], [f32; 3])>,
@@ -1301,6 +1303,7 @@ impl StateDef {
             layer: d.layer,
             model: d.model,
             textures: std::array::from_fn(|_| tex.to_string()),
+            turns: [0; 6],
             boxes: Vec::new(),
             hitbox: Vec::new(),
             orientation: None,
@@ -1369,6 +1372,12 @@ macro_rules! state_setters {
         /// Faces in -X, +X, -Y, +Y, -Z, +Z order.
         pub fn faces(mut self, f: [&str; 6]) -> Self {
             self.each(|s| s.textures = std::array::from_fn(|i| crate::asset("block", f[i])));
+            self
+        }
+        /// Quarter turns of each face's picture, -X, +X, -Y, +Y, -Z, +Z: a log lying on its side
+        /// turns its bark along it. For a cube; boxes have `turned`.
+        pub fn face_turns(mut self, turns: [u8; 6]) -> Self {
+            self.each(|s| s.turns = turns.map(|t| t % 4));
             self
         }
         /// Not opaque, rendered alpha-tested, lets light through (glass, leaves).
@@ -2378,6 +2387,7 @@ impl Drop for BlockBuilder<'_> {
                 layer: s.layer,
                 model: s.model,
                 textures: std::array::from_fn(|i| Str::new(&s.textures[i])),
+                turns: s.turns,
                 boxes: Slice::new(b),
                 hitbox: Slice::new(h),
                 components: Slice::new(v),
