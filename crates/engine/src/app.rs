@@ -69,7 +69,7 @@ pub enum Request {
     /// Starts the game anew the way it was started, then leaves: what mods are on takes effect.
     Restart,
     Rebuild,
-    Rebind(String, crate::input::Chord),
+    Rebind(String, crate::input::Slots),
     ResetBinds,
     StartWorld(WorldMeta),
     /// Without asking about mods that are missing.
@@ -388,7 +388,7 @@ impl App {
         let post = crate::post::Post::new(&mut *gpu, &assets);
         let mut input = Input::default();
         for (action, key) in &content().game.keys {
-            match crate::input::Chord::parse(key) {
+            match crate::input::Binding::parse_slots(key) {
                 Some(k) => input.register(action, k),
                 None => log::warn!("key binding {action}: unknown key {key}"),
             }
@@ -727,12 +727,12 @@ impl Running {
                     Some(s) => self.open(s),
                     None => log::warn!("no screen {name}"),
                 },
-                Request::Rebind(action, key) => {
-                    self.input.rebind(&action, key);
-                    self.settings.set_bind(&action, key);
+                Request::Rebind(action, keys) => {
+                    self.input.rebind(&action, keys);
+                    self.settings.set_bind(&action, &keys);
                 }
                 Request::ResetBinds => {
-                    let defaults: Vec<(String, crate::input::Chord)> = self
+                    let defaults: Vec<(String, crate::input::Slots)> = self
                         .input
                         .binds
                         .iter()
@@ -740,7 +740,7 @@ impl Running {
                         .collect();
                     for (a, k) in defaults {
                         self.input.rebind(&a, k);
-                        self.settings.set_bind(&a, k);
+                        self.settings.set_bind(&a, &k);
                     }
                     self.rebuild_all();
                 }
@@ -1766,8 +1766,8 @@ fn toggle_gizmo(r: &mut Running, group: &str) {
 fn f3_keys(r: &mut Running) {
     let f3 = r
         .input
-        .key_of("core:debug")
-        .is_some_and(|k| r.input.held_key(k.key));
+        .binding_of("core:debug")
+        .is_some_and(|b| r.input.held_key(b.chord.key));
     if r.input.pressed("core:debug") {
         r.f3_combo = Some(false);
     }
@@ -1887,10 +1887,10 @@ fn update_game(r: &mut Running, dt: f64, frame_start: Instant) {
         g.client.render.occlusion.on = r.settings.occlusion_culling();
         let t = Instant::now();
         if world_input {
-            g.client.update(&mut *r.gpu, &r.textures, &r.input, dt);
+            g.client.update(&mut *r.gpu, &r.textures, &mut r.input, dt);
         } else {
             g.client
-                .update(&mut *r.gpu, &r.textures, &Input::default(), dt);
+                .update(&mut *r.gpu, &r.textures, &mut Input::default(), dt);
         }
         r.prof[0] = t.elapsed().as_secs_f32() * 1000.0;
         r.prof[1] = Instant::now().duration_since(frame_start).as_secs_f32() * 1000.0;
@@ -1944,8 +1944,8 @@ fn world_keys(r: &mut Running) {
         let command = r.input.pressed("core:command");
         let f3_held = r
             .input
-            .key_of("core:debug")
-            .is_some_and(|k| r.input.held_key(k.key));
+            .binding_of("core:debug")
+            .is_some_and(|b| r.input.held_key(b.chord.key));
         if command || (r.input.pressed("core:chat") && !f3_held) {
             r.open(Box::new(crate::game_screens::Chat::new(if command { "/" } else { "" })));
             r.input.typed.clear();
@@ -2000,8 +2000,6 @@ fn handle_disconnect(r: &mut Running) {
 fn end_input(r: &mut Running) {
     r.input.sensitivity = r.settings.sensitivity();
     r.input.invert_y = r.settings.invert_y();
-    r.input.toggle_sneak = r.settings.toggle_sneak();
-    r.input.toggle_sprint = r.settings.toggle_sprint();
     r.input.end_frame();
     let top = (
         r.screens.len(),

@@ -151,7 +151,7 @@ pub async fn run(t: T, src: String) -> R {
                 None => t.fail(format!("bad waypoint '{line}'")),
             },
             "travel" => {
-                let eye = t.c().entity(0).map_or(1.62, |e| e.size[2] as f64);
+                let eye = t.c().entity(0).map_or(1.62, |e| e.size.eye as f64);
                 let s = t.state();
                 let mut pts = vec![[s.pos[0], s.pos[1] + eye, s.pos[2], (s.yaw as f64).to_degrees(), (s.pitch as f64).to_degrees()]];
                 pts.append(&mut via);
@@ -160,7 +160,7 @@ pub async fn run(t: T, src: String) -> R {
             "glide" => {
                 let s = t.state();
                 let from = [s.pos[0], s.pos[1] + 0.0, s.pos[2]];
-                let eye = t.c().entity(0).map_or(1.62, |e| e.size[2] as f64);
+                let eye = t.c().entity(0).map_or(1.62, |e| e.size.eye as f64);
                 let a = [from[0], from[1] + eye, from[2], (s.yaw as f64).to_degrees(), (s.pitch as f64).to_degrees()];
                 let b = [a[0], a[1], a[2], num(0, 0.0) as f64, num(1, 0.0) as f64];
                 fly(&t, vec![a, b], num(2, 2.0) as f64, eye).await?;

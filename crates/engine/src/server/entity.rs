@@ -54,7 +54,7 @@ pub struct Entity {
     /// its kind would do otherwise (`World::body_fall`, every falling block).
     pub falls: bool,
     /// Its own box (width, height, eye) and another kind it looks like, set by mods.
-    pub size: Option<[f32; 3]>,
+    pub size: Option<weft_abi::EntitySize>,
     pub look: Option<u32>,
     /// Crouching players: a 1.5 high box with lower eyes.
     pub pose: crate::world::Pose,
@@ -151,9 +151,8 @@ impl Entity {
         self.health > 0.0
     }
 
-    /// Half width, height and eye height of its box: its own size if a mod gave it one, else
-    /// its kind's; crouching lowers either.
-    pub fn dims(&self, c: &Content) -> (f64, f64, f64) {
+    /// Its box: its own size if a mod gave it one, else its kind's; crouching lowers either.
+    pub fn dims(&self, c: &Content) -> physics::Dims {
         physics::posed(
             self.size
                 .unwrap_or(c.game.entities[self.kind as usize].size()),
@@ -171,17 +170,17 @@ impl Entity {
     }
 
     pub fn height(&self, c: &Content) -> f64 {
-        self.dims(c).1
+        self.dims(c).height
     }
 
     pub fn eye(&self, c: &Content) -> f64 {
-        self.dims(c).2
+        self.dims(c).eye
     }
 
     /// Its collision box now.
-    pub fn aabb(&self, c: &Content) -> crate::physics::Aabb {
-        let (hw, h, _) = self.dims(c);
-        crate::physics::Aabb::around(self.pos, hw, h)
+    pub fn aabb(&self, c: &Content) -> physics::Aabb {
+        let physics::Dims { half_width: hw, height: h, .. } = self.dims(c);
+        physics::Aabb::around(self.pos, hw, h)
     }
 
     /// Where items it throws start: just below its eyes (vanilla).
@@ -226,10 +225,7 @@ impl Entity {
             age: self.age,
             fall_distance: self.fall,
             moved: self.moved,
-            size: {
-                let (hw, h, eye) = self.dims(c);
-                [hw as f32 * 2.0, h as f32, eye as f32]
-            },
+            size: self.dims(c).size(),
         }
     }
 }
@@ -638,7 +634,7 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl physics::Cel
         e.moved = (e.vel.with_y(0.0) * DT).length() as f32;
         return out;
     }
-    let (hw, h, _) = e.dims(c);
+    let physics::Dims { half_width: hw, height: h, .. } = e.dims(c);
     let moved_by = physics::carried(c, block, &mut e.pos, hw, h, e.on_ground, &mut e.frame, bodies, e.id);
     if let Some(d) = moved_by.released {
         e.vel += d / DT;
@@ -723,7 +719,7 @@ pub fn soft_push(c: &Content, list: &[Entity]) -> Vec<(usize, DVec3)> {
                             break 'near;
                         }
                         let o = &list[j];
-                        let reach = e.dims(c).0 + o.dims(c).0;
+                        let reach = e.dims(c).half_width + o.dims(c).half_width;
                         let d = e.pos - o.pos;
                         if j == i || d.x.abs() >= reach || d.z.abs() >= reach || d.y >= o.height(c) || -d.y >= e.height(c) {
                             continue;

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config;
-use crate::input::{Chord, Input};
+use crate::input::{Binding, Input, Slots};
 
 #[derive(Clone)]
 pub struct Settings {
@@ -109,13 +109,7 @@ impl Settings {
         number("core:invert_y") != 0.0
     }
     /// The sneak key switches sneaking on and off instead of being held.
-    pub fn toggle_sneak(&self) -> bool {
-        number("core:toggle_sneak") != 0.0
-    }
     /// The sprint key switches sprinting on and off instead of being held.
-    pub fn toggle_sprint(&self) -> bool {
-        number("core:toggle_sprint") != 0.0
-    }
     pub fn name(&self) -> String {
         config::text(id("core:name"))
     }
@@ -164,21 +158,72 @@ impl Settings {
     pub fn apply_binds(&self, input: &mut Input) {
         let actions: Vec<String> = input.binds.iter().map(|b| b.action.clone()).collect();
         for action in actions {
-            match Chord::parse(&config::text(id(&format!("core:key.{action}")))) {
+            match Binding::parse_slots(&config::text(id(&format!("core:key.{action}")))) {
                 Some(k) => input.rebind(&action, k),
                 None => log::warn!("key binding {action}: unknown key {}", config::text(id(&format!("core:key.{action}")))),
             }
         }
     }
 
-    pub fn set_bind(&self, action: &str, key: Chord) {
-        config::set_text(id(&format!("core:key.{action}")), &Chord::id(key));
+    pub fn set_bind(&self, action: &str, keys: &Slots) {
+        config::set_text(id(&format!("core:key.{action}")), &Binding::slots_id(keys));
+    }
+}
+
+/// Brings settings files written by older versions up to date.
+pub fn migrate(run_dir: &Path) {
+    let config = crate::paths::config(run_dir);
+    merge_settings(&config);
+    for dir in [config, run_dir.join("test-config")] {
+        migrate_bindings(&dir.join("core.txt"));
+    }
+}
+
+/// Sneak and sprint switched by two settings of their own become toggled bindings, and a sprint
+/// or fly key saved when they had one binding gets the double tap the engine now gives them.;
+/// TODO remove in 26.11.3
+fn migrate_bindings(path: &Path) {
+    let Ok(src) = std::fs::read_to_string(path) else { return };
+    let mut pairs: Vec<(String, String)> = crate::kv::pairs(&src)
+        .map(|(_, k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let before = pairs.clone();
+    let mut toggled = Vec::new();
+    pairs.retain(|(k, v)| match k.strip_prefix("toggle_") {
+        Some(action @ ("sneak" | "sprint")) => {
+            if matches!(v.as_str(), "true" | "1") {
+                toggled.push(format!("key.core:{action}"));
+            }
+            false
+        }
+        _ => true,
+    });
+    for (k, v) in &mut pairs {
+        match (k.as_str(), v.as_str()) {
+            ("key.core:sprint", "ControlLeft") => *v = "ControlLeft, double KeyW".into(),
+            ("key.core:fly", "KeyF") => *v = "KeyF, double Space".into(),
+            _ => {}
+        }
+        if toggled.contains(k) && !v.starts_with("toggle ") {
+            *v = format!("toggle {v}");
+        }
+    }
+    if pairs != before {
+        let out: String = pairs
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "{k} = {v}
+"
+                )
+            })
+            .collect();
+        let _ = std::fs::write(path, out);
     }
 }
 
 /// The old `config/settings.txt` joins `config/core.txt` once (lists were one line per entry).
-pub fn migrate(run_dir: &Path) {
-    let config = crate::paths::config(run_dir);
+fn merge_settings(config: &Path) {
     let (old, new) = (config.join("settings.txt"), config.join("core.txt"));
     let Ok(src) = std::fs::read_to_string(&old) else { return };
     let mut out = std::fs::read_to_string(&new).unwrap_or_default();

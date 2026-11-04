@@ -560,8 +560,8 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
         } else if let Some(action) = tag.strip_prefix("key:") {
             let name = cx
                 .input
-                .and_then(|i| i.key_of(action))
-                .map(|k| display_chord(cx.lang, k))
+                .and_then(|i| i.binding_of(action))
+                .map(|b| display_binding(cx.lang, b))
                 .unwrap_or_else(|| "?".into());
             let color = st
                 .color
@@ -925,6 +925,15 @@ pub fn layout_with(spans: &[Span], font: &Font, max_width: Option<f32>, line_hei
 
 /// A key's name for players: translated (`keyname.ShiftLeft`) when the language has it.
 /// `Ctrl+T`: the modifiers (`keyname.ctrl` ..., either side's key), then the key.
+/// What a player reads for a binding: its keys, `x2` after a double tap's (`Wx2`).
+pub fn display_binding(lang: &Lang, b: crate::input::Binding) -> String {
+    let chord = display_chord(lang, b.chord);
+    match b.trigger {
+        crate::input::Trigger::Double => format!("{chord}x2"),
+        _ => chord,
+    }
+}
+
 pub fn display_chord(lang: &Lang, c: crate::input::Chord) -> String {
     let mut out = String::new();
     for (bit, name, ..) in crate::input::MODIFIERS {

@@ -442,11 +442,14 @@ fn morph(r: &mut Registry) {
         match cmd.text("kind").map(str::to_string) {
             Some(kind) => {
                 // The size of what it turns into, unless told otherwise.
-                let own = w.kind_size(&kind).unwrap_or([0.9, 0.9, 0.765]);
-                let (width, height) = (cmd.float("width").map_or(own[0], |v| v as f32), cmd.float("height").map_or(own[1], |v| v as f32));
-                let eye = if cmd.float("height").is_some() { height * 0.85 } else { own[2] };
+                let own = w
+                    .kind_size(&kind)
+                    .unwrap_or(EntitySize { width: 0.9, height: 0.9, eye: 0.765 });
+                let (width, height) =
+                    (cmd.float("width").map_or(own.width, |v| v as f32), cmd.float("height").map_or(own.height, |v| v as f32));
+                let eye = if cmd.float("height").is_some() { height * 0.85 } else { own.eye };
                 w.set_appearance(me, Some(&kind));
-                w.set_size(me, Some([width, height, eye]));
+                w.set_size(me, Some(EntitySize { width, height, eye }));
                 cmd.reply("command.testmod.morph", &[Arg::Text(&kind), Arg::Float(width as f64, 2), Arg::Float(height as f64, 2)]);
             }
             None => {

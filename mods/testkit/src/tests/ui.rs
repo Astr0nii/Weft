@@ -739,7 +739,8 @@ pub async fn inventory_hotkeys(t: T) -> R {
 
 /// Rebinding in Controls: the clicked entry waits for a key (Escape cancels and leaves the screen
 /// open). A key pressed with Ctrl makes a chord that the key alone does not trigger; a modifier
-/// let go of with nothing else pressed is the key itself.
+/// let go of with nothing else pressed is the key itself. A key pressed twice binds a double tap
+/// in the second slot, and a right click clears it.
 pub async fn rebind(t: T) -> R {
     t.flat().await?;
     // `keys`: (key, seconds held, seconds before the next one).
@@ -747,13 +748,14 @@ pub async fn rebind(t: T) -> R {
         t.c().screen_open(&screens::CONTROLS);
         t.screen("core:controls").await?;
         t.frames(2).await?;
-        t.click_ui("id:bind:core:forward", 0);
+        t.click_ui("id:bind:core:forward:0", 0);
         t.secs(0.2).await?;
         for &(key, held, after) in keys {
             t.c().input_key(key, held);
             t.secs(after).await?;
         }
-        t.frames(4).await?;
+        // A key pressed once binds when the time for a second press is over.
+        t.secs(0.5).await?;
         Ok(())
     };
     let walked = async |keys: &[&str]| -> Result<f64, String> {
@@ -786,6 +788,16 @@ pub async fn rebind(t: T) -> R {
         walked(&["ShiftRight"]).await?
     };
     bind(&[("KeyW", 0.0, 0.0)]).await?;
+    t.click_ui("id:bind:core:forward:1", 0);
+    t.secs(0.2).await?;
+    t.c().input_key("KeyJ", 0.05);
+    t.secs(0.1).await?;
+    t.c().input_key("KeyJ", 0.05);
+    t.secs(0.5).await?;
+    t.check(t.c().ui_rect("text:Jx2").is_some(), "a key pressed twice binds a double tap");
+    t.click_ui("id:bind:core:forward:1", 1);
+    t.frames(4).await?;
+    t.check(t.c().ui_rect("text:Jx2").is_none(), "a right click clears it");
     t.c().screen_close();
     t.no_screen().await?;
     t.check(k > 1.0, format!("K walks after rebinding forward to it (moved {k:.2})"));

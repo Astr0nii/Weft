@@ -500,7 +500,7 @@ const OPS: &[(&str, &str, Run)] = &[
     }),
     ("size", "@entity", |w, cmd, _, _| {
         let s = w.entity(owner(w, cmd)?).ok_or("no such entity")?.size;
-        Ok(format!("{:.3} {:.3} {:.3}", s[0], s[1], s[2]))
+        Ok(format!("{:.3} {:.3} {:.3}", s.width, s.height, s.eye))
     }),
     ("near", "<pos:pos> <r:float>", |w, cmd, player, _| {
         let p = pos(cmd, "pos")?;

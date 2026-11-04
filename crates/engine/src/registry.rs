@@ -120,9 +120,9 @@ pub struct EntityKind {
 }
 
 impl EntityKind {
-    /// Width, height and eye height standing, as `Entity::dims` starts from.
-    pub fn size(&self) -> [f32; 3] {
-        [self.width, self.height, self.eye]
+    /// Its box standing, as `Entity::dims` starts from.
+    pub fn size(&self) -> weft_abi::EntitySize {
+        weft_abi::EntitySize { width: self.width, height: self.height, eye: self.eye }
     }
 
     pub fn is(&self, f: u32) -> bool {
@@ -1768,11 +1768,11 @@ pub fn freeze(
     // The engine's settings, with a binding per key: the engine's and the mods'.
     let mut keys: Vec<(String, String)> = crate::input::ENGINE_KEYS
         .iter()
-        .map(|(a, k)| (a.to_string(), crate::input::Chord::id((*k).into())))
+        .map(|(a, k)| (a.to_string(), k.to_string()))
         .collect();
     for (action, key) in &g.keys {
-        match crate::input::Chord::parse(key) {
-            Some(k) => keys.push((action.clone(), crate::input::Chord::id(k))),
+        match crate::input::Binding::parse_slots(key) {
+            Some(k) => keys.push((action.clone(), crate::input::Binding::slots_id(&k))),
             None => errors.push(format!("key {action}: unknown key {key}")),
         }
     }

@@ -94,7 +94,7 @@ impl Gizmos {
                 .values()
                 .filter(|e| (e.pos - me).length_squared() < 64.0 * 64.0)
             {
-                let (hw, h, eye) = e.dims();
+                let crate::physics::Dims { half_width: hw, height: h, eye } = e.dims();
                 cuboid(&mut lines, e.pos - DVec3::new(hw, 0.0, hw), e.pos + DVec3::new(hw, h, hw), 0xFFFFFFFF);
                 let eye = e.pos + DVec3::Y * eye;
                 let (sy, cy) = (e.yaw as f64).sin_cos();

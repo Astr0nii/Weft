@@ -138,20 +138,18 @@ impl World {
     pub fn push(&self, id: u64, v: [f64; 3]) {
         unsafe { (host().entity_push)(self.raw(), id, &v) }
     }
-    /// The entity's own box (width, height, eye height); `None` goes back to its kind's.
-    /// Crouching still shrinks it.
-    pub fn set_size(&self, id: u64, size: Option<[f32; 3]>) {
-        let [w, h, eye] = size.unwrap_or([0.0; 3]);
-        unsafe { (host().set_entity_size)(self.raw(), id, w, h, eye) }
+    /// The entity's own box; `None` goes back to its kind's. Crouching still shrinks it.
+    pub fn set_size(&self, id: u64, size: Option<abi::EntitySize>) {
+        unsafe { (host().set_entity_size)(self.raw(), id, size.unwrap_or_default()) }
     }
     /// Draws the entity as another kind (model, texture, animations); `None` as itself. It stays
     /// the same entity with its own behavior.
     pub fn set_appearance(&self, id: u64, kind: Option<&str>) {
         unsafe { (host().set_entity_appearance)(self.raw(), id, Str::new(kind.unwrap_or(""))) }
     }
-    /// The box entities of a kind have (width, height, eye height).
-    pub fn kind_size(&self, kind: &str) -> Option<[f32; 3]> {
-        let mut out = [0.0; 3];
+    /// The box entities of a kind have.
+    pub fn kind_size(&self, kind: &str) -> Option<abi::EntitySize> {
+        let mut out = abi::EntitySize::default();
         (unsafe { (host().entity_kind_size)(Str::new(kind), &mut out) } != 0).then_some(out)
     }
     /// `id` walks to `target` by itself, around obstacles, at `speed` times its walking speed

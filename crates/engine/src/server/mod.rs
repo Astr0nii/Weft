@@ -967,7 +967,7 @@ impl Server {
             e.pos = pos;
             let id = e.id;
             let r = dims[to as usize].ensure_region(c, pos);
-            let (hw, ..) = e.dims(c);
+            let hw = e.dims(c).half_width;
             frame = r.body_under(c, pos, hw).map(|(b, at)| (b, pos - at));
             e.frame = frame.map(|f| f.0);
             r.entities.insert_with(c, e, inv, comps);

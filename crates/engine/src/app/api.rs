@@ -288,7 +288,7 @@ pub unsafe extern "C" fn client_input(c: *mut abi::ClientCtx, op: u32, text: Str
         let Some(r) = run(c) else { return 0 };
         let text = text.as_str();
         match op {
-            ci::ACTION => match r.input.key_of(text) {
+            ci::ACTION => match r.input.binding_of(text).map(|b| b.chord) {
                 Some(c) => {
                     for (bit, _, k, _) in crate::input::MODIFIERS {
                         if c.mods & bit != 0 {

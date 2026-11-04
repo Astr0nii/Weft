@@ -11,27 +11,34 @@ fn item(name: &str) -> u32 {
 
 use base_api::HUNGER;
 
+/// Sprint and sneak held, toggled (Shift + right click on the binding in Controls) and sprint from
+/// a double tap of forward, its second binding.
 pub async fn sprint_and_sneak_modes(t: T) -> R {
-    use weft_sdk::Config;
-    static TOGGLE_SNEAK: Config<bool> = Config::named("core:toggle_sneak");
-    static TOGGLE_SPRINT: Config<bool> = Config::named("core:toggle_sprint");
+    static SPRINT: TextConfig = TextConfig::named("core:key.core:sprint");
+    static SNEAK: TextConfig = TextConfig::named("core:key.core:sneak");
     t.flat().await?;
-    // The options are in Controls, and nothing is left of them in the Settings.
-    t.c().screen_open(&screens::SETTINGS);
-    t.screen("core:settings").await?;
-    t.frames(3).await?;
-    t.check(t.c().ui_rect("text:Toggle sneak").is_none(), "input options out of the Settings");
-    t.c().screen_close();
-    t.no_screen().await?;
+    // Switching a binding between held and toggled.
+    let toggle = async |action: &str| -> R {
+        t.c().screen_open(&screens::CONTROLS);
+        t.screen("core:controls").await?;
+        t.frames(3).await?;
+        t.c().input_key("ShiftLeft", 0.2);
+        t.frames(2).await?;
+        t.click_ui(&format!("id:bind:{action}:0"), 1);
+        // Shift let go again, or the walks after start sneaking.
+        t.secs(0.3).await?;
+        t.c().screen_close();
+        t.no_screen().await?;
+        // Toggles and double taps switch only once the game has the mouse again.
+        t.frames(3).await?;
+        Ok(())
+    };
+    toggle("core:sneak").await?;
+    t.check_eq(SNEAK.get(), "toggle ShiftLeft".to_string(), "Shift + right click makes sneak a toggle");
     t.c().screen_open(&screens::CONTROLS);
     t.screen("core:controls").await?;
     t.frames(3).await?;
     t.shot("controls").await?;
-    t.laid_out(&["text:Invert mouse Y", "text:Toggle sneak", "text:Toggle sprint"]);
-    t.check(t.click_ui("text:Toggle sneak", 0), "toggle sneak in Controls");
-    t.until("toggle sneak on", Duration::from_secs(2), |_| TOGGLE_SNEAK.get())
-        .await?;
-    TOGGLE_SNEAK.set(false);
     t.c().screen_close();
     t.no_screen().await?;
     t.c().set_look(0.0, 0.0);
@@ -43,58 +50,38 @@ pub async fn sprint_and_sneak_modes(t: T) -> R {
         t.secs(1.2).await?;
         Ok(((t.state().pos[0] - a[0]).powi(2) + (t.state().pos[2] - a[2]).powi(2)).sqrt())
     };
+    // Toggle sneak: one press slows the walk until the next.
+    t.press("core:sneak");
+    t.frames(4).await?;
+    let d = walk().await?;
+    t.press("core:sneak");
+    t.frames(4).await?;
     let plain = walk().await?;
     t.note(format!("walking: {plain:.2}"));
+    t.probe("toggled sneak, against walking", (d / plain) as f32, d < plain * 0.5);
+    toggle("core:sneak").await?;
     let fast = |d: f64| d > plain * 1.15;
 
     // A double tap sprints as long as forward stays down.
-    t.press("core:forward");
-    t.frames(3).await?;
+    t.c().input_key("KeyW", 0.05);
+    t.secs(0.1).await?;
     let d = walk().await?;
     t.probe("double tap, against walking", (d / plain) as f32, fast(d));
     let d = walk().await?;
     t.probe("after letting go of forward, against walking", (d / plain) as f32, !fast(d));
 
-    // Toggle sprint: the key switches it on and off, also while still held.
-    TOGGLE_SPRINT.set(true);
-    t.frames(2).await?;
+    // Toggle sprint: the key switches it on and off, as it goes down.
+    toggle("core:sprint").await?;
+    t.check_eq(SPRINT.get(), "toggle ControlLeft, double KeyW".to_string(), "the other binding stays");
     t.press("core:sprint");
     t.frames(4).await?;
     let d = walk().await?;
     t.probe("toggled sprint, against walking", (d / plain) as f32, fast(d));
-    t.press("core:sprint");
+    t.hold("core:sprint", 1.0);
     t.frames(4).await?;
     let d = walk().await?;
-    t.probe("toggled off, against walking", (d / plain) as f32, !fast(d));
-    // It switches as it goes down, not as it comes up.
-    t.hold("core:sprint", 1.5);
-    t.frames(4).await?;
-    let d = walk().await?;
-    t.probe("sprinting with the key still down, against walking", (d / plain) as f32, fast(d));
-    t.secs(0.8).await?;
-    t.press("core:sprint");
-    t.secs(0.3).await?;
-    // Held for a stack drop, the same key switches nothing.
-    t.hold("core:sprint", 0.3);
-    t.frames(3).await?;
-    t.press("core:drop");
-    t.secs(0.5).await?;
-    let d = walk().await?;
-    t.probe("after dropping a stack, against walking", (d / plain) as f32, !fast(d));
-    TOGGLE_SPRINT.set(false);
-
-    // Toggle sneak: one press slows the walk until the next.
-    TOGGLE_SNEAK.set(true);
-    t.frames(2).await?;
-    t.press("core:sneak");
-    t.frames(4).await?;
-    let d = walk().await?;
-    t.probe("toggled sneak, against walking", (d / plain) as f32, d < plain * 0.5);
-    t.press("core:sneak");
-    t.frames(4).await?;
-    let d = walk().await?;
-    t.probe("toggled off, against walking", (d / plain) as f32, d > plain * 0.8);
-    TOGGLE_SNEAK.set(false);
+    t.probe("toggled off with the key still down, against walking", (d / plain) as f32, !fast(d));
+    toggle("core:sprint").await?;
     Ok(())
 }
 
@@ -834,7 +821,7 @@ pub async fn player_box(t: T) -> R {
         t.secs(0.3).await?;
         let server = t.op("size me").await?;
         let c = t.c().entity(0).ok_or("no local player")?.size;
-        let client = format!("{:.3} {:.3} {:.3}", c[0], c[1], c[2]);
+        let client = format!("{:.3} {:.3} {:.3}", c.width, c.height, c.eye);
         t.check(server == client, format!("{step}: server box {server}, client box {client}"));
         if step == "start" {
             t.check(server.starts_with("0.600 1.800"), format!("player box is {server}, not 0.6 x 1.8"));
@@ -1095,7 +1082,7 @@ pub async fn creative_and_invulnerable(t: T) -> R {
 /// Looks at a point from the player's eyes.
 fn aim(t: &T, p: [f64; 3]) {
     let s = t.state();
-    let eye = [s.pos[0], s.pos[1] + t.c().entity(0).map_or(1.62, |e| e.size[2] as f64), s.pos[2]];
+    let eye = [s.pos[0], s.pos[1] + t.c().entity(0).map_or(1.62, |e| e.size.eye as f64), s.pos[2]];
     let d = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
     let yaw = (-d[0]).atan2(-d[2]).to_degrees() as f32;
     let pitch = d[1].atan2((d[0] * d[0] + d[2] * d[2]).sqrt()).to_degrees() as f32;

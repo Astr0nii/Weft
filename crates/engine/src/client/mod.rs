@@ -1,4 +1,3 @@
-mod controls;
 pub mod ctm;
 pub mod entity_render;
 pub mod gizmo;
@@ -79,16 +78,13 @@ pub struct LocalPlayer {
     /// The solid body it rides.
     pub support: Option<u64>,
     /// Its box standing (width, height, eye): the player kind's, or what a mod gave it.
-    pub size: [f32; 3],
+    pub size: weft_abi::EntitySize,
     /// Riding a body: its id and the position relative to it at the previous and the last
     /// step. Drawn on the body as shown, so a rider and its deck never drift apart.
     pub riding: Option<(u64, DVec3, DVec3)>,
     /// Walking speed and jump multipliers from the server (attributes).
     pub speed_mul: f64,
     pub jump_mul: f64,
-    /// Sneaking now and wanting to sprint now.
-    pub sneak: bool,
-    pub sprint: bool,
 }
 
 pub struct ClientEntity {
@@ -144,7 +140,7 @@ pub struct ClientEntity {
     /// A picked up item flying to who took it: where it started, the taker, seconds so far.
     pub pulled: Option<(DVec3, u64, f32)>,
     /// Its own box (width, height, eye) and the kind it looks like, when a mod set them.
-    pub size: Option<[f32; 3]>,
+    pub size: Option<weft_abi::EntitySize>,
     pub look: Option<u32>,
     /// The solid body it stands on (0: the world), and its position relative to that body:
     /// shown and as the server last had it. Riders are drawn where the body is drawn.
@@ -164,8 +160,8 @@ const PULL_SECS: f32 = 0.15;
 const HURT_FLASH: f32 = 0.5;
 
 impl LocalPlayer {
-    /// Half width, height and eye height now (crouching lowers them).
-    pub fn dims(&self) -> (f64, f64, f64) {
+    /// Its box now (crouching lowers it).
+    pub fn dims(&self) -> physics::Dims {
         physics::posed(self.size, self.pose)
     }
 }
@@ -255,8 +251,8 @@ impl ClientEntity {
         }
     }
 
-    /// Half width, height and eye height of its box, like the server's `Entity::dims`.
-    pub fn dims(&self) -> (f64, f64, f64) {
+    /// Its box, like the server's `Entity::dims`.
+    pub fn dims(&self) -> physics::Dims {
         physics::posed(
             self.size
                 .unwrap_or(content().game.entities[self.kind as usize].size()),
@@ -407,7 +403,8 @@ pub struct Client {
     pub mode: GameMode,
     /// When jump was last pressed, for double-tap flight toggling.
     /// How sneak, sprint and flight are being asked for.
-    controls: controls::Controls,
+    /// The server ended the sprint; `update` switches the key off.
+    sprint_stopped: bool,
     /// 0 first person, 1 third person from behind, 2 from the front.
     pub view: u8,
     /// F1: no hand and no block outline.
@@ -678,11 +675,10 @@ impl Client {
                 climbing: false,
                 speed_mul: 1.0,
                 jump_mul: 1.0,
-                sneak: false,
-                sprint: false,
             },
             joined: false,
             player_id: 0,
+            sprint_stopped: false,
             me: ClientEntity { health: 20.0, ..ClientEntity::new(content().game.player_kind, DVec3::ZERO, 0.0, 0.0, ItemStack::EMPTY) },
             accum: 0.0,
             tick_accum: 0.0,
@@ -737,7 +733,6 @@ impl Client {
             sent: Vec::new(),
             held_name: (ItemStack::EMPTY, Instant::now()),
             mode: GameMode::SURVIVAL,
-            controls: controls::Controls::default(),
             view: 0,
             hide_gui: false,
             first_person_model: false,
@@ -866,7 +861,12 @@ impl Client {
         }
     }
 
-    pub fn update(&mut self, gpu: &mut dyn Backend, textures: &GameTextures, input: &Input, dt: f64) {
+    pub fn update(&mut self, gpu: &mut dyn Backend, textures: &GameTextures, input: &mut Input, dt: f64) {
+        // The server ended the sprint (no food, say): a toggle or a double tap has to be pressed again.
+        if std::mem::take(&mut self.sprint_stopped) {
+            input.stop("core:sprint");
+        }
+        let input = &*input;
         self.take_messages(dt);
         self.read_look(input);
         self.read_controls(input);
@@ -925,12 +925,11 @@ impl Client {
         }
     }
 
+    /// Flying goes on and off where the game mode lets it.
     fn read_controls(&mut self, input: &Input) {
-        let creative = self.mode.has(weft_abi::game_mode_flags::CAN_FLY);
-        let i = self
-            .controls
-            .read(&controls::Keys::of(input), self.player.flying, creative, Instant::now());
-        (self.player.sneak, self.player.sprint, self.player.flying) = (i.sneak, i.sprint, i.flying);
+        if self.mode.has(weft_abi::game_mode_flags::CAN_FLY) && input.captured && input.pressed("core:fly") {
+            self.player.flying = !self.player.flying;
+        }
     }
 
     /// A spectator's scroll wheel sets how fast it flies.
@@ -978,11 +977,12 @@ impl Client {
     /// Eye and view widen or drop over a few frames like vanilla, not in one jump.
     fn ease_camera(&mut self, input: &Input, dt: f64) {
         let k = (dt * 12.0).min(1.0);
-        let sneaking = self.player.sneak && !self.player.flying;
-        let eye_target = self.player.dims().2;
+        let sneaking = input.held("core:sneak") && !self.player.flying;
+        let eye_target = self.player.dims().eye;
         self.player.eye += (eye_target - self.player.eye) * k;
         let moving = input.held("core:forward");
-        let fov_target = if self.player.flying { 1.1 } else { 1.0 } + if self.player.sprint && moving && !sneaking { 0.15 } else { 0.0 };
+        let fov_target =
+            if self.player.flying { 1.1 } else { 1.0 } + if input.held("core:sprint") && moving && !sneaking { 0.15 } else { 0.0 };
         self.player.fov_mul += (fov_target - self.player.fov_mul) * k as f32;
         if input.pressed("core:perspective") && input.captured {
             self.view = (self.view + 1) % 3;
@@ -1122,14 +1122,14 @@ impl Client {
                     }
                     if k.is(weft_abi::entity_flags::SOLID) {
                         let (now, delta) = (e.known(at), e.known(at) - e.known(at - step_ticks));
-                        let (hw, h, _) = e.dims();
+                        let physics::Dims { half_width: hw, height: h, .. } = e.dims();
                         let built = e.structure.as_deref().map(|s| s as &dyn physics::Blocks);
                         bodies.extend(physics::Body::of(id, k, now, (hw, h), delta, built));
                     } else if k.is(weft_abi::entity_flags::PUSHABLE) {
                         let d = self.player.pos - e.pos;
-                        let ((ehw, eh, _), (hw, h, _)) = (e.dims(), self.player.dims());
-                        let reach = ehw + hw;
-                        if d.x.abs() < reach && d.z.abs() < reach && d.y < eh && -d.y < h {
+                        let (theirs, mine) = (e.dims(), self.player.dims());
+                        let reach = theirs.half_width + mine.half_width;
+                        if d.x.abs() < reach && d.z.abs() < reach && d.y < theirs.height && -d.y < mine.height {
                             push += physics::nudge(d);
                         }
                     }
@@ -1341,7 +1341,7 @@ impl Client {
             if let Some(id) = self.target_entity {
                 self.conn.send(ToServer::Interact(id));
             } else if let Some(hit) = self.target {
-                let sneak = self.player.sneak;
+                let sneak = input.held("core:sneak");
                 let at = self
                     .frame_place(hit.frame)
                     .to_local(self.camera().pos + self.camera().forward().as_dvec3() * hit.dist);
@@ -1586,7 +1586,7 @@ impl Client {
         let c = content();
         let pos = self.player.pos;
         if self.me.sprinting {
-            self.sprint_dust(pos, self.player.vel, self.player.size[0] / 2.0, dt);
+            self.sprint_dust(pos, self.player.vel, self.player.size.width / 2.0, dt);
         }
         let bubble = self.eye_liquid().and_then(|l| {
             let state = c.liquids[l as usize].first_state;
@@ -1781,7 +1781,7 @@ impl Client {
         let pos = DVec3::from_array(a.pos);
         if a.dying >= 1.0 {
             if let Some(&kind) = c.game.particle_names.get(weft_abi::particle::POOF) {
-                let (hw, h, _) = physics::posed(k.size(), Pose::STAND);
+                let crate::physics::Dims { half_width: hw, height: h, .. } = physics::posed(k.size(), Pose::STAND);
                 let (w, h) = (hw as f32, h as f32 * 0.5);
                 let at = (pos + DVec3::Y * h as f64).to_array();
                 self.particles.spawn(
@@ -1820,11 +1820,11 @@ impl Client {
         if e.sprinting {
             // Vanilla's sprint, about 0.28 blocks a tick, the way the body faces.
             let (sin, cos) = (e.body_yaw as f64).sin_cos();
-            let (vel, hw) = (DVec3::new(-sin, 0.0, -cos) * 0.28, e.dims().0 as f32);
+            let (vel, hw) = (DVec3::new(-sin, 0.0, -cos) * 0.28, e.dims().half_width as f32);
             self.sprint_dust(pos, vel, hw, a.dt);
         }
         let Some(e) = self.entities.get(&a.entity) else { return };
-        let eye = e.dims().2;
+        let eye = e.dims().eye;
         if k.sounds[entity_sound::AMBIENT] != u32::MAX && self.chance() < a.dt / 12.0 {
             self.sounds
                 .push(Play { sound: k.sounds[entity_sound::AMBIENT], pos: Some(pos + DVec3::Y * eye), volume: 1.0, pitch: 0.0 });
@@ -1913,7 +1913,7 @@ impl Client {
             if !e.is_body() || id == self.player_id || e.structure.is_some() {
                 continue;
             }
-            let (hw, h, _) = e.dims();
+            let physics::Dims { half_width: hw, height: h, .. } = e.dims();
             let b = physics::Aabb::around(e.pos, hw, h);
             if let Some(t) = physics::ray_aabb(eye, dir, &b, max) {
                 if best.is_none_or(|(bt, _)| t < bt) {
@@ -1931,7 +1931,7 @@ impl Client {
         let now = self.world.time;
         let f: Vec<f32> = words(bytes).map(f32::from_le_bytes).collect();
         let shaped = || {
-            let size = (f.len() == 4 && f[0] > 0.0).then(|| [f[0], f[1], f[2]]);
+            let size = (f.len() == 4 && f[0] > 0.0).then(|| weft_abi::EntitySize { width: f[0], height: f[1], eye: f[2] });
             let look = words(bytes)
                 .nth(3)
                 .map(u32::from_le_bytes)
@@ -2458,13 +2458,13 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl physics::Cells, 
     // Held facing one way it stays put: in a bed.
     if let Some((pose, Some(yaw))) = p.forced {
         (p.yaw, p.pitch, p.vel, p.pose) = (yaw, 0.0, DVec3::ZERO, pose);
-        p.eye = p.dims().2;
+        p.eye = p.dims().eye;
         return;
     }
     // The body the player rides moves it first, like on the server.
-    let (hw, _, _) = p.dims();
+    let hw = p.dims().half_width;
     if !p.noclip {
-        let h = p.dims().1;
+        let h = p.dims().height;
         let moved_by = physics::carried(c, block, &mut p.pos, hw, h, p.on_ground, &mut p.support, bodies, 0);
         if let Some(d) = moved_by.released {
             p.vel += d;
@@ -2486,16 +2486,16 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl physics::Cells, 
     if input.held("core:right") {
         side_in += 1.0;
     }
-    let sneak = p.sneak;
+    let sneak = input.held("core:sneak");
     let crawl = input.held("core:crawl");
     let jump = input.held("core:jump");
     // Sprinting needs forward movement and stops when walking backwards, sneaking or crawling.
-    let sprint = p.sprint && fwd_in > 0.0 && !sneak && !crawl && !p.using && (p.can_sprint || p.flying);
+    let sprint = input.held("core:sprint") && fwd_in > 0.0 && !sneak && !crawl && !p.using && (p.can_sprint || p.flying);
     // Sprinting swims once the eyes are in a liquid that can be swum in, and keeps at it while the
     // body is. In a liquid it is no use otherwise.
     let can_swim = |at: DVec3| physics::liquid_at(c, block, at).is_some_and(|l| p.swim_anywhere || c.liquids[l as usize].swimmable);
     let feet_wet = physics::in_liquid(c, block, p.pos, 0.0);
-    let start_at = p.pos + DVec3::Y * if matches!(p.pose, Pose::SWIM | Pose::CRAWL) { 0.1 } else { p.dims().2 };
+    let start_at = p.pos + DVec3::Y * if matches!(p.pose, Pose::SWIM | Pose::CRAWL) { 0.1 } else { p.dims().eye };
     let swimming = sprint && !p.flying && !p.noclip && can_swim(start_at);
     let sprint = sprint && (swimming || !feet_wet);
     p.sprinting = sprint;
@@ -2512,7 +2512,7 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl physics::Cells, 
         Pose::STAND
     };
     let fits =
-        |pose: Pose| p.noclip || !physics::collides(c, block, physics::Aabb::around(p.pos, hw - 1e-3, physics::posed(p.size, pose).1));
+        |pose: Pose| p.noclip || !physics::collides(c, block, physics::Aabb::around(p.pos, hw - 1e-3, physics::posed(p.size, pose).height));
     p.pose = if fits(want) {
         want
     } else if fits(Pose::CROUCH) {
@@ -2540,7 +2540,7 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl physics::Cells, 
     let wish = forward * fwd_in + right * side_in;
     let g = physics::gravity_per_tick(gravity);
 
-    let height = p.dims().1;
+    let height = p.dims().height;
     let before = p.pos;
 
     if p.flying || p.noclip {

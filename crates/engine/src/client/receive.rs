@@ -195,7 +195,7 @@ impl Client {
                 }
             }
             ToClient::Cracks(list) => self.others_mining = list,
-            ToClient::StopSprint => self.controls.stop_sprint(),
+            ToClient::StopSprint => self.sprint_stopped = true,
             ToClient::Knock { away } => {
                 let away = glam::Vec3::from_array(away).as_dvec3();
                 self.player.vel = physics::knock(self.player.vel, away, self.player.on_ground);

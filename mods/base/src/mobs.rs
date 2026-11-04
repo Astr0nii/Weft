@@ -422,7 +422,7 @@ fn skeleton() -> ai::Goals {
 
 fn shoot(w: &World, id: u64, from: &EntityState, at: &EntityState) {
     let eye = from.eye()[1];
-    let d = [at.pos[0] - from.pos[0], at.pos[1] + at.size[2] as f64 * 0.7 - eye, at.pos[2] - from.pos[2]];
+    let d = [at.pos[0] - from.pos[0], at.pos[1] + at.size.eye as f64 * 0.7 - eye, at.pos[2] - from.pos[2]];
     let flat = (d[0] * d[0] + d[2] * d[2]).sqrt();
     let len = (flat * flat + d[1] * d[1]).sqrt().max(0.1);
     // A little above the target for the drop on the way.

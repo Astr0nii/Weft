@@ -2252,11 +2252,12 @@ unsafe extern "C" fn break_block(w: *mut abi::WorldCtx, pos: *const [i32; 3], to
     unsafe { dim(w).break_block(content(), ip(pos), tool, player, drops != 0) as u32 }
 }
 
-unsafe extern "C" fn set_entity_size(w: *mut abi::WorldCtx, id: u64, width: f32, height: f32, eye: f32) {
+unsafe extern "C" fn set_entity_size(w: *mut abi::WorldCtx, id: u64, size: abi::EntitySize) {
     unsafe {
         let d = dim(w);
         if let Some(e) = d.entities.get_mut(id) {
-            e.size = (width > 0.0).then_some([width, height.max(0.0), eye.clamp(0.0, height.max(0.0))]);
+            let height = size.height.max(0.0);
+            e.size = (size.width > 0.0).then_some(abi::EntitySize { width: size.width, height, eye: size.eye.clamp(0.0, height) });
         }
     }
 }
@@ -2278,12 +2279,12 @@ unsafe extern "C" fn set_entity_appearance(w: *mut abi::WorldCtx, id: u64, kind:
     }
 }
 
-unsafe extern "C" fn entity_kind_size(kind: Str, out: *mut [f32; 3]) -> u32 {
+unsafe extern "C" fn entity_kind_size(kind: Str, out: *mut abi::EntitySize) -> u32 {
     unsafe {
         let g = &content().game;
         let Some(&k) = g.entity_names.get(kind.as_str()) else { return 0 };
         let e = &g.entities[k as usize];
-        *out = [e.width, e.height, e.eye];
+        *out = e.size();
         1
     }
 }

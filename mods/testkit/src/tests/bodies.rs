@@ -445,7 +445,7 @@ pub async fn skiff_blocks(t: T) -> R {
     let st = t.state();
     let o = t.c().entity(id).map_or([0.0; 3], |e| e.pos);
     let spot = [o[0] - 0.5 + 0.98, o[1] + 1.0, o[2] - 0.5 + 0.5 - 1.0];
-    let eye = [st.shown[0], st.shown[1] + t.c().entity(0).map_or(1.62, |e| e.size[2] as f64), st.shown[2]];
+    let eye = [st.shown[0], st.shown[1] + t.c().entity(0).map_or(1.62, |e| e.size.eye as f64), st.shown[2]];
     let (dx, dy, dz) = (spot[0] - eye[0], spot[1] - eye[1], spot[2] - eye[2]);
     t.c()
         .set_look((-dx).atan2(-dz).to_degrees() as f32, dy.atan2((dx * dx + dz * dz).sqrt()).to_degrees() as f32);

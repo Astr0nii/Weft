@@ -203,7 +203,7 @@ pub fn watch_player(range: f64) -> impl Goal {
 pub fn melee() -> impl Goal {
     move |w: &World, id: u64, st: &EntityState| {
         let reach = w.attribute(id, &crate::attribute::ENTITY_REACH);
-        if let Some((p, _)) = find_target(w, id, st, reach + st.size[0] as f64 + 2.0) {
+        if let Some((p, _)) = find_target(w, id, st, reach + st.size.width as f64 + 2.0) {
             if w.in_reach(id, p) {
                 w.attack(id, p);
             }
@@ -217,10 +217,10 @@ pub fn melee_within(reach: f64) -> impl Goal {
     move |w: &World, id: u64, st: &EntityState| {
         if let Some((p, ps)) = find_target(w, id, st, reach + 2.0) {
             let eye = st.eye();
-            let half = ps.size[0] as f64 / 2.0;
+            let half = ps.size.width as f64 / 2.0;
             let near = [
                 eye[0].clamp(ps.pos[0] - half, ps.pos[0] + half),
-                eye[1].clamp(ps.pos[1], ps.pos[1] + ps.size[1] as f64),
+                eye[1].clamp(ps.pos[1], ps.pos[1] + ps.size.height as f64),
                 eye[2].clamp(ps.pos[2] - half, ps.pos[2] + half),
             ];
             let d2: f64 = (0..3).map(|a| (near[a] - eye[a]).powi(2)).sum();

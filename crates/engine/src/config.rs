@@ -406,8 +406,6 @@ pub fn engine_configs(keys: &[(String, String)]) -> Vec<ConfigDef> {
         ConfigDef::number("core:brightness", ck::FLOAT, 0.5, 0.0, 1.0, 0.0),
         ConfigDef::number("core:debug_groups", ck::INT, u32::MAX as f64, 0.0, u32::MAX as f64, 1.0),
         ConfigDef::number("core:invert_y", ck::BOOL, 0.0, 0.0, 1.0, 0.0),
-        ConfigDef::number("core:toggle_sneak", ck::BOOL, 0.0, 0.0, 1.0, 0.0),
-        ConfigDef::number("core:toggle_sprint", ck::BOOL, 0.0, 0.0, 1.0, 0.0),
         ConfigDef::text("core:debug_lines", ""),
         ConfigDef::text("core:name", &user),
         ConfigDef::text("core:relays", ""),

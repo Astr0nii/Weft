@@ -599,10 +599,7 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
                 flying: cl.player.flying as u32,
                 health: cl.me.health,
                 max_health: cl.max_health,
-                size: {
-                    let (hw, h, eye) = cl.player.dims();
-                    [hw as f32 * 2.0, h as f32, eye as f32]
-                },
+                size: cl.player.dims().size(),
                 ..Default::default()
             };
             *out = state;
@@ -628,10 +625,7 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
                             })
                             .unwrap_or(attr.default) as f32
                     },
-                    size: {
-                        let (hw, h, eye) = e.dims();
-                        [hw as f32 * 2.0, h as f32, eye as f32]
-                    },
+                    size: e.dims().size(),
                     ..Default::default()
                 };
                 *out = state;

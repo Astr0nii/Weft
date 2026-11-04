@@ -154,7 +154,7 @@ pub struct Dim {
 }
 
 fn physics_body<'a>(c: &Content, e: &Entity, built: Option<&'a Box<Space>>, delta: DVec3) -> Option<crate::physics::Body<'a>> {
-    let (hw, h, _) = e.dims(c);
+    let crate::physics::Dims { half_width: hw, height: h, .. } = e.dims(c);
     let built = built.map(|s| &**s as &dyn crate::physics::Blocks);
     crate::physics::Body::of(e.id, &c.game.entities[e.kind as usize], e.pos, (hw, h), delta, built)
 }
@@ -661,7 +661,8 @@ impl Dim {
             let items: Vec<u8> = e.worn.iter().flat_map(|i| i.to_le_bytes()).collect();
             put(comps, worn, &items);
             let mut sh = [0u8; 16];
-            for (i, v) in e.size.unwrap_or([0.0; 3]).iter().enumerate() {
+            let size = e.size.unwrap_or_default();
+            for (i, v) in [size.width, size.height, size.eye].into_iter().enumerate() {
                 sh[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
             }
             sh[12..].copy_from_slice(&e.look.unwrap_or(u32::MAX).to_le_bytes());
@@ -1438,7 +1439,7 @@ impl Dim {
         let hit = self.damage(c, target, dmg, attacker, damage::ATTACK);
         if hit && crit {
             if let Some(t) = self.entities.get(target) {
-                let (pos, id) = (t.pos + DVec3::Y * (t.dims(c).1 * 0.5), self.id);
+                let (pos, id) = (t.pos + DVec3::Y * (t.dims(c).height * 0.5), self.id);
                 self.events.push(DimEvent::Particles {
                     dim: id,
                     burst: abi::ParticleBurst {
@@ -1512,7 +1513,7 @@ impl Dim {
     /// one (`comp::SPLASH`, `comp::BUBBLE`).
     pub fn fall_effects(&mut self, c: &'static Content, id: u64, fell: Option<f32>, splash: bool) {
         let Some(e) = self.entities.get(id) else { return };
-        let (pos, w) = (e.pos, e.dims(c).0 as f32);
+        let (pos, w) = (e.pos, e.dims(c).half_width as f32);
         let mut bursts = Vec::new();
         let safe = super::entity::SAFE_FALL;
         let under = self

@@ -1232,7 +1232,7 @@ impl EntityRenderer {
                 continue;
             }
             if e.burning && !own_view {
-                let (hw, h, _) = e.dims();
+                let crate::physics::Dims { half_width: hw, height: h, .. } = e.dims();
                 let from = boxes.len();
                 fire_boxes(&mut boxes, textures, base, hw as f32 * 2.0, h as f32, cam.yaw, e.age);
                 light_boxes(&mut boxes, from, FULL_LIGHT);

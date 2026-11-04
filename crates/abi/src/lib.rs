@@ -1561,6 +1561,15 @@ defaults!(PoseDesc {
     bob: 1
 });
 
+/// An entity's box in blocks: as wide as `width` both ways, `height` tall, its eyes `eye` up.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EntitySize {
+    pub width: f32,
+    pub height: f32,
+    pub eye: f32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct EntityState {
@@ -1587,14 +1596,14 @@ pub struct EntityState {
     /// Distance walked this tick (hunger exhaustion); read on a client, the limb swing (0
     /// standing, 1 running) in the frame of what it stands on.
     pub moved: f32,
-    /// Box width and height and eye height now (crouching and `set_size` included).
-    pub size: [f32; 3],
+    /// Its box now (crouching and `set_size` included).
+    pub size: EntitySize,
 }
 
 impl EntityState {
     /// Where its eyes are.
     pub fn eye(&self) -> [f64; 3] {
-        [self.pos[0], self.pos[1] + self.size[2] as f64, self.pos[2]]
+        [self.pos[0], self.pos[1] + self.size.eye as f64, self.pos[2]]
     }
 
     pub fn crouching(&self) -> bool {
@@ -1625,7 +1634,7 @@ defaults!(EntityState {
     age: 0,
     fall_distance: 0.0,
     moved: 0.0,
-    size: [0.0; 3],
+    size: EntitySize { width: 0.0, height: 0.0, eye: 0.0 },
 });
 
 impl Default for EntityState {
@@ -2787,12 +2796,12 @@ pub struct Host {
     pub reg_words: unsafe extern "C" fn(reg: *mut Registrar, set: Str, words: Str),
     /// An entity's own box (width, height, eye height) instead of its kind's; `width` <= 0 goes
     /// back to the kind's. Its pose (crouching, swimming) scales whichever applies.
-    pub set_entity_size: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, width: f32, height: f32, eye: f32),
+    pub set_entity_size: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, size: EntitySize),
     /// Draws an entity with another kind's model, texture and animations (it stays what it is);
     /// empty goes back to its own.
     pub set_entity_appearance: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, kind: Str),
     /// Writes a kind's box (width, height, eye height); 0 if there is no such kind.
-    pub entity_kind_size: unsafe extern "C" fn(kind: Str, out: *mut [f32; 3]) -> u32,
+    pub entity_kind_size: unsafe extern "C" fn(kind: Str, out: *mut EntitySize) -> u32,
     /// Takes blocks of the world out into a new moving body: `center` is its block
     /// (0, 0, 0), they keep their places around that. Returns its entity, 0 if nothing came.
     pub body_from_blocks: unsafe extern "C" fn(world: *mut WorldCtx, center: *const [i32; 3], cells: *const [i32; 3], count: usize) -> u64,

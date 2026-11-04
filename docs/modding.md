@@ -309,7 +309,7 @@ Stacks with different data don't merge. `r.stack_component` says a component exi
 - `not_in_world()`: nothing but what it holds, components or slots. Nothing sees, hits or saves it, and it stays until removed
 
 Moving platforms: `solid()`, `kinematic()`, `carry_height(..)`, and
-`blocks(&DECK)` with a template (`r.template(&DECK).fill("base:oak_planks", from, to)`) makes a flying structure players can build on; its box is what the blocks fill, no `size` needed. `EntityState.size` is an entity's box and eye height as they are now (crouching and `w.set_size` included), so `st.pos[1] + st.size[2]` is where its eyes are.
+`blocks(&DECK)` with a template (`r.template(&DECK).fill("base:oak_planks", from, to)`) makes a flying structure players can build on; its box is what the blocks fill, no `size` needed. `EntityState.size` is an entity's box and eye height as they are now (crouching and `w.set_size` included), so `st.pos[1] + st.size.eye` is where its eyes are (or just `st.eye()`).
 
 ### Machines
 `r.machine(&BLOCK, &MENU)` is block + block entity + inventory + menu + screen in one go.\
@@ -466,7 +466,7 @@ Inside any callback you get a `World` (`w`):
 - Bind values instead of copying them: `ui.progress_bind("energy", style, |c| ..)`, `ui.text_bind(..)`
 
 Also:
-- key bindings, one declaration each: `r.key(&DASH, "R").on_press_client(|c| ..)` on the client (a chord works too: `"ctrl+R"`, `"shift+alt+F6"`; the player rebinds them the same way in Controls), or `.on_press_server(|p| ..)` and the engine carries the press to the server for you. They only act while the world has the input, typing in the chat doesn't trigger them. `c.key_pressed(&DASH)` / `c.key_held(&DASH)` read them in a frame hook; the engine's keys are `keys::*`
+- key bindings, one declaration each: `r.key(&DASH, "R").on_press_client(|c| ..)` on the client (a chord works too: `"ctrl+R"`, `"shift+alt+F6"`; up to two bindings, each held, `toggle` or a `double` tap: `"ctrl+R, double KeyR"`; the player rebinds them the same way in Controls), or `.on_press_server(|p| ..)` and the engine carries the press to the server for you. They only act while the world has the input, typing in the chat doesn't trigger them. `c.key_pressed(&DASH)` / `c.key_held(&DASH)` read them in a frame hook; the engine's keys are `keys::*`
 - messages both ways on a typed channel: `static BOOST: Channel<Boost> = Channel::named("boost")` with a `value!` struct (or `String`, `Vec<u8>`, `()`), `r.packet(&BOOST, |p, b| ..)` on the server (`p.reply(&OTHER, &v)` answers), `r.client_packet` on the client, `w.send` / `client.send`. Both ends must declare the same type, the engine checks it like event values
 - `client.run_command("/tp ~ ~5 ~")` runs a command as the player and `client.command_reply(id)` gives its answer to your code instead of the chat (testkit drives its server half like this)
 - frame hooks (`r.client_frame`)
