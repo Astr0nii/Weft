@@ -105,14 +105,15 @@ impl Command<'_> {
             .map(|v| v.float)
     }
 
-    /// Words, text, player names, and the full names of items, blocks, entities, dimensions.
+    /// Words, text, player names, and the full names of items, blocks, entities, dimensions,
+    /// attributes.
     pub fn text(&self, name: &str) -> Option<&str> {
         self.value(name)
             .filter(|v| v.kind == cv::TEXT || v.kind == cv::ID)
             .map(|v| unsafe { v.text.as_str() })
     }
 
-    /// Registry id of an item, block state, entity kind or dimension parameter.
+    /// Registry id of an item, block state, entity kind, dimension or attribute parameter.
     pub fn id(&self, name: &str) -> Option<u32> {
         self.value(name)
             .filter(|v| v.kind == cv::ID)
