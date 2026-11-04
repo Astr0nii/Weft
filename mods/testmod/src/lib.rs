@@ -66,6 +66,7 @@ static SCORCHED: Biome = Biome::named("scorched");
 static REGOLITH: Block = Block::named("regolith");
 static BASALT: Block = Block::named("basalt");
 static TIN_ORE: Block = Block::named("tin_ore");
+static BASALT_TIN_ORE: Block = Block::named("basalt_tin_ore");
 static TIN_INGOT: Item = Item::named("tin_ingot");
 static ANOTHER_STICK: Item = Item::named("another_stick");
 static POUCH: Item = Item::named("pouch");
@@ -271,6 +272,12 @@ fn init(r: &mut Registry) {
         .mineable("pickaxe")
         .needs_tool_level(0)
         .tag("ores/tin");
+    r.block(&BASALT_TIN_ORE)
+        .texture("tin_ore")
+        .hardness(3.5)
+        .mineable("pickaxe")
+        .needs_tool_level(0)
+        .tag("ores/tin");
     r.item(&TIN_INGOT).tag("ingots/tin");
 
     r.item(&ANOTHER_STICK).tag("stick");
@@ -354,12 +361,15 @@ fn init(r: &mut Registry) {
             .named("needle"),
         );
     r.decoration(boulders).dimension(&OVERWORLD);
-    // One ore for every dimension: base's stone and Mars' basalt both take it.
+    // One ore for every dimension: base's stone takes it, and where a vein meets Mars' basalt
+    // it goes on as basalt tin ore. Half of what would touch a cave is left out.
     r.ore(&TIN_ORE)
         .y(-64, 90)
         .veins(5)
         .vein_size(8)
-        .replace("#stone_ore_replaceables");
+        .replace("#stone_ore_replaceables")
+        .replace_with("basalt", &BASALT_TIN_ORE)
+        .exposed(0.5);
     r.terrain(&MARS)
         .stone("basalt")
         .base_height(60.0)

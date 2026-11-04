@@ -18,6 +18,7 @@ testmod.energy = {color:key}{0}{/} / {1} ЭЕ
 block.testmod.regolith = Реголит
 block.testmod.basalt = Красный базальт
 block.testmod.tin_ore = Оловянная руда
+block.testmod.basalt_tin_ore = Базальтовая оловянная руда
 item.testmod.tin_ingot = Оловянный слиток
 item.testmod.another_stick = Палка по-круче
 block.testmod.oil = Нефть

@@ -4748,6 +4748,15 @@ pub struct OreDesc {
     pub height: u32,
     /// `TRAPEZOID`: blocks in the middle where it is at its most.
     pub plateau: i32,
+    /// Space separated `from>ore` pairs: where the vein meets `from` (a block or `#tag`), that
+    /// ore block goes instead of `block` (granite iron ore in granite).
+    pub replace_with: Str,
+    /// Share of its blocks left out where they would touch air (vanilla's ores in caves); NaN:
+    /// as it was (0 for a new ore).
+    pub exposed: f32,
+    /// 1: adds to the ore of `block` registered already (another mod's) instead of a new one:
+    /// `replace`, `replace_with` and `exposed` given here go onto it.
+    pub edit: u32,
 }
 defaults!(OreDesc {
     dimensions: Str::EMPTY,
@@ -4761,7 +4770,10 @@ defaults!(OreDesc {
     shape: vein_shape::WALK,
     shape_size: [0.0; 2],
     height: height_curve::UNIFORM,
-    plateau: 0
+    plateau: 0,
+    replace_with: Str::EMPTY,
+    exposed: f32::NAN,
+    edit: 0,
 });
 
 pub mod vein_shape {

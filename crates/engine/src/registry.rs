@@ -1303,6 +1303,10 @@ pub struct RawOre {
     pub shape_size: [f32; 2],
     pub height: u32,
     pub plateau: i32,
+    /// (block or `#tag` met, ore block put there).
+    pub replace_with: Vec<(String, String)>,
+    pub exposed: f32,
+    pub edit: bool,
 }
 
 pub struct RawScatter {

@@ -322,23 +322,29 @@ fn place_ores(
                                     c.components
                                         .has(comps::BIOME, biomes[(l.z * 16 + l.x) as usize] as u32, t)
                                 });
-                                if biome_ok
-                                    && ore
-                                        .replace
-                                        .binary_search(&c.states[blocks[i] as usize].block)
-                                        .is_ok()
-                                {
-                                    blocks[i] = ore.state;
+                                let was = c.states[blocks[i] as usize].block;
+                                // Vanilla's ores in caves: some of what would touch air is left out.
+                                let bare = ore.exposed > 0.0
+                                    && crate::world::DIRS.iter().any(|d| {
+                                        let n = l + *d;
+                                        n.cmpge(IVec3::ZERO).all()
+                                            && n.cmplt(IVec3::splat(16)).all()
+                                            && blocks[local_index(n)] == crate::content::AIR
+                                    })
+                                    && weft_noise::unit(hash(h, p.x as i64, p.y as i64, p.z as i64)) < ore.exposed as f64;
+                                if biome_ok && !bare && ore.replace.binary_search(&was).is_ok() {
+                                    let s = ore.state_in(was);
+                                    blocks[i] = s;
                                     placed = true;
+                                    if !present.contains(&s) {
+                                        present.push(s);
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-        }
-        if placed && !present.contains(&ore.state) {
-            present.push(ore.state);
         }
     }
     placed

@@ -2098,6 +2098,15 @@ unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {
                 .shape_size
                 .map(|v| if v.is_finite() { v.clamp(0.0, 15.0) } else { 0.0 }),
             height: d.height,
+            replace_with: d
+                .replace_with
+                .as_str()
+                .split_whitespace()
+                .filter_map(|p| p.split_once('>'))
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect(),
+            exposed: d.exposed,
+            edit: d.edit != 0,
             plateau: d.plateau.max(0),
         });
     }

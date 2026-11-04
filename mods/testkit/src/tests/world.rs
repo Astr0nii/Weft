@@ -1212,6 +1212,16 @@ pub async fn worldgen(t: T) -> R {
         .collect();
     t.check(n[0] + n[1] > 0, "trees grow in base's forest on Mars");
     t.check(n[2] > 0, "the forest brings its grass to Mars");
+    // Testmod's tin goes on as its basalt variant where a vein meets Mars' basalt.
+    let ores = t
+        .op("census 20 testmod:tin_ore,testmod:basalt_tin_ore")
+        .await?;
+    t.note(format!("Mars ores: {ores}"));
+    let n: Vec<u32> = ores
+        .split_whitespace()
+        .filter_map(|e| e.rsplit_once('=')?.1.parse().ok())
+        .collect();
+    t.check(n[0] == 0 && n[1] > 0, "tin in basalt is basalt tin ore");
     Ok(())
 }
 

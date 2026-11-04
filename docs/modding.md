@@ -346,7 +346,7 @@ Every liquid is also an item of its name and tags, its count in millibuckets: wh
 - weather is a value too: `r.weather(&ACID_RAIN).darkness(0.5).gray(0.8, 0.6, 0.9).sound("mymod:weather.acid").duration(2400, 6000).weight(1)` (`falls`, `lightning`, `shelters_from_sun`, or the whole `look`), and a dimension lists what comes there after clear weather, `.weathers(&[&weathers::RAIN, &weathers::THUNDER, &ACID_RAIN])`. `w.weather()` is the id now (`w.raining()`, `w.thundering()` read its flags), `w.set_weather(&weathers::THUNDER, ticks)` changes it, and `r.on(&WEATHER_TICK, ..)` hears every tick of it for acid on whoever stands outside. What falls is the biome's: `.precipitation(&ASH)` after `r.precipitation(&ASH)`, `.snows()` for snow
 - `r.sky_body(&DIM, &OBJECT)`, `r.sky_stars`, `r.sky_dome`, `r.sky_remove` for what is in its sky, the sun and the moon included
 - `r.terrain(dim)` for its terrain, yours or another mod's
-- `r.ore(block)`, in every dimension whose stone it replaces (`.dimension(..)` limits it)
+- `r.ore(block)`, in every dimension whose stone it replaces (`.dimension(..)` limits it). `.replace_with("#granite", &GRANITE_IRON_ORE)` makes the same vein go on as another block where it meets granite, so veins don't stop at stone borders; `.exposed(0.5)` leaves out half of what would touch a cave, as vanilla's gold and diamonds. `r.ore_edit(&IRON_ORE)` adds those to another mod's ore
 - `r.scatter(&TREES)` for trees and the like, `r.decoration(f)` for plants, in every dimension
 - `r.template(&T)` (layers and keys, or `fill` boxes) for a shape of blocks, then `r.structure(dim, &T)`, `.body(&T)` on an entity or `w.place_template(&T, pos)`
 - `r.natural_spawn(entity).biome("#animals").light(7, 15)`

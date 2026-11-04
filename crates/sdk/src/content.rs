@@ -996,10 +996,20 @@ impl Registry {
             dimensions: String::new(),
             block: block.name().to_string(),
             replace: String::new(),
+            replace_with: String::new(),
             biome: String::new(),
             desc: abi::OreDesc::DEFAULT,
             _p: PhantomData,
         }
+    }
+
+    /// Adds to an ore registered already, another mod's: what `replace`, `replace_with` and
+    /// `exposed` give goes onto it, the rest stays (`r.ore_edit(&IRON_ORE).replace_with("#granite",
+    /// &GRANITE_IRON_ORE)`).
+    pub fn ore_edit<'a>(&'a mut self, block: &Block) -> OreBuilder<'a> {
+        let mut b = self.ore(block);
+        b.desc.edit = 1;
+        b
     }
 
     /// A template placed now and then on the surface of `dimension` (the structure is called
@@ -3062,6 +3072,7 @@ pub struct OreBuilder<'a> {
     dimensions: String,
     block: String,
     replace: String,
+    replace_with: String,
     biome: String,
     desc: abi::OreDesc,
     _p: PhantomData<&'a mut Registry>,
@@ -3107,13 +3118,27 @@ impl OreBuilder<'_> {
         self.desc.blocks = n;
         self
     }
-    /// Blocks or `#tags` the ore may replace, space separated.
+    /// Blocks or `#tags` the ore may replace, space separated; again for more.
     pub fn replace(mut self, blocks: &str) -> Self {
-        let names: Vec<String> = blocks
-            .split_whitespace()
-            .map(|b| if b.starts_with('#') { b.to_string() } else { qualify(self.ns, b) })
-            .collect();
-        self.replace = names.join(" ");
+        for b in blocks.split_whitespace() {
+            let name = if b.starts_with('#') { b.to_string() } else { qualify(self.ns, b) };
+            self.replace = format!("{} {name}", self.replace);
+        }
+        self
+    }
+    /// Where the vein meets `blocks` (names or `#tags`), `ore` goes there instead: one vein
+    /// through stone and granite, iron ore in one and granite iron ore in the other.
+    pub fn replace_with(mut self, blocks: &str, ore: &Block) -> Self {
+        for b in blocks.split_whitespace() {
+            let name = if b.starts_with('#') { b.to_string() } else { qualify(self.ns, b) };
+            self.replace_with = format!("{} {name}>{}", self.replace_with, ore.name());
+        }
+        self
+    }
+    /// Share of its blocks left out where they would touch air, as vanilla's in caves (0.5 for
+    /// most of them).
+    pub fn exposed(mut self, share: f32) -> Self {
+        self.desc.exposed = share;
         self
     }
 }
@@ -3127,6 +3152,7 @@ impl Drop for OreBuilder<'_> {
             dimensions: Str::new(&self.dimensions),
             block: Str::new(&self.block),
             replace: Str::new(&self.replace),
+            replace_with: Str::new(&self.replace_with),
             biome: Str::new(&self.biome),
             ..self.desc
         };

@@ -601,9 +601,20 @@ pub struct OreDef {
     /// `abi::height_curve`.
     pub height: u32,
     pub plateau: i32,
+    /// (block id met, ore state put there instead of `state`), sorted.
+    pub variants: Vec<(u32, u32)>,
+    /// Share of blocks left out next to air.
+    pub exposed: f32,
 }
 
 impl OreDef {
+    /// The state it puts where `block` was.
+    pub fn state_in(&self, block: u32) -> u32 {
+        self.variants
+            .binary_search_by_key(&block, |v| v.0)
+            .map_or(self.state, |i| self.variants[i].1)
+    }
+
     /// How far from its start a vein may put blocks: a cube at most, so the cubes around one
     /// are all there is to look at.
     pub fn reach(&self) -> i32 {
@@ -3069,6 +3080,25 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
         .flat_map(|g| std::mem::take(&mut g.ores))
         .collect();
     raw_ores.sort_by(|a, b| a.block.cmp(&b.block));
+    // Edits go onto the ore they name, in mod order.
+    let mut merged: Vec<crate::registry::RawOre> = Vec::new();
+    for o in raw_ores {
+        if o.edit {
+            match merged.iter_mut().find(|m| m.block == o.block) {
+                Some(m) => {
+                    m.replace.extend(o.replace);
+                    m.replace_with.extend(o.replace_with);
+                    if o.exposed.is_finite() {
+                        m.exposed = o.exposed;
+                    }
+                }
+                None => errors.push(format!("ore edit {}: no such ore", o.block)),
+            }
+        } else {
+            merged.push(o);
+        }
+    }
+    let raw_ores = merged;
     let mut ore_defs: Vec<(Vec<usize>, OreDef)> = Vec::new();
     for o in raw_ores {
         let Some(&b) = block_names.get(&o.block) else {
@@ -3083,6 +3113,24 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
                 Err(e) => errors.push(format!("ore {}: replace: {e}", o.block)),
             }
         }
+        let mut variants: Vec<(u32, u32)> = Vec::new();
+        for (from, ore) in &o.replace_with {
+            let Some(&ob) = block_names.get(ore) else {
+                errors.push(format!("ore {}: replace_with: unknown block {ore}", o.block));
+                continue;
+            };
+            match crate::refs::Ref::parse(from).and_then(|r| crate::refs::blocks(&r, block_names, block_defs, components, state_count)) {
+                Ok(b) => {
+                    for b in b {
+                        replace.push(b);
+                        variants.push((b, block_defs[ob as usize].first_state));
+                    }
+                }
+                Err(e) => errors.push(format!("ore {}: replace_with: {e}", o.block)),
+            }
+        }
+        variants.sort_unstable_by_key(|v| v.0);
+        variants.dedup_by_key(|v| v.0);
         replace.sort_unstable();
         replace.dedup();
         let salt = crate::registry::name_hash(&o.block);
@@ -3111,6 +3159,8 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
                 shape_size: o.shape_size,
                 height: o.height,
                 plateau: o.plateau,
+                variants,
+                exposed: if o.exposed.is_finite() { o.exposed.clamp(0.0, 1.0) } else { 0.0 },
             },
         ));
     }

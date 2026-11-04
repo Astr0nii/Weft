@@ -123,18 +123,20 @@ pub fn register(r: &mut Registry) {
     // Underground (3D): whole cubes deep under the surface; spiders like it there.
     r.biome(&DEEP_CAVES).tag("cave").tag("dark");
 
-    for (ore, max_y, veins, size) in [
-        (&COAL_ORE, 128, 8, 12),
-        (&IRON_ORE, 64, 6, 8),
-        (&GOLD_ORE, 32, 2, 7),
-        (&crate::redstone::REDSTONE_ORE, 16, 4, 8),
-        (&DIAMOND_ORE, 16, 1, 6),
+    // The last: share left out where it would touch a cave, vanilla's.
+    for (ore, max_y, veins, size, exposed) in [
+        (&COAL_ORE, 128, 8, 12, 0.0),
+        (&IRON_ORE, 64, 6, 8, 0.0),
+        (&GOLD_ORE, 32, 2, 7, 0.5),
+        (&crate::redstone::REDSTONE_ORE, 16, 4, 8, 0.0),
+        (&DIAMOND_ORE, 16, 1, 6, 0.5),
     ] {
         r.ore(ore)
             .y(i32::MIN, max_y)
             .veins(veins)
             .vein_size(size)
-            .replace("#stone_ore_replaceables");
+            .replace("#stone_ore_replaceables")
+            .exposed(exposed);
     }
 
     // The overworld's shape. Other mods add to it by these names (`base:desert`, `base:mountains`).
