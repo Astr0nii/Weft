@@ -382,9 +382,13 @@ impl Screen for Chat {
             ctx.requests.push(Request::Rebuild);
         };
         match key {
+            // Shift+Tab goes back through the list.
             Key::Code(KeyCode::Tab) if n > 0 => {
+                let back = ctx.input.mods() & crate::input::SHIFT != 0;
                 if st.stem.is_some() {
-                    st.selected = (st.selected + 1) % n;
+                    st.selected = if back { (st.selected + n - 1) % n } else { (st.selected + 1) % n };
+                } else if back {
+                    st.selected = n - 1;
                 }
                 take(&mut st, ctx);
                 true

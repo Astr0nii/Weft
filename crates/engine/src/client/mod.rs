@@ -679,7 +679,7 @@ impl Client {
             joined: false,
             player_id: 0,
             sprint_stopped: false,
-            me: ClientEntity { health: 20.0, ..ClientEntity::new(content().game.player_kind, DVec3::ZERO, 0.0, 0.0, ItemStack::EMPTY) },
+            me: ClientEntity::new(content().game.player_kind, DVec3::ZERO, 0.0, 0.0, ItemStack::EMPTY),
             accum: 0.0,
             tick_accum: 0.0,
             body_clock: 0.0,
@@ -791,6 +791,11 @@ impl Client {
 
     pub fn leave(&mut self) {
         self.conn.send(ToServer::Leave);
+    }
+
+    /// The player's health, full until the server has said.
+    pub fn health(&self) -> f32 {
+        if self.me.health.is_nan() { self.max_health } else { self.me.health }
     }
 
     fn attribute(&self, id: u32) -> f32 {
