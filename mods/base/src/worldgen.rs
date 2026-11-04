@@ -276,7 +276,7 @@ pub fn grow_tree(w: World, p: [i32; 3]) {
     });
 }
 
-/// Plants, after the terrain and trees filled the cube.
+/// Plants and Clay after the terrain and trees filled the cube.
 fn decorate(g: &mut Gen) {
     let Some(&cols) = g.columns() else { return };
     let seed = g.seed();
@@ -288,6 +288,7 @@ fn decorate(g: &mut Gen) {
     if oy > max_h + 16 || oy + 15 < min_h - 1 {
         return;
     }
+    // Plant decorations
     for z in 0..16usize {
         for x in 0..16usize {
             let col = &cols[z * 16 + x];
@@ -340,6 +341,34 @@ fn decorate(g: &mut Gen) {
                 let n = 1 + (h >> 40) % 3;
                 for k in 0..n as usize {
                     g.set(x, y + k, z, SUGAR_CANE.id());
+                }
+            }
+        }
+    }
+    // Clay patches in shallow water (rivers, lakes, ocean shores), replacing the top blocks in
+    // bodies of water
+    for z in 0..16usize {
+        for x in 0..16usize {
+            let col = &cols[z * 16 + x];
+            // Make sure we only generate clay patches in shallower waters
+            if col.height >= SEA || col.height < SEA - 6 {
+                continue;
+            }
+            let y = col.height - oy;
+            if !(0..16).contains(&y) {
+                continue;
+            }
+            let y = y as usize;
+            let (wx, wz) = (ox + x as i32, oz + z as i32);
+            // Clay patch size based on noise scale
+            let clay = Fields { seed }.fbm(0xC1A7, wx * 16, wz * 16, 18 * 16, 3);
+            // Threshold for clay generation
+            if clay > ONE / 4 {
+                let surface = g.get(x, y, z);
+                if SAND.is(surface)
+                    || GRAVEL.is(surface)
+                {
+                    g.set(x, y, z, CLAY.id());
                 }
             }
         }
