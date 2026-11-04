@@ -5,8 +5,8 @@ Base builds its overworld with the functions described here, and other mods can 
 
 ## Note
 Examples to copy from:
-- `mods/testmod/src/lib.rs`: Mars, a planet made only from terrain presets, `void`, an island written by hand, and a biome, a rock needle and boulders added to base's overworld
-- `mods/testmod/src/looks.rs`: an obelisk structure standing in another mod's desert
+- `mods/testmod/src/lib.rs`: Mars, a planet made only from terrain presets, `void`, an island written by hand, and a biome, a rock needle and boulders added to Mars as from outside
+- `mods/testmod/src/looks.rs`: an obelisk structure standing in the dry parts of Mars
 - `mods/base/src/worldgen.rs`: the overworld, with biomes, caves, trees and flowers
 
 ## Quick links
@@ -45,9 +45,9 @@ r.template(&OBELISK)
     .layer(&["sss", "sss", "sss"])
     .layer(&["   ", " g ", "   "])
     .key('s', "base:sandstone").key('g', "glow_crystal");
-r.structure(&OVERWORLD, &OBELISK).spacing(128).chance(0.5).biome("#dry").buried(1);
+r.structure(&MARS, &OBELISK).spacing(128).chance(0.5).biome("#dry").buried(1);
 ```
-That's a sandstone obelisk with a glowing crystal inside, in every dry biome (so deserts) of base's overworld.
+That's a sandstone obelisk with a glowing crystal inside, in every dry biome of Mars.
 
 Where and how often it appears is set by four calls. `spacing(n)` gives one chance per `n` x `n` blocks and `chance(c)` says how likely that chance is to be taken, while `biome(tag)` limits it to biomes with that tag and `buried(n)` puts the bottom layer that many blocks into the ground. A key can also name a block state, like `furnace[facing=east,lit=true]`.
 
@@ -156,7 +156,7 @@ Each preset is `Feature::new` of a formula from `shape`, and yours is the same: 
 - `ramp(from, to)`: 0 at `from`, 1 at `to`, straight between; `from == to` is a step
 - `e.at(x, z)`: the same formula somewhere else, `noise.at(Expr::x() + warp, Expr::z())` bends it
 
-Testmod's needle, a column of rock 90 blocks high at one spot of base's overworld, is 1 within 3 blocks of it times 90:
+Testmod's needle, a column of rock 90 blocks high at one spot of Mars, is 1 within 3 blocks of it times 90:
 
 ```rust
 let far = (Expr::x() - Expr::blocks(1000.0)).abs().max((Expr::z() - Expr::blocks(1000.0)).abs());

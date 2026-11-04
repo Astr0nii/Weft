@@ -1867,7 +1867,8 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// Replaces the block of this name registered by a mod this one depends on. Without
+    /// Replaces the block of this name registered by a mod this one depends on, or by this mod
+    /// itself (one part of a mod reworking another's block, a config's version). Without
     /// `.states(...)` it keeps that block's states (shapes, textures, support, placement and other
     /// callbacks it does not set itself), with the components this builder sets on top.
     pub fn replacing(mut self) -> Self {

@@ -2183,9 +2183,9 @@ fn merge_registrars(mods: &[ModMeta], regs: Vec<RawRegistrar>, errors: &mut Vec<
 fn apply_replacements(mods: &[ModMeta], mut blocks: Vec<(ModId, RawBlock)>, items: &mut Vec<(ModId, RawItem)>) -> Vec<(ModId, RawBlock)> {
     blocks.par_sort_by(|a, b| a.1.name.cmp(&b.1.name).then(a.1.replace.cmp(&b.1.replace)));
     items.par_sort_by(|a, b| a.1.name.cmp(&b.1.name));
-    // A replacement wins over the original if its mod depends on the original's mod. The
+    // A replacement wins over the original if its mod is the original's or depends on it. The
     // original's item stays (it already points at the block by name).
-    let depends = |m: ModId, on: ModId| mods[m.0 as usize].deps.contains(&mods[on.0 as usize].id);
+    let depends = |m: ModId, on: ModId| m == on || mods[m.0 as usize].deps.contains(&mods[on.0 as usize].id);
     let mut kept: Vec<(ModId, RawBlock)> = Vec::with_capacity(blocks.len());
     for (owner, b) in blocks {
         match kept.last() {

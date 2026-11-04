@@ -459,7 +459,7 @@ pub async fn model_bones(t: T) -> R {
     let again = (tip - back).length_squared();
     t.check(again < 0.01, format!("for as long as it said so: {tip:?} and {back:?}"));
     // Put away, it goes down as the model it is, not as its sprite.
-    t.op("put me 0 base:apple").await?;
+    t.op("put me 0 testmod:apple").await?;
     t.secs(1.0).await?;
     t.check(at("fruit").is_some(), "an apple in hand is its model");
     t.c().input_key("Digit2", 0.0);
@@ -1558,8 +1558,8 @@ pub async fn hitboxes(t: T) -> R {
     Ok(())
 }
 
-/// Food: eating raises hunger, and another mod's component on the base game's food plus the
-/// engine's `item_used` event heals.
+/// Food: eating raises hunger, the base game's way for another mod's food too, and that mod's
+/// component on it plus the engine's `item_used` event heals.
 pub async fn food(t: T) -> R {
     t.flat().await?;
     let s = t.state();
@@ -1572,7 +1572,7 @@ pub async fn food(t: T) -> R {
         .await?;
     let before = t.state().health;
     t.cmd("/feed 10").await?;
-    t.op("put me 0 cooked_beef 3").await?;
+    t.op("put me 0 testmod:apple 3").await?;
     t.c().select_slot(0);
     t.until("hunger synced", Duration::from_secs(5), |t| {
         t.c()
@@ -1589,7 +1589,7 @@ pub async fn food(t: T) -> R {
         t.c()
             .view()
             .component(&HUNGER)
-            .is_some_and(|h| h.food == 18.0)
+            .is_some_and(|h| h.food == 14.0)
     })
     .await?;
     t.until("healed", Duration::from_secs(3), |t| t.state().health >= before + 2.0)

@@ -1,12 +1,13 @@
 //! Stairs, slabs and vertical slabs of any block, by tag or name: `r.stairs("#has_shapes")`. Each
 //! block found gets its own, with its textures and what it is like to mine, also from mods this
-//! one has never heard of. `.tab(..)` and the rest go on what they return, as on any block.
+//! one has never heard of. `.tab(..)` and the rest go on what they return, as on any block. And a
+//! torch's shape for any torch (`torch_state`).
 
-use crate::Dir;
 use crate::abi::BlockPos;
 use crate::component::Tag;
-use crate::content::{Block, BlockBuilder, Place, Props, Registry, WithComponents};
+use crate::content::{Block, BlockBuilder, Place, Props, Registry, State, WithComponents};
 use crate::world::state_prop;
+use crate::{Dir, Facings};
 
 /// How neighboring stairs find each other: every stair has it.
 static STAIRS: Tag = Tag::named("stairs");
@@ -176,5 +177,31 @@ impl Registry {
                     props.set("side", "double");
                 }
             })
+    }
+}
+
+/// Torches stand on the floor or hang on a wall, facing away from it.
+pub const TORCH_FACINGS: Facings = Facings::only(&[Dir::Up, Dir::North, Dir::East, Dir::South, Dir::West]);
+
+/// A stick's picture on a post, as a torch's: the middle of it from the side, its tip on top.
+pub fn stick_faces(t: &str) -> [(&str, [f32; 4]); 6] {
+    let side = [7.0, 6.0, 9.0, 16.0];
+    [(t, side), (t, side), (t, [7.0, 13.0, 9.0, 15.0]), (t, [7.0, 6.0, 9.0, 8.0]), (t, side), (t, side)]
+}
+
+/// A torch facing `d`: on the floor (`Up`), hanging (`Down`), or leaning out from the wall behind
+/// it, by vanilla's numbers.
+pub fn torch_state<'a>(d: Dir, s: State<'a>, texture: &str) -> State<'a> {
+    let faces = stick_faces(texture);
+    let s = s.texture(texture).needs(d.opposite(), "");
+    if d.horizontal() {
+        s.oriented(crate::signal::Orientation::leaning(d.opposite()))
+            .model_box_faces([-1.0, 3.5, 7.0], [1.0, 13.5, 9.0], faces)
+            .tilted([0.0, 3.5, 8.0], Dir::South, -22.5)
+            .hitbox([0.0, 3.0, 5.5], [5.0, 13.0, 10.5])
+    } else {
+        s.oriented(crate::signal::Orientation::new(d.opposite(), Dir::North))
+            .model_box_faces([7.0, 0.0, 7.0], [9.0, 10.0, 9.0], faces)
+            .hitbox([6.0, 0.0, 6.0], [10.0, 10.0, 10.0])
     }
 }

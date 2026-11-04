@@ -579,15 +579,19 @@ pub async fn crater_saved(t: T) -> R {
 
 use base_api::OVERWORLD;
 
-/// Testmod edits base's overworld from outside: a biome of its own tried before base's desert,
-/// with its own surface and boulders, and a rock needle from a feature written in testmod.
+/// Testmod edits Mars as from outside: a biome tried before its dust, with its own surface
+/// and boulders, and a rock needle from a feature written in testmod.
 pub async fn foreign_terrain(t: T) -> R {
+    static MARS: Dimension = Dimension::named("testmod:mars");
     t.world(5).await?;
     t.op("mode spectator").await?;
+    t.cmd("/dim testmod:mars").await?;
+    t.until("on Mars", Duration::from_secs(20), |t| t.state().dim == MARS.id())
+        .await?;
     let seed = 5;
     // testmod's `NEEDLE`.
-    let needle = OVERWORLD.column(seed, 1000, 1000);
-    let beside = OVERWORLD.column(seed, 1010, 1000);
+    let needle = MARS.column(seed, 1000, 1000);
+    let beside = MARS.column(seed, 1010, 1000);
     t.note(format!("needle {} beside {}", needle.height, beside.height));
     t.check(needle.height - beside.height > 60, "the needle rises from the land around it");
     t.cmd(&format!("/tp 1000 {} 1000", needle.height + 3))
@@ -599,18 +603,18 @@ pub async fn foreign_terrain(t: T) -> R {
 
     let grid: Vec<(i32, i32, Column)> = (-80..80)
         .flat_map(|i| (-80..80).map(move |j| (i * 64, j * 64)))
-        .map(|(x, z)| (x, z, OVERWORLD.column(seed, x, z)))
+        .map(|(x, z)| (x, z, MARS.column(seed, x, z)))
         .collect();
     let count = |name: &str| {
         grid.iter()
             .filter(|g| name_of(ek::BIOME, g.2.biome) == name)
             .count()
     };
-    t.note(format!("of {} columns: desert {}, scorched {}", grid.len(), count("base:desert"), count("testmod:scorched")));
+    t.note(format!("of {} columns: dust {}, scorched {}", grid.len(), count("testmod:dust"), count("testmod:scorched")));
     let scorched = grid
         .into_iter()
-        .find(|&(x, z, c)| name_of(ek::BIOME, c.biome) == "testmod:scorched" && !OVERWORLD.surface_carved(seed, x, z));
-    let (x, z, c) = scorched.ok_or("no scorched biome in base's overworld")?;
+        .find(|&(x, z, c)| name_of(ek::BIOME, c.biome) == "testmod:scorched" && !MARS.surface_carved(seed, x, z));
+    let (x, z, c) = scorched.ok_or("no scorched biome on Mars")?;
     t.note(format!("scorched at {x} {z}, height {}", c.height));
     t.cmd(&format!("/tp {x} {} {z}", c.height + 3)).await?;
     t.secs(0.5).await?;
@@ -1100,37 +1104,12 @@ pub async fn dimensions(t: T) -> R {
     Ok(())
 }
 
-/// World generation from data, sampled with seed 5: deep caves (an underground biome) with the
-/// test mod's glow crystals only there, birches in birch forests and oaks on the plains, and
-/// structures where the engine says they are.
+/// World generation from data, sampled with seed 5: birches in birch forests and oaks on the
+/// plains, structures where the engine says they are, and on Mars the test mod's glow crystals
+/// only in its crystal caves (an underground biome).
 pub async fn worldgen(t: T) -> R {
     t.world(5).await?;
     t.op("mode spectator").await?;
-    let (mut caves, mut inside, mut outside) = (0, 0, 0);
-    for (i, x) in [0, 200].into_iter().enumerate() {
-        t.cmd(&format!("/tp {x} -60 {}", i * 150)).await?;
-        t.secs(0.5).await?;
-        t.loaded().await?;
-        let survey = t.op("survey 12").await?;
-        let (biomes, crystals) = survey
-            .split_once(" | crystals ")
-            .ok_or(format!("survey: {survey}"))?;
-        caves += biomes
-            .split_whitespace()
-            .filter_map(|e| e.strip_prefix("base:deep_caves="))
-            .filter_map(|n| n.parse::<u32>().ok())
-            .sum::<u32>();
-        let n: Vec<u32> = crystals
-            .split_whitespace()
-            .filter_map(|n| n.parse().ok())
-            .collect();
-        inside += n.first().copied().unwrap_or(0);
-        outside += n.get(1).copied().unwrap_or(0);
-        t.note(format!("{x}: {survey}"));
-    }
-    t.check(caves > 0, "deep caves were found underground");
-    t.check(inside > 0, format!("glow crystals grow in deep caves ({inside})"));
-    t.check_eq(outside, 0, "glow crystals outside deep caves");
 
     // Birch forests and plains of seed 5, found from the generator's columns: the middle of
     // a patch of the biome, above ground.
@@ -1172,7 +1151,6 @@ pub async fn worldgen(t: T) -> R {
         t.check_eq(n[2] + n[3], 0, &format!("the test mod's glowing plants are not generated ({x} {z})"));
     }
 
-    t.check(t.op("structure testmod:obelisk 3000").await? != "none", "another mod's obelisks are in the world too");
     // The same template placed by code.
     let f = t.feet();
     t.check_eq(
@@ -1212,6 +1190,32 @@ pub async fn worldgen(t: T) -> R {
         .collect();
     t.check(n[0] + n[1] > 0, "trees grow in base's forest on Mars");
     t.check(n[2] > 0, "the forest brings its grass to Mars");
+    t.check(t.op("structure testmod:obelisk 3000").await? != "none", "obelisks on Mars");
+    let (mut caves, mut inside, mut outside) = (0, 0, 0);
+    for (i, x) in [0, 200].into_iter().enumerate() {
+        t.cmd(&format!("/tp {x} -40 {}", i * 150)).await?;
+        t.secs(0.5).await?;
+        t.loaded().await?;
+        let survey = t.op("survey 12").await?;
+        let (biomes, crystals) = survey
+            .split_once(" | crystals ")
+            .ok_or(format!("survey: {survey}"))?;
+        caves += biomes
+            .split_whitespace()
+            .filter_map(|e| e.strip_prefix("testmod:crystal_caves="))
+            .filter_map(|n| n.parse::<u32>().ok())
+            .sum::<u32>();
+        let n: Vec<u32> = crystals
+            .split_whitespace()
+            .filter_map(|n| n.parse().ok())
+            .collect();
+        inside += n.first().copied().unwrap_or(0);
+        outside += n.get(1).copied().unwrap_or(0);
+        t.note(format!("{x}: {survey}"));
+    }
+    t.check(caves > 0, "crystal caves were found under Mars");
+    t.check(inside > 0, format!("glow crystals grow in crystal caves ({inside})"));
+    t.check_eq(outside, 0, "glow crystals outside crystal caves");
     // Testmod's tin goes on as its basalt variant where a vein meets Mars' basalt.
     let ores = t
         .op("census 20 testmod:tin_ore,testmod:basalt_tin_ore")

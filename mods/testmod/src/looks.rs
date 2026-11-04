@@ -76,20 +76,21 @@ pub fn register(r: &mut Registry) {
         .color(0xFF2020FF, 0xFF2020FF)
         .fullbright();
 
-    // A glowing obelisk here and there in the deserts of another mod's world.
+    // A glowing obelisk here and there in the dry parts of Mars.
     static OBELISK: Template = Template::named("obelisk");
     let mut obelisk = r.template(&OBELISK).layer(&["sss", "sss", "sss"]);
     for _ in 0..4 {
         obelisk = obelisk.layer(&["   ", " g ", "   "]);
     }
     drop(obelisk.key('s', "base:sandstone").key('g', "glow_crystal"));
-    r.structure(&crate::OVERWORLD, &OBELISK)
+    r.structure(&crate::MARS, &OBELISK)
         .spacing(128)
         .chance(0.5)
         .biome("#dry")
         .buried(1);
-    // Glow crystals grow only in the overworld's deep caves (an underground biome).
+    // Glow crystals grow only in Mars' crystal caves (an underground biome).
     r.ore(&GLOW_CRYSTAL)
+        .dimension(&crate::MARS)
         .veins(3)
         .vein_size(6)
         .replace("#stone_ore_replaceables")
@@ -209,8 +210,8 @@ pub fn register(r: &mut Registry) {
     // A metre of katana in the hand, on the ground and in a slot; much less of one once damaged.
     r.set_model(&GREATSWORD, "katana");
     r.item_model_for_stack(&GREATSWORD, |s| (s.wear() > 0).then_some("testmod:katana_broken"));
-    // Food with models of its own, by one line and a file each: what has none stays as it was.
-    r.set_model("#food", "food/{name}");
+    // Its apple has a model of its own, by one line and a file.
+    r.set_model(&crate::APPLE, "food/apple");
     // Its chain hangs and sways by itself: its bones are called `hanging_..`.
     static LANTERN: Item = Item::named("lantern");
     r.item(&LANTERN).max_stack(1);

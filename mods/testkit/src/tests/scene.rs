@@ -362,8 +362,9 @@ async fn loot_tables(t: &T) -> R {
     let zombie = counts(&t.op("loot base:zombie 2000").await?);
     let flesh = zombie.get("base:rotten_flesh").copied().unwrap_or(0);
     t.check((1700..=2300).contains(&flesh), format!("rotten flesh from 2000 zombies: {flesh} (0..2 each)"));
-    let tin = zombie.get("testmod:tin_ingot").copied().unwrap_or(0);
-    t.check((50..=160).contains(&tin), format!("tin from 2000 zombies through testmod's modifier: {tin} (5%: 100)"));
+    let steed = counts(&t.op("loot testmod:steed 2000").await?);
+    let tin = steed.get("testmod:tin_ingot").copied().unwrap_or(0);
+    t.check((50..=160).contains(&tin), format!("tin from 2000 steeds through testmod's modifier: {tin} (5%: 100)"));
     let pig = counts(&t.op("loot base:pig 200 fire").await?);
     t.check(
         pig.contains_key("base:cooked_porkchop") && !pig.contains_key("base:porkchop"),

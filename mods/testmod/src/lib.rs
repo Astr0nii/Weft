@@ -4,12 +4,14 @@
 //! - a block with its own screen (energy bar bound to synced menu data),
 //! - reads the base game's data (fuel values, smelting recipes) through `base_api`, checked when
 //!   it compiles and again by the engine when the mods load,
-//! - replaces a base game block (torches burn blue),
-//! - adds its own dimensions, one of them a planet built only from terrain presets,
-//! - adds an ore to the base game's overworld,
+//! - leaves the base game's own things as they are: what it shows off on base's systems it does
+//!   on things of its own,
+//! - replaces a block the way another mod would (its own torch, burning blue),
+//! - adds its own dimensions, one of them a planet built only from terrain presets and edited
+//!   as from outside (a biome, a rock needle, boulders, obelisks, ores with variants),
 //! - adds a liquid (oil) whose bucket is the base game's bucket filled, without bucket code,
-//! - makes cooked meat heal: its own component on the base game's items plus the base game's
-//!   `eaten` event, and lets zombies drop tin through a loot modifier,
+//! - makes its apple heal: eaten the base game's way, healing by its own component and the
+//!   engine's `item_used` event, and lets its steed drop tin through a loot modifier,
 //! - shows off particles, shaders, text effects and glow masks (`looks`).
 
 mod bodies;
@@ -46,23 +48,24 @@ static OIL_BUCKET: Item = Item::named("oil_bucket");
 static MACHINES: SoundCategory = SoundCategory::named("machines");
 static ENERGY_GIZMOS: GizmoGroup = GizmoGroup::named("energy");
 // The base game's things, by name: no code dependency on it.
-pub use base_api::OVERWORLD;
 static BUCKET: Item = Item::named("base:bucket");
-static ZOMBIE: EntityKind = EntityKind::named("base:zombie");
 use base_api::tabs::{BUILDING as BASE_BUILDING, TOOLS as BASE_TOOLS};
-static SOUL_TORCH: Block = Block::named("base:torch");
+static TORCH: Block = Block::named("torch");
 static GENERATOR_MENU: Menu = Menu::named("generator");
 static FURNACE_MENU: Menu = Menu::named("electric_furnace");
 static BATTERY_MENU: Menu = Menu::named("battery");
 static TANK_MENU: Menu = Menu::named("tank");
 use base_api::SMELTING as SMELTING_RECIPES;
 static VOID: Dimension = Dimension::named("void");
-static MARS: Dimension = Dimension::named("mars");
+pub static MARS: Dimension = Dimension::named("mars");
 static MARS_SUN: SkyObject = SkyObject::named("mars_sun");
 static PHOBOS: SkyObject = SkyObject::named("phobos");
 static DEIMOS: SkyObject = SkyObject::named("deimos");
 static DUST: Biome = Biome::named("dust");
 static SCORCHED: Biome = Biome::named("scorched");
+static CRYSTAL_CAVES: Biome = Biome::named("crystal_caves");
+/// An apple of its own, eaten the base game's way, with a model of its own and healing.
+pub static APPLE: Item = Item::named("apple");
 static REGOLITH: Block = Block::named("regolith");
 static BASALT: Block = Block::named("basalt");
 static TIN_ORE: Block = Block::named("tin_ore");
@@ -155,10 +158,20 @@ fn init(r: &mut Registry) {
         .hardness(1.0)
         .tab(&BASE_BUILDING);
 
-    // Same name as the base game's torch: the base game's handle, item and recipes give this.
-    // It keeps the base torch's states (floor and walls) and placement, only its texture and
-    // light are its own.
-    r.block(&SOUL_TORCH)
+    // A torch of its own, shaped like base's; then the same block replaced, as another mod would
+    // replace it: the handle, item and recipes give the replacement, which keeps the states
+    // (floor and walls) and placement and has only its texture and light of its own.
+    r.block(&TORCH)
+        .sound_group("base:block.wood")
+        .ambient_particles(&["core:flame", "core:smoke"])
+        .facing(shapes::TORCH_FACINGS, Toward::Face)
+        .states(|p, s| shapes::torch_state(p.facing(), s, "base:torch"))
+        .item_texture("base:torch")
+        .not_solid()
+        .light_rgb(15, 13, 10)
+        .hardness(0.0)
+        .tab(&BASE_BUILDING);
+    r.block(&TORCH)
         .replacing()
         .retexture("base:torch", "soul_torch")
         .light_rgb(3, 9, 35)
@@ -335,8 +348,17 @@ fn init(r: &mut Registry) {
         .surface("regolith", "regolith", 3)
         .tint(&tints::GRASS, 0xb5764a)
         .tint(&tints::FOLIAGE, 0x9a6040)
-        .tint(&tints::WATER, 0x8a5a40);
-    // The hottest, driest part of base's deserts.
+        .tint(&tints::WATER, 0x8a5a40)
+        .tag("dry");
+    // Deep under Mars, where its glow crystals grow.
+    r.biome(&CRYSTAL_CAVES).tag("cave").tag("dark");
+    r.item(&APPLE)
+        .set(&base_api::FOOD, base_api::Food { hunger: 4, saturation: 2.4 })
+        .use_ticks(32)
+        .on_use(base_api::eat)
+        .set(&FOOD_HEAL, 2.0)
+        .tab(&BASE_TOOLS);
+    // The hottest, driest part of Mars.
     r.biome(&SCORCHED)
         .temperature(0.4..)
         .humidity(..-0.1)
@@ -345,25 +367,10 @@ fn init(r: &mut Registry) {
         .tint(&tints::FOLIAGE, 0xae7a3a)
         .tag("dry")
         .tag("hot");
-    // Base's overworld, edited from outside: a biome in the hottest, driest deserts, a rock needle
-    // from a feature of this mod's own, and boulders on the new biome.
-    r.terrain(&OVERWORLD)
-        .biome_before("base:desert", BiomeRule::new("scorched"))
-        .feature(
-            // 90 blocks up within 3 of the spot: a step where the distance passes 3.
-            Feature::new(
-                ((Expr::x() - Expr::blocks(NEEDLE[0] as f64)).abs())
-                    .max((Expr::z() - Expr::blocks(NEEDLE[1] as f64)).abs())
-                    .ramp_blocks(3.0, 3.0)
-                    .not()
-                    * Expr::blocks(90.0),
-            )
-            .named("needle"),
-        );
-    r.decoration(boulders).dimension(&OVERWORLD);
-    // One ore for every dimension: base's stone takes it, and where a vein meets Mars' basalt
-    // it goes on as basalt tin ore. Half of what would touch a cave is left out.
+    // Mars' tin: where a vein meets basalt it goes on as basalt tin ore. Half of what would touch
+    // a cave is left out.
     r.ore(&TIN_ORE)
+        .dimension(&MARS)
         .y(-64, 90)
         .veins(5)
         .vein_size(8)
@@ -385,7 +392,24 @@ fn init(r: &mut Registry) {
                 .temperature(..-0.3)
                 .humidity(..),
         )
-        .biome(BiomeRule::new("dust"));
+        .biome(BiomeRule::new("dust"))
+        .cave_biome("crystal_caves", 24, 96.0, 0.0);
+    // Mars edited as from outside: a biome tried before its dust, a rock needle from a feature
+    // of this mod's own, and boulders on the new biome.
+    r.terrain(&MARS)
+        .biome_before("testmod:dust", BiomeRule::new("scorched"))
+        .feature(
+            // 90 blocks up within 3 of the spot: a step where the distance passes 3.
+            Feature::new(
+                ((Expr::x() - Expr::blocks(NEEDLE[0] as f64)).abs())
+                    .max((Expr::z() - Expr::blocks(NEEDLE[1] as f64)).abs())
+                    .ramp_blocks(3.0, 3.0)
+                    .not()
+                    * Expr::blocks(90.0),
+            )
+            .named("needle"),
+        );
+    r.decoration(boulders).dimension(&MARS);
     r.dimension(&MARS)
         .spawn_point(|seed| [8, MARS.column(seed, 8, 8).height + 1, 8].into())
         .height_cubes(-4, 12)
@@ -422,8 +446,8 @@ fn init(r: &mut Registry) {
         .tag("oil")
         .bucket(&OIL_BUCKET, &BUCKET, &BASE_TOOLS);
 
-    // Healing food without touching the base game's eating code: any used item that heals.
-    r.set("#cooked_meat/*", &FOOD_HEAL, 2.0);
+    // Healing food without touching the base game's eating code: any used item that heals (its
+    // apple).
     r.on(&actions::USE_ITEM, |b| {
         let w = b.world();
         for e in b.iter() {
@@ -432,7 +456,7 @@ fn init(r: &mut Registry) {
             }
         }
     });
-    r.loot_edit(&ZOMBIE)
+    r.loot_edit(&crate::riding::STEED)
         .add_pool(Pool::new().when(Cond::Chance(0.05)).item("tin_ingot"));
 
     r.command("tagbench", "[millions:int]", tag_bench);
@@ -767,10 +791,10 @@ fn recipe_showcase(r: &mut Registry) {
         .input_amounts(&[1, 1000]);
 }
 
-/// Where the needle stands in base's overworld.
+/// Where the needle stands on Mars.
 pub const NEEDLE: [i32; 2] = [1000, 1000];
 
-/// Basalt boulders on the scorched biome of base's overworld.
+/// Basalt boulders on Mars' scorched biome.
 fn boulders(g: &mut Gen) {
     let Some(&cols) = g.columns() else { return };
     let BlockPos { x: ox, y: oy, z: oz } = g.origin();

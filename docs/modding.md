@@ -369,7 +369,7 @@ and other mods' tables without replacing them: `r.loot_edit(&ZOMBIE).add_pool(..
 
 ### Replacing something of another mod
 Register their handle (`Block::named("base:torch")`) with `.replacing()`.\
-Their handle, item and recipes now point at yours. testmod does it with the torch.Only for a different shape: to change a property (hardness, light ...) `r.set` it.
+Their handle, item and recipes now point at yours. A mod may also replace its own block (testmod does it with its torch). Only for a different shape: to change a property (hardness, light ...) `r.set` it.
 
 ## Hooking into the game
 There are four mechanisms, try them in this order:
