@@ -54,7 +54,7 @@ pub async fn events_batched(t: T) -> R {
 pub async fn vetoes_and_timers(t: T) -> R {
     t.flat().await?;
     t.cmd("/rule testkit:no_hurt 1").await?;
-    t.cmd("/kill").await?;
+    t.cmd("/clear @s").await?;
     t.secs(0.3).await?;
     t.check(!t.flag(weft_sdk::client::client_flags::DEAD), "actions::HURT denied, the player lives");
     t.cmd("/rule testkit:no_hurt 0").await?;

@@ -1616,7 +1616,7 @@ impl Dim {
             .copied()
             .flatten()
             .is_some_and(|t| c.components.has(crate::components::ENTITY, e.kind, t));
-        // The void gets through everything, or /kill would silently fail.
+        // The void gets through everything, or /clear would silently fail.
         if immune || (!def.has(df::PIERCES_INVULNERABLE) && (k.is(ef::INVULNERABLE) || e.mode.invulnerable())) {
             return false;
         }

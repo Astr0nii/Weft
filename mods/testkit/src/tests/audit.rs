@@ -54,7 +54,7 @@ pub async fn death_is_a_state(t: T) -> R {
     t.click_ui("slot:36", 0);
     t.until("on the cursor", Duration::from_secs(2), |t| t.c().inventory_slot(0).is_empty())
         .await?;
-    t.cmd("/kill").await?;
+    t.cmd("/clear @s").await?;
     t.screen("core:death").await?;
     t.secs(5.0).await?;
     t.check_eq(t.op("health").await?, "0".to_string(), "still dead after a hunger pulse");

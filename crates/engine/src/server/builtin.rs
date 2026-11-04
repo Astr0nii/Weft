@@ -62,7 +62,7 @@ pub const COMMANDS: &[(&str, &str, Handler, u32)] = &[
     ("give", "<who:targets> <item:item> [count:int] | <item:item> [count:int]", give, p::GAME_MASTER),
     ("time", "set <time:time> | add <ticks:int> | query", time, p::GAME_MASTER),
     ("summon", "<entity:entity> [pos:pos] [count:int]", summon, p::GAME_MASTER),
-    ("kill", "[who:targets]", kill, p::GAME_MASTER),
+    ("clear", "[who:targets] | [item:item]", clear, p::GAME_MASTER),
     ("setblock", "<pos:pos> <block:block>", set_block, p::GAME_MASTER),
     ("insert", "<pos:pos> <item:item> [count:int]", insert, p::GAME_MASTER),
     ("block", "<pos:pos>", block, p::GAME_MASTER),
@@ -275,15 +275,34 @@ fn summon(s: &mut Server, x: &Ctx) -> Vec<Msg> {
     say("summon.done", vec![int(count), text(&kname)])
 }
 
-fn kill(s: &mut Server, x: &Ctx) -> Vec<Msg> {
+/// `/clear <targets>`: kills them. `/clear [item]`: empties the player's own inventory, or only
+/// the stacks of `item`.
+fn clear(s: &mut Server, x: &Ctx) -> Vec<Msg> {
     let c = x.c;
-    let who = x.targets(s, "who");
-    for &(d, id) in &who {
-        if let Some(r) = s.dims[d as usize].entity_region(id) {
-            r.damage(c, id, f32::MAX, 0, damage::VOID);
+    if x.a.get("who").is_some() {
+        let who = x.targets(s, "who");
+        for &(d, id) in &who {
+            if let Some(r) = s.dims[d as usize].entity_region(id) {
+                r.damage(c, id, f32::MAX, 0, damage::VOID);
+            }
+        }
+        return say("clear.killed", vec![int(who.len())]);
+    }
+    let (d, id) = x.me;
+    let filter = x.a.id("item");
+    let mut total: u64 = 0;
+    if let Some(r) = s.dims[d as usize].entity_region(id) {
+        let slots = r.entities.inventories.get(&id).map_or(0, Vec::len) as u32;
+        for slot in 0..slots {
+            let stack = r.entities.inventory_slot(id, slot);
+            if stack.is_empty() || filter.is_some_and(|item| item != stack.item) {
+                continue;
+            }
+            total += u64::from(stack.count);
+            r.entities.set_slot(id, slot, ItemStack::EMPTY);
         }
     }
-    say("kill.done", vec![int(who.len())])
+    say("clear.done", vec![int(total)])
 }
 
 fn set_block(s: &mut Server, x: &Ctx) -> Vec<Msg> {

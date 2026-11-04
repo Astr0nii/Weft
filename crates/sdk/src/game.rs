@@ -902,7 +902,7 @@ impl EntityBuilder<'_> {
         self.flags = (self.flags | entity_flags::SOLID) & !entity_flags::PUSHABLE;
         self
     }
-    /// Takes no damage (no hurt flash, health stays); `/kill` and the void still remove it.
+    /// Takes no damage (no hurt flash, health stays); `/clear` and the void still remove it.
     pub fn invulnerable(mut self) -> Self {
         self.flags |= entity_flags::INVULNERABLE;
         self
