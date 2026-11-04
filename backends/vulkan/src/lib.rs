@@ -813,6 +813,16 @@ impl VulkanBackend {
         }
     }
 
+    /// Frees `d` once the GPU is done with it: after the next wait on this slot's fence. That wait
+    /// must not be one still to come for the submission before (a destroy between `end_frame` and
+    /// `begin_frame`, like an asset reload's): it would only cover the frame two back, and the one
+    /// just submitted could still be drawing with `d` when it goes (a GPU fault, which hangs the
+    /// whole screen on Apple GPUs). So the slot is made ready first, as uploads do.
+    fn defer(&mut self, d: Deferred) {
+        self.ensure_slot_ready();
+        self.frames[self.slot].deferred.push(d);
+    }
+
     fn destroy_now(&mut self, d: Deferred) {
         unsafe {
             match d {
@@ -1195,9 +1205,7 @@ impl Backend for VulkanBackend {
 
     fn destroy_buffer(&mut self, buffer: BufferId) {
         if let Some(b) = self.buffers.remove(buffer.0) {
-            self.frames[self.slot]
-                .deferred
-                .push(Deferred::Buffer(b.raw, b.alloc));
+            self.defer(Deferred::Buffer(b.raw, b.alloc));
         }
     }
 
@@ -1296,9 +1304,7 @@ impl Backend for VulkanBackend {
 
     fn destroy_texture(&mut self, texture: TextureId) {
         if let Some(t) = self.textures.remove(texture.0) {
-            self.frames[self.slot]
-                .deferred
-                .push(Deferred::Texture(t.image, t.view, t.alloc, t.index));
+            self.defer(Deferred::Texture(t.image, t.view, t.alloc, t.index));
         }
     }
 
@@ -1438,9 +1444,7 @@ impl Backend for VulkanBackend {
 
     fn destroy_pipeline(&mut self, pipeline: PipelineId) {
         if let Some(p) = self.pipelines.remove(pipeline.0) {
-            self.frames[self.slot]
-                .deferred
-                .push(Deferred::Pipeline(p.raw, p.layout, p.set_layout));
+            self.defer(Deferred::Pipeline(p.raw, p.layout, p.set_layout));
         }
     }
 
@@ -1802,9 +1806,7 @@ impl Backend for VulkanBackend {
                 px.swap(0, 2);
             }
         }
-        self.frames[self.slot]
-            .deferred
-            .push(Deferred::Buffer(buf, alloc));
+        self.defer(Deferred::Buffer(buf, alloc));
         Some(Capture { width: w, height: h, rgba })
     }
 
