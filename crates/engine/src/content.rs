@@ -2721,6 +2721,7 @@ fn declare_components(
         (crate::registry::LOOPING_ACTION, "bytes"),
         (crate::registry::EFFECT, "bytes"),
         (crate::registry::FORCED_POSE, "bytes"),
+        (crate::registry::RIDING, "bytes"),
         (crate::registry::SHAPE, "bytes"),
         (crate::registry::SIMULATED, "u64"),
     ] {

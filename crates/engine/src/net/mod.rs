@@ -401,6 +401,10 @@ messages! {
         /// (the client shows bodies behind the server; only the relative position agrees).
         /// `jumped`: it jumped since the last one.
         Move { pos: DVec3, yaw: f32, pitch: f32, on_ground: bool, pose: crate::world::Pose, sprint: bool, flying: bool, jumped: bool, frame: Option<(u64, DVec3)> },
+        /// Where the mount the player steers went this tick (its client moves it).
+        MountMove { pos: DVec3, yaw: f32, vel: DVec3, on_ground: bool },
+        /// Off what the player rides (`core:dismount`).
+        Dismount,
         /// Started mining this block (`frame` and `part` like `Break`'s).
         StartBreak { pos: IVec3, part: u32, frame: u64 },
         /// Stopped mining without finishing.

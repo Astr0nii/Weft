@@ -1,0 +1,22 @@
+//! Something to ride: a steed with a saddle that steers and a pillion seat that doesn't. It
+//! walks where its rider looks and jumps higher the longer jump is held; its falls hurt its
+//! riders, and nobody builds from its back.
+
+use weft_sdk::*;
+
+pub static STEED: EntityKind = EntityKind::named("steed");
+
+pub fn register(r: &mut Registry) {
+    r.entity(&STEED)
+        .size(0.9, 1.0)
+        .walk_speed(4.0)
+        .max_health(30.0)
+        .seat(Seat::at([0.0, 1.0, 0.1]).steers())
+        .seat(Seat::at([0.0, 1.0, -0.5]).exit(Exit::offset([0.0, 0.0, -1.5])))
+        .steering(steer::walk_look(1.6).and(steer::charged_jump(12.0, 10)))
+        .rider_rules(RiderRules::new().builds(|_, _, _| false))
+        .riders_fall()
+        .rideable();
+    // The idol's model, a little bigger than a pig.
+    r.set_model(&STEED, "testmod:idol");
+}

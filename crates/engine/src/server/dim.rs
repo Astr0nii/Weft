@@ -649,7 +649,7 @@ impl Dim {
     /// Writes the fields clients show (`registry::HEALTH` ...) into their synced components when
     /// they differ, so they travel like mods' components. Absent ones stay absent while default.
     pub fn mirror_fields(&mut self, c: &Content) {
-        let [health, burning, worn, shape, held, off_held, using, ..] = c.game.field_comps;
+        let [health, burning, worn, shape, held, off_held, using, .., riding] = c.game.field_comps;
         let maxes: Vec<(u64, f32)> = self
             .entities
             .list
@@ -685,6 +685,13 @@ impl Dim {
             }
             sh[12..].copy_from_slice(&e.look.unwrap_or(u32::MAX).to_le_bytes());
             put(comps, shape, &sh);
+            let rides: Vec<u8> = e.vehicle.map_or(Vec::new(), |(m, seat)| {
+                m.to_le_bytes()
+                    .into_iter()
+                    .chain((seat as u32).to_le_bytes())
+                    .collect()
+            });
+            put(comps, riding, &rides);
             if e.player {
                 let inv = inventories.get(&e.id).map_or(&[][..], |i| &i[..]);
                 let item = crate::content::in_main_hand(c, inv, e.selected);
@@ -2203,6 +2210,7 @@ impl Dim {
         }
         self.fire_timers(c);
         self.navigation(c);
+        self.steer_mounts(c);
 
         let gravity = c.dims[self.id as usize].gravity as f64;
         let day = self.daylight(c);
@@ -2340,10 +2348,12 @@ impl Dim {
         for (i, push) in super::entity::soft_push(c, &self.entities.list) {
             self.entities.list[i].vel += push;
         }
+        self.seat_riders(c);
         for &TickHit { id, land, fell, splash, burn, hot, crushed } in &hits {
             self.fall_effects(c, id, fell, splash);
             if let Some(amount) = land {
                 self.damage(c, id, amount, 0, damage::FALL);
+                self.riders_fall(c, id, amount);
             }
             if crushed {
                 self.damage(c, id, 1.0, 0, damage::CRUSH);

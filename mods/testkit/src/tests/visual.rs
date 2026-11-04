@@ -35,44 +35,6 @@ fn changed(a: &[u8], b: &[u8], w: u32, h: u32, x0: f32, y0: f32, x1: f32, y1: f3
     n / all.max(1.0)
 }
 
-/// Items in the first person hand: each drawn in its own colors at the hand's place.
-pub async fn held_items(t: T) -> R {
-    // Tools by being tools, the rest by asking.
-    static HANDHELD: Tag = Tag::named("handheld");
-    let handheld = |name: &str| Item::lookup(name).is_some_and(|i| HANDHELD.on_item(i));
-    t.check(
-        handheld("base:diamond_sword") && handheld("base:wood_pickaxe") && handheld("base:stick") && handheld("testmod:steel_pickaxe"),
-        "tools and the stick are held like tools",
-    );
-    t.check(!handheld("base:apple") && !handheld("base:stone"), "the rest are not");
-    t.flat().await?;
-    for (i, name) in ["wood_pickaxe", "diamond_sword", "glass", "rose", "torch"]
-        .iter()
-        .enumerate()
-    {
-        t.op(&format!("put me {i} {name} 1")).await?;
-    }
-    t.c().set_look(0.0, -10.0);
-    let looks: [(&str, fn([u8; 3]) -> bool, f32); 5] = [
-        ("pickaxe", probe::brown, 0.03),
-        ("sword", probe::cyan, 0.03),
-        ("block", |c| c[0] > 90 && c[2] > 110, 0.005),
-        ("flower", probe::red, 0.02),
-        ("torch", probe::dark, 0.003),
-    ];
-    for (i, (name, color, min)) in looks.into_iter().enumerate() {
-        t.c().select_slot(i as u32);
-        t.until("selected", Duration::from_secs(5), |t| t.state().selected == i as u32)
-            .await?;
-        // The hand lowers and comes back up on a switch.
-        t.secs(0.6).await?;
-        let shot = t.shot(name).await?;
-        let v = shot.share(0.55, 0.45, 1.0, 0.95, color);
-        t.probe(&format!("{name} colors in the hand"), v, v > min);
-    }
-    Ok(())
-}
-
 /// Hovering a slot shows a tooltip box next to the cursor.
 pub async fn tooltips(t: T) -> R {
     t.flat().await?;

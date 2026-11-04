@@ -119,6 +119,7 @@ schema_values!(
     abi::Pickup,
     abi::ItemUsed,
     abi::Interaction,
+    abi::Mounting,
     abi::DimensionChange,
     abi::WeatherTick
 );
@@ -205,6 +206,9 @@ pub mod actions {
     pub static PICKUP_ITEM: Action<abi::Pickup> = Action::named(a::PICKUP_ITEM);
     pub static ENTER_DIMENSION: Action<abi::DimensionChange> = Action::named(a::ENTER_DIMENSION);
     pub static CHAT: Action<abi::ChatMessage> = Action::named(a::CHAT);
+    /// Asked with `entity` the rider, `other` the mount, `amount` the seat.
+    pub static MOUNT: Action<abi::Mounting> = Action::named(a::MOUNT);
+    pub static DISMOUNT: Action<abi::Mounting> = Action::named(a::DISMOUNT);
 }
 
 /// Every value of one event queued during a tick, in the order they happened.

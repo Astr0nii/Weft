@@ -23,6 +23,7 @@ use player_file::save_player;
 pub mod menu;
 pub mod persist;
 pub mod regions;
+pub mod riding;
 pub mod structure;
 pub mod terrain;
 pub mod visibility;

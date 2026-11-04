@@ -76,6 +76,10 @@ pub struct Entity {
     pub last_hurt: f32,
     /// Where it walks to by itself (`Host::navigate`).
     pub nav: Option<super::path::Nav>,
+    /// What it rides and in which seat (`riding.rs`).
+    pub vehicle: Option<(u64, u8)>,
+    /// The player whose client moves it, sitting in a seat that steers.
+    pub driver: Option<u64>,
 }
 
 /// How a body goes, besides its speed, which is what `Free` goes by.
@@ -142,6 +146,8 @@ impl Entity {
             in_hand: ItemStack::EMPTY,
             last_hurt: 0.0,
             nav: None,
+            vehicle: None,
+            driver: None,
         }
     }
 
@@ -356,7 +362,16 @@ impl Entities {
         if let Some(inv) = inv {
             self.inventories.insert(id, inv);
         }
+        let riding = c.game.field_comps[11];
         for (k, v) in comps {
+            // A loaded rider sits where it sat.
+            if k == riding && v.len() >= 12 {
+                let mount = u64::from_le_bytes(v[..8].try_into().unwrap());
+                let seat = u32::from_le_bytes(v[8..12].try_into().unwrap()) as u8;
+                if let Some(e) = self.get_mut(id).filter(|e| e.vehicle.is_none()) {
+                    e.vehicle = Some((mount, seat));
+                }
+            }
             self.comps.insert((id, k), v);
         }
     }
@@ -610,7 +625,8 @@ pub fn step(c: &Content, e: &mut Entity, gravity: f64, block: &impl physics::Cel
     const DT: f64 = crate::world::TICK;
     let k = &c.game.entities[e.kind as usize];
     let mut out = Stepped { land: None, crushed: false };
-    if e.anchor.is_some() {
+    // A rider goes where its seat is, a mount a player steers where that player's client says.
+    if e.anchor.is_some() || e.vehicle.is_some() || e.driver.is_some() {
         return out;
     }
     if (k.is(ef::KINEMATIC) && !e.falls) || e.motion == Motion::Parked {

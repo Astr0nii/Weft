@@ -306,7 +306,12 @@ impl Client {
         let solid = |k: u32| content().game.entities[k as usize].is(weft_abi::entity_flags::SOLID);
         // Physics looks a step of its own back, many ticks at a high `/tick rate`.
         let keep = ((self.tick_rate * STEP).ceil() as usize * 2 + 4).max(8);
+        // The mount this client steers goes where it moves it.
+        let driving = self.me.vehicle.map(|v| v.0);
         for &(id, pos, yaw, pitch, pose, sprinting, frame) in &list {
+            if Some(id) == driving {
+                continue;
+            }
             if let Some(e) = self.entities.get_mut(&id) {
                 (e.pose, e.sprinting) = (pose, sprinting);
                 let was = e.target;

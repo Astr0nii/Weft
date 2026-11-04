@@ -115,6 +115,24 @@ pub struct EntityKind {
     /// A moving structure: its template (`Content::templates`), by name until the freeze.
     pub template_name: String,
     pub template: Option<u32>,
+    /// Where riders sit (`abi::SeatDesc`).
+    pub seats: Vec<Seat>,
+    /// What the keys of a player steering it do (`abi::SteerArgs`), and where riders get off
+    /// when a seat asks it (`abi::DismountArgs`).
+    pub steer: Option<(ModId, Callback)>,
+    pub dismount: Option<(ModId, Callback)>,
+    /// Blocks the third-person camera goes further back on it, `NAN`: by its size.
+    pub ride_camera: f32,
+}
+
+/// A place on a mount, in its frame: +Z ahead.
+#[derive(Clone, Copy, Debug)]
+pub struct Seat {
+    pub pos: glam::DVec3,
+    pub steers: bool,
+    /// `abi::seat_exit`, and its offset or reach.
+    pub exit: u32,
+    pub exit_at: glam::DVec3,
 }
 
 impl EntityKind {
@@ -380,8 +398,9 @@ pub struct Game {
     pub name_comp: u32,
     /// Components with `component_flags::CARRIED`: between a block's item and its block entity.
     pub carried: Vec<u32>,
-    /// `HEALTH`, `BURNING`, `WORN`, `SHAPE`, `HELD`, `OFF_HELD`, `USING`, `SWAPS`, `LOOPING_ACTION`.
-    pub field_comps: [u32; 11],
+    /// `HEALTH`, `BURNING`, `WORN`, `SHAPE`, `HELD`, `OFF_HELD`, `USING`, `SWAPS`, `LOOPING_ACTION`,
+    /// `EFFECT`, `FORCED_POSE`, `RIDING`.
+    pub field_comps: [u32; 12],
     /// `SIMULATED`.
     pub simulated_comp: u32,
     /// Entity components with `SYNC_WATCHERS` / `SYNC_MENU`.
@@ -1255,6 +1274,8 @@ pub const ENGINE_EVENTS: &[(&str, &str, u32)] = {
         (abi::event::WEATHER_TICK, abi::WeatherTick::SCHEMA, size_of::<abi::WeatherTick>() as u32),
         (abi::action::USE_BLOCK, abi::BlockChange::SCHEMA, size_of::<abi::BlockChange>() as u32),
         (abi::action::INTERACT_ENTITY, abi::Interaction::SCHEMA, size_of::<abi::Interaction>() as u32),
+        (abi::action::MOUNT, abi::Mounting::SCHEMA, size_of::<abi::Mounting>() as u32),
+        (abi::action::DISMOUNT, abi::Mounting::SCHEMA, size_of::<abi::Mounting>() as u32),
         (abi::action::ENTER_DIMENSION, abi::DimensionChange::SCHEMA, size_of::<abi::DimensionChange>() as u32),
     ]
 };
@@ -1376,6 +1397,21 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
                 carry_height: d.carry_height,
                 template_name: d.template.as_str().to_string(),
                 template: None,
+                seats: d
+                    .seats
+                    .as_slice()
+                    .iter()
+                    .take(255)
+                    .map(|s| Seat {
+                        pos: crate::world::dvec(s.pos),
+                        steers: s.steers != 0,
+                        exit: s.exit,
+                        exit_at: crate::world::dvec(s.exit_at),
+                    })
+                    .collect(),
+                steer: opt(d.steer).map(|c| (owner, c)),
+                dismount: opt(d.dismount).map(|c| (owner, c)),
+                ride_camera: d.ride_camera,
             },
         }
     }
@@ -1515,6 +1551,10 @@ fn builtin(name: &str, width: f32, height: f32, flags: u32) -> EntityKind {
         carry_height: 0.0,
         template_name: String::new(),
         template: None,
+        seats: Vec::new(),
+        steer: None,
+        dismount: None,
+        ride_camera: f32::NAN,
     }
 }
 
@@ -1539,6 +1579,8 @@ pub const LOOPING_ACTION: &str = "core:looping_action";
 pub const EFFECT: &str = "core:effect";
 /// A pose a mod holds it in (`u32` pose id, `f32` yaw or NaN), empty: as it moves.
 pub const FORCED_POSE: &str = "core:forced_pose";
+/// What it rides (`u64` id) and its seat (`u32`), empty: nothing. Saved, and seen by everyone.
+pub const RIDING: &str = "core:riding";
 /// Entity component (`u64`, saved): the world time a system last simulated it to, so it can
 /// catch up on what it missed (`Dim::run_systems`).
 pub const SIMULATED: &str = "core:simulated";
@@ -2175,6 +2217,7 @@ pub fn freeze(
         (LOOPING_ACTION, 0, shown, Vec::new()),
         (EFFECT, 0, shown, Vec::new()),
         (FORCED_POSE, 0, own | shown, Vec::new()),
+        (RIDING, 0, own | shown | save, Vec::new()),
         (SIMULATED, 8, save, vec![0; 8]),
     ] {
         components.push(RawComponent {
@@ -2205,8 +2248,8 @@ pub fn freeze(
         .filter(|(_, d)| d.runtime && d.flags & weft_abi::component_flags::CARRIED != 0)
         .map(|(i, _)| i as u32)
         .collect();
-    g.field_comps =
-        [HEALTH, BURNING, WORN, SHAPE, HELD, OFF_HELD, USING, SWAPS, LOOPING_ACTION, EFFECT, FORCED_POSE].map(|n| g.component_names[n]);
+    g.field_comps = [HEALTH, BURNING, WORN, SHAPE, HELD, OFF_HELD, USING, SWAPS, LOOPING_ACTION, EFFECT, FORCED_POSE, RIDING]
+        .map(|n| g.component_names[n]);
     g.simulated_comp = g.component_names[SIMULATED];
     let with_flag = |f: u32| {
         g.components

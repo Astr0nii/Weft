@@ -278,6 +278,11 @@ impl Server {
                 p.last_place = place;
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get_mut(entity) else { return };
+                // On a mount it is where its seat is; only where it looks is its own.
+                if e.vehicle.is_some() {
+                    (e.yaw, e.pitch) = (yaw, pitch);
+                    return;
+                }
                 e.pose = pose;
                 let here = crate::physics::around(c, &*r.space, pos, e.height(c));
                 let splash = entity::splashes(e.in_liquid, here.in_liquid, -walked.y);
@@ -297,6 +302,18 @@ impl Server {
                 if let Some(amount) = land {
                     r.damage(c, entity, amount, 0, abi::damage_cause::FALL);
                 }
+            }
+
+            ToServer::MountMove { pos, yaw, vel, on_ground } => {
+                if !pos.is_finite() || !vel.is_finite() || !yaw.is_finite() {
+                    return;
+                }
+                let Some((r, entity)) = self.region(pi) else { return };
+                r.mount_moved(c, entity, pos, yaw, vel, on_ground);
+            }
+            ToServer::Dismount => {
+                let Some((r, entity)) = self.region(pi) else { return };
+                r.dismount(c, entity);
             }
 
             ToServer::Break { pos, part, face, frame } => {

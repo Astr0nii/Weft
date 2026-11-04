@@ -30,6 +30,7 @@ pub const ENGINE_KEYS: &[(&str, &str)] = &[
     ("core:right", "KeyD"),
     ("core:jump", "Space"),
     ("core:sneak", "ShiftLeft"),
+    ("core:dismount", "ShiftLeft"),
     // Vanilla's double tap of forward is a second way to sprint.
     ("core:sprint", "ControlLeft, double KeyW"),
     ("core:crawl", "KeyC"),

@@ -15,6 +15,7 @@
 mod bodies;
 mod looks;
 mod mace;
+mod riding;
 
 use weft_sdk::terrain::*;
 use weft_sdk::*;
@@ -93,6 +94,7 @@ const FURNACE_USE: i64 = 20;
 fn init(r: &mut Registry) {
     looks::register(r);
     mace::register(r);
+    riding::register(r);
     bodies::register(r);
     debug_panel(r);
     about_screen(r);

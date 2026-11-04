@@ -1358,6 +1358,8 @@ pub mod entity_flags {
     pub const KINEMATIC: u32 = 128;
     /// A solid body hurts what it squeezes against blocks instead of only pushing.
     pub const CRUSHES: u32 = 256;
+    /// Its riders take the damage of its falls too, as a horse's rider does.
+    pub const RIDERS_FALL: u32 = 512;
     /// Not a kind flag: set in `EntityState::flags` when its last move ran into a wall.
     pub const BLOCKED: u32 = 1 << 31;
 }
@@ -1442,7 +1444,116 @@ pub struct EntityDesc {
     pub category_name: Str,
     /// Slots of the inventory each entity of this kind carries, 0 = none.
     pub slots: u32,
+    /// Where riders sit on it (`Host::entity_mount`), in its own frame turned by its yaw.
+    pub seats: Slice<SeatDesc>,
+    /// `SteerArgs`, on the client of the player in a seat that `steers`: what the mount does
+    /// with that player's keys. Without one a player in that seat rides along, nothing more.
+    pub steer: Callback,
+    /// `DismountArgs`: where a rider gets off when its seat's `exit` doesn't say (`seat_exit::CALL`).
+    pub dismount: Callback,
+    /// Blocks the third-person camera goes further back while riding it; `f32::NAN`: worked
+    /// out from its size.
+    pub ride_camera: f32,
 }
+
+/// A place on a mount (`EntityDesc::seats`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct SeatDesc {
+    /// Where a rider's feet go, in blocks from the mount's position, turned with it: +Z ahead.
+    pub pos: Vec3,
+    /// Who sits here steers it (a player with their keys and `EntityDesc::steer`, a mob with
+    /// its AI); nobody steering, its own AI moves it.
+    pub steers: u32,
+    /// `seat_exit`: where a rider of this seat gets off.
+    pub exit: u32,
+    /// `seat_exit::OFFSET`: from the mount, turned with it. `NEAREST`: x is how far to look.
+    pub exit_at: Vec3,
+}
+defaults!(SeatDesc { pos: Vec3::ZERO, steers: 0, exit: seat_exit::NEAREST, exit_at: Vec3 { x: 2.0, y: 0.0, z: 0.0 } });
+
+/// Where a rider gets off (`SeatDesc::exit`).
+pub mod seat_exit {
+    /// The nearest place it fits beside the mount, within `exit_at.x` blocks; none: where it sat.
+    pub const NEAREST: u32 = 0;
+    /// At `exit_at` from the mount, turned with it (a gondola's door).
+    pub const OFFSET: u32 = 1;
+    /// Right where it sat, in the air if that is where it was.
+    pub const STAY: u32 = 2;
+    /// The kind's `EntityDesc::dismount` decides.
+    pub const CALL: u32 = 3;
+}
+
+/// The keys of the player steering a mount this tick (`SteerArgs`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MountInput {
+    /// -1..1: back to ahead, left to right.
+    pub forward: f32,
+    pub strafe: f32,
+    /// Jump and sneak (`core:jump`, `core:sneak`) held.
+    pub up: u32,
+    pub down: u32,
+    /// Ticks jump has been held, 0 when it isn't.
+    pub jump_held: u32,
+    /// Jump was let go this tick after being held that many ticks, 0 otherwise.
+    pub jump_released: u32,
+    pub sprint: u32,
+    /// Where the player looks, radians.
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+/// What a mount does this tick (`SteerArgs::out`), starting from nothing.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Steer {
+    /// Where it goes, ahead and to the right of its own facing, length up to 1.
+    pub forward: f32,
+    pub strafe: f32,
+    /// Times its kind's walking speed.
+    pub speed: f32,
+    /// Its new facing, radians; `f32::NAN` keeps it.
+    pub yaw: f32,
+    /// Blocks per second up when it is on the ground this tick (a jump), 0 for none.
+    pub jump: f32,
+    /// Non-zero: no gravity this tick, `rise` blocks per second up (negative down).
+    pub flies: u32,
+    pub rise: f32,
+}
+defaults!(Steer { forward: 0.0, strafe: 0.0, speed: 1.0, yaw: f32::NAN, jump: 0.0, flies: 0, rise: 0.0 });
+
+#[repr(C)]
+pub struct SteerArgs {
+    pub input: MountInput,
+    /// The mount as it is.
+    pub mount: EntityState,
+    pub out: Steer,
+}
+
+#[repr(C)]
+pub struct DismountArgs {
+    pub world: *mut WorldCtx,
+    pub mount: u64,
+    pub rider: u64,
+    pub seat: u32,
+    /// Where it gets off; the engine's choice (`seat_exit::NEAREST`) until changed.
+    pub out: Vec3,
+}
+
+/// Who gets on or off what (`action::MOUNT`, `action::DISMOUNT`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Mounting {
+    pub rider: u64,
+    pub mount: u64,
+    pub seat: u32,
+    pub pad: u32,
+}
+impl Schema for Mounting {
+    const SCHEMA: &'static str = "{rider:u64,mount:u64,seat:u32,pad:u32}";
+}
+
 /// Eye height as a share of an entity's height unless it says otherwise (vanilla's default).
 pub const EYE_SHARE: f32 = 0.85;
 
@@ -1465,6 +1576,10 @@ defaults!(EntityDesc {
     template: Str::EMPTY,
     category_name: Str::EMPTY,
     slots: 0,
+    seats: Slice::EMPTY,
+    steer: Callback::NONE,
+    dismount: Callback::NONE,
+    ride_camera: f32::NAN,
 });
 
 #[repr(C)]
@@ -2606,6 +2721,16 @@ pub struct Host {
     /// block, an item kind without a stack).
     pub entity_spawn: unsafe extern "C" fn(world: *mut WorldCtx, desc: *const SpawnEntityDesc) -> u64,
     pub entity_despawn: unsafe extern "C" fn(world: *mut WorldCtx, id: u64),
+    /// Puts `rider` on `mount` in `seat` (`u32::MAX`: the first free one), at the end of the
+    /// tick, after `action::MOUNT` let it. False when it can't: no such seat, taken, or the
+    /// mount rides the rider somewhere down its chain.
+    pub entity_mount: unsafe extern "C" fn(world: *mut WorldCtx, rider: u64, mount: u64, seat: u32) -> u32,
+    /// Takes `rider` off what it rides, after `action::DISMOUNT` let it.
+    pub entity_dismount: unsafe extern "C" fn(world: *mut WorldCtx, rider: u64),
+    /// What `rider` sits on and in which seat; 0 for nothing.
+    pub entity_vehicle: unsafe extern "C" fn(world: *mut WorldCtx, rider: u64, seat: *mut u32) -> u64,
+    /// The riders of `mount`, one per seat (0 for an empty one), up to `cap`; returns its seats.
+    pub entity_riders: unsafe extern "C" fn(world: *mut WorldCtx, mount: u64, out: *mut u64, cap: u32) -> u32,
     pub entity_get: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, out: *mut EntityState) -> u32,
     /// Adds `v` (blocks per second) to the entity's velocity: a mob's here, a player's on its
     /// client, the way a hit's knockback goes.
@@ -3870,6 +3995,10 @@ pub mod action {
     /// `Death`. `entity` about to die of `amount` from `other` and `cause`. Denied, it lives on
     /// with one health (a totem); what saves it is the interceptor's to do.
     pub const DIE: &str = "core:die";
+    /// `Mounting`. `entity` getting onto `other` in seat `amount`.
+    pub const MOUNT: &str = "core:mount";
+    /// `Mounting`. `entity` getting off `other` (`amount` its seat).
+    pub const DISMOUNT: &str = "core:dismount";
 }
 
 pub mod question {

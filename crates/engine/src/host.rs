@@ -64,6 +64,10 @@ pub static HOST: Host = Host {
     daylight,
     entity_spawn,
     entity_despawn,
+    entity_mount,
+    entity_dismount,
+    entity_vehicle,
+    entity_riders,
     entity_get,
     entity_push,
     entity_set,
@@ -767,6 +771,38 @@ unsafe extern "C" fn entity_despawn(w: *mut abi::WorldCtx, id: u64) {
             return;
         }
         d.entities.remove(id)
+    }
+}
+
+unsafe extern "C" fn entity_mount(w: *mut abi::WorldCtx, rider: u64, mount: u64, seat: u32) -> u32 {
+    unsafe { dim(w).mount(content(), rider, mount, (seat != u32::MAX).then_some(seat.min(255) as u8)) as u32 }
+}
+
+unsafe extern "C" fn entity_dismount(w: *mut abi::WorldCtx, rider: u64) {
+    unsafe {
+        dim(w).dismount(content(), rider);
+    }
+}
+
+unsafe extern "C" fn entity_vehicle(w: *mut abi::WorldCtx, rider: u64, seat: *mut u32) -> u64 {
+    unsafe {
+        let Some((mount, s)) = dim(w).entities.get(rider).and_then(|e| e.vehicle) else { return 0 };
+        if !seat.is_null() {
+            *seat = s as u32;
+        }
+        mount
+    }
+}
+
+unsafe extern "C" fn entity_riders(w: *mut abi::WorldCtx, mount: u64, out: *mut u64, cap: u32) -> u32 {
+    unsafe {
+        let d = dim(w);
+        let Some(m) = d.entities.get(mount) else { return 0 };
+        let seats = content().game.entities[m.kind as usize].seats.len() as u32;
+        for s in 0..seats.min(cap) {
+            *out.add(s as usize) = d.rider_in(mount, s as u8).unwrap_or(0);
+        }
+        seats
     }
 }
 

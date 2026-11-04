@@ -56,6 +56,69 @@ pub async fn missing_dimension(t: T) -> R {
     Ok(())
 }
 
+/// Riding: chains of mounts without rings, a mob jockey steering by its AI, the player steering
+/// from its client with the kind's keys, getting off where the seat says.
+pub async fn riding(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let spawn = async |t: &T, kind: &str, dz: i32| {
+        t.op(&format!("spawn {kind} {} {} {}", f[0], f[1], f[2] + dz))
+            .await
+    };
+    let (a, b) = (spawn(&t, "testmod:steed", -4).await?, spawn(&t, "testmod:steed", -7).await?);
+    let y = |s: String| {
+        s.split_whitespace()
+            .nth(2)
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(f64::NAN)
+    };
+    t.check_eq(t.op(&format!("mount {a} {b}")).await?, "1".to_string(), "a steed on a steed");
+    t.check_eq(t.op(&format!("mount {b} {a}")).await?, "0".to_string(), "no ring of riders");
+    t.secs(0.3).await?;
+    let (ya, yb) = (y(t.op(&format!("entity {a}")).await?), y(t.op(&format!("entity {b}")).await?));
+    t.check((yb - ya - 1.0).abs() < 0.05, format!("the one on top sits in its seat: {yb:.2} over {ya:.2}"));
+
+    // A zombie in the saddle walks the steed with its AI, towards the player.
+    let z = spawn(&t, "base:zombie", -12).await?;
+    let c = spawn(&t, "testmod:steed", -12).await?;
+    t.op("time 18000").await?;
+    t.check_eq(t.op(&format!("mount {c} {z}")).await?, "1".to_string(), "a zombie jockey");
+    let at = |s: String| {
+        let v: Vec<f64> = s
+            .split_whitespace()
+            .skip(1)
+            .take(3)
+            .filter_map(|v| v.parse().ok())
+            .collect();
+        (v.first().copied().unwrap_or(f64::NAN), v.get(2).copied().unwrap_or(f64::NAN))
+    };
+    let before = at(t.op(&format!("entity {c}")).await?);
+    t.secs(2.0).await?;
+    let after = at(t.op(&format!("entity {c}")).await?);
+    let walked = (after.0 - before.0).hypot(after.1 - before.1);
+    t.probe("blocks the zombie walked its steed", walked as f32, walked > 1.0);
+
+    // The player in the saddle of the free one: its keys walk it where it looks.
+    t.op(&format!("remove {z}")).await?;
+    t.op(&format!("remove {c}")).await?;
+    let d = spawn(&t, "testmod:steed", 3).await?;
+    t.check_eq(t.op(&format!("mount {d}")).await?, "1".to_string(), "the player gets on");
+    t.c().set_look(0.0, 0.0);
+    t.secs(0.5).await?;
+    let before = at(t.op(&format!("entity {d}")).await?);
+    t.hold("core:forward", 1.0);
+    t.secs(1.3).await?;
+    let after = at(t.op(&format!("entity {d}")).await?);
+    let rode = (after.0 - before.0).hypot(after.1 - before.1);
+    t.probe("blocks the player rode it in a second", rode as f32, rode > 2.0);
+    let seat = t.op("vehicle").await?;
+    t.check(seat.starts_with(&d), format!("still on it: {seat}"));
+    t.press("core:dismount");
+    t.secs(0.5).await?;
+    t.check_eq(t.op("vehicle").await?, "0 0".to_string(), "the dismount key gets off");
+    Ok(())
+}
+
 /// Mods change a player's state from the server, and its client follows: a mace's smash by the
 /// fall it reads, then the look, the hand, flight and fire set from outside.
 pub async fn entity_edit(t: T) -> R {

@@ -864,6 +864,10 @@ pub struct EntityBuilder<'a> {
     slots: u32,
     /// Components (full name, starting value) every entity of this kind gets.
     attached: Vec<(&'static str, Vec<u8>)>,
+    seats: Vec<crate::riding::Seat>,
+    steering: Option<crate::riding::Steering>,
+    rider_rules: Option<crate::riding::RiderRules>,
+    ride_camera: f32,
 }
 
 /// Components of the kind (not per entity; see `Registry::entity_component` for that).
@@ -1116,6 +1120,36 @@ impl EntityBuilder<'_> {
         self.on_interact = event_cb(f);
         self
     }
+    /// A place to ride it, in the order seats are numbered (`crate::riding::Seat`).
+    pub fn seat(mut self, seat: crate::riding::Seat) -> Self {
+        self.seats.push(seat);
+        self
+    }
+    /// How the keys of a player in a seat that steers move it (`steer::*`, or your own).
+    pub fn steering(mut self, s: crate::riding::Steering) -> Self {
+        self.steering = Some(s);
+        self
+    }
+    /// What its riders may do (`RiderRules`).
+    pub fn rider_rules(mut self, rules: crate::riding::RiderRules) -> Self {
+        self.rider_rules = Some(rules);
+        self
+    }
+    /// Its falls hurt its riders too, as a horse's.
+    pub fn riders_fall(mut self) -> Self {
+        self.flags |= entity_flags::RIDERS_FALL;
+        self
+    }
+    /// Blocks the third-person camera stays further back while riding it, 0 for none; without
+    /// this, by its size.
+    pub fn ride_camera(mut self, blocks: f32) -> Self {
+        self.ride_camera = blocks;
+        self
+    }
+    /// A right click gets on it, in its first free seat (`on_interact` doing `w.mount`).
+    pub fn rideable(self) -> Self {
+        self.on_interact(|e| e.world().mount(e.other(), e.entity()))
+    }
 }
 
 fn raw_part(p: &ModelPart) -> abi::ModelPart {
@@ -1155,6 +1189,24 @@ impl Drop for EntityBuilder<'_> {
         let parts: Vec<abi::ModelPart> = self.parts.iter().map(raw_part).collect();
         let mut scratch = Vec::new();
         let values = crate::content::raw_values(&self.components, &mut scratch);
+        let seats: Vec<abi::SeatDesc> = self.seats.iter().map(|s| s.desc).collect();
+        let steer = self
+            .steering
+            .take()
+            .map_or(abi::Callback::NONE, |s| callback(move |a: &mut abi::SteerArgs| a.out = (s.0)(&a.input, &a.mount)));
+        let exits: Vec<Option<crate::riding::ExitFn>> = self.seats.iter().map(|s| s.exit.clone()).collect();
+        let dismount = if exits.iter().any(Option::is_some) {
+            callback(move |a: &mut abi::DismountArgs| {
+                if let Some(Some(f)) = exits.get(a.seat as usize) {
+                    a.out = f(&World::from_raw(a.world), a.mount, a.rider, a.out);
+                }
+            })
+        } else {
+            abi::Callback::NONE
+        };
+        if let Some(rules) = self.rider_rules.take() {
+            crate::riding::register_rules(self.reg, EntityKind::generated(self.name.clone()), rules);
+        }
         let desc = abi::EntityDesc {
             name: Str::new(&self.name),
             cell: self.handle.map_or(std::ptr::null(), |h| h.id_cell()),
@@ -1174,7 +1226,10 @@ impl Drop for EntityBuilder<'_> {
             category_name: Str::new(&self.category_name),
             template: Str::new(&self.template),
             slots: self.slots,
-            ..abi::EntityDesc::DEFAULT
+            seats: Slice::new(&seats),
+            steer,
+            dismount,
+            ride_camera: self.ride_camera,
         };
         unsafe { (host().reg_entity)(self.reg.raw, &desc) }
         for (comp, value) in &self.attached {
@@ -1502,6 +1557,10 @@ impl Registry {
             template: String::new(),
             slots: d.slots,
             attached: Vec::new(),
+            seats: Vec::new(),
+            steering: None,
+            rider_rules: None,
+            ride_camera: f32::NAN,
         }
     }
 

@@ -89,6 +89,8 @@ pub struct LocalPlayer {
 
 pub struct ClientEntity {
     pub kind: u32,
+    /// What it rides and in which seat: it is drawn there.
+    pub vehicle: Option<(u64, u8)>,
     pub pos: DVec3,
     pub target: DVec3,
     pub yaw: f32,
@@ -166,6 +168,111 @@ impl LocalPlayer {
     }
 }
 
+/// One step on a mount: steering it when the seat says so and the kind knows how
+/// (`EntityKind::steer`), then sitting where the seat is.
+#[allow(clippy::too_many_arguments)]
+fn ride_step(
+    entities: &FxHashMap<u64, ClientEntity>,
+    player: &mut LocalPlayer,
+    drive: &mut Drive,
+    conn: &mut ClientConn,
+    input: &Input,
+    block: &impl physics::Cells,
+    gravity: f64,
+    bodies: &[physics::Body],
+    mount: u64,
+    seat: u8,
+) -> Option<(DVec3, f32)> {
+    let c = content();
+    let m = entities.get(&mount)?;
+    let k = &c.game.entities[m.kind as usize];
+    let steers = k.seats.get(seat as usize).is_some_and(|s| s.steers);
+    let mut moved = None;
+    if let (true, Some((owner, cb))) = (steers, k.steer) {
+        let axis = |plus: &str, minus: &str| input.held(plus) as i32 as f32 - input.held(minus) as i32 as f32;
+        let jump = input.captured && input.held("core:jump");
+        let released = if !jump { drive.jump_held } else { 0 };
+        drive.jump_held = if jump { drive.jump_held + 1 } else { 0 };
+        let held = |a: &str| input.captured && input.held(a);
+        let d = m.dims();
+        let mut args = weft_abi::SteerArgs {
+            input: weft_abi::MountInput {
+                forward: if input.captured { axis("core:forward", "core:back") } else { 0.0 },
+                strafe: if input.captured { axis("core:right", "core:left") } else { 0.0 },
+                up: jump as u32,
+                down: held("core:sneak") as u32,
+                jump_held: drive.jump_held,
+                jump_released: released,
+                sprint: held("core:sprint") as u32,
+                yaw: player.yaw,
+                pitch: player.pitch,
+            },
+            mount: weft_abi::EntityState {
+                kind: m.kind,
+                flags: k.flags,
+                pos: m.pos.to_array().into(),
+                vel: (drive.vel * crate::world::TPS as f64).to_array().into(),
+                yaw: m.yaw,
+                pitch: m.pitch,
+                on_ground: drive.on_ground as u32,
+                size: weft_abi::EntitySize { width: d.half_width as f32 * 2.0, height: d.height as f32, eye: d.eye as f32 },
+                ..weft_abi::EntityState::DEFAULT
+            },
+            out: weft_abi::Steer::DEFAULT,
+        };
+        crate::host::invoke(owner, cb, &mut args);
+        let s = args.out;
+        let yaw = if s.yaw.is_finite() { s.yaw } else { m.yaw };
+        let tick = crate::world::TICK;
+        let target = k.speed as f64 * s.speed.max(0.0) as f64 * tick;
+        let wish = crate::server::riding::turned(DVec3::new(s.strafe as f64, 0.0, s.forward as f64), yaw);
+        let ctl = physics::Control {
+            wish,
+            // As a mob walks: this much a tick keeps it at its speed on plain ground.
+            ground: target * (1.0 - 0.6 * 0.91),
+            air: 0.02,
+            jump: if s.jump > 0.0 { s.jump as f64 * tick } else { 0.0 },
+            swim: k.is(weft_abi::entity_flags::SWIMS),
+            ..Default::default()
+        };
+        let flies = s.flies != 0;
+        if flies {
+            drive.vel.y = s.rise as f64 * tick;
+        }
+        let frame = physics::Frame {
+            half_width: d.half_width,
+            height: d.height,
+            step: physics::STEP_UP,
+            gravity: if flies || k.is(weft_abi::entity_flags::NO_GRAVITY) { 0.0 } else { physics::gravity_per_tick(gravity) },
+        };
+        let mut pos = m.pos;
+        let r = physics::walk(c, block, bodies, mount, &mut pos, &mut drive.vel, drive.on_ground, &ctl, &frame);
+        drive.on_ground = r.on_ground;
+        conn.send(ToServer::MountMove { pos, yaw, vel: drive.vel * crate::world::TPS as f64, on_ground: r.on_ground });
+        moved = Some((pos, yaw));
+    }
+    let (pos, yaw) = moved.unwrap_or((m.pos, m.yaw));
+    if let Some(at) = seat_at(c, m.kind, pos, yaw, seat) {
+        (player.pos, player.vel, player.on_ground) = (at, DVec3::ZERO, false);
+    }
+    moved
+}
+
+/// The mount the local player steers, as its client moves it.
+#[derive(Default)]
+struct Drive {
+    /// Blocks per tick.
+    vel: DVec3,
+    on_ground: bool,
+    jump_held: u32,
+}
+
+/// Where a rider's feet go in seat `seat` of a mount of `kind` at `pos` facing `yaw`.
+fn seat_at(c: &crate::content::Content, kind: u32, pos: DVec3, yaw: f32, seat: u8) -> Option<DVec3> {
+    let s = c.game.entities[kind as usize].seats.get(seat as usize)?;
+    Some(pos + crate::server::riding::turned(s.pos, yaw))
+}
+
 /// `u32` and `f32` values of an engine field component (`registry::HEALTH` ...).
 fn words(bytes: &[u8]) -> impl Iterator<Item = [u8; 4]> + '_ {
     bytes.chunks_exact(4).map(|w| [w[0], w[1], w[2], w[3]])
@@ -214,6 +321,7 @@ impl ClientEntity {
             age: 0.0,
             burning: false,
             dying: None,
+            vehicle: None,
             next_step: 0.0,
             action: None,
             pose: Pose::STAND,
@@ -346,6 +454,8 @@ pub struct Client {
     /// The local player as an entity: what the server says of it (health, actions, look) and
     /// what its own animation works out, brought up to date each frame (`sync_me`).
     pub me: ClientEntity,
+    /// The mount the player steers: its velocity, footing and how long jump has been held.
+    drive: Drive,
     accum: f64,
     tick_accum: f64,
     /// Seconds of physics steps taken, the clock solid bodies are shown by.
@@ -680,6 +790,7 @@ impl Client {
             player_id: 0,
             sprint_stopped: false,
             me: ClientEntity::new(content().game.player_kind, DVec3::ZERO, 0.0, 0.0, ItemStack::EMPTY),
+            drive: Drive::default(),
             accum: 0.0,
             tick_accum: 0.0,
             body_clock: 0.0,
@@ -930,8 +1041,11 @@ impl Client {
         }
     }
 
-    /// Flying goes on and off where the game mode lets it.
+    /// Flying goes on and off where the game mode lets it; on a mount the dismount key gets off.
     fn read_controls(&mut self, input: &Input) {
+        if self.me.vehicle.is_some() && input.captured && input.pressed("core:dismount") {
+            self.conn.send(ToServer::Dismount);
+        }
         if self.mode.has(weft_abi::game_mode_flags::CAN_FLY) && input.captured && input.pressed("core:fly") {
             self.player.flying = !self.player.flying;
         }
@@ -1140,6 +1254,26 @@ impl Client {
                     }
                 }
                 if !ready {
+                    continue;
+                }
+                // On a mount the seat carries it; in one that steers its keys move the mount.
+                if let Some((mount, seat)) = self.me.vehicle {
+                    let moved = ride_step(
+                        &self.entities,
+                        &mut self.player,
+                        &mut self.drive,
+                        &mut self.conn,
+                        input,
+                        &block,
+                        gravity,
+                        &bodies,
+                        mount,
+                        seat,
+                    );
+                    drop(bodies);
+                    if let (Some((pos, yaw)), Some(e)) = (moved, self.entities.get_mut(&mount)) {
+                        (e.pos, e.target, e.yaw, e.target_yaw) = (pos, pos, yaw, yaw);
+                    }
                     continue;
                 }
                 if !flying {
@@ -1470,6 +1604,33 @@ impl Client {
             moving.iter_mut().for_each(step);
         }
         self.frames = frames;
+        self.seat_riders();
+    }
+
+    /// Riders where their seats are on their mounts as drawn this frame, mounts first.
+    fn seat_riders(&mut self) {
+        let c = content();
+        let riders: Vec<u64> = self
+            .entities
+            .iter()
+            .filter(|e| e.1.vehicle.is_some())
+            .map(|e| *e.0)
+            .collect();
+        for _ in 0..4 {
+            for &id in &riders {
+                let Some((mount, seat)) = self.entities.get(&id).and_then(|e| e.vehicle) else { continue };
+                let Some(at) = self
+                    .entities
+                    .get(&mount)
+                    .and_then(|m| seat_at(c, m.kind, m.pos, m.yaw, seat))
+                else {
+                    continue;
+                };
+                if let Some(e) = self.entities.get_mut(&id) {
+                    (e.pos, e.target) = (at, at);
+                }
+            }
+        }
     }
 
     /// Hitting a block chips pieces off the face being hit, one per tick like vanilla.
@@ -1932,7 +2093,7 @@ impl Client {
     /// Copies an engine field component into the entity (or the own player) that shows it.
     fn engine_field(&mut self, id: u64, comp: u32, bytes: &[u8]) {
         let c = content();
-        let [health, burning, worn, shape, held, off_held, using, swaps, looping, effect, forced] = c.game.field_comps;
+        let [health, burning, worn, shape, held, off_held, using, swaps, looping, effect, forced, riding] = c.game.field_comps;
         let now = self.world.time;
         let f: Vec<f32> = words(bytes).map(f32::from_le_bytes).collect();
         let shaped = || {
@@ -1951,6 +2112,11 @@ impl Client {
                 e.hurt = HURT_FLASH;
             }
             e.health = f[0];
+        } else if comp == riding {
+            e.vehicle = (bytes.len() >= 12).then(|| {
+                let mount = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+                (mount, u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as u8)
+            });
         } else if comp == burning {
             e.burning = bytes.first().is_some_and(|&b| b != 0);
         } else if comp == worn {

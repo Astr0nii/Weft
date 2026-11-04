@@ -762,6 +762,17 @@ const OPS: &[(&str, &str, Run)] = &[
         w.inventory(player).set(int(cmd, "index")?, s);
         Ok(String::new())
     }),
+    // `rider` (the player by default) onto `mount`: 1 if it got on.
+    ("mount", "<onto:int> [rider:int]", |w, cmd, player, _| {
+        let rider = cmd.int("rider").map_or(player, |r| r as u64);
+        Ok((w.mount(rider, int(cmd, "onto")?) as u32).to_string())
+    }),
+    // What `id` (the player by default) rides and its seat, "0 0" for nothing.
+    ("vehicle", "[id:int]", |w, cmd, player, _| {
+        let id = cmd.int("id").map_or(player, |r| r as u64);
+        Ok(w.vehicle(id)
+            .map_or("0 0".to_string(), |(m, s)| format!("{m} {s}")))
+    }),
     ("stashed", "<index:int>", |w, cmd, player, _| Ok(stack_text(w.inventory(STASH.of(player)).get(int(cmd, "index")?)))),
     ("remove", "<id:int>", |w, cmd, _, _| {
         w.despawn(int(cmd, "id")?);
