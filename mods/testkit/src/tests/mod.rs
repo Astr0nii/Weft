@@ -45,6 +45,7 @@ pub fn all() -> Vec<TestDef> {
         world::missing_dimension,
         world::dimensions,
         world::world_seed,
+        world::entity_edit,
         world::virtual_menus,
         world::worldgen,
         world::plants_on_cube_tops,

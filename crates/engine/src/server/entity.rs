@@ -223,6 +223,8 @@ impl Entity {
             max_health,
             age: self.age,
             fall_distance: self.fall,
+            fire: self.fire,
+            selected: self.selected,
             moved: self.moved,
             size: self.dims(c).size(),
         }
@@ -245,15 +247,20 @@ pub struct Entities {
     pub killed: Vec<u64>,
     /// Item entities picked up whole this tick, and by whom (clients pull them in).
     pub taken: Vec<(u64, u64)>,
-    /// What moves players, whose clients move them, so they get told.
-    pub pushed: Vec<(u64, Pushed)>,
+    /// What changes players whose clients run them (their movement, look, flight, hand), so
+    /// they get told.
+    pub told: Vec<(u64, Told)>,
 }
 
-/// In blocks per tick, like the client's own velocity.
+/// Velocities in blocks per tick, like the client's own.
 #[derive(Clone, Copy)]
-pub enum Pushed {
+pub enum Told {
     Knock([f32; 3]),
     Add([f32; 3]),
+    Velocity([f32; 3]),
+    Look([f32; 2]),
+    Flying(bool),
+    Selected(u32),
 }
 
 /// Falls up to this many blocks do no damage.

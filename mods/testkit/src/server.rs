@@ -843,6 +843,38 @@ const OPS: &[(&str, &str, Run)] = &[
             .map_or(ItemStack::EMPTY, |t| ItemStack::new(t, 1));
         Ok((w.break_block(pos(cmd, "pos")?, tool, player, true) as u32).to_string())
     }),
+    // A melee hit's damage with what `item` makes of the player having fallen `fall` blocks.
+    ("attack_damage", "<item:item> <fall:float>", |w, cmd, player, _| {
+        let fall = cmd.float("fall").ok_or("missing fall")?;
+        w.entity_edit(player).fall_distance(fall as f32);
+        let base = 6.0;
+        let q = abi::Query { entity: player, item: id(cmd, "item")?, amount: base, ..query() };
+        let fell = w.entity(player).map_or(-1.0, |s| s.fall_distance);
+        Ok(format!("{} {fell}", w.chain_compute(&chain::ATTACK_DAMAGE, base, &q)))
+    }),
+    // The player hits `id` as if having fallen `fall` blocks first.
+    ("hit_falling", "<id:int> <fall:float>", |w, cmd, player, _| {
+        w.entity_edit(player)
+            .fall_distance(cmd.float("fall").unwrap_or(0.0) as f32);
+        w.damage(int(cmd, "id")?, 1.0, player, damage_cause::ATTACK);
+        Ok(String::new())
+    }),
+    // Three blocks up, flying there: landing would end the flight.
+    ("edit_me", "<yaw:float> <slot:int> <flying:int> <fire:int>", |w, cmd, player, _| {
+        let up = w
+            .entity(player)
+            .ok_or("no player")?
+            .pos
+            .offset(0.0, 3.0, 0.0);
+        w.entity_edit(player)
+            .pos(up)
+            .yaw(cmd.float("yaw").unwrap_or(0.0) as f32)
+            .selected(int(cmd, "slot")?)
+            .flying(int::<u32>(cmd, "flying")? != 0)
+            .fire(int(cmd, "fire")?);
+        let s = w.entity(player).ok_or("no player")?;
+        Ok(format!("{} {}", s.selected, s.fire))
+    }),
     ("damage", "<amount:float> [cause:int]", |w, cmd, player, _| {
         let amount = cmd.float("amount").ok_or("missing amount")?;
         let cause: u32 = int(cmd, "cause").unwrap_or(abi::damage_cause::GENERIC);

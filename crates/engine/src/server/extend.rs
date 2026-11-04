@@ -186,6 +186,7 @@ pub const CAN_SPRINT: u32 = 5;
 pub const BLOCK_REACH: u32 = 6;
 pub const ENTITY_REACH: u32 = 7;
 pub const MINING_SPEED: u32 = 8;
+pub const FOV: u32 = 9;
 
 impl Dim {
     fn base_attribute(&self, c: &Content, entity: u64, attr: u32) -> Option<f64> {

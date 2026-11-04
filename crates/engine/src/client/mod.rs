@@ -2080,7 +2080,7 @@ impl Client {
             pos: self.smooth_pos() + DVec3::Y * self.player.eye + pillow,
             yaw: self.player.yaw,
             pitch: self.player.pitch,
-            fov: self.fov * self.player.fov_mul * inside,
+            fov: self.fov * self.player.fov_mul * self.attribute(crate::server::extend::FOV) * inside,
             bob: (Vec3::ZERO, 0.0, 0.0),
         }
     }

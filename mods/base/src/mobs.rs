@@ -404,11 +404,9 @@ fn shoot(w: &World, id: u64, from: &EntityState, at: &EntityState) {
     if let Some(shooter) = w.component_mut(arrow, &SHOOTER) {
         *shooter = id;
     }
-    if let Some(mut s) = w.entity(arrow) {
-        s.vel = [d[0] / len * SPEED, d[1] / len * SPEED + flat * 0.4, d[2] / len * SPEED].into();
-        s.yaw = yaw_toward([0.0; 3], d);
-        w.set_entity(arrow, &s);
-    }
+    w.entity_edit(arrow)
+        .velocity([d[0] / len * SPEED, d[1] / len * SPEED + flat * 0.4, d[2] / len * SPEED])
+        .yaw(yaw_toward([0.0; 3], d));
 }
 
 /// An arrow in flight: gone when it hits something or has flown for five seconds.
@@ -433,9 +431,8 @@ fn arrow_flies(w: &World, id: u64, st: &EntityState) -> bool {
 fn passive_chicken() -> ai::Goals {
     let goals = ai::Goals::new().then(|w: &World, id: u64, st: &EntityState| {
         if st.on_ground == 0 && st.vel.y < 0.0 {
-            let mut now = *st;
-            now.vel.y *= 0.6;
-            w.set_entity(id, &now);
+            w.entity_edit(id)
+                .velocity(Vec3 { y: st.vel.y * 0.6, ..st.vel });
         }
         if let Some(next) = w.component_mut(id, &FUSE) {
             if *next == 0 {

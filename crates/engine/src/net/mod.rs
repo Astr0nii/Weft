@@ -329,6 +329,14 @@ messages! {
         Knock { away: [f32; 3] },
         /// Velocity change in blocks per tick (a mod's push, a sprinting hit).
         Velocity { add: [f32; 3] },
+        /// A mod set the player's velocity, in blocks per tick.
+        SetVelocity([f32; 3]),
+        /// A mod turned the player: yaw and pitch in radians.
+        Look([f32; 2]),
+        /// A mod made the player fly or stop.
+        Flying(bool),
+        /// A mod put this hotbar slot in the player's hand.
+        Selected(u32),
         /// Ticks a second the server runs at.
         TickRate(u32),
         /// The player's walking speed and jump multipliers.

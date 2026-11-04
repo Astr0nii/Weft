@@ -56,6 +56,57 @@ pub async fn missing_dimension(t: T) -> R {
     Ok(())
 }
 
+/// Mods change a player's state from the server, and its client follows: a mace's smash by the
+/// fall it reads, then the look, the hand, flight and fire set from outside.
+pub async fn entity_edit(t: T) -> R {
+    t.flat().await?;
+    let (dmg, fell) = {
+        let s = t.op("attack_damage testmod:mace 5").await?;
+        let mut p = s
+            .split_whitespace()
+            .map(|v| v.parse::<f64>().unwrap_or(f64::NAN));
+        (p.next().unwrap_or(f64::NAN), p.next().unwrap_or(f64::NAN))
+    };
+    t.check_eq(fell, 5.0, "the fall distance a mod set");
+    t.check_eq(dmg, 22.0, "a mace after five blocks: 6 + 4 * 3 + 2 * 2");
+    let (plain, _) = {
+        let s = t.op("attack_damage base:stick 5").await?;
+        (s.split_whitespace().next().unwrap_or("").to_string(), ())
+    };
+    t.check_eq(plain, "6".to_string(), "anything else doesn't care how far it fell");
+    let ground = t.state().pos.y;
+    t.check_eq(t.op("edit_me 1.5 4 1 60").await?, "4 60".to_string(), "slot and fire on the server");
+    t.until("the client follows", Duration::from_secs(10), |t| {
+        let s = t.state();
+        (s.yaw - 1.5).abs() < 1e-3 && s.selected == 4 && t.flag(client::client_flags::FLYING) && s.pos.y > ground + 2.5
+    })
+    .await?;
+
+    // The smash throws back what stands around the one hit.
+    let f = t.feet();
+    let f = [f[0], f[1] - 3, f[2]];
+    t.op("put me 4 testmod:mace").await?;
+    let hit = t
+        .op(&format!("spawn base:pig {} {} {}", f[0], f[1], f[2] - 3))
+        .await?;
+    let near = t
+        .op(&format!("spawn base:pig {} {} {}", f[0] + 1, f[1], f[2] - 3))
+        .await?;
+    t.secs(0.5).await?;
+    let x = |s: String| {
+        s.split_whitespace()
+            .nth(1)
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(f64::NAN)
+    };
+    let before = x(t.op(&format!("entity {near}")).await?);
+    t.op(&format!("hit_falling {hit} 5")).await?;
+    t.secs(0.5).await?;
+    let after = x(t.op(&format!("entity {near}")).await?);
+    t.probe("the pig beside is thrown back", (after - before) as f32, after - before > 0.8);
+    Ok(())
+}
+
 /// Menus open on a storage a player carries and on far away blocks; a menu for a block without
 /// an entity is refused with a reason instead of opening something broken.
 pub async fn virtual_menus(t: T) -> R {

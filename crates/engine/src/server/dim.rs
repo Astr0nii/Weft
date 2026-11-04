@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use weft_abi::{self as abi, ItemStack, block_flags as bf, damage_cause as damage, damage_flags as df, entity_flags as ef};
 
-use super::entity::{Entities, Entity, Motion, Pushed, step};
+use super::entity::{Entities, Entity, Motion, Told, step};
 use super::space::Space;
 use crate::components as comps;
 use crate::content::{AIR, Content};
@@ -1655,7 +1655,7 @@ impl Dim {
             );
         }
         if let Some(away) = knocked {
-            self.entities.pushed.push((id, Pushed::Knock(away)));
+            self.entities.told.push((id, Told::Knock(away)));
         }
         if health <= 0.0 {
             self.entities.killed.push(id);
@@ -2741,7 +2741,7 @@ impl Dim {
         let Some(e) = self.entities.get_mut(id) else { return };
         if e.player {
             let add = (v / crate::world::TPS as f64).as_vec3().to_array();
-            self.entities.pushed.push((id, Pushed::Add(add)));
+            self.entities.told.push((id, Told::Add(add)));
         } else {
             e.vel += v;
         }

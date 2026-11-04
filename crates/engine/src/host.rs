@@ -781,31 +781,70 @@ unsafe extern "C" fn entity_get(w: *mut abi::WorldCtx, id: u64, out: *mut abi::E
     }
 }
 
-unsafe extern "C" fn entity_set(w: *mut abi::WorldCtx, id: u64, s: *const abi::EntityState) {
+unsafe extern "C" fn entity_set(w: *mut abi::WorldCtx, id: u64, set: u32, s: *const abi::EntityState) {
+    use crate::server::entity::Told;
+    use abi::entity_set as es;
     unsafe {
         let s = &*s;
-        let place = dim(w).place;
-        if let Some(e) = dim(w).entities.get_mut(id) {
-            let pos = crate::world::dvec(s.pos);
-            if pos.is_finite() {
-                e.pos = place.to_world(pos);
-            }
-            let vel = crate::world::dvec(s.vel);
-            if vel.is_finite() {
-                e.vel = vel;
-            }
+        let d = dim(w);
+        let c = content();
+        let max_health = d.max_health(c, id);
+        let Some(e) = d.entities.get_mut(id) else { return };
+        let player = e.player;
+        let mut told = Vec::new();
+        let pos = crate::world::dvec(s.pos);
+        let teleport = set & es::POS != 0 && pos.is_finite();
+        if teleport && !player {
+            e.pos = d.place.to_world(pos);
+        }
+        let vel = crate::world::dvec(s.vel);
+        if set & es::VELOCITY != 0 && vel.is_finite() {
+            e.vel = vel;
+            told.push(Told::Velocity((vel / crate::world::TPS as f64).as_vec3().to_array()));
+        }
+        if set & es::YAW != 0 && s.yaw.is_finite() {
             e.yaw = s.yaw;
+        }
+        if set & es::PITCH != 0 && s.pitch.is_finite() {
             e.pitch = s.pitch;
-            // Only a respawn brings back the dead, and only damage kills: everything that follows
-            // a death goes one way.
-            if e.alive() {
-                let health = s.health.min(s.max_health.max(e.health));
-                if health > 0.0 {
-                    e.health = health;
-                } else {
-                    dim(w).damage(content(), id, f32::MAX, 0, weft_abi::damage_cause::VOID);
-                }
+        }
+        if set & (es::YAW | es::PITCH) != 0 {
+            told.push(Told::Look([e.yaw, e.pitch]));
+        }
+        if set & es::FALL_DISTANCE != 0 && s.fall_distance.is_finite() {
+            e.fall = s.fall_distance.max(0.0);
+        }
+        if set & es::FLYING != 0 {
+            e.flying = s.flying != 0;
+            told.push(Told::Flying(e.flying));
+        }
+        if set & es::FIRE != 0 {
+            e.fire = s.fire;
+        }
+        if set & es::SELECTED != 0 && player {
+            e.selected = s
+                .selected
+                .min(c.game.player_layout.hotbar.saturating_sub(1));
+            told.push(Told::Selected(e.selected));
+        }
+        // Only a respawn brings back the dead, and only damage kills: everything that follows
+        // a death goes one way.
+        let dies = set & es::HEALTH != 0 && e.alive() && {
+            let health = s.health.min(max_health);
+            if health > 0.0 {
+                e.health = health;
             }
+            !(health > 0.0)
+        };
+        if player {
+            d.entities.told.extend(told.into_iter().map(|t| (id, t)));
+        }
+        if teleport && player {
+            d.events
+                .push(crate::server::DimEvent::Teleport { from: d.id, id, dim: d.id, pos: d.place.to_world(pos) });
+        }
+        if dies {
+            d.damage(c, id, f32::MAX, 0, weft_abi::damage_cause::VOID);
         }
     }
 }

@@ -1657,6 +1657,7 @@ pub fn freeze(
         (abi::attribute::BLOCK_REACH.into(), 4.5, 0.0, 1024.0),
         (abi::attribute::ENTITY_REACH.into(), 3.0, 0.0, 1024.0),
         (abi::attribute::MINING_SPEED.into(), 1.0, 0.0, 1024.0),
+        (abi::attribute::FOV.into(), 1.0, 0.05, 8.0),
     ];
     let mut particles: Vec<RawParticle> = engine_particles();
     let mut sky: Vec<RawSky> = Vec::new();

@@ -166,9 +166,8 @@ pub fn register(r: &mut Registry) {
             } else {
                 // Bows to whoever used it.
                 let w = e.world();
-                if let (Some(mut me), Some(them)) = (w.entity(id), w.entity(e.other())) {
-                    me.yaw = yaw_toward(me.pos, them.pos);
-                    w.set_entity(id, &me);
+                if let (Some(me), Some(them)) = (w.entity(id), w.entity(e.other())) {
+                    w.entity_edit(id).yaw(yaw_toward(me.pos, them.pos));
                 }
                 bowed.push(id);
                 w.action_play(id, "bow", false);
@@ -283,7 +282,7 @@ fn wisps(t: &EntityTick) {
             st.yaw = a;
         }
         st.vel.y = ((time as f64 + phase as f64) * 0.1).sin() * 0.8;
-        w.set_entity(id, &st);
+        w.entity_edit(id).yaw(st.yaw).velocity(st.vel);
         w.walk(id, yaw_dir(st.yaw), 1.0, false);
         if (time + phase) % 20 == 0 {
             w.spawn_particles(&SPARK, [st.pos.x, st.pos.y + 0.2, st.pos.z])

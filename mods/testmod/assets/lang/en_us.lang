@@ -53,6 +53,7 @@ config.testmod.dream_style = Daydream style
 config.testmod.dream_style.warm = Warm
 config.testmod.dream_style.cold = Cold
 item.testmod.steel_pickaxe = Steel Pickaxe
+item.testmod.mace = Mace
 item.testmod.pouch = Pouch
 block.testmod.pipe = Pipe
 testmod.notes.sample = Notes go here

@@ -1474,6 +1474,23 @@ pub struct SpawnEntityDesc {
     pub pickup_delay: u32,
 }
 
+/// Which fields of `EntityState` `Host::entity_set` writes.
+pub mod entity_set {
+    /// Players: a teleport within the dimension.
+    pub const POS: u32 = 1;
+    pub const VELOCITY: u32 = 2;
+    pub const YAW: u32 = 4;
+    pub const HEALTH: u32 = 8;
+    /// 0: the next landing hurts as if it started there.
+    pub const FALL_DISTANCE: u32 = 16;
+    /// Players: flying, whether the game mode lets them or not (it stops on landing then).
+    pub const FLYING: u32 = 32;
+    pub const FIRE: u32 = 64;
+    /// Players: the hotbar slot in hand.
+    pub const SELECTED: u32 = 128;
+    pub const PITCH: u32 = 256;
+}
+
 pub mod spawn_set {
     pub const VELOCITY: u32 = 1;
     pub const YAW: u32 = 2;
@@ -1773,8 +1790,12 @@ pub struct EntityState {
     pub health: f32,
     pub max_health: f32,
     pub age: u64,
-    /// Blocks fallen since last on ground.
+    /// Blocks fallen since last on ground: what a landing hurts by.
     pub fall_distance: f32,
+    /// Ticks it burns for yet.
+    pub fire: u32,
+    /// Players: the hotbar slot in hand.
+    pub selected: u32,
     /// Distance walked this tick (hunger exhaustion); read on a client, the limb swing (0
     /// standing, 1 running) in the frame of what it stands on.
     pub moved: f32,
@@ -1814,6 +1835,8 @@ defaults!(EntityState {
     max_health: 0.0,
     age: 0,
     fall_distance: 0.0,
+    fire: 0,
+    selected: 0,
     moved: 0.0,
     size: EntitySize { width: 0.0, height: 0.0, eye: 0.0 },
 });
@@ -2511,8 +2534,9 @@ pub struct Host {
     /// Adds `v` (blocks per second) to the entity's velocity: a mob's here, a player's on its
     /// client, the way a hit's knockback goes.
     pub entity_push: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, v: *const Vec3),
-    /// Writes pos, vel, yaw, pitch and health from `state`.
-    pub entity_set: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, state: *const EntityState),
+    /// Writes the fields of `state` that `set` names (`entity_set::*`), players' on their client
+    /// too. Health only comes back by respawning: 0 or less is a death by `damage_cause::VOID`.
+    pub entity_set: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, set: u32, state: *const EntityState),
     /// AI steering: horizontal direction and speed factor applied by the physics, optional jump.
     pub entity_walk: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, dir: *const [f32; 2], speed: f32, jump: u32),
     pub entity_damage: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, amount: f32, source: u64, cause: u32) -> u32,
@@ -3867,6 +3891,9 @@ pub mod attribute {
     pub const ENTITY_REACH: &str = "core:entity_reach";
     /// Multiplier on how fast a player mines (1).
     pub const MINING_SPEED: &str = "core:mining_speed";
+    /// Multiplier on a player's field of view (1), on top of the setting and of flying and
+    /// sprinting: a zoom, a speed rush.
+    pub const FOV: &str = "core:fov";
 }
 
 /// How an attribute modifier applies, like vanilla: ADD amounts sum onto the base, then times

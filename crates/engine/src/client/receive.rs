@@ -196,10 +196,14 @@ impl Client {
             ToClient::Cracks(list) => self.others_mining = list,
             ToClient::StopSprint => self.sprint_stopped = true,
             ToClient::Knock { away } => {
-                let away = glam::Vec3::from_array(away).as_dvec3();
+                let away = Vec3::from_array(away).as_dvec3();
                 self.player.vel = physics::knock(self.player.vel, away, self.player.on_ground);
             }
-            ToClient::Velocity { add } => self.player.vel += glam::Vec3::from_array(add).as_dvec3(),
+            ToClient::Velocity { add } => self.player.vel += Vec3::from_array(add).as_dvec3(),
+            ToClient::SetVelocity(v) => self.player.vel = Vec3::from_array(v).as_dvec3(),
+            ToClient::Look([yaw, pitch]) => (self.player.yaw, self.player.pitch) = (yaw, pitch),
+            ToClient::Flying(on) => self.player.flying = on,
+            ToClient::Selected(slot) => self.selected = (slot as usize).min(content().game.player_layout.hotbar.saturating_sub(1) as usize),
             ToClient::TickRate(rate) => self.tick_rate = rate.max(1) as f64,
             ToClient::Died => {
                 self.dead = true;

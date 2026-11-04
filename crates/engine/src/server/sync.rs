@@ -130,7 +130,7 @@ impl Server {
                 r.space.signals.level_changes.clear();
                 r.entities.killed.clear();
                 r.entities.taken.clear();
-                r.entities.pushed.clear();
+                r.entities.told.clear();
                 r.entities.dirty_comp.clear();
                 r.gizmos.clear();
                 // Block entity inventory changes must reach the save.
@@ -383,10 +383,14 @@ fn send_entities(
 /// What only the player itself hears: pushes, movement numbers, inventory, components, its menu.
 fn send_own_state(c: &'static Content, p: &mut Player, dim: &mut DimSet) {
     let Some(reg) = dim.entity_region(p.entity) else { return };
-    for &(_, push) in reg.entities.pushed.iter().filter(|h| h.0 == p.entity) {
-        p.conn.send(match push {
-            entity::Pushed::Knock(away) => ToClient::Knock { away },
-            entity::Pushed::Add(add) => ToClient::Velocity { add },
+    for &(_, told) in reg.entities.told.iter().filter(|h| h.0 == p.entity) {
+        p.conn.send(match told {
+            entity::Told::Knock(away) => ToClient::Knock { away },
+            entity::Told::Add(add) => ToClient::Velocity { add },
+            entity::Told::Velocity(v) => ToClient::SetVelocity(v),
+            entity::Told::Look(look) => ToClient::Look(look),
+            entity::Told::Flying(on) => ToClient::Flying(on),
+            entity::Told::Selected(slot) => ToClient::Selected(slot),
         });
     }
     // The client moves its player and times its mining: it needs them all.

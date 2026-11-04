@@ -63,6 +63,8 @@ pub mod attribute {
     pub static ENTITY_REACH: Attribute = Attribute::named(crate::abi::attribute::ENTITY_REACH);
     /// Multiplier on how fast a player mines (1).
     pub static MINING_SPEED: Attribute = Attribute::named(crate::abi::attribute::MINING_SPEED);
+    /// Multiplier on a player's field of view (1): a zoom, a speed rush.
+    pub static FOV: Attribute = Attribute::named(crate::abi::attribute::FOV);
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;

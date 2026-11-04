@@ -137,8 +137,10 @@ impl World {
         let pos = pos.into();
         unsafe { (host().place_template)(self.raw(), Str::new(template.name()), &pos) != 0 }
     }
-    pub fn set_entity(&self, id: u64, s: &EntityState) {
-        unsafe { (host().entity_set)(self.raw(), id, s) }
+    /// Changes what the entity is now, only what is named, when the edit is dropped:
+    /// `w.entity_edit(id).velocity(v).yaw(y);`. Players' own clients follow.
+    pub fn entity_edit(&self, id: u64) -> EntityEdit {
+        EntityEdit { world: *self, id, set: 0, state: EntityState::DEFAULT }
     }
     /// Adds `v` (blocks per second) to its velocity, players included: a trampoline, a blast.
     pub fn push(&self, id: u64, v: impl Into<Vec3>) {
@@ -426,6 +428,68 @@ impl World {
     }
     fn draw(&self, group: &GizmoGroup, kind: u32, a: Vec3, b: Vec3, color: u32, ticks: u32) {
         unsafe { (host().gizmo)(self.raw(), Str::new(group.name()), kind, &a, &b, color, ticks) }
+    }
+}
+
+/// What `World::entity_edit` changes, sent when dropped.
+pub struct EntityEdit {
+    world: World,
+    id: u64,
+    set: u32,
+    state: EntityState,
+}
+
+impl EntityEdit {
+    fn with(mut self, field: u32, f: impl FnOnce(&mut EntityState)) -> Self {
+        self.set |= field;
+        f(&mut self.state);
+        self
+    }
+    /// A player is teleported there.
+    pub fn pos(self, pos: impl Into<Vec3>) -> Self {
+        let pos = pos.into();
+        self.with(abi::entity_set::POS, |s| s.pos = pos)
+    }
+    /// Blocks per second.
+    pub fn velocity(self, v: impl Into<Vec3>) -> Self {
+        let v = v.into();
+        self.with(abi::entity_set::VELOCITY, |s| s.vel = v)
+    }
+    /// Radians, like `EntityState::yaw`.
+    pub fn yaw(self, yaw: f32) -> Self {
+        self.with(abi::entity_set::YAW, |s| s.yaw = yaw)
+    }
+    pub fn pitch(self, pitch: f32) -> Self {
+        self.with(abi::entity_set::PITCH, |s| s.pitch = pitch)
+    }
+    /// Up to its max health; 0 or less kills it (`damage_cause::VOID`). Only a respawn brings
+    /// back the dead.
+    pub fn health(self, health: f32) -> Self {
+        self.with(abi::entity_set::HEALTH, |s| s.health = health)
+    }
+    /// What the next landing hurts by: 0 after a mace's smash, a parachute opening.
+    pub fn fall_distance(self, blocks: f32) -> Self {
+        self.with(abi::entity_set::FALL_DISTANCE, |s| s.fall_distance = blocks)
+    }
+    /// Players: flying or not, whatever the game mode allows (landing still stops it).
+    pub fn flying(self, on: bool) -> Self {
+        self.with(abi::entity_set::FLYING, |s| s.flying = on as u32)
+    }
+    /// Ticks it burns for, 0 puts it out.
+    pub fn fire(self, ticks: u32) -> Self {
+        self.with(abi::entity_set::FIRE, |s| s.fire = ticks)
+    }
+    /// Players: the hotbar slot in hand.
+    pub fn selected(self, slot: u32) -> Self {
+        self.with(abi::entity_set::SELECTED, |s| s.selected = slot)
+    }
+}
+
+impl Drop for EntityEdit {
+    fn drop(&mut self) {
+        if self.set != 0 && !std::thread::panicking() {
+            unsafe { (host().entity_set)(self.world.raw(), self.id, self.set, &self.state) }
+        }
     }
 }
 
