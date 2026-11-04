@@ -482,7 +482,7 @@ pub fn abi_values(args: &Args, selected: &[Option<String>]) -> Vec<weft_abi::Com
                 int: 0,
                 float: 0.0,
                 text: Str::new(""),
-                pos: [0.0; 3],
+                pos: [0.0; 3].into(),
                 name: Str::new(&args.names[i]),
             };
             match v {
@@ -491,7 +491,7 @@ pub fn abi_values(args: &Args, selected: &[Option<String>]) -> Vec<weft_abi::Com
                 Some(Value::Float(f)) => (out.kind, out.float) = (cv::FLOAT, *f),
                 Some(Value::Text(t)) => (out.kind, out.text) = (cv::TEXT, Str::new(t)),
                 Some(Value::Id(n, name)) => (out.kind, out.int, out.text) = (cv::ID, *n as i64, Str::new(name)),
-                Some(Value::Pos(p)) => (out.kind, out.pos) = (cv::POS, p.to_array()),
+                Some(Value::Pos(p)) => (out.kind, out.pos) = (cv::POS, p.to_array().into()),
                 Some(Value::Targets(_)) => {
                     let ids = selected.get(i).and_then(|s| s.as_deref()).unwrap_or("");
                     (out.kind, out.int, out.text) = (cv::TARGETS, ids.split_whitespace().count() as i64, Str::new(ids));

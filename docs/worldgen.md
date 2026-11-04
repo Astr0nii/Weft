@@ -199,9 +199,9 @@ Anything bigger than a cube that stands on the ground here and there, like a tre
 ```rust
 static TREE_SITES: Scatter = Scatter::named("trees");
 r.scatter(&TREE_SITES).cell(5).reach(3).density(&TREES).shape(|s| {
-    let [x, y, z] = s.pos();                        // the block above the ground
-    for dy in 0..5 { s.force([x, y + dy, z], OAK_LOG.id()); }
-    s.put([x, y + 5, z], OAK_LEAVES.id());           // put: only into air
+    let p = s.pos();                                // the block above the ground
+    for dy in 0..5 { s.put_force(p.offset(0, dy, 0), OAK_LOG.id()); }
+    s.put(p.offset(0, 5, 0), OAK_LEAVES.id());       // put: only into air
 });
 ```
 - `cell(n)`: one spot per `n` x `n` blocks at most

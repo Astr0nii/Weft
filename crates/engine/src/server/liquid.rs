@@ -294,7 +294,7 @@ impl Dim {
             {
                 let mut q = weft_abi::Query {
                     entity: player,
-                    pos: hit.block.to_array(),
+                    pos: hit.block.to_array().into(),
                     state: source,
                     item: held.item,
                     ..weft_abi::Query::DEFAULT
@@ -311,8 +311,13 @@ impl Dim {
             if old == source {
                 return None;
             }
-            let mut q =
-                weft_abi::Query { entity: player, pos: target.to_array(), state: source, item: held.item, ..weft_abi::Query::DEFAULT };
+            let mut q = weft_abi::Query {
+                entity: player,
+                pos: target.to_array().into(),
+                state: source,
+                item: held.item,
+                ..weft_abi::Query::DEFAULT
+            };
             if !self.ask(c, weft_abi::action::PLACE_BLOCK, &mut q) {
                 return None;
             }
@@ -328,8 +333,13 @@ impl Dim {
             .filter(|h| h.frame == 0)?;
         let f = decode(c, hit.state).filter(|f| f.source)?;
         let filled = *c.containers.get(&(held.item, f.id))?;
-        let mut q =
-            weft_abi::Query { entity: player, pos: hit.block.to_array(), state: hit.state, item: held.item, ..weft_abi::Query::DEFAULT };
+        let mut q = weft_abi::Query {
+            entity: player,
+            pos: hit.block.to_array().into(),
+            state: hit.state,
+            item: held.item,
+            ..weft_abi::Query::DEFAULT
+        };
         if !self.ask(c, weft_abi::action::BREAK_BLOCK, &mut q) {
             return None;
         }

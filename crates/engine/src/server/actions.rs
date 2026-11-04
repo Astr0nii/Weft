@@ -115,7 +115,7 @@ impl Server {
         let Some(def) = c.items.get(held.item as usize) else { return false };
         let (pos, face) = target.unwrap_or((IVec3::ZERO, 0));
         let state = target.and_then(|_| r.get(pos)).unwrap_or(0);
-        let mut q = abi::Query { entity, item: held.item, pos: pos.to_array(), state, ..abi::Query::DEFAULT };
+        let mut q = abi::Query { entity, item: held.item, pos: pos.to_array().into(), state, ..abi::Query::DEFAULT };
         if !r.ask(c, abi::action::USE_ITEM, &mut q) {
             return false;
         }
@@ -147,7 +147,7 @@ impl Server {
                 player: entity,
                 stack: held,
                 slot,
-                pos: pos.to_array(),
+                pos: pos.to_array().into(),
                 face: face as u32,
                 has_target: target.is_some() as u32,
                 handled: 0,
@@ -161,7 +161,7 @@ impl Server {
             r.emit_engine(
                 c,
                 abi::action::USE_ITEM,
-                &abi::ItemUsed { player: entity, stack: held, pos: pos.to_array(), has_target: target.is_some() as u32 },
+                &abi::ItemUsed { player: entity, stack: held, pos: pos.to_array().into(), has_target: target.is_some() as u32 },
             );
             r.events
                 .push(DimEvent::EntitySwing { id: entity, off: off_hand });

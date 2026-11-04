@@ -55,7 +55,7 @@ fn init(r: &mut Registry) {
     r.dimension(&FLATLANDS)
         .generator(worldgen::flat)
         .bare()
-        .spawn_point(|_| [0, 3, 0])
+        .spawn_point(|_| [0, 3, 0].into())
         .height_cubes(-2, 8)
         .sky_above(1)
         .fixed_time(6000)

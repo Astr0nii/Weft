@@ -188,13 +188,13 @@ pub async fn fly_load(t: T) -> R {
     while begin.elapsed().as_secs_f32() < secs - 12.0 {
         t.secs(1.0).await?;
         let s = t.state();
-        let speed = ((s.pos[0] - last_pos[0]).powi(2) + (s.pos[2] - last_pos[2]).powi(2)).sqrt();
+        let speed = ((s.pos.x - last_pos.x).powi(2) + (s.pos.z - last_pos.z).powi(2)).sqrt();
         last_pos = s.pos;
         // Yaw 0 looks along -Z: the ground ahead, the first column not there yet.
         let reach = (1..=64)
             .map(|i| i * 16)
             .find(|d| {
-                let (x, z) = (s.pos[0].floor() as i32, s.pos[2].floor() as i32 - d);
+                let (x, z) = (s.pos.x.floor() as i32, s.pos.z.floor() as i32 - d);
                 t.c()
                     .block([x, OVERWORLD.column(5, x, z).height, z])
                     .is_none()
@@ -210,7 +210,7 @@ pub async fn fly_load(t: T) -> R {
         // Every few seconds: the ground ahead, well behind the front of what has arrived, has to
         // be drawn: a cube here but waiting for its mesh is a hole in the picture.
         if samples.len() % 5 == 4 {
-            let (px, pz) = (s.pos[0].floor() as i32, s.pos[2].floor() as i32);
+            let (px, pz) = (s.pos.x.floor() as i32, s.pos.z.floor() as i32);
             for dz in (32..(reach / 2).max(33)).step_by(16) {
                 for dx in (-448..=448).step_by(16) {
                     let (x, z) = (px + dx, pz - dz);
@@ -230,7 +230,7 @@ pub async fn fly_load(t: T) -> R {
     t.shot("flying").await?;
     let b = t.bench(10.0, "flying").await?;
     let s = t.state();
-    t.note(format!("flew to {:.0}: worst reach ahead {worst} blocks, seconds under 512: {lows}, peak meshes waiting {peak_pending}, generated {} cubes on the way, p99 {:.1} ms", s.pos[2], s.generated - cubes_at_start, b[2]));
+    t.note(format!("flew to {:.0}: worst reach ahead {worst} blocks, seconds under 512: {lows}, peak meshes waiting {peak_pending}, generated {} cubes on the way, p99 {:.1} ms", s.pos.z, s.generated - cubes_at_start, b[2]));
     // Stopped, the rest of the columns comes.
     t.secs(2.5).await?;
     let stop = std::time::Instant::now();
@@ -801,9 +801,9 @@ pub async fn dimensions(t: T) -> R {
     let p = add(t.feet(), [0, -1, 0]);
     t.check(t.set(p, "stone").await.is_err(), "no block can be set in the void");
     t.check(t.block(p).await? != "base:stone", "the void stays empty");
-    let y = t.state().pos[1];
+    let y = t.state().pos.y;
     t.secs(1.0).await?;
-    t.check((t.state().pos[1] - y).abs() < 0.01, format!("no gravity in the void (y {y:.2} -> {:.2})", t.state().pos[1]));
+    t.check((t.state().pos.y - y).abs() < 0.01, format!("no gravity in the void (y {y:.2} -> {:.2})", t.state().pos.y));
 
     t.cmd("/dim core:debug_blocks").await?;
     t.secs(0.5).await?;
@@ -1011,10 +1011,10 @@ async fn edit_while_loading_once(t: &T) -> Result<f64, String> {
     t.world(5).await?;
     t.idle().await?;
     t.op("mode spectator").await?;
-    let low = t.state().pos[1];
+    let low = t.state().pos.y;
     t.cmd("/tp ~ ~40 ~").await?;
     // Read too early, "here" is still the ground, and the block goes where the camera doesn't look.
-    t.until("up in the air", Duration::from_secs(5), |t| t.state().pos[1] > low + 30.0)
+    t.until("up in the air", Duration::from_secs(5), |t| t.state().pos.y > low + 30.0)
         .await?;
     t.c().set_look(0.0, 0.0);
     t.frames(5).await?;

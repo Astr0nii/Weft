@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use glam::{DVec3, IVec3, Vec2};
+use glam::Vec2;
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
 use weft_abi::{self as abi, ItemStack, Slice, Str, client_flags as cf};
@@ -258,12 +258,12 @@ pub unsafe extern "C" fn client_state(c: *mut abi::ClientCtx, out: *mut abi::Cli
                 | bit(cl.menu.is_some(), cf::MENU_OPEN);
             s.dim = cl.world.dim;
             s.player = cl.player_id;
-            s.pos = p.pos.to_array();
-            s.shown = cl.smooth_pos().to_array();
+            s.pos = p.pos.to_array().into();
+            s.shown = cl.smooth_pos().to_array().into();
             if let Some(h) = cl.target {
-                (s.target, s.target_body) = (h.block.to_array(), h.frame);
+                (s.target, s.target_body) = (h.block.to_array().into(), h.frame);
             }
-            s.vel = p.vel.to_array();
+            s.vel = p.vel.to_array().into();
             s.yaw = p.yaw;
             s.pitch = p.pitch;
             s.selected = cl.selected as u32;
@@ -339,12 +339,12 @@ pub unsafe extern "C" fn client_set_player(c: *mut abi::ClientCtx, control: *con
         let Some(g) = r.game.as_mut() else { return };
         let ctl = *control;
         let p = &mut g.client.player;
-        if ctl.mask & m::POS != 0 && DVec3::from_array(ctl.pos).is_finite() {
-            p.pos = DVec3::from_array(ctl.pos);
+        if ctl.mask & m::POS != 0 && crate::world::dvec(ctl.pos).is_finite() {
+            p.pos = crate::world::dvec(ctl.pos);
             p.prev = p.pos;
         }
-        if ctl.mask & m::VEL != 0 && DVec3::from_array(ctl.vel).is_finite() {
-            p.vel = DVec3::from_array(ctl.vel);
+        if ctl.mask & m::VEL != 0 && crate::world::dvec(ctl.vel).is_finite() {
+            p.vel = crate::world::dvec(ctl.vel);
         }
         if ctl.mask & m::LOOK != 0 {
             p.yaw = ctl.yaw;
@@ -485,10 +485,10 @@ pub unsafe extern "C" fn client_text(c: *mut abi::ClientCtx, which: u32, index: 
     }
 }
 
-pub unsafe extern "C" fn client_block_in(c: *mut abi::ClientCtx, frame: u64, pos: *const [i32; 3]) -> u32 {
+pub unsafe extern "C" fn client_block_in(c: *mut abi::ClientCtx, frame: u64, pos: *const abi::BlockPos) -> u32 {
     unsafe {
         let Some(cl) = client(c) else { return u32::MAX };
-        let p = IVec3::from_array(*pos);
+        let p = crate::world::ivec(*pos);
         if frame == 0 {
             return cl.world.block(p);
         }
@@ -499,18 +499,18 @@ pub unsafe extern "C" fn client_block_in(c: *mut abi::ClientCtx, frame: u64, pos
     }
 }
 
-pub unsafe extern "C" fn client_cube_shown(c: *mut abi::ClientCtx, pos: *const [i32; 3]) -> u32 {
+pub unsafe extern "C" fn client_cube_shown(c: *mut abi::ClientCtx, pos: *const abi::BlockPos) -> u32 {
     unsafe {
         client(c).is_some_and(|cl| {
             cl.world
-                .cube_shown(crate::world::cube_of(IVec3::from_array(*pos)))
+                .cube_shown(crate::world::cube_of(crate::world::ivec(*pos)))
         }) as u32
     }
 }
 
-pub unsafe extern "C" fn client_light(c: *mut abi::ClientCtx, pos: *const [i32; 3]) -> u32 {
+pub unsafe extern "C" fn client_light(c: *mut abi::ClientCtx, pos: *const abi::BlockPos) -> u32 {
     unsafe {
-        let p = IVec3::from_array(*pos);
+        let p = crate::world::ivec(*pos);
         client(c).map_or(u32::MAX, |cl| if cl.world.block(p) == u32::MAX { u32::MAX } else { cl.world.light(p) })
     }
 }
@@ -627,8 +627,8 @@ pub unsafe extern "C" fn client_draw(
     c: *mut abi::ClientCtx,
     group: Str,
     kind: u32,
-    a: *const [f64; 3],
-    b: *const [f64; 3],
+    a: *const abi::Vec3,
+    b: *const abi::Vec3,
     color: u32,
     key: Str,
     args: Slice<abi::UiArg>,
@@ -640,7 +640,7 @@ pub unsafe extern "C" fn client_draw(
             return;
         }
         let (a, b, text) =
-            (DVec3::from_array(*a), DVec3::from_array(*b), crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(args)));
+            (crate::world::dvec(*a), crate::world::dvec(*b), crate::ui::text::Msg::new(key.as_str(), crate::client::modui::args(args)));
         match kind {
             abi::gizmo_kind::SCREEN_TEXT => {
                 r.mod_screen_text
@@ -749,7 +749,7 @@ pub unsafe extern "C" fn client_entity_held(c: *mut abi::ClientCtx, entity: u64,
     unsafe { with_entity(c, entity, |_, e| if off != 0 { e.off_held } else { e.held }).unwrap_or(0) }
 }
 
-pub unsafe extern "C" fn client_bone_position(c: *mut abi::ClientCtx, entity: u64, bone: Str, out: *mut [f64; 3]) -> u32 {
+pub unsafe extern "C" fn client_bone_position(c: *mut abi::ClientCtx, entity: u64, bone: Str, out: *mut abi::Vec3) -> u32 {
     unsafe {
         let Some(g) = run(c).and_then(|r| r.game.as_ref()) else { return 0 };
         match g
@@ -759,7 +759,7 @@ pub unsafe extern "C" fn client_bone_position(c: *mut abi::ClientCtx, entity: u6
             .bone_position(entity, bone.as_str())
         {
             Some(p) => {
-                *out = p.to_array();
+                *out = p.to_array().into();
                 1
             }
             None => 0,
@@ -767,10 +767,10 @@ pub unsafe extern "C" fn client_bone_position(c: *mut abi::ClientCtx, entity: u6
     }
 }
 
-pub unsafe extern "C" fn client_play_sound(c: *mut abi::ClientCtx, sound: u32, pos: *const [f64; 3], volume: f32, pitch: f32) {
+pub unsafe extern "C" fn client_play_sound(c: *mut abi::ClientCtx, sound: u32, pos: *const abi::Vec3, volume: f32, pitch: f32) {
     unsafe {
         let Some(r) = run(c) else { return };
-        let pos = (!pos.is_null()).then(|| DVec3::from_array(*pos));
+        let pos = (!pos.is_null()).then(|| crate::world::dvec(*pos));
         r.ui_sounds
             .push(crate::audio::Play { sound, pos, volume, pitch });
     }

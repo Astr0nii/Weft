@@ -683,7 +683,7 @@ impl Server {
                     }
                 }
                 DimEvent::Particles { dim, burst } => {
-                    let at = DVec3::from_array(burst.pos);
+                    let at = crate::world::dvec(burst.pos);
                     for (pi, p) in self.players.iter().enumerate() {
                         let pos = self.dims[p.dim as usize].entity(p.entity).map(|e| e.pos);
                         if p.joined && p.dim == dim && pos.is_some_and(|pos| (pos - at).length_squared() < PARTICLE_RANGE * PARTICLE_RANGE)
@@ -1148,7 +1148,7 @@ impl Server {
                         p.dim == d
                             && self.dims[d as usize]
                                 .entity(p.entity)
-                                .is_some_and(|e| (e.pos - DVec3::from_array(at)).length_squared() < radius * radius)
+                                .is_some_and(|e| (e.pos - crate::world::dvec(at)).length_squared() < radius * radius)
                     }
                 };
             if to_them {

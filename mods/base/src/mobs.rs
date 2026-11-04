@@ -351,7 +351,7 @@ fn creeper() -> ai::Goals {
             let near = ai::nearest_player(w, st, 7.0);
             let d2 = near
                 .as_ref()
-                .map_or(f64::MAX, |(_, p)| (0..3).map(|i| (p.pos[i] - st.pos[i]).powi(2)).sum());
+                .map_or(f64::MAX, |(_, p)| (p.pos - st.pos).length_squared());
             let Some(fuse) = w.component_mut(id, &FUSE) else { return false };
             if d2 < 9.0 || (*fuse > 0 && d2 < 49.0) {
                 *fuse += 1;
@@ -364,7 +364,7 @@ fn creeper() -> ai::Goals {
                 w.flash(id);
             }
             if lit >= 30 {
-                blast(w, id, st.pos, 3.0);
+                blast(w, id, st.pos.to_array().into(), 3.0);
                 return true;
             }
             lit > 0
@@ -375,13 +375,10 @@ fn creeper() -> ai::Goals {
 }
 
 /// Vanilla's explosion in short: a hole, and damage falling off to nothing at twice the radius.
-fn blast(w: &World, id: u64, at: [f64; 3], radius: f64) {
+fn blast(w: &World, id: u64, at: Vec3, radius: f64) {
     for other in w.entities_near(at, radius * 2.0, None) {
         let Some(s) = w.entity(other).filter(|_| other != id) else { continue };
-        let d = (0..3)
-            .map(|i| (s.pos[i] - at[i]).powi(2))
-            .sum::<f64>()
-            .sqrt();
+        let d = (s.pos - at).length_squared().sqrt();
         let impact = (1.0 - d / (radius * 2.0)).max(0.0);
         let damage = (impact * impact + impact) / 2.0 * 7.0 * radius * 2.0 + 1.0;
         w.damage(other, damage as f32, id, damage_cause::EXPLOSION);
@@ -410,7 +407,7 @@ fn skeleton() -> ai::Goals {
             if *reload == 0 {
                 shoot(w, id, st, &p);
             }
-            let d2 = (p.pos[0] - st.pos[0]).powi(2) + (p.pos[2] - st.pos[2]).powi(2);
+            let d2 = (p.pos.x - st.pos.x).powi(2) + (p.pos.z - st.pos.z).powi(2);
             if d2 > 100.0 {
                 w.navigate(id, p.pos, 1.0);
             }
@@ -421,18 +418,18 @@ fn skeleton() -> ai::Goals {
 }
 
 fn shoot(w: &World, id: u64, from: &EntityState, at: &EntityState) {
-    let eye = from.eye()[1];
-    let d = [at.pos[0] - from.pos[0], at.pos[1] + at.size.eye as f64 * 0.7 - eye, at.pos[2] - from.pos[2]];
+    let eye = from.eye().y;
+    let d = [at.pos.x - from.pos.x, at.pos.y + at.size.eye as f64 * 0.7 - eye, at.pos.z - from.pos.z];
     let flat = (d[0] * d[0] + d[2] * d[2]).sqrt();
     let len = (flat * flat + d[1] * d[1]).sqrt().max(0.1);
     // A little above the target for the drop on the way.
     const SPEED: f64 = 32.0;
-    let arrow = w.spawn(&ARROW, [from.pos[0], eye, from.pos[2]]);
+    let arrow = w.spawn(&ARROW, [from.pos.x, eye, from.pos.z]);
     if let Some(shooter) = w.component_mut(arrow, &SHOOTER) {
         *shooter = id;
     }
     if let Some(mut s) = w.entity(arrow) {
-        s.vel = [d[0] / len * SPEED, d[1] / len * SPEED + flat * 0.4, d[2] / len * SPEED];
+        s.vel = [d[0] / len * SPEED, d[1] / len * SPEED + flat * 0.4, d[2] / len * SPEED].into();
         s.yaw = yaw_toward([0.0; 3], d);
         w.set_entity(arrow, &s);
     }
@@ -442,7 +439,7 @@ fn shoot(w: &World, id: u64, from: &EntityState, at: &EntityState) {
 fn arrow_flies(w: &World, id: u64, st: &EntityState) -> bool {
     let shooter = w.component(id, &SHOOTER).unwrap_or(0);
     // Its own box against theirs: a tall mob is hit in the head too.
-    let tip = Shape::cuboid([st.pos[0] - 0.25, st.pos[1], st.pos[2] - 0.25], [st.pos[0] + 0.25, st.pos[1] + 0.5, st.pos[2] + 0.25]);
+    let tip = Shape::cuboid([st.pos.x - 0.25, st.pos.y, st.pos.z - 0.25], [st.pos.x + 0.25, st.pos.y + 0.5, st.pos.z + 0.25]);
     let hit = w
         .entities_in(&tip, EntityFilter::any().targets().touching())
         .into_iter()
@@ -459,9 +456,9 @@ fn arrow_flies(w: &World, id: u64, st: &EntityState) -> bool {
 /// A chicken: flutters down instead of falling, and lays an egg now and then.
 fn passive_chicken() -> ai::Goals {
     let goals = ai::Goals::new().then(|w: &World, id: u64, st: &EntityState| {
-        if st.on_ground == 0 && st.vel[1] < 0.0 {
+        if st.on_ground == 0 && st.vel.y < 0.0 {
             let mut now = *st;
-            now.vel[1] *= 0.6;
+            now.vel.y *= 0.6;
             w.set_entity(id, &now);
         }
         if let Some(next) = w.component_mut(id, &FUSE) {
@@ -498,7 +495,7 @@ fn hostile() -> ai::Goals {
 
 /// A spider's peace: out in daylight.
 fn in_daylight(w: &World, st: &EntityState, _player: &EntityState) -> bool {
-    let feet = [st.pos[0].floor() as i32, (st.pos[1] + 0.5).floor() as i32, st.pos[2].floor() as i32];
+    let feet = [st.pos.x.floor() as i32, (st.pos.y + 0.5).floor() as i32, st.pos.z.floor() as i32];
     w.daylight() >= 0.5 && w.sky_light(feet) >= 10
 }
 
@@ -517,7 +514,7 @@ fn with_passive(goals: ai::Goals) -> ai::Goals {
             // A new direction every second.
             if w.game_time() % 20 == id % 20 || !w.navigating(id) {
                 let a = w.random_below(628) as f64 / 100.0;
-                w.navigate(id, [st.pos[0] + a.cos() * 8.0, st.pos[1], st.pos[2] + a.sin() * 8.0], 1.6);
+                w.navigate(id, [st.pos.x + a.cos() * 8.0, st.pos.y, st.pos.z + a.sin() * 8.0], 1.6);
             }
             true
         })

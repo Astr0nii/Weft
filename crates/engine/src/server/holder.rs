@@ -2,7 +2,6 @@
 //! block's through its block entity, a stack's through its `contents` and stack components,
 //! written back into the slot the stack sits in.
 
-use glam::IVec3;
 use weft_abi::{self as abi, ItemStack};
 
 use super::dim::Dim;
@@ -26,7 +25,7 @@ pub fn resolve(d: &Dim, h: &abi::Holder) -> Option<At> {
             .get(h.entity)
             .filter(|e| !e.removed)
             .map(|_| At::Entity(h.entity)),
-        abi::holder::BLOCK => d.anchored(IVec3::from_array(h.pos)).map(At::Entity),
+        abi::holder::BLOCK => d.anchored(crate::world::ivec(h.pos)).map(At::Entity),
         abi::holder::HELD => d
             .entities
             .inventories

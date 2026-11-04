@@ -117,7 +117,7 @@ fn init(r: &mut Registry) {
                 .texture("machine_top")
                 .model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0]);
             for d in Dir::ALL.into_iter().filter(|d| p.is(d.name(), "true")) {
-                let o = d.offset().map(|v| v as f32);
+                let o = d.offset().to_array().map(|v| v as f32);
                 let lo = [0, 1, 2].map(|a| {
                     if o[a] < 0.0 {
                         0.0
@@ -371,7 +371,7 @@ fn init(r: &mut Registry) {
         )
         .biome(BiomeRule::new("dust"));
     r.dimension(&MARS)
-        .spawn_point(|seed| [8, MARS.column(seed, 8, 8).height + 1, 8])
+        .spawn_point(|seed| [8, MARS.column(seed, 8, 8).height + 1, 8].into())
         .height_cubes(-4, 12)
         .sky_above(11)
         .gravity(12.0)
@@ -425,7 +425,7 @@ fn init(r: &mut Registry) {
 
     r.dimension(&VOID)
         .generator(island)
-        .spawn_point(|_| [0, 64, 0])
+        .spawn_point(|_| [0, 64, 0].into())
         .height_cubes(2, 6)
         .sky_above(5)
         .gravity(14.0)
@@ -515,7 +515,7 @@ fn debug_panel(r: &mut Registry) {
     r.hud_element(&DEBUG_PANEL, hud_anchor::DEBUG_LEFT, 0, |ui| {
         ui.text_bind(|c, out| {
             let Some(me) = c.player_state() else { return };
-            let speed = (me.vel[0] * me.vel[0] + me.vel[2] * me.vel[2]).sqrt() * 20.0;
+            let speed = (me.vel.x * me.vel.x + me.vel.z * me.vel.z).sqrt() * 20.0;
             out.set("testmod.debug.speed", &[Arg::Float(speed, 2), Arg::Float(me.fall_distance as f64, 1)]);
         });
     });
@@ -551,7 +551,7 @@ fn energy_gizmos(w: &World, ids: &[u64]) {
     for &id in ids {
         if let (Some(st), Some(e)) = (w.entity(id), w.component(id, &ENERGY)) {
             let args = [Arg::Int(e.stored as i64), Arg::Int(e.capacity as i64)];
-            w.draw_text(&ENERGY_GIZMOS, [st.pos[0], st.pos[1] + 1.3, st.pos[2]], "testmod.energy_label", &args, 0x60FF60FF, 1.0, 11);
+            w.draw_text(&ENERGY_GIZMOS, [st.pos.x, st.pos.y + 1.3, st.pos.z], "testmod.energy_label", &args, 0x60FF60FF, 1.0, 11);
         }
     }
 }
@@ -588,7 +588,7 @@ fn dynamite(r: &mut Registry) {
             let center = block_center(pos);
             if left > 1 {
                 w.prop_set(pos, "fuse", &(left - 1).to_string());
-                w.spawn_particles(&looks::SPARK, [center[0], center[1] + 0.6, center[2]])
+                w.spawn_particles(&looks::SPARK, [center.x, center.y + 0.6, center.z])
                     .count(6)
                     .spread(0.2)
                     .random_speed(0.5);
@@ -757,7 +757,7 @@ pub const NEEDLE: [i32; 2] = [1000, 1000];
 /// Basalt boulders on the scorched biome of base's overworld.
 fn boulders(g: &mut Gen) {
     let Some(&cols) = g.columns() else { return };
-    let [ox, oy, oz] = g.origin();
+    let BlockPos { x: ox, y: oy, z: oz } = g.origin();
     let (scorched, basalt) = (SCORCHED.id(), BASALT.id());
     for (i, c) in cols.iter().enumerate() {
         let y = c.height + 1 - oy;
@@ -773,7 +773,7 @@ fn boulders(g: &mut Gen) {
 }
 
 fn island(g: &mut Gen) {
-    let [ox, oy, oz] = g.origin();
+    let BlockPos { x: ox, y: oy, z: oz } = g.origin();
     let (stone, grass, dirt) = (STONE.id(), GRASS.id(), DIRT.id());
     for y in 0..16usize {
         for z in 0..16usize {

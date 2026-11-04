@@ -1391,7 +1391,7 @@ impl Dim {
                     if let (Some(cb), true) = (block.cb.on_signal, was != u8::MAX) {
                         self.call(block.owner, cb, |w| abi::SignalArgs {
                             world: w,
-                            pos: p.to_array(),
+                            pos: p.to_array().into(),
                             state: new,
                             level: level as u32,
                             before: was as u32,
@@ -1418,8 +1418,12 @@ impl Dim {
                     let info = c.states[state as usize].signal;
                     let block = c.block_of(there);
                     let Some(cb) = block.cb.signal_read else { continue };
-                    let out =
-                        self.call(block.owner, cb, |w| abi::SignalReadArgs { world: w, pos: behind.to_array(), state: there, output: 0 });
+                    let out = self.call(block.owner, cb, |w| abi::SignalReadArgs {
+                        world: w,
+                        pos: behind.to_array().into(),
+                        state: there,
+                        output: 0,
+                    });
                     let want = compared(info.flags, out.output.min(15) as u8, side);
                     if want != info.level {
                         self.space.signals.schedule(p, want, info.delay, self.time);
@@ -1444,7 +1448,7 @@ impl Dim {
                     let Some(cb) = block.cb.signal_gate else { continue };
                     let out = self.call(block.owner, cb, |w| abi::GateArgs {
                         world: w,
-                        pos: p.to_array(),
+                        pos: p.to_array().into(),
                         state,
                         inputs: inputs.map(|v| v as u32),
                         output: info.level as u32,

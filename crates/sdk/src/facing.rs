@@ -7,6 +7,8 @@
 //!     .states(|p, s| s.faces(..p.facing()..p.is("lit", "true")..));
 //! ```
 
+use crate::abi::BlockPos;
+
 /// A direction, in face order (`-X +X -Y +Y -Z +Z`), so `face()` is the face index blocks and
 /// support rules use.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -31,8 +33,8 @@ impl Dir {
     pub fn opposite(self) -> Dir {
         Dir::from_face(self.face() ^ 1)
     }
-    pub fn offset(self) -> [i32; 3] {
-        crate::abi::FACE_DIRS[self as usize]
+    pub fn offset(self) -> BlockPos {
+        crate::abi::FACE_DIRS[self as usize].into()
     }
     /// The next way around, seen from above: north, east, south, west. Up and down stay.
     pub fn clockwise(self) -> Dir {
@@ -61,7 +63,7 @@ impl Dir {
     pub fn nearest(v: [f32; 3], allowed: Facings) -> Dir {
         let score = |d: Dir| {
             let o = d.offset();
-            o[0] as f32 * v[0] + o[1] as f32 * v[1] + o[2] as f32 * v[2]
+            o.x as f32 * v[0] + o.y as f32 * v[1] + o.z as f32 * v[2]
         };
         allowed
             .dirs()

@@ -172,7 +172,6 @@ impl Client {
                 }
                 self.player.speed_mul = self.attributes[a::MOVEMENT_SPEED as usize] as f64;
                 self.player.jump_mul = self.attributes[a::JUMP_STRENGTH as usize] as f64;
-                self.player.swim_anywhere = self.attributes[a::SWIM_ANYWHERE as usize] >= 1.0;
                 self.player.can_sprint = self.attributes[a::CAN_SPRINT as usize] >= 1.0;
             }
             ToClient::BreakRefused { frame, pos } => {

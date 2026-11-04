@@ -9,6 +9,7 @@
 //! });
 //! ```
 
+use crate::abi::Vec3;
 use std::ops::{Deref, DerefMut};
 
 use crate::abi::{self, Str, command_value as cv};
@@ -130,7 +131,7 @@ impl Command<'_> {
             })
     }
 
-    pub fn pos(&self, name: &str) -> Option<[f64; 3]> {
+    pub fn pos(&self, name: &str) -> Option<Vec3> {
         self.value(name)
             .filter(|v| v.kind == cv::POS)
             .map(|v| v.pos)

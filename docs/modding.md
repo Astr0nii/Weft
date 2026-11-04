@@ -309,7 +309,7 @@ Stacks with different data don't merge. `r.stack_component` says a component exi
 - `not_in_world()`: nothing but what it holds, components or slots. Nothing sees, hits or saves it, and it stays until removed
 
 Moving platforms: `solid()`, `kinematic()`, `carry_height(..)`, and
-`blocks(&DECK)` with a template (`r.template(&DECK).fill("base:oak_planks", from, to)`) makes a flying structure players can build on; its box is what the blocks fill, no `size` needed. `EntityState.size` is an entity's box and eye height as they are now (crouching and `w.set_size` included), so `st.pos[1] + st.size.eye` is where its eyes are (or just `st.eye()`).
+`blocks(&DECK)` with a template (`r.template(&DECK).fill("base:oak_planks", from, to)`) makes a flying structure players can build on; its box is what the blocks fill, no `size` needed. `EntityState.size` is an entity's box and eye height as they are now (crouching and `w.set_size` included), so `st.pos.y + st.size.eye` is where its eyes are (or just `st.eye()`).
 
 ### Machines
 `r.machine(&BLOCK, &MENU)` is block + block entity + inventory + menu + screen in one go.\
@@ -321,7 +321,7 @@ Look at testmod's generator for an example.
 - `flow_delay`, `drop_off`, `slope_find`, `flows_up()`
 - `renewable(n)`: a new source where n sources meet (water 2)
 - `temperature`
-- `swimmable(false)`: sprinting in it doesn't swim. `attribute::SWIM_ANYWHERE` lifts that per player, with a modifier for as long as it should last: `w.attribute_add_modifier(id, &attribute::SWIM_ANYWHERE, "mymod:swims", attr_op::ADD, 1.0, 20)`. It changes nothing else: a burning liquid keeps burning unless `actions::HURT` says no
+- what can swim in it isn't the liquid's say: an entity kind's `SWIMS_IN` (names and `#tags`, base gives players `#water`) and the same on anything it wears, so a suit with `.set_text(&SWIMS_IN, "#lava")` swims in lava. It changes nothing else: a burning liquid keeps burning unless `actions::HURT` says no
 - `fog(rgb, blocks)` and `overlay(texture, opacity)` or `no_overlay()`: what you see from inside. By default both come from its texture; set them when the inside should look different from the surface: `r.liquid(&TAR).fog(0x1A1408, 6.0).overlay("tar_inside", 0.4)`
 - `drag(d)`: how fast things move inside (water 1, lava 0.4), `light`, `opacity` (light it absorbs per block), `texture`, `tint`
 - `bucket(..)`
@@ -439,6 +439,8 @@ Who may run it goes by permission levels, the same for the engine's commands and
 The callback gets a `ServerCommand`: `cmd.world()` is where it runs, and what it changes settles when it returns (neighbors updated, events delivered), like `/setblock`.`r.client_command` is the same for commands that run on the client that typed them: a `ClientCommand` with `cmd.client()` and no world.`r.command_branch("time", "dawn", ..)` adds a branch to someone else's command (`r.client_command_branch` for client ones like `/gizmo`), and a `r.command` named like one of the engine's (`/give`, `/tp`...) replaces it.
 
 ## World API
+
+Positions come back as `BlockPos` (a block, `x`, `y`, `z` whole numbers) and `Vec3` (a point or a speed, in blocks); `p.offset(0, 1, 0)`, `p.above()`, `p.center()` and `v.block()` move between them. Anything that takes a position takes a plain array too: `w.set_block([x, y + 1, z], s)`.
 
 Inside any callback you get a `World` (`w`):
 - the world's seed (`seed`, and `seed_at(pos)`, `seed_of_cube(pos)` for a number that belongs to a place: what a chest holds when first opened, a villager's trades)

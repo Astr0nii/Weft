@@ -165,7 +165,7 @@ fn events(r: &mut Registry) {
         }
     });
     // r.on(&actions::BREAK_BLOCK, |b| for e in b.iter() { /* e.player, e.pos, e.state */ });
-    // r.intercept(&actions::BREAK_BLOCK, |q| if q.pos()[1] < -60 { Verdict::Deny } else { Verdict::Abstain });
+    // r.intercept(&actions::BREAK_BLOCK, |q| if q.pos().y < -60 { Verdict::Deny } else { Verdict::Abstain });
     // r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.9);
 }
 

@@ -1,4 +1,5 @@
 use crate::abi::{self, Str};
+use crate::abi::{BlockPos, Vec3};
 use crate::host;
 
 /// A dimension as seen from a callback. Only valid for the duration of that callback.
@@ -16,13 +17,15 @@ impl World {
         self.raw
     }
 
-    pub fn block(&self, pos: [i32; 3]) -> u32 {
+    pub fn block(&self, pos: impl Into<BlockPos>) -> u32 {
+        let pos = pos.into();
         self.block_loaded(pos).unwrap_or(0)
     }
 
     /// `block` that tells air from what isn't loaded here: `None` for that. A callback sees the
     /// region it runs in, so that is also anything far from the players around it.
-    pub fn block_loaded(&self, pos: [i32; 3]) -> Option<u32> {
+    pub fn block_loaded(&self, pos: impl Into<BlockPos>) -> Option<u32> {
+        let pos = pos.into();
         let s = unsafe { (host().block_get)(self.raw, &pos) };
         (s != u32::MAX).then_some(s)
     }
@@ -33,7 +36,8 @@ impl World {
     }
 
     /// False if the position is not loaded.
-    pub fn set_block(&self, pos: [i32; 3], state: u32) -> bool {
+    pub fn set_block(&self, pos: impl Into<BlockPos>, state: u32) -> bool {
+        let pos = pos.into();
         unsafe { (host().block_set)(self.raw, &pos, state) != 0 }
     }
 
@@ -50,7 +54,8 @@ impl World {
     /// `center` and which they keep their places around. Chests and the like go along with
     /// what is in them, and it stands there till told otherwise: `set_entity` for a speed,
     /// `body_move_to` to go somewhere, `body_to_blocks` to be blocks again. Its entity, or 0 if nothing came.
-    pub fn body_from_blocks(&self, center: [i32; 3], cells: &[[i32; 3]]) -> u64 {
+    pub fn body_from_blocks(&self, center: impl Into<BlockPos>, cells: &[BlockPos]) -> u64 {
+        let center = center.into();
         unsafe { (host().body_from_blocks)(self.raw, &center, cells.as_ptr(), cells.len()) }
     }
 
@@ -61,7 +66,8 @@ impl World {
     }
 
     /// A moving body goes to `pos` in exactly `ticks`.
-    pub fn body_move_to(&self, entity: u64, pos: [f64; 3], ticks: u32) {
+    pub fn body_move_to(&self, entity: u64, pos: impl Into<Vec3>, ticks: u32) {
+        let pos = pos.into();
         unsafe { (host().body_move_to)(self.raw, entity, &pos, ticks) }
     }
 
@@ -69,7 +75,8 @@ impl World {
     /// piston does (sticky blocks bring their neighbors, immovable ones stop it): a drawbridge
     /// turned by a machine, a conveyor of blocks. Pulling is pushing the other way from the far
     /// side. False if it can't go.
-    pub fn push_blocks(&self, pos: [i32; 3], dir: crate::Dir) -> bool {
+    pub fn push_blocks(&self, pos: impl Into<BlockPos>, dir: crate::Dir) -> bool {
+        let pos = pos.into();
         unsafe { (host().push_blocks)(self.raw, &pos, dir.face()) != 0 }
     }
 
@@ -81,11 +88,13 @@ impl World {
     }
 
     /// What a comparator reads of the block at `pos` (`signal_read`) may be different now.
-    pub fn signal_read_changed(&self, pos: [i32; 3]) {
+    pub fn signal_read_changed(&self, pos: impl Into<BlockPos>) {
+        let pos = pos.into();
         unsafe { (host().signal_read_changed)(self.raw, &pos) }
     }
 
-    pub fn schedule_tick(&self, pos: [i32; 3], delay_ticks: u32) {
+    pub fn schedule_tick(&self, pos: impl Into<BlockPos>, delay_ticks: u32) {
+        let pos = pos.into();
         unsafe { (host().schedule_tick)(self.raw, &pos, delay_ticks) }
     }
 
@@ -102,17 +111,20 @@ impl World {
         ((self.random() >> 32) * n as u64 >> 32) as u32
     }
 
-    pub fn block_flags(&self, pos: [i32; 3]) -> u32 {
+    pub fn block_flags(&self, pos: impl Into<BlockPos>) -> u32 {
+        let pos = pos.into();
         state_flags(self.block(pos))
     }
 
     /// The strongest redstone power coming into a cell, 0..15.
-    pub fn signal(&self, pos: [i32; 3]) -> u8 {
+    pub fn signal(&self, pos: impl Into<BlockPos>) -> u8 {
+        let pos = pos.into();
         unsafe { (host().signal_at)(self.raw, &pos) as u8 }
     }
 
     /// The value of property `name` of the block at `pos`: `w.prop(pos, "lit")`.
-    pub fn prop(&self, pos: [i32; 3], name: &str) -> Option<&'static str> {
+    pub fn prop(&self, pos: impl Into<BlockPos>, name: &str) -> Option<&'static str> {
+        let pos = pos.into();
         state_prop(self.block(pos), name).or_else(|| {
             self.parts(pos)
                 .into_iter()
@@ -121,20 +133,22 @@ impl World {
     }
 
     /// A number property of the block at `pos` (`age`, `fuse`).
-    pub fn prop_int(&self, pos: [i32; 3], name: &str) -> Option<u32> {
+    pub fn prop_int(&self, pos: impl Into<BlockPos>, name: &str) -> Option<u32> {
+        let pos = pos.into();
         self.prop(pos, name)?.parse().ok()
     }
 
     /// The block at `pos` goes on to the next value of a property, the first after the last: a
     /// lever's power, a repeater's delay. False if it has no such property.
-    pub fn prop_cycle(&self, pos: [i32; 3], name: &str) -> bool {
+    pub fn prop_cycle(&self, pos: impl Into<BlockPos>, name: &str) -> bool {
+        let pos = pos.into();
         let Some(old) = self.part_with_prop(pos, name) else { return false };
         let next = unsafe { (host().state_cycle)(old, Str::new(name)) };
         next != u32::MAX && state_prop(next, name).is_some_and(|v| self.prop_set(pos, name, v))
     }
 
     /// Of the block `block` gives, else of the first in the cell that has the property.
-    fn part_with_prop(&self, pos: [i32; 3], name: &str) -> Option<u32> {
+    fn part_with_prop(&self, pos: BlockPos, name: &str) -> Option<u32> {
         let own = self.block(pos);
         if state_prop(own, name).is_some() {
             return Some(own);
@@ -146,7 +160,8 @@ impl World {
 
     /// Changes one property of the block at `pos`, keeping the others (its facing stays):
     /// `w.prop_set(pos, "lit", "true")`. False if the block has no such property or value.
-    pub fn prop_set(&self, pos: [i32; 3], name: &str, value: &str) -> bool {
+    pub fn prop_set(&self, pos: impl Into<BlockPos>, name: &str, value: &str) -> bool {
+        let pos = pos.into();
         let part = self.part_with_prop(pos, name);
         match part.and_then(|old| Some((old, state_with(old, name, value)?))) {
             Some((old, new)) if old == self.block(pos) => self.set_block(pos, new),
@@ -157,7 +172,8 @@ impl World {
 
     /// All that is in a cell, which may hold any number of blocks: the one `block` gives first, a
     /// slab and the water in it, a flower and the snow on it. Air has none.
-    pub fn parts(&self, pos: [i32; 3]) -> Vec<u32> {
+    pub fn parts(&self, pos: impl Into<BlockPos>) -> Vec<u32> {
+        let pos = pos.into();
         let mut out = [0u32; 16];
         let n = unsafe { (host().part_list)(self.raw, &pos, out.as_mut_ptr(), out.len() as u32) } as usize;
         if n <= out.len() {
@@ -171,17 +187,20 @@ impl World {
     /// Puts another block in a cell with what is there, whatever its shape; `set_block` would replace
     /// all of it. Only one thing in a cell can have a block entity, a circuit, light of its own or
     /// growth: false if there would be two, or the cell isn't loaded.
-    pub fn part_add(&self, pos: [i32; 3], state: u32) -> bool {
+    pub fn part_add(&self, pos: impl Into<BlockPos>, state: u32) -> bool {
+        let pos = pos.into();
         unsafe { (host().part_add)(self.raw, &pos, state) != 0 }
     }
 
     /// Takes one block out of a cell, the others staying. False if it isn't there.
-    pub fn part_remove(&self, pos: [i32; 3], state: u32) -> bool {
+    pub fn part_remove(&self, pos: impl Into<BlockPos>, state: u32) -> bool {
+        let pos = pos.into();
         self.part_replace(pos, state, 0)
     }
 
     /// One block of a cell becomes another state, the others staying. False if it isn't there.
-    pub fn part_replace(&self, pos: [i32; 3], old: u32, new: u32) -> bool {
+    pub fn part_replace(&self, pos: impl Into<BlockPos>, old: u32, new: u32) -> bool {
+        let pos = pos.into();
         unsafe { (host().part_replace)(self.raw, &pos, old, new) != 0 }
     }
 }
@@ -201,29 +220,33 @@ pub fn state_facing(state: u32) -> crate::Dir {
 }
 
 /// Where the other part of a `two_part` block is, from the part `state` at `pos`.
-pub fn other_part(pos: [i32; 3], state: u32, prop: &str, second: &str, way: impl Fn(u32) -> crate::Dir) -> [i32; 3] {
+pub fn other_part(pos: impl Into<BlockPos>, state: u32, prop: &str, second: &str, way: impl Fn(u32) -> crate::Dir) -> BlockPos {
+    let pos = pos.into();
     let (d, s) = (way(state).offset(), if state_prop(state, prop) == Some(second) { -1 } else { 1 });
-    [pos[0] + d[0] * s, pos[1] + d[1] * s, pos[2] + d[2] * s]
+    [pos.x + d.x * s, pos.y + d.y * s, pos.z + d.z * s].into()
 }
 
 /// The middle of a block.
-pub fn block_center(p: [i32; 3]) -> [f64; 3] {
-    p.map(|v| v as f64 + 0.5)
+pub fn block_center(p: impl Into<BlockPos>) -> Vec3 {
+    p.into().center()
 }
 
 /// The middle of a block's floor: where something stands on it.
-pub fn block_floor(p: [i32; 3]) -> [f64; 3] {
-    [p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5]
+pub fn block_floor(p: impl Into<BlockPos>) -> Vec3 {
+    let p = p.into();
+    [p.x as f64 + 0.5, p.y as f64, p.z as f64 + 0.5].into()
 }
 
 /// The block a point is in.
-pub fn block_pos_of(p: [f64; 3]) -> [i32; 3] {
-    p.map(|v| v.floor() as i32)
+pub fn block_pos_of(p: impl Into<Vec3>) -> BlockPos {
+    p.into().block()
 }
 
 /// The yaw (radians, as `EntityState` has it) that faces from one point to another.
-pub fn yaw_toward(from: [f64; 3], to: [f64; 3]) -> f32 {
-    (from[0] - to[0]).atan2(from[2] - to[2]) as f32
+pub fn yaw_toward(from: impl Into<Vec3>, to: impl Into<Vec3>) -> f32 {
+    let from = from.into();
+    let to = to.into();
+    (from.x - to.x).atan2(from.z - to.z) as f32
 }
 
 /// Where a yaw faces: x, z, of length 1.
@@ -232,10 +255,10 @@ pub fn yaw_dir(yaw: f32) -> [f32; 2] {
 }
 
 /// Where a look goes (radians, as `EntityState` has them), of length 1.
-pub fn look_dir(yaw: f32, pitch: f32) -> [f64; 3] {
+pub fn look_dir(yaw: f32, pitch: f32) -> Vec3 {
     let (sy, cy) = (yaw as f64).sin_cos();
     let (sp, cp) = (pitch as f64).sin_cos();
-    [-sy * cp, sp, -cy * cp]
+    [-sy * cp, sp, -cy * cp].into()
 }
 
 /// `a` of `b`, 0..1, 0 of nothing: a progress bar's value.

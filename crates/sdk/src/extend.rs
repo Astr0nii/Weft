@@ -14,6 +14,7 @@
 //! r.loot_edit(&ZOMBIE).add_pool(Pool::new().item("mymod:brain"));
 //! ```
 
+use crate::abi::BlockPos;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -52,8 +53,6 @@ pub mod attribute {
     pub static VISIBILITY: Attribute = Attribute::named(crate::abi::attribute::VISIBILITY);
     /// Multiplier on jump speed, players and mobs (1).
     pub static JUMP_STRENGTH: Attribute = Attribute::named(crate::abi::attribute::JUMP_STRENGTH);
-    /// 1 or more: can swim in any liquid, also those that are not `swimmable`.
-    pub static SWIM_ANYWHERE: Attribute = Attribute::named(crate::abi::attribute::SWIM_ANYWHERE);
     /// Multiplier on how fast a swing recharges (1).
     pub static ATTACK_SPEED: Attribute = Attribute::named(crate::abi::attribute::ATTACK_SPEED);
     /// Below 1: can't sprint (1).
@@ -254,7 +253,7 @@ impl Ask {
     pub fn entity(&self) -> u64 {
         self.query().entity
     }
-    pub fn pos(&self) -> [i32; 3] {
+    pub fn pos(&self) -> BlockPos {
         self.query().pos
     }
     pub fn state(&self) -> u32 {
@@ -750,7 +749,8 @@ impl World {
 
     /// Breaks a block as if mined with `tool` by `player` (0 = nobody), with its loot when
     /// `drops`. False if nothing broke or an interceptor said no.
-    pub fn break_block(&self, pos: [i32; 3], tool: ItemStack, player: u64, drops: bool) -> bool {
+    pub fn break_block(&self, pos: impl Into<BlockPos>, tool: ItemStack, player: u64, drops: bool) -> bool {
+        let pos = pos.into();
         unsafe { (host().break_block)(self.raw(), &pos, tool, player, drops as u32) != 0 }
     }
 }

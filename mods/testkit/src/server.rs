@@ -59,7 +59,7 @@ pub fn register(r: &mut Registry) {
                 .then(weft_sdk::ai::melee_within(1.3))
                 .then(weft_sdk::ai::chase_target(20.0, 1.0)),
         )
-        .neutral(|_, mob, player| (mob.pos[0] - player.pos[0]).hypot(mob.pos[2] - player.pos[2]) > 5.0);
+        .neutral(|_, mob, player| (mob.pos.x - player.pos.x).hypot(mob.pos.z - player.pos.z) > 5.0);
     // A random `.ctm` with tiles of two colors, on what isn't a cube.
     static VARIED_PLANT: Block = Block::named("varied_plant");
     static VARIED_BOX: Block = Block::named("varied_box");
@@ -77,6 +77,8 @@ pub fn register(r: &mut Registry) {
         .texture("varied")
         .no_item();
     r.entity_component(&MARK, 0, component_flags::SYNC_WATCHERS);
+    // A suit to swim in lava with (`swimming`).
+    r.set_text_on(Target::Name("base:diamond_chestplate"), &SWIMS_IN, "#lava");
     r.attach(&PIG, &MARK);
     r.config(&COUNT_MARKS).bool(false).world();
     // While the rule is on, every marked pig counts up once a tick.
@@ -184,7 +186,7 @@ pub fn register_ops(r: &mut Registry) {
 }
 
 fn pos(cmd: &Command, name: &str) -> Result<[i32; 3], String> {
-    Ok(block_pos_of(cmd.pos(name).ok_or_else(|| format!("missing {name}"))?))
+    Ok((block_pos_of(cmd.pos(name).ok_or_else(|| format!("missing {name}"))?)).to_array())
 }
 
 fn int<T: TryFrom<i64>>(cmd: &Command, name: &str) -> Result<T, String> {
@@ -234,7 +236,7 @@ fn run(w: &World, cmd: &Command) -> Result<String, String> {
         .iter()
         .find(|o| cmd.text(o.0) == Some(o.0))
         .ok_or("no operation")?;
-    (op.2)(w, cmd, player, me)
+    (op.2)(w, cmd, player, me.to_array())
 }
 
 /// A repeater with a delay of four into a block with a torch on it, the torch feeding the
@@ -268,12 +270,12 @@ type Run = fn(&World, &Command, u64, [i32; 3]) -> Result<String, String>;
 const OPS: &[(&str, &str, Run)] = &[
     ("last_said", "", |_, _, _, _| Ok(LAST_SAID.lock().unwrap().clone())),
     ("show", "<who:word> <place:word> <text:text>", |w, cmd, player, _| {
-        let pos = w.entity(player).map_or([0.0; 3], |e| e.pos);
+        let pos = w.entity(player).map_or([0.0; 3], |e| e.pos.to_array());
         let who = match word(cmd, "who")? {
             "all" => Who::All,
             "dim" => Who::Dimension(w.dimension()),
-            "near" => Who::Near(w.dimension(), pos, 8.0),
-            "far" => Who::Near(w.dimension(), [pos[0] + 100.0, pos[1], pos[2]], 8.0),
+            "near" => Who::Near(w.dimension(), pos.into(), 8.0),
+            "far" => Who::Near(w.dimension(), [pos[0] + 100.0, pos[1], pos[2]].into(), 8.0),
             _ => Who::Player(player),
         };
         let text = word(cmd, "text")?;
@@ -294,7 +296,7 @@ const OPS: &[(&str, &str, Run)] = &[
         for x in -r..=r {
             for y in -r..=r {
                 for z in -r..=r {
-                    cells.push([p[0] + x, p[1] + y, p[2] + z]);
+                    cells.push(BlockPos::new(p[0] + x, p[1] + y, p[2] + z));
                 }
             }
         }
@@ -496,7 +498,7 @@ const OPS: &[(&str, &str, Run)] = &[
     }),
     ("entity", "@entity", |w, cmd, _, _| {
         let e = w.entity(owner(w, cmd)?).ok_or("no such entity")?;
-        Ok(format!("{} {:.2} {:.2} {:.2} {}", name_of(ek::ENTITY, e.kind), e.pos[0], e.pos[1], e.pos[2], e.health))
+        Ok(format!("{} {:.2} {:.2} {:.2} {}", name_of(ek::ENTITY, e.kind), e.pos.x, e.pos.y, e.pos.z, e.health))
     }),
     ("size", "@entity", |w, cmd, _, _| {
         let s = w.entity(owner(w, cmd)?).ok_or("no such entity")?.size;
@@ -651,7 +653,7 @@ const OPS: &[(&str, &str, Run)] = &[
         // platforms move on while a teleport by command makes its way).
         let e = w.entity(int(cmd, "id")?).ok_or("no such entity")?;
         let rider = cmd.int("rider").map_or(player, |r| r as u64);
-        w.teleport(rider, None, [e.pos[0], e.pos[1] + cmd.float("h").unwrap_or(0.0) + 0.05, e.pos[2]]);
+        w.teleport(rider, None, [e.pos.x, e.pos.y + cmd.float("h").unwrap_or(0.0) + 0.05, e.pos.z]);
         Ok(String::new())
     }),
     ("navigate", "@owner <to:pos>", |w, cmd, _, _| {
@@ -660,7 +662,7 @@ const OPS: &[(&str, &str, Run)] = &[
     }),
     ("structure", "<name:word> <r:int>", |w, cmd, _, me| {
         Ok(w.structure_near(word(cmd, "name")?, me, int(cmd, "r")?)
-            .map_or("none".into(), |a| format!("{} {} {}", a[0], a[1], a[2])))
+            .map_or("none".into(), |a| format!("{} {} {}", a.x, a.y, a.z)))
     }),
     // A timer on the player: `after 60`, then `rings` counts the ones that fired.
     ("after", "<ticks:int>", |w, cmd, player, _| {
@@ -670,7 +672,7 @@ const OPS: &[(&str, &str, Run)] = &[
     ("rings", "", |_, _, _, _| Ok(RINGS.load(Ordering::Relaxed).to_string())),
     ("look", "", |w, _, player, _| {
         Ok(w.target_block(player, 5.0, false)
-            .map_or("none".into(), |l| format!("{} {} {} {} {}", l.body, l.pos[0], l.pos[1], l.pos[2], block_name(l.state))))
+            .map_or("none".into(), |l| format!("{} {} {} {} {}", l.body, l.pos.x, l.pos.y, l.pos.z, block_name(l.state))))
     }),
     ("place", "<template:word> <pos:pos>", |w, cmd, _, _| {
         Ok((w.place_template(&Template::generated(word(cmd, "template")?.to_string()), pos(cmd, "pos")?) as u32).to_string())
@@ -735,7 +737,7 @@ const OPS: &[(&str, &str, Run)] = &[
     ("vmenu", "<which:word> <slots:int> [items:text]", |w, cmd, player, _| {
         let name = word(cmd, "which")?;
         let m = Menu::lookup(name).ok_or_else(|| format!("no menu {name}"))?;
-        let pos = w.entity(player).map_or([0.0; 3], |e| e.pos);
+        let pos = w.entity(player).map_or([0.0; 3], |e| e.pos.to_array());
         let id = w.loose_inventory(int(cmd, "slots")?, pos);
         let inv = w.inventory(id);
         // Pairs of item and count.

@@ -48,7 +48,7 @@ pub async fn sprint_and_sneak_modes(t: T) -> R {
         let a = t.state().pos;
         t.hold("core:forward", 1.0);
         t.secs(1.2).await?;
-        Ok(((t.state().pos[0] - a[0]).powi(2) + (t.state().pos[2] - a[2]).powi(2)).sqrt())
+        Ok(((t.state().pos.x - a.x).powi(2) + (t.state().pos.z - a.z).powi(2)).sqrt())
     };
     // Toggle sneak: one press slows the walk until the next.
     t.press("core:sneak");
@@ -423,7 +423,7 @@ async fn die_and_respawn(t: &T) -> R {
 
 fn off_bed(t: &T, foot: [i32; 3]) -> f64 {
     let p = t.state().pos;
-    ((p[0] - (foot[0] as f64 + 0.5)).powi(2) + (p[2] - (foot[2] as f64 + 0.5)).powi(2)).sqrt()
+    ((p.x - (foot[0] as f64 + 0.5)).powi(2) + (p.z - (foot[2] as f64 + 0.5)).powi(2)).sqrt()
 }
 
 /// A bed placed by a player takes two blocks, the head away from them. Used by day it sets the
@@ -441,8 +441,8 @@ pub async fn model_bones(t: T) -> R {
     t.secs(2.5).await?;
     t.check(at("no_such_bone").is_none(), "no bone of that name");
     let (hook, lamp) = (at("hook").ok_or("the lantern's hook")?, at("hanging_lamp").ok_or("the lantern's lamp")?);
-    t.check(hook[1] - lamp[1] > 0.5, format!("it hangs from the hand: {hook:?} {lamp:?}"));
-    t.check((hook[0] - lamp[0]).abs() + (hook[2] - lamp[2]).abs() < 0.3, format!("straight down when still: {hook:?} {lamp:?}"));
+    t.check(hook.y - lamp.y > 0.5, format!("it hangs from the hand: {hook:?} {lamp:?}"));
+    t.check((hook.x - lamp.x).abs() + (hook.z - lamp.z).abs() < 0.3, format!("straight down when still: {hook:?} {lamp:?}"));
     // Past its hold easing in.
     t.op("put me 0 testmod:greatsword").await?;
     t.secs(0.5).await?;
@@ -452,11 +452,11 @@ pub async fn model_bones(t: T) -> R {
         t.frames(1).await?;
     }
     let bent = at("tip").ok_or("the sword's tip")?;
-    let moved: f64 = (0..3).map(|i| (tip[i] - bent[i]).powi(2)).sum();
+    let moved = (tip - bent).length_squared();
     t.check(moved > 0.1, format!("a mod turned the blade: {tip:?} to {bent:?}"));
     t.frames(4).await?;
     let back = at("tip").ok_or("the sword's tip")?;
-    let again: f64 = (0..3).map(|i| (tip[i] - back[i]).powi(2)).sum();
+    let again = (tip - back).length_squared();
     t.check(again < 0.01, format!("for as long as it said so: {tip:?} and {back:?}"));
     // Put away, it goes down as the model it is, not as its sprite.
     t.op("put me 0 base:apple").await?;
@@ -612,7 +612,7 @@ pub async fn beds(t: T) -> R {
     t.secs(0.3).await?;
     t.check_eq(t.op("pose").await?.trim().to_string(), abi::pose::SLEEP.to_string(), "lying down");
     let p = t.state().pos;
-    t.check((p[2] - foot[2] as f64).abs() < 0.1, format!("over the middle of the bed: {p:?}, foot {foot:?}"));
+    t.check((p.z - foot[2] as f64).abs() < 0.1, format!("over the middle of the bed: {p:?}, foot {foot:?}"));
     t.secs(2.5).await?;
     t.shot("sleeping").await?;
     t.until("morning", Duration::from_secs(15), |t| t.c().screen() != "base:sleeping")
@@ -698,7 +698,7 @@ pub async fn beds_far(t: T) -> R {
     t.op("time 6000").await?;
     let home = t.state().pos;
     t.cmd("/tp ~1500 ~30 ~").await?;
-    t.until("far away", Duration::from_secs(10), |t| (t.state().pos[0] - home[0]).abs() > 1000.0)
+    t.until("far away", Duration::from_secs(10), |t| (t.state().pos.x - home.x).abs() > 1000.0)
         .await?;
     // Only now: the news of the mode, on its way above, turns flying off.
     t.secs(0.2).await?;
@@ -725,7 +725,7 @@ pub async fn beds_far(t: T) -> R {
     die_and_respawn(&t).await?;
     t.until("the respawn point gone", Duration::from_secs(20), |t| bed_spawn(t).is_none())
         .await?;
-    t.until("back at the spawn", Duration::from_secs(20), |t| (t.state().pos[0] - home[0]).abs() < 100.0)
+    t.until("back at the spawn", Duration::from_secs(20), |t| (t.state().pos.x - home.x).abs() < 100.0)
         .await?;
 
     t.cmd("/dim base:flatlands").await?;
@@ -793,7 +793,7 @@ pub async fn fall_damage(t: T) -> R {
     t.until("full health", Duration::from_secs(5), |t| t.state().health >= 20.0)
         .await?;
     let s = t.state();
-    t.c().teleport([s.pos[0], s.pos[1] + 12.0, s.pos[2]]);
+    t.c().teleport([s.pos.x, s.pos.y + 12.0, s.pos.z]);
     t.until("falling", Duration::from_secs(5), |t| !t.flag(client::client_flags::ON_GROUND))
         .await?;
     t.until("landed", Duration::from_secs(10), |t| t.flag(client::client_flags::ON_GROUND))
@@ -847,7 +847,7 @@ pub async fn sneak_edge(t: T) -> R {
     t.secs(1.0).await?;
     t.hold("core:left", 1.0);
     t.secs(1.5).await?;
-    let y = t.state().pos[1];
+    let y = t.state().pos.y;
     t.check(y > base[1] as f64 + 2.9, format!("fell off while sneaking: y {y:.2}"));
     Ok(())
 }
@@ -862,7 +862,7 @@ pub async fn movement_attributes(t: T) -> R {
         t.hold("core:forward", 1.0);
         t.secs(1.3).await?;
         let end = t.state().pos;
-        Ok::<f64, String>(((end[0] - start[0]).powi(2) + (end[2] - start[2]).powi(2)).sqrt())
+        Ok::<f64, String>(((end.x - start.x).powi(2) + (end.z - start.z).powi(2)).sqrt())
     };
     let slow = walk(t.clone()).await?;
     t.op("attr_mod me core:movement_speed testkit:fast 1 1 0")
@@ -873,12 +873,12 @@ pub async fn movement_attributes(t: T) -> R {
     t.check(fast > slow * 1.6, format!("faster with the attribute: {slow:.2} -> {fast:.2}"));
     t.op("attr_rm me core:movement_speed testkit:fast").await?;
     let jump = |t: T| async move {
-        let y0 = t.state().pos[1];
+        let y0 = t.state().pos.y;
         let mut top = y0;
         t.hold("core:jump", 0.1);
         for _ in 0..30 {
             t.secs(0.03).await?;
-            top = top.max(t.state().pos[1]);
+            top = top.max(t.state().pos.y);
         }
         t.secs(1.0).await?;
         Ok::<f64, String>(top - y0)
@@ -891,10 +891,10 @@ pub async fn movement_attributes(t: T) -> R {
     t.note(format!("jumped {low:.2} then {high:.2}"));
     t.check(high > low * 1.4, format!("higher with the attribute: {low:.2} -> {high:.2}"));
     t.op("attr_rm me core:jump_strength testkit:spring").await?;
-    let y = t.state().pos[1];
+    let y = t.state().pos.y;
     t.op("push 0 12 0").await?;
     t.secs(0.25).await?;
-    t.check(t.state().pos[1] > y + 0.3, format!("the push lifted the player: {y:.2} -> {:.2}", t.state().pos[1]));
+    t.check(t.state().pos.y > y + 0.3, format!("the push lifted the player: {y:.2} -> {:.2}", t.state().pos.y));
     Ok(())
 }
 
@@ -1082,7 +1082,7 @@ pub async fn creative_and_invulnerable(t: T) -> R {
 /// Looks at a point from the player's eyes.
 fn aim(t: &T, p: [f64; 3]) {
     let s = t.state();
-    let eye = [s.pos[0], s.pos[1] + t.c().entity(0).map_or(1.62, |e| e.size.eye as f64), s.pos[2]];
+    let eye = [s.pos.x, s.pos.y + t.c().entity(0).map_or(1.62, |e| e.size.eye as f64), s.pos.z];
     let d = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
     let yaw = (-d[0]).atan2(-d[2]).to_degrees() as f32;
     let pitch = d[1].atan2((d[0] * d[0] + d[2] * d[2]).sqrt()).to_degrees() as f32;
@@ -1239,7 +1239,7 @@ pub async fn block_shapes(t: T) -> R {
     // They stop a walker as one, each of them being there.
     t.c().teleport(centre(mix, 0.5, 2.0, 0.5));
     t.secs(0.8).await?;
-    t.check((t.state().pos[1] - (mix[1] as f64 + 1.0)).abs() < 0.01, format!("stands on the top one: {:?}", t.state().pos));
+    t.check((t.state().pos.y - (mix[1] as f64 + 1.0)).abs() < 0.01, format!("stands on the top one: {:?}", t.state().pos));
     t.c().teleport(centre(mix, 0.5, 0.0, 2.4));
     t.secs(0.3).await?;
     // Each part by what it asks of the tool, as it would on its own: sandstone wants a pickaxe.
@@ -1304,7 +1304,7 @@ pub async fn block_shapes(t: T) -> R {
     t.hold("core:forward", 1.4);
     t.secs(1.5).await?;
     let up = t.state().pos;
-    t.check(up[1] >= f[1] as f64 + 0.99, format!("up the stairs, one block: {up:?}"));
+    t.check(up.y >= f[1] as f64 + 0.99, format!("up the stairs, one block: {up:?}"));
     let v = add(f, [-16, 0, 2]);
     t.set(v, "base:oak_planks_vertical_slab[side=north]")
         .await?;
@@ -1315,7 +1315,7 @@ pub async fn block_shapes(t: T) -> R {
     t.secs(0.3).await?;
     t.hold("core:forward", 1.2);
     t.secs(1.3).await?;
-    let stopped = t.state().pos[2];
+    let stopped = t.state().pos.z;
     t.check((stopped - (v[2] as f64 + 0.8)).abs() < 0.05, format!("up to the half it fills: z {stopped:.2}, it is at {}", v[2]));
 
     // One recipe for all of them.
@@ -1553,7 +1553,7 @@ pub async fn hitboxes(t: T) -> R {
     t.secs(0.3).await?;
     t.hold("core:forward", 1.0);
     t.secs(1.1).await?;
-    let z = t.state().pos[2] - wall[2] as f64;
+    let z = t.state().pos.z - wall[2] as f64;
     t.check((z - (0.9375 + 0.3)).abs() < 0.05, format!("up to its box: {z:.3}"));
     Ok(())
 }
@@ -1563,7 +1563,7 @@ pub async fn hitboxes(t: T) -> R {
 pub async fn food(t: T) -> R {
     t.flat().await?;
     let s = t.state();
-    t.c().teleport([s.pos[0], s.pos[1] + 8.0, s.pos[2]]);
+    t.c().teleport([s.pos.x, s.pos.y + 8.0, s.pos.z]);
     t.until("falling", Duration::from_secs(5), |t| !t.flag(client::client_flags::ON_GROUND))
         .await?;
     t.until("landed", Duration::from_secs(10), |t| t.flag(client::client_flags::ON_GROUND))
@@ -1732,7 +1732,7 @@ pub async fn replaced_plants_drop(t: T) -> R {
 }
 
 /// Sprinting under water swims in a low box at about 3.9 blocks a second, where wading does 2;
-/// lava is not swimmable, unless the attribute says so.
+/// lava is not swum in, unless something worn says so (`swims_in`, testkit's on a chestplate).
 pub async fn swimming(t: T) -> R {
     t.flat().await?;
     t.op("mode creative").await?;
@@ -1744,7 +1744,7 @@ pub async fn swimming(t: T) -> R {
     };
     let sprint_speed = |t: T, pitch: f32| async move {
         let s = t.state().pos;
-        t.c().teleport([s[0], f[1] as f64 + 8.0, f[2] as f64 + 0.5]);
+        t.c().teleport([s.x, f[1] as f64 + 8.0, f[2] as f64 + 0.5]);
         t.secs(0.3).await?;
         t.c().set_look(0.0, pitch);
         t.hold("core:sprint", 2.0);
@@ -1754,7 +1754,7 @@ pub async fn swimming(t: T) -> R {
         t.secs(0.8).await?;
         let to = t.state().pos;
         t.secs(1.0).await?;
-        Ok::<(f64, f64), String>((((to[0] - from[0]).powi(2) + (to[2] - from[2]).powi(2)).sqrt() / 0.8, to[1] - from[1]))
+        Ok::<(f64, f64), String>((((to.x - from.x).powi(2) + (to.z - from.z).powi(2)).sqrt() / 0.8, to.y - from.y))
     };
     pool("water").await?;
     t.secs(0.5).await?;
@@ -1769,13 +1769,12 @@ pub async fn swimming(t: T) -> R {
     let (wade, _) = sprint_speed(t.clone(), 0.0).await?;
     t.note(format!("sprinting in lava: {wade:.2} blocks/s"));
     t.check(wade < 1.8, format!("no swimming in lava: {wade:.2} blocks/s"));
-    t.op("attr_mod me core:swim_anywhere testkit:swims 0 1 0")
-        .await?;
+    t.op("put me 37 base:diamond_chestplate").await?;
     t.secs(0.2).await?;
     let (suit, _) = sprint_speed(t.clone(), 0.0).await?;
-    t.note(format!("with the attribute: {suit:.2} blocks/s"));
-    t.check(suit > wade * 1.3, format!("the attribute swims in lava: {wade:.2} -> {suit:.2}"));
-    t.op("attr_rm me core:swim_anywhere testkit:swims").await?;
+    t.note(format!("with the suit: {suit:.2} blocks/s"));
+    t.check(suit > wade * 1.3, format!("the suit swims in lava: {wade:.2} -> {suit:.2}"));
+    t.op("put me 37 base:diamond_chestplate 0").await?;
     pool("air").await?;
     Ok(())
 }

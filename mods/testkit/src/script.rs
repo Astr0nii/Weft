@@ -135,10 +135,10 @@ pub async fn run(t: T, src: String) -> R {
                 .await?;
                 t.c().world_join(&ticket);
             }
-            "origin" => origin = t.state().pos,
+            "origin" => origin = (t.state().pos).to_array(),
             "where" => {
                 let s = t.state();
-                weft_sdk::info!("script: where {:.3} {:.3} {:.3} {rest}", s.pos[0], s.pos[1], s.pos[2]);
+                weft_sdk::info!("script: where {:.3} {:.3} {:.3} {rest}", s.pos.x, s.pos.y, s.pos.z);
             }
             "rec" => weft_sdk::info!("REC {rest}"),
             "via" => match waypoint(origin, rest) {
@@ -153,13 +153,13 @@ pub async fn run(t: T, src: String) -> R {
             "travel" => {
                 let eye = t.c().entity(0).map_or(1.62, |e| e.size.eye as f64);
                 let s = t.state();
-                let mut pts = vec![[s.pos[0], s.pos[1] + eye, s.pos[2], (s.yaw as f64).to_degrees(), (s.pitch as f64).to_degrees()]];
+                let mut pts = vec![[s.pos.x, s.pos.y + eye, s.pos.z, (s.yaw as f64).to_degrees(), (s.pitch as f64).to_degrees()]];
                 pts.append(&mut via);
                 fly(&t, pts, num(0, 5.0) as f64, eye).await?;
             }
             "glide" => {
                 let s = t.state();
-                let from = [s.pos[0], s.pos[1] + 0.0, s.pos[2]];
+                let from = [s.pos.x, s.pos.y + 0.0, s.pos.z];
                 let eye = t.c().entity(0).map_or(1.62, |e| e.size.eye as f64);
                 let a = [from[0], from[1] + eye, from[2], (s.yaw as f64).to_degrees(), (s.pitch as f64).to_degrees()];
                 let b = [a[0], a[1], a[2], num(0, 0.0) as f64, num(1, 0.0) as f64];
@@ -275,8 +275,8 @@ async fn fly(t: &T, mut pts: Vec<[f64; 5]>, secs: f64, eye: f64) -> R {
         let c = t.c();
         c.control(&weft_sdk::abi::PlayerControl {
             mask: weft_sdk::abi::control_mask::POS | weft_sdk::abi::control_mask::VEL | weft_sdk::abi::control_mask::LOOK,
-            pos: [p[0], p[1] - eye, p[2]],
-            vel: [0.0; 3],
+            pos: [p[0], p[1] - eye, p[2]].into(),
+            vel: [0.0; 3].into(),
             yaw: p[3].to_radians() as f32,
             pitch: p[4].to_radians() as f32,
             ..weft_sdk::abi::PlayerControl::DEFAULT

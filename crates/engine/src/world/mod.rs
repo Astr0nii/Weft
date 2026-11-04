@@ -12,6 +12,16 @@ pub const TPS: u32 = 20;
 /// One tick in seconds.
 pub const TICK: f64 = 1.0 / TPS as f64;
 
+/// A point or vector from the ABI (or an array) as the engine works with it.
+pub fn dvec(v: impl Into<[f64; 3]>) -> glam::DVec3 {
+    glam::DVec3::from_array(v.into())
+}
+
+/// A block position from the ABI (or an array) as the engine works with it.
+pub fn ivec(v: impl Into<[i32; 3]>) -> glam::IVec3 {
+    glam::IVec3::from_array(v.into())
+}
+
 /// How a player holds itself, which decides its box and eyes.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Pose(pub u16);

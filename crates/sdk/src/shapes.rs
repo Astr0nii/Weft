@@ -3,6 +3,7 @@
 //! one has never heard of. `.tab(..)` and the rest go on what they return, as on any block.
 
 use crate::Dir;
+use crate::abi::BlockPos;
 use crate::component::Tag;
 use crate::content::{Block, BlockBuilder, Place, Props, Registry, WithComponents};
 use crate::world::state_prop;
@@ -10,9 +11,9 @@ use crate::world::state_prop;
 /// How neighboring stairs find each other: every stair has it.
 static STAIRS: Tag = Tag::named("stairs");
 
-fn pos_step(pos: [i32; 3], side: Dir) -> [i32; 3] {
+fn pos_step(pos: BlockPos, side: Dir) -> BlockPos {
     let o = side.offset();
-    [pos[0] + o[0], pos[1] + o[1], pos[2] + o[2]]
+    [pos.x + o.x, pos.y + o.y, pos.z + o.z].into()
 }
 
 /// The part of a layer towards `a` (and `b`, for a corner), in 1/16 of a block: (x, z) ranges.
@@ -35,9 +36,9 @@ fn upper_half(p: &Place) -> bool {
 }
 
 /// A stair's shape from the stairs around it, as vanilla has it.
-fn stair_shape(w: &crate::World, pos: [i32; 3]) -> &'static str {
+fn stair_shape(w: &crate::World, pos: BlockPos) -> &'static str {
     let (Some(facing), Some(half)) = (w.prop(pos, "facing").and_then(Dir::from_name), w.prop(pos, "half")) else { return "straight" };
-    let stair_at = |at: [i32; 3]| {
+    let stair_at = |at: BlockPos| {
         let s = w.block(at);
         (STAIRS.on_block(s) && state_prop(s, "half") == Some(half))
             .then(|| state_prop(s, "facing").and_then(Dir::from_name))

@@ -59,7 +59,7 @@ impl Mesh {
 
 use crate::gpu_layout::CORNERS;
 
-const NORMALS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
+pub const NORMALS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
 
 #[cfg(test)]
 pub fn corners(dir: usize) -> [[i32; 3]; 4] {

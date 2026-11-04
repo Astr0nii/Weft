@@ -190,7 +190,7 @@ pub fn register(r: &mut Registry) {
         .reach(3)
         .density(&TREES)
         .shape(|s| {
-            let [x, y, z] = s.pos();
+            let BlockPos { x, y, z } = s.pos();
             let log = TREE_KINDS
                 .on_biome(s.biome())
                 .and_then(|l| l.pick(s.random() >> 40))
@@ -280,7 +280,7 @@ pub fn grow_tree(w: World, p: [i32; 3]) {
 fn decorate(g: &mut Gen) {
     let Some(&cols) = g.columns() else { return };
     let seed = g.seed();
-    let [ox, oy, oz] = g.origin();
+    let BlockPos { x: ox, y: oy, z: oz } = g.origin();
     let max_h = cols.iter().map(|c| c.height).max().unwrap_or(0);
     let min_h = cols.iter().map(|c| c.height).min().unwrap_or(0);
 
@@ -348,7 +348,7 @@ fn decorate(g: &mut Gen) {
 
 /// The test dimension: flat, bounded in height, nothing else.
 pub fn flat(g: &mut Gen) {
-    let [_, oy, _] = g.origin();
+    let BlockPos { y: oy, .. } = g.origin();
     for y in 0..16usize {
         let wy = oy + y as i32;
         let s = match wy {
