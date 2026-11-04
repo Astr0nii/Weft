@@ -4,6 +4,7 @@
 mod advancements;
 mod beds;
 mod blocks;
+mod commands;
 mod items;
 mod machines;
 mod mobs;
@@ -35,6 +36,7 @@ fn init(r: &mut Registry) {
         r.creative_tab(tab, icon);
     }
     blocks::register(r);
+    commands::register(r);
     items::register(r);
     player::register(r);
     machines::register(r);

@@ -1733,7 +1733,7 @@ pub mod damage_cause {
     pub const FIRE: u32 = 3;
     pub const STARVE: u32 = 4;
     pub const DROWN: u32 = 5;
-    /// Falling out of the world, and `/kill`: gets through everything.
+    /// Falling out of the world, and `/clear`: gets through everything.
     pub const VOID: u32 = 6;
     /// Inside a burning hot liquid.
     pub const LAVA: u32 = 7;
