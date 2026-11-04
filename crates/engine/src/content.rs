@@ -707,6 +707,50 @@ pub struct Tight {
     pub light: [u8; 3],
     /// Absorption per channel (r, g, b), opacity included.
     pub absorb: [u8; 3],
+    /// Faces (`1 << dir`, `world::DIRS` order) its shape covers whole, which light doesn't
+    /// pass through though the block lets it in elsewhere: a slab's bottom, as vanilla's.
+    pub seals: u8,
+}
+
+impl Tight {
+    /// Takes all light: nothing gets in.
+    pub fn dark(&self) -> bool {
+        self.opacity >= 15
+    }
+
+    /// Light sees no difference between the two.
+    pub fn same_light(&self, o: &Tight) -> bool {
+        (self.opacity, self.light, self.absorb, self.seals) == (o.opacity, o.light, o.absorb, o.seals)
+    }
+
+    /// Light goes through it whole and every way.
+    pub fn clear(&self) -> bool {
+        self.opacity == 0 && self.seals == 0
+    }
+
+    /// Whether light goes from a block of `self` to the next one, `to`, in direction `dir`.
+    #[inline]
+    pub fn lets_into(&self, to: &Tight, dir: usize) -> bool {
+        self.seals & (1 << dir) == 0 && to.seals & (1 << (dir ^ 1)) == 0
+    }
+}
+
+/// The faces a state's collision covers whole, for `Tight::seals`; none for a block light
+/// doesn't pass at all.
+fn seals_of(s: &StateInfo) -> u8 {
+    if s.opacity >= 15 {
+        return 0;
+    }
+    let full = |lo: f32, hi: f32| lo <= 1e-4 && hi >= 1.0 - 1e-4;
+    (0..6).fold(0, |m, dir| {
+        let (axis, top) = (dir / 2, dir % 2 == 1);
+        let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
+        let covers = s.collision.iter().any(|bx| {
+            let on_face = if top { bx[axis + 3] >= 1.0 - 1e-4 } else { bx[axis] <= 1e-4 };
+            on_face && full(bx[a], bx[a + 3]) && full(bx[b], bx[b + 3])
+        });
+        if covers { m | 1 << dir } else { m }
+    })
 }
 
 pub struct Content {
@@ -2003,7 +2047,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         .fold((IVec3::ZERO, IVec3::ZERO), |(lo, hi), sp| (lo.min(-sp.max), hi.max(-sp.min)));
     let tight = states
         .iter()
-        .map(|s| Tight { flags: s.flags, opacity: s.opacity, light: s.light, absorb: s.absorb })
+        .map(|s| Tight { flags: s.flags, opacity: s.opacity, light: s.light, absorb: s.absorb, seals: seals_of(s) })
         .collect();
     Ok(Content {
         spread_tags,
@@ -3040,9 +3084,7 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
         }
         let mut ground = Vec::new();
         for r in &s.ground {
-            match crate::refs::Ref::parse(r).and_then(|r| {
-                crate::refs::blocks(&r, block_names, block_defs, components, state_count)
-           }) {
+            match crate::refs::Ref::parse(r).and_then(|r| crate::refs::blocks(&r, block_names, block_defs, components, state_count)) {
                 Ok(blocks) => ground.extend(blocks),
                 Err(e) => errors.push(format!("{what}: ground: {e}")),
             }
