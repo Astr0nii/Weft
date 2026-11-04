@@ -1289,6 +1289,7 @@ pub struct RawScatter {
     /// Down and up.
     pub reach_y: [i32; 2],
     pub density: String,
+    pub ground: Vec<String>,
     pub shape: Callback,
 }
 

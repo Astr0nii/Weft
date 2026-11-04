@@ -965,6 +965,8 @@ pub struct ScatterDesc {
     pub reach_down: i32,
     /// A biome component (`f32`, 0..1): the chance of a site per cell. No value: none there.
     pub density: Str,
+    /// Space-separated block names or `#tags` the ground may contain.
+    pub ground: Str,
     /// `ScatterArgs`. Pure: called once for each cube the site reaches.
     pub shape: Callback,
 }
@@ -976,6 +978,7 @@ defaults!(ScatterDesc {
     reach_up: 32,
     reach_down: 16,
     density: Str::EMPTY,
+    ground: Str::EMPTY,
     shape: Callback::NONE
 });
 

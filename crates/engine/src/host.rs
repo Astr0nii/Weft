@@ -1843,6 +1843,7 @@ unsafe extern "C" fn reg_scatter(r: *mut abi::Registrar, d: *const abi::ScatterD
             reach: d.reach,
             reach_y: [d.reach_down.clamp(0, 256), d.reach_up.clamp(0, 256)],
             density: d.density.as_str().to_string(),
+            ground: d.ground.as_str().split_whitespace().map(str::to_string).collect(),
             shape: d.shape,
         });
     }

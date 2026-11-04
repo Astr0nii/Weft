@@ -189,6 +189,7 @@ pub fn register(r: &mut Registry) {
         .cell(5)
         .reach(3)
         .density(&TREES)
+        .ground("#plant_soil")
         .shape(|s| {
             let BlockPos { x, y, z } = s.pos();
             let log = TREE_KINDS
