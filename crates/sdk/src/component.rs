@@ -565,6 +565,7 @@ pub static SPREAD_REACH: Component<[i32; 6]> = Component::named(abi::comp::SPREA
 pub static SMOTHERED_INTO: Component<BlockRef> = Component::named(abi::comp::SMOTHERED_INTO);
 pub static SMOTHER_TIME: Component<f32> = Component::named(abi::comp::SMOTHER_TIME);
 pub static AMBIENT_PARTICLE: Component<Text> = Component::named(abi::comp::AMBIENT_PARTICLE);
+pub static DRIP: Component<Text> = Component::named(abi::comp::DRIP);
 pub static CONDUCTOR: Tag = Tag::named(abi::comp::CONDUCTOR);
 pub static ENERGY: Component<abi::Energy> = Component::named(abi::comp::ENERGY);
 pub static WORN: Component<abi::Worn> = Component::named(abi::comp::WORN);

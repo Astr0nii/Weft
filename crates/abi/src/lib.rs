@@ -385,6 +385,9 @@ pub mod comp {
     /// Block: a particle kind (`str`) clients show around it now and then, near the player only
     /// (vanilla's torch smoke); nothing of it reaches the server.
     pub const AMBIENT_PARTICLE: &str = "ambient_particle";
+    /// Liquid block: a particle kind (`str`) that drips from the ceiling of a cave under it,
+    /// near the player only (vanilla's water through a ceiling).
+    pub const DRIP: &str = "drip";
 }
 
 /// Harvest levels (`tool_level` of a tool, `harvest_level` of a block) of the vanilla tiers.

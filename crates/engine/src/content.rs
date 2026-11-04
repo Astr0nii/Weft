@@ -3426,9 +3426,10 @@ fn link_particles(game: &mut crate::registry::Game, textures: &mut TextureList) 
 }
 
 fn check_ambient_particles(game: &crate::registry::Game, components: &Components, state_count: u32, errors: &mut Vec<String>) {
-    if let Some(ap) = components.id(abi::comp::AMBIENT_PARTICLE) {
+    for comp in [abi::comp::AMBIENT_PARTICLE, abi::comp::DRIP] {
+        let Some(id) = components.id(comp) else { continue };
         let mut named: Vec<&str> = (0..state_count)
-            .filter_map(|s| components.text(comps::BLOCK, s, ap))
+            .filter_map(|s| components.text(comps::BLOCK, s, id))
             .flat_map(|n| n.split(','))
             .filter(|n| !game.particle_names.contains_key(*n))
             .collect();
@@ -3436,7 +3437,7 @@ fn check_ambient_particles(game: &crate::registry::Game, components: &Components
         errors.extend(
             named
                 .into_iter()
-                .map(|n| format!("ambient_particle: unknown particle {n}")),
+                .map(|n| format!("{comp}: unknown particle {n}")),
         );
     }
 }

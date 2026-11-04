@@ -45,6 +45,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     (abi::comp::SMOTHERED_INTO, "block"),
     (abi::comp::SMOTHER_TIME, "f32"),
     (abi::comp::AMBIENT_PARTICLE, "str"),
+    (abi::comp::DRIP, "str"),
     (abi::comp::CONDUCTOR, ""),
     (abi::comp::ENERGY, <abi::Energy as abi::Schema>::SCHEMA),
     (abi::comp::WORN, <abi::Worn as abi::Schema>::SCHEMA),

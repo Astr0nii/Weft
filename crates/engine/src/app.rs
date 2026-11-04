@@ -1184,7 +1184,7 @@ impl Running {
             let mine = self
                 .game
                 .as_ref()
-                .map(|g| g.client.self_entity().args(g.client.player_id, dt));
+                .map(|g| g.client.me.args(g.client.player_id, dt));
             let others = self.game.as_ref().map_or(Vec::new(), |g| {
                 g.client
                     .entities

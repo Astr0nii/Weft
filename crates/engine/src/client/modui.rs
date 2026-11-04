@@ -597,7 +597,7 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
                 sprinting: cl.player.sprinting as u32,
                 pose: cl.player.pose.0 as u32,
                 flying: cl.player.flying as u32,
-                health: cl.health,
+                health: cl.me.health,
                 max_health: cl.max_health,
                 size: {
                     let (hw, h, eye) = cl.player.dims();

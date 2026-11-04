@@ -247,7 +247,7 @@ impl Client {
             ToClient::PlayAction(list) => {
                 for (id, name, looping) in list {
                     if id == self.player_id {
-                        self.self_action = (!name.is_empty()).then(|| (name, self.start.elapsed().as_secs_f32(), looping));
+                        self.me.action = (!name.is_empty()).then(|| (name, self.me.age, looping));
                     } else if let Some(e) = self.entities.get_mut(&id) {
                         e.action = (!name.is_empty()).then(|| (name, e.age, looping));
                     }
@@ -288,50 +288,8 @@ impl Client {
 
     fn spawn_entities(&mut self, list: Vec<crate::net::EntityView>) {
         for e in list {
-            self.entities.insert(
-                e.id,
-                ClientEntity {
-                    kind: e.kind,
-                    pos: e.pos,
-                    target: e.pos,
-                    yaw: e.yaw,
-                    target_yaw: e.yaw,
-                    body_yaw: e.yaw,
-                    arm_swing: None,
-                    effect: None,
-                    pitch: e.pitch,
-                    item: e.item,
-                    // Arrives as a component right after: no hurt flash for the first.
-                    health: f32::NAN,
-                    hurt: 0.0,
-                    worn: Vec::new(),
-                    held: 0,
-                    off_held: 0,
-                    using: None,
-                    use_ticks: 0.0,
-                    crouched: 0.0,
-                    swaps: Vec::new(),
-                    swing_off: false,
-                    walk: 0.0,
-                    walked: 0.0,
-                    swing: 0.0,
-                    age: 0.0,
-                    burning: false,
-                    dying: None,
-                    next_step: 0.0,
-                    action: None,
-                    pose: Pose::STAND,
-                    track: Default::default(),
-                    pulled: None,
-                    size: None,
-                    look: None,
-                    frame: 0,
-                    rel: DVec3::ZERO,
-                    rel_target: None,
-                    structure: None,
-                    world_light: Default::default(),
-                },
-            );
+            self.entities
+                .insert(e.id, ClientEntity::new(e.kind, e.pos, e.yaw, e.pitch, e.item));
         }
     }
 
