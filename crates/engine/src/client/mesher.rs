@@ -163,7 +163,7 @@ fn draw_block(
                 if ninfo.block == info.block && info.layer != RenderLayer::Opaque && info.flags & bf::CULL_SAME != 0 {
                     continue;
                 }
-                let (ao, light) = corner_data(n, ctm, opaque, x, y, z, dir);
+                let (ao, light) = corner_data(c, n, ctm, opaque, x, y, z, dir);
                 let tex = ctm.resolve(c, n, x, y, z, dir, textures[dir] & face::TEX_MASK);
                 let tint = face_tint(info, ctm, dir, tex);
                 // All that is translucent is kept far to near as one list of quads.
@@ -264,6 +264,7 @@ fn tilted(p: [f32; 3], t: &weft_abi::BoxTilt) -> [f32; 3] {
 }
 
 fn corner_data(
+    c: &Content,
     n: &Neighborhood,
     ctm: &super::ctm::Ctm,
     opaque: &impl Fn(usize) -> bool,
@@ -300,9 +301,17 @@ fn corner_data(
         let ao = if s1 && s2 { 0 } else { 3 - (s1 as u32 + s2 as u32 + s3 as u32) };
         ao_bits |= ao << (k * 2);
 
+        // Only what light could come from into the cell before the face: a slab's closed side
+        // keeps its neighbor's light off the face as it keeps the light itself.
+        let t = |i: usize| &c.tight[n.states[i] as usize];
+        let along = |axis: usize, s: i32| axis * 2 + (s > 0) as usize;
+        let (to_a, to_b) = (along(ta, -sa), along(tb, -sb));
+        let r1 = t(i1).lets_into(t(i0), to_a);
+        let r2 = t(i2).lets_into(t(i0), to_b);
+        let r3 = (t(i3).lets_into(t(i1), to_b) && r1) || (t(i3).lets_into(t(i2), to_a) && r2);
         let mut sum = [0u32; 4];
         let mut count = 0;
-        for (idx, solid) in [(i0, false), (i1, s1), (i2, s2), (i3, s3 || (s1 && s2))] {
+        for (idx, solid) in [(i0, false), (i1, s1 || !r1), (i2, s2 || !r2), (i3, s3 || (s1 && s2) || !r3)] {
             // A block with holes is still opaque to light, there is none in it to go by.
             if solid || ctm.is_open(n.states[idx]) {
                 continue;
