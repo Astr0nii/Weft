@@ -29,7 +29,7 @@ pub fn register(r: &mut Registry) {
             let w = t.world();
             for &id in t.ids() {
                 let Some(mut st) = w.entity(id) else { continue };
-                st.vel = [0.0, if (st.age / 80) % 2 == 0 { 1.0 } else { -1.0 }, 0.0];
+                st.vel = [0.0, if (st.age / 80) % 2 == 0 { 1.0 } else { -1.0 }, 0.0].into();
                 w.set_entity(id, &st);
             }
         });
@@ -46,7 +46,7 @@ pub fn register(r: &mut Registry) {
             let w = t.world();
             for &id in t.ids() {
                 let Some(mut st) = w.entity(id) else { continue };
-                st.vel = [if (st.age / 60) % 2 == 0 { 6.0 } else { -6.0 }, 0.0, 0.0];
+                st.vel = [if (st.age / 60) % 2 == 0 { 6.0 } else { -6.0 }, 0.0, 0.0].into();
                 w.set_entity(id, &st);
             }
         });

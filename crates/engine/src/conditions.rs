@@ -26,8 +26,14 @@ pub fn on_server(d: &mut Dim, c: &'static Content, id: u32, pos: DVec3, entity: 
         },
         Answer::Mode(m) => d.entities.get(entity).is_some_and(|e| e.mode == m),
         Answer::Mod(owner, cb) => {
-            d.call(owner, cb, |w| abi::ConditionArgs { world: w, client: std::ptr::null_mut(), pos: pos.to_array(), entity, result: 0 })
-                .result
+            d.call(owner, cb, |w| abi::ConditionArgs {
+                world: w,
+                client: std::ptr::null_mut(),
+                pos: pos.to_array().into(),
+                entity,
+                result: 0,
+            })
+            .result
                 != 0
         }
     }
@@ -50,7 +56,7 @@ pub fn on_client(client: Option<&crate::client::Client>, id: u32) -> bool {
         Answer::Mod(owner, cb) => {
             let mut v = crate::client::modui::ClientView::new(client);
             let pos = client.map_or([0.0; 3], |cl| cl.player.pos.to_array());
-            let mut a = abi::ConditionArgs { world: std::ptr::null_mut(), client: v.raw(), pos, entity: 0, result: 0 };
+            let mut a = abi::ConditionArgs { world: std::ptr::null_mut(), client: v.raw(), pos: pos.into(), entity: 0, result: 0 };
             crate::host::invoke(owner, cb, &mut a);
             a.result != 0
         }

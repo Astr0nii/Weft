@@ -271,11 +271,11 @@ impl Wire for Msg {
 
 impl Wire for ParticleBurst {
     fn put(&self, w: &mut W) {
-        (self.kind, self.pos, self.spread, self.velocity, self.speed, (self.count, self.block, self.outward)).put(w);
+        (self.kind, crate::world::dvec(self.pos), self.spread, self.velocity, self.speed, (self.count, self.block, self.outward)).put(w);
     }
     fn get(r: &mut R) -> Option<Self> {
-        let (kind, pos, spread, velocity, speed, (count, block, outward)) = Wire::get(r)?;
-        Some(ParticleBurst { kind, pos, spread, velocity, speed, count, block, outward })
+        let (kind, pos, spread, velocity, speed, (count, block, outward)): (u32, DVec3, _, _, _, _) = Wire::get(r)?;
+        Some(ParticleBurst { kind, pos: pos.to_array().into(), spread, velocity, speed, count, block, outward })
     }
 }
 

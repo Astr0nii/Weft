@@ -715,7 +715,13 @@ impl Dim {
             if let Some(cb) = c.block_of(state).cb.on_carried {
                 let owner = c.block_of(state).owner;
                 let cell = at + now;
-                self.call(owner, cb, |w| abi::BlockEventArgs { world: w, pos: cell.to_array(), state, other: at.to_array(), entity: id });
+                self.call(owner, cb, |w| abi::BlockEventArgs {
+                    world: w,
+                    pos: cell.to_array().into(),
+                    state,
+                    other: at.to_array().into(),
+                    entity: id,
+                });
             }
         }
     }

@@ -10,6 +10,7 @@
 //! ```
 
 use crate::abi::{self, ItemStack, Slice, Str, gizmo_kind as gk};
+use crate::abi::{BlockPos, Vec3};
 use crate::{ClientView, Key, Registry, Screen, Value, World, callback, host};
 
 pub use abi::{ClientState, client_flags};
@@ -134,8 +135,8 @@ impl Client {
 
     /// Where a bone of `entity`'s model or of what it has on was in the world the last frame: for
     /// sparks off a sword's tip, smoke over a lantern.
-    pub fn bone_position(&self, entity: u64, bone: &str) -> Option<[f64; 3]> {
-        let mut out = [0.0; 3];
+    pub fn bone_position(&self, entity: u64, bone: &str) -> Option<Vec3> {
+        let mut out = Vec3::ZERO;
         (unsafe { (host().client_bone_position)(self.raw, entity, abi_str(bone), &mut out) } != 0).then_some(out)
     }
 
@@ -168,11 +169,13 @@ impl Client {
     }
 
     /// Puts the local player's feet at `pos` (the server takes it as a move).
-    pub fn teleport(&self, pos: [f64; 3]) {
+    pub fn teleport(&self, pos: impl Into<Vec3>) {
+        let pos = pos.into();
         self.control(&abi::PlayerControl { mask: abi::control_mask::POS | abi::control_mask::VEL, pos, ..abi::PlayerControl::DEFAULT });
     }
 
-    pub fn set_velocity(&self, vel: [f64; 3]) {
+    pub fn set_velocity(&self, vel: impl Into<Vec3>) {
+        let vel = vel.into();
         self.control(&abi::PlayerControl { mask: abi::control_mask::VEL, vel, ..abi::PlayerControl::DEFAULT });
     }
 
@@ -283,25 +286,29 @@ impl Client {
     }
 
     /// The block the client has at `pos`, `None` while that cube is not loaded.
-    pub fn block(&self, pos: [i32; 3]) -> Option<u32> {
+    pub fn block(&self, pos: impl Into<BlockPos>) -> Option<u32> {
+        let pos = pos.into();
         let b = unsafe { (host().client_block_in)(self.raw, 0, &pos) };
         (b != u32::MAX).then_some(b)
     }
 
     /// The block the client has at `pos` of moving body `entity`.
-    pub fn body_block(&self, entity: u64, pos: [i32; 3]) -> Option<u32> {
+    pub fn body_block(&self, entity: u64, pos: impl Into<BlockPos>) -> Option<u32> {
+        let pos = pos.into();
         let b = unsafe { (host().client_block_in)(self.raw, entity, &pos) };
         (b != u32::MAX).then_some(b)
     }
 
     /// Whether the cube holding `pos` is here and has been drawn.
-    pub fn cube_shown(&self, pos: [i32; 3]) -> bool {
+    pub fn cube_shown(&self, pos: impl Into<BlockPos>) -> bool {
+        let pos = pos.into();
         unsafe { (host().client_cube_shown)(self.raw, &pos) != 0 }
     }
 
     /// The light the client has at `pos` (sky level in the low byte, then block red, green,
     /// blue), `None` while that cube is not loaded.
-    pub fn light(&self, pos: [i32; 3]) -> Option<u32> {
+    pub fn light(&self, pos: impl Into<BlockPos>) -> Option<u32> {
+        let pos = pos.into();
         let l = unsafe { (host().client_light)(self.raw, &pos) };
         (l != u32::MAX).then_some(l)
     }
@@ -353,7 +360,7 @@ impl Client {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw(&self, group: Option<&crate::GizmoGroup>, kind: u32, a: [f64; 3], b: [f64; 3], color: u32, key: &str, args: &[crate::Arg]) {
+    fn draw(&self, group: Option<&crate::GizmoGroup>, kind: u32, a: Vec3, b: Vec3, color: u32, key: &str, args: &[crate::Arg]) {
         let raw = crate::ui::raw_args(args);
         unsafe {
             (host().client_draw)(
@@ -371,16 +378,22 @@ impl Client {
 
     /// The server's `draw_*` for this frame only: always, or with a `group` while the player
     /// shows it (`/gizmo <group>`). Colors are 0xRRGGBBAA.
-    pub fn draw_line(&self, group: Option<&crate::GizmoGroup>, a: [f64; 3], b: [f64; 3], color: u32) {
+    pub fn draw_line(&self, group: Option<&crate::GizmoGroup>, a: impl Into<Vec3>, b: impl Into<Vec3>, color: u32) {
+        let a = a.into();
+        let b = b.into();
         self.draw(group, gk::LINE, a, b, color, "", &[]);
     }
 
-    pub fn draw_box(&self, group: Option<&crate::GizmoGroup>, min: [f64; 3], max: [f64; 3], color: u32) {
+    pub fn draw_box(&self, group: Option<&crate::GizmoGroup>, min: impl Into<Vec3>, max: impl Into<Vec3>, color: u32) {
+        let min = min.into();
+        let max = max.into();
         self.draw(group, gk::BOX, min, max, color, "", &[]);
     }
 
     /// See-through by `color`'s alpha (range previews, blueprints).
-    pub fn draw_fill(&self, group: Option<&crate::GizmoGroup>, min: [f64; 3], max: [f64; 3], color: u32) {
+    pub fn draw_fill(&self, group: Option<&crate::GizmoGroup>, min: impl Into<Vec3>, max: impl Into<Vec3>, color: u32) {
+        let min = min.into();
+        let max = max.into();
         self.draw(group, gk::FILL, min, max, color, "", &[]);
     }
     /// The outline of a shape, this frame.
@@ -392,15 +405,24 @@ impl Client {
 
     /// The translation `key` with `args` at a world position, `size` times as big as menu text.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw_text(&self, group: Option<&crate::GizmoGroup>, pos: [f64; 3], key: &str, args: &[crate::Arg], color: u32, size: f32) {
-        self.draw(group, gk::TEXT, pos, [size as f64, 0.0, 0.0], color, key, args);
+    pub fn draw_text(
+        &self,
+        group: Option<&crate::GizmoGroup>,
+        pos: impl Into<Vec3>,
+        key: &str,
+        args: &[crate::Arg],
+        color: u32,
+        size: f32,
+    ) {
+        let pos = pos.into();
+        self.draw(group, gk::TEXT, pos, [size as f64, 0.0, 0.0].into(), color, key, args);
     }
 
     /// The translation `key` with `args`, centered at fractions of the window, `size` times as
     /// big as menu text. Part of the GUI: F1 hides it with the rest.
     #[allow(clippy::too_many_arguments)]
     pub fn draw_screen_text(&self, x: f32, y: f32, key: &str, args: &[crate::Arg], color: u32, size: f32) {
-        self.draw(None, gk::SCREEN_TEXT, [x as f64, y as f64, 0.0], [size as f64, 0.0, 0.0], color, key, args);
+        self.draw(None, gk::SCREEN_TEXT, [x as f64, y as f64, 0.0].into(), [size as f64, 0.0, 0.0].into(), color, key, args);
     }
 
     /// Sends `value` on `channel` to the server.
@@ -562,12 +584,14 @@ impl World {
     /// An inventory of `slots` belonging to nothing in the world (a shared stash, a test):
     /// menus open on it like on a chest. Never saved; remove it with `despawn`. Items that keep
     /// what they hold are `ItemBuilder::inventory`.
-    pub fn loose_inventory(&self, slots: u32, pos: [f64; 3]) -> u64 {
+    pub fn loose_inventory(&self, slots: u32, pos: impl Into<Vec3>) -> u64 {
+        let pos = pos.into();
         unsafe { (host().loose_inventory)(self.raw(), slots, &pos) }
     }
 
     /// Moves an entity (players included) at the end of the tick, to `dim` or the same dimension.
-    pub fn teleport(&self, id: u64, dim: Option<&crate::Dimension>, pos: [f64; 3]) {
+    pub fn teleport(&self, id: u64, dim: Option<&crate::Dimension>, pos: impl Into<Vec3>) {
+        let pos = pos.into();
         let d = dim.map_or(u32::MAX, |d| d.id());
         unsafe { (host().entity_teleport)(self.raw(), id, d, &pos) }
     }
@@ -789,7 +813,7 @@ impl ClientEntity {
     pub fn kind(&self) -> u32 {
         self.0.kind
     }
-    pub fn pos(&self) -> [f64; 3] {
+    pub fn pos(&self) -> Vec3 {
         self.0.pos
     }
     pub fn yaw(&self) -> f32 {

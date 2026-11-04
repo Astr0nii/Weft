@@ -137,14 +137,14 @@ impl T {
     pub fn on_screen(&self, p: [f64; 3]) -> Option<(f32, f32)> {
         let s = self.state();
         let eye_y = self.c().entity(0).map_or(1.62, |e| e.size.eye as f64);
-        let eye = [s.shown[0], s.shown[1] + eye_y, s.shown[2]];
+        let eye = [s.shown.x, s.shown.y + eye_y, s.shown.z];
         let fwd = look_dir(s.yaw, s.pitch);
         let (sy, cy) = (s.yaw as f64).sin_cos();
         let right = [cy, 0.0, -sy];
-        let up = [right[1] * fwd[2] - right[2] * fwd[1], right[2] * fwd[0] - right[0] * fwd[2], right[0] * fwd[1] - right[1] * fwd[0]];
+        let up = [right[1] * fwd.z - right[2] * fwd.y, right[2] * fwd.x - right[0] * fwd.z, right[0] * fwd.y - right[1] * fwd.x];
         let d = [p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]];
         let dot = |a: [f64; 3]| a[0] * d[0] + a[1] * d[1] + a[2] * d[2];
-        let z = dot(fwd);
+        let z = dot(fwd.to_array());
         if z <= 0.05 {
             return None;
         }
@@ -207,8 +207,8 @@ impl T {
         let mut last = [f64::NAN; 3];
         self.until("standing still", DEFAULT_TIMEOUT, move |t| {
             let s = t.state();
-            let moved = (0..3).any(|i| (s.pos[i] - last[i]).abs() > 1e-6 || s.pos[i].is_nan());
-            last = s.pos;
+            let moved = (s.pos - last.into()).length_squared() > 1e-12 || s.pos.to_array().iter().any(|v| v.is_nan());
+            last = s.pos.to_array();
             still = if moved || !t.flag(cf::ON_GROUND) { 0 } else { still + 1 };
             still >= 20
         })
@@ -310,7 +310,7 @@ impl T {
 
     /// Player's block position as the client has it.
     pub fn feet(&self) -> [i32; 3] {
-        block_pos_of(self.state().pos)
+        block_pos_of(self.state().pos).to_array()
     }
 
     // ------------------------------------------------ input

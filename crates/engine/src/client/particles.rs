@@ -277,7 +277,7 @@ impl Particles {
     pub fn spawn(&mut self, b: &ParticleBurst, world: &ClientWorld) {
         let c = content();
         let Some(k) = c.game.particles.get(b.kind as usize) else { return };
-        let pos = DVec3::from_array(b.pos);
+        let pos = crate::world::dvec(b.pos);
         if !pos.is_finite() {
             return;
         }

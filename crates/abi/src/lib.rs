@@ -25,6 +25,140 @@ pub const fn fnv(bytes: &[u8]) -> u64 {
     h
 }
 
+/// A block's place in the world, or how far one block is from another.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct BlockPos {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+}
+
+impl BlockPos {
+    pub const ZERO: BlockPos = BlockPos { x: 0, y: 0, z: 0 };
+
+    pub const fn new(x: i32, y: i32, z: i32) -> BlockPos {
+        BlockPos { x, y, z }
+    }
+
+    /// This one moved by (`dx`, `dy`, `dz`).
+    pub const fn offset(self, dx: i32, dy: i32, dz: i32) -> BlockPos {
+        BlockPos { x: self.x + dx, y: self.y + dy, z: self.z + dz }
+    }
+
+    pub const fn above(self) -> BlockPos {
+        self.offset(0, 1, 0)
+    }
+
+    pub const fn below(self) -> BlockPos {
+        self.offset(0, -1, 0)
+    }
+
+    /// The middle of the block.
+    pub fn center(self) -> Vec3 {
+        Vec3 { x: self.x as f64 + 0.5, y: self.y as f64 + 0.5, z: self.z as f64 + 0.5 }
+    }
+
+    pub const fn to_array(self) -> [i32; 3] {
+        [self.x, self.y, self.z]
+    }
+}
+
+impl From<[i32; 3]> for BlockPos {
+    fn from([x, y, z]: [i32; 3]) -> BlockPos {
+        BlockPos { x, y, z }
+    }
+}
+
+impl From<BlockPos> for [i32; 3] {
+    fn from(p: BlockPos) -> [i32; 3] {
+        p.to_array()
+    }
+}
+
+impl core::ops::Add for BlockPos {
+    type Output = BlockPos;
+    fn add(self, o: BlockPos) -> BlockPos {
+        self.offset(o.x, o.y, o.z)
+    }
+}
+
+impl core::ops::Sub for BlockPos {
+    type Output = BlockPos;
+    fn sub(self, o: BlockPos) -> BlockPos {
+        self.offset(-o.x, -o.y, -o.z)
+    }
+}
+
+/// A point in the world in blocks, or a direction or speed.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Vec3 {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+impl Vec3 {
+    pub const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
+
+    pub const fn new(x: f64, y: f64, z: f64) -> Vec3 {
+        Vec3 { x, y, z }
+    }
+
+    pub fn offset(self, dx: f64, dy: f64, dz: f64) -> Vec3 {
+        Vec3 { x: self.x + dx, y: self.y + dy, z: self.z + dz }
+    }
+
+    /// The block it is in.
+    pub fn block(self) -> BlockPos {
+        // No `floor` here: this crate has no std.
+        let floor = |v: f64| v as i32 - ((v as i32) as f64 > v) as i32;
+        BlockPos { x: floor(self.x), y: floor(self.y), z: floor(self.z) }
+    }
+
+    pub fn length_squared(self) -> f64 {
+        self.x * self.x + self.y * self.y + self.z * self.z
+    }
+
+    pub const fn to_array(self) -> [f64; 3] {
+        [self.x, self.y, self.z]
+    }
+}
+
+impl From<[f64; 3]> for Vec3 {
+    fn from([x, y, z]: [f64; 3]) -> Vec3 {
+        Vec3 { x, y, z }
+    }
+}
+
+impl From<Vec3> for [f64; 3] {
+    fn from(v: Vec3) -> [f64; 3] {
+        v.to_array()
+    }
+}
+
+impl core::ops::Add for Vec3 {
+    type Output = Vec3;
+    fn add(self, o: Vec3) -> Vec3 {
+        self.offset(o.x, o.y, o.z)
+    }
+}
+
+impl core::ops::Sub for Vec3 {
+    type Output = Vec3;
+    fn sub(self, o: Vec3) -> Vec3 {
+        self.offset(-o.x, -o.y, -o.z)
+    }
+}
+
+impl core::ops::Mul<f64> for Vec3 {
+    type Output = Vec3;
+    fn mul(self, k: f64) -> Vec3 {
+        Vec3 { x: self.x * k, y: self.y * k, z: self.z * k }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Str {
@@ -393,6 +527,9 @@ pub mod comp {
     /// Liquid block: the particle kind (`str`) that rises from what is under it and from a
     /// falling in.
     pub const BUBBLE: &str = "bubble";
+    /// Entity kinds and worn items: the liquids sprinting swims in (`str`, names and `#tags`
+    /// apart by spaces); a worn item's add to its wearer's.
+    pub const SWIMS_IN: &str = "swims_in";
 }
 
 /// Harvest levels (`tool_level` of a tool, `harvest_level` of a block) of the vanilla tiers.
@@ -596,7 +733,7 @@ defaults!(SignalDesc { kind: signal_kind::NONE, attach: 6, front: 6, delay: 2, f
 #[repr(C)]
 pub struct SignalArgs {
     pub world: *mut WorldCtx,
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
     pub state: u32,
     pub level: u32,
     /// What it was before.
@@ -607,7 +744,7 @@ pub struct SignalArgs {
 #[repr(C)]
 pub struct SignalReadArgs {
     pub world: *mut WorldCtx,
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
     pub state: u32,
     pub output: u32,
 }
@@ -617,7 +754,7 @@ pub struct SignalReadArgs {
 #[repr(C)]
 pub struct GateArgs {
     pub world: *mut WorldCtx,
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
     pub state: u32,
     pub inputs: [u32; 6],
     pub output: u32,
@@ -782,7 +919,7 @@ defaults!(BiomeDesc { name: Str::EMPTY, cell: core::ptr::null(), rule: BiomeRule
 #[repr(C)]
 pub struct GenArgs {
     pub seed: u64,
-    pub cube: [i32; 3],
+    pub cube: BlockPos,
     /// 4096 state ids, index = (y * 16 + z) * 16 + x. Pre-filled with 0 (air).
     pub blocks: *mut u32,
     /// 256 biome ids per column, index = z * 16 + x.
@@ -830,7 +967,7 @@ defaults!(ScatterDesc {
 #[derive(Clone, Copy)]
 pub struct ScatterBlock {
     /// From `ScatterArgs::pos`.
-    pub offset: [i32; 3],
+    pub offset: BlockPos,
     pub state: u32,
     /// 1: replaces anything; 0: only air.
     pub force: u32,
@@ -841,7 +978,7 @@ pub struct ScatterArgs {
     pub seed: u64,
     pub dim: u32,
     /// The block above the ground at the site.
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
     pub biome: u32,
     /// Random bits of this site.
     pub random: u64,
@@ -855,7 +992,7 @@ pub struct ScatterArgs {
 pub struct SpawnArgs {
     pub seed: u64,
     /// Output, block position the player stands on top of.
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
 }
 
 #[repr(C)]
@@ -945,7 +1082,7 @@ pub struct ColumnArgs {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct StructureBlock {
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
     /// Block state name (`base:furnace#2`); `core:air` clears what is there.
     pub block: Str,
 }
@@ -980,17 +1117,17 @@ pub struct TemplateDesc {
 #[repr(C)]
 pub struct BlockEventArgs {
     pub world: *mut WorldCtx,
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
     pub state: u32,
     /// `on_neighbor`: the neighbor that changed. `on_carried`: where the block is on the body.
-    pub other: [i32; 3],
+    pub other: BlockPos,
     pub entity: u64,
 }
 
 #[repr(C)]
 pub struct UseArgs {
     pub world: *mut WorldCtx,
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
     pub state: u32,
     pub face: u32,
     pub player: u64,
@@ -999,7 +1136,7 @@ pub struct UseArgs {
 
 #[repr(C)]
 pub struct PlaceArgs {
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
     pub face: u32,
     /// Player look direction.
     pub look: [f32; 3],
@@ -1023,7 +1160,7 @@ pub struct ItemUseArgs {
     /// The slot of the player's inventory it is in.
     pub slot: u32,
     /// Target block if any (`has_target`).
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
     pub face: u32,
     pub has_target: u32,
     pub handled: u32,
@@ -1075,7 +1212,7 @@ pub struct Holder {
     pub slot: u32,
     pub entity: u64,
     /// `BLOCK`: the block, in the caller's frame (a body's coordinates on a body).
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
 }
 
 pub mod holder {
@@ -1087,13 +1224,13 @@ pub mod holder {
 }
 
 impl Holder {
-    pub const NONE: Holder = Holder { kind: holder::NONE, slot: 0, entity: 0, pos: [0; 3] };
+    pub const NONE: Holder = Holder { kind: holder::NONE, slot: 0, entity: 0, pos: BlockPos::ZERO };
 
     pub fn entity(id: u64) -> Holder {
         Holder { kind: if id == 0 { holder::NONE } else { holder::ENTITY }, entity: id, ..Holder::NONE }
     }
 
-    pub fn block(pos: [i32; 3]) -> Holder {
+    pub fn block(pos: BlockPos) -> Holder {
         Holder { kind: holder::BLOCK, pos, ..Holder::NONE }
     }
 
@@ -1111,6 +1248,12 @@ impl From<u64> for Holder {
 
 impl From<[i32; 3]> for Holder {
     fn from(pos: [i32; 3]) -> Holder {
+        Holder::block(pos.into())
+    }
+}
+
+impl From<BlockPos> for Holder {
+    fn from(pos: BlockPos) -> Holder {
         Holder::block(pos)
     }
 }
@@ -1304,13 +1447,13 @@ pub mod damage_cause {
 #[derive(Clone, Copy, Debug)]
 pub struct SpawnEntityDesc {
     pub kind: u32,
-    pub pos: [f64; 3],
+    pub pos: Vec3,
     /// `spawn_set`: which of the fields below are given.
     pub set: u32,
     /// What an item entity is.
     pub stack: ItemStack,
     /// Blocks per second.
-    pub velocity: [f64; 3],
+    pub velocity: Vec3,
     pub yaw: f32,
     /// Ticks before an item can be picked up.
     pub pickup_delay: u32,
@@ -1532,7 +1675,19 @@ pub mod pose_tilt {
     pub const ON_BACK: u32 = 3;
 }
 
-/// A pose (`Host::reg_pose`).
+/// When a pose may be taken, all of those given (`PoseDesc::when`).
+pub mod pose_when {
+    /// In a liquid it swims in (`comp::SWIMS_IN`): at its eyes, or at its feet once it is low.
+    pub const SWIM_LIQUID: u32 = 1;
+    /// Not flying (nor moving through blocks).
+    pub const NOT_FLYING: u32 = 2;
+    /// Sprinting: the sprint action held while moving forward, with the food for it.
+    pub const SPRINTING: u32 = 4;
+}
+
+/// A pose (`Host::reg_pose`). Of the poses whose conditions hold the one with the highest
+/// `priority` is taken where it has room; where it has none, the first of its `fallback` that
+/// does and whose `when` holds, input aside (`key`, `pose_when::SPRINTING`).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PoseDesc {
@@ -1549,6 +1704,14 @@ pub struct PoseDesc {
     pub action: Str,
     /// The camera bobs while walking in it; 0: still.
     pub bob: u32,
+    pub priority: i32,
+    /// An action (`core:sneak`) held for it, empty for none.
+    pub key: Str,
+    /// `pose_when`.
+    pub when: u32,
+    /// Poses tried in this order where it has no room (full names apart by spaces); the last
+    /// is taken even without room.
+    pub fallback: Str,
 }
 defaults!(PoseDesc {
     name: Str::EMPTY,
@@ -1558,7 +1721,11 @@ defaults!(PoseDesc {
     speed: 1.0,
     tilt: pose_tilt::UPRIGHT,
     action: Str::EMPTY,
-    bob: 1
+    bob: 1,
+    priority: 0,
+    key: Str::EMPTY,
+    when: 0,
+    fallback: Str::EMPTY
 });
 
 /// An entity's box in blocks: as wide as `width` both ways, `height` tall, its eyes `eye` up.
@@ -1575,8 +1742,8 @@ pub struct EntitySize {
 pub struct EntityState {
     pub kind: u32,
     pub flags: u32,
-    pub pos: [f64; 3],
-    pub vel: [f64; 3],
+    pub pos: Vec3,
+    pub vel: Vec3,
     pub yaw: f32,
     pub pitch: f32,
     pub on_ground: u32,
@@ -1602,8 +1769,8 @@ pub struct EntityState {
 
 impl EntityState {
     /// Where its eyes are.
-    pub fn eye(&self) -> [f64; 3] {
-        [self.pos[0], self.pos[1] + self.size.eye as f64, self.pos[2]]
+    pub fn eye(&self) -> Vec3 {
+        self.pos.offset(0.0, self.size.eye as f64, 0.0)
     }
 
     pub fn crouching(&self) -> bool {
@@ -1611,16 +1778,15 @@ impl EntityState {
     }
 
     /// The block its feet are in.
-    pub fn block_pos(&self) -> [i32; 3] {
-        // No `floor` here: this crate has no std.
-        self.pos.map(|v| v as i32 - ((v as i32) as f64 > v) as i32)
+    pub fn block_pos(&self) -> BlockPos {
+        self.pos.block()
     }
 }
 defaults!(EntityState {
     kind: 0,
     flags: 0,
-    pos: [0.0; 3],
-    vel: [0.0; 3],
+    pos: Vec3::ZERO,
+    vel: Vec3::ZERO,
     yaw: 0.0,
     pitch: 0.0,
     on_ground: 0,
@@ -2301,22 +2467,22 @@ pub struct Host {
 
     /// The block where the running callback is: the world, or the body a block of it is on or
     /// `world_enter_body` entered. `u32::MAX` for what isn't loaded.
-    pub block_get: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u32,
+    pub block_get: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos) -> u32,
     /// The id of the dimension this callback runs in.
     pub world_dimension: unsafe extern "C" fn(world: *mut WorldCtx) -> u32,
     /// Like `block_get`, where it reads. Returns 0 if the position is not loaded.
-    pub block_set: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3], state: u32) -> u32,
+    pub block_set: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos, state: u32) -> u32,
     /// What is in a cell, the one `block_get` gives first: writes up to `cap`, returns how many.
-    pub part_list: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3], out: *mut u32, cap: u32) -> u32,
+    pub part_list: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos, out: *mut u32, cap: u32) -> u32,
     /// Puts another block in a cell; 0 if not loaded or two parts would both want to be its main.
-    pub part_add: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3], state: u32) -> u32,
+    pub part_add: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos, state: u32) -> u32,
     /// Replaces a part of a cell with another state, air taking it out; 0 if it isn't there.
-    pub part_replace: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3], old: u32, new: u32) -> u32,
-    pub schedule_tick: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3], delay: u32),
+    pub part_replace: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos, old: u32, new: u32) -> u32,
+    pub schedule_tick: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos, delay: u32),
     pub game_time: unsafe extern "C" fn(world: *mut WorldCtx) -> u64,
     /// Deterministic per-world random stream.
     pub random: unsafe extern "C" fn(world: *mut WorldCtx) -> u64,
-    pub light: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u32,
+    pub light: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos) -> u32,
     /// 0..1 sun strength for the world's time of day.
     pub daylight: unsafe extern "C" fn(world: *mut WorldCtx) -> f32,
 
@@ -2327,7 +2493,7 @@ pub struct Host {
     pub entity_get: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, out: *mut EntityState) -> u32,
     /// Adds `v` (blocks per second) to the entity's velocity: a mob's here, a player's on its
     /// client, the way a hit's knockback goes.
-    pub entity_push: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, v: *const [f64; 3]),
+    pub entity_push: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, v: *const Vec3),
     /// Writes pos, vel, yaw, pitch and health from `state`.
     pub entity_set: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, state: *const EntityState),
     /// AI steering: horizontal direction and speed factor applied by the physics, optional jump.
@@ -2345,15 +2511,15 @@ pub struct Host {
     /// blocks). `from` is in the caller's frame. Returns its state + 1, or 0 for none.
     pub raycast: unsafe extern "C" fn(
         world: *mut WorldCtx,
-        from: *const [f64; 3],
-        dir: *const [f64; 3],
+        from: *const Vec3,
+        dir: *const Vec3,
         max: f64,
         liquids: u32,
-        pos: *mut [i32; 3],
+        pos: *mut BlockPos,
         face: *mut u32,
         body: *mut u64,
     ) -> u32,
-    pub in_liquid: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [f64; 3]) -> u32,
+    pub in_liquid: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const Vec3) -> u32,
     pub entity_swing_strength: unsafe extern "C" fn(world: *mut WorldCtx, id: u64) -> f32,
     /// Entities in a shape (their feet, or with `entity_filter::TOUCHING` any of their box),
     /// of `kind` (`u32::MAX`: any): writes up to `max` ids, returns how many there are.
@@ -2374,7 +2540,7 @@ pub struct Host {
     /// Merges into existing stacks first; returns what did not fit.
     pub inventory_insert: unsafe extern "C" fn(world: *mut WorldCtx, holder: *const Holder, stack: ItemStack) -> ItemStack,
     pub selected_slot: unsafe extern "C" fn(world: *mut WorldCtx, player: u64) -> u32,
-    pub block_entity: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u64,
+    pub block_entity: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos) -> u64,
     /// Opens `menu` on `holder` (`Holder::NONE` for menus without one). 0 when the holder isn't
     /// there or has no inventory: the reason is logged and nothing opens.
     pub open_menu: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, menu: u32, holder: *const Holder) -> u32,
@@ -2454,8 +2620,8 @@ pub struct Host {
         world: *mut WorldCtx,
         group: Str,
         kind: u32,
-        a: *const [f64; 3],
-        b: *const [f64; 3],
+        a: *const Vec3,
+        b: *const Vec3,
         color: u32,
         ticks: u32,
         key: Str,
@@ -2486,7 +2652,7 @@ pub struct Host {
     /// The item in `entity`'s hand, the other hand with `off` set; 0 for none.
     pub client_held_item: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, off: u32) -> u32,
     /// Where a bone of what `entity` is or has on was, the last frame. 0 if there is none.
-    pub client_bone_position: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, bone: Str, out: *mut [f64; 3]) -> u32,
+    pub client_bone_position: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, bone: Str, out: *mut Vec3) -> u32,
     /// The engine's own cosmetics for this entity, what a kind without a tick gets.
     pub client_engine_effects: unsafe extern "C" fn(args: *mut ClientEntityArgs),
     /// Message channel `name` between a mod's client and server parts, carrying values of
@@ -2506,10 +2672,10 @@ pub struct Host {
     pub send_packet: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, name: Str, schema: Str, data: Slice<u8>),
     /// An inventory of `slots` belonging to nothing in the world (an invisible entity at `pos`,
     /// never saved) that menus open on like on a chest. Remove it with `entity_despawn`.
-    pub loose_inventory: unsafe extern "C" fn(world: *mut WorldCtx, slots: u32, pos: *const [f64; 3]) -> u64,
+    pub loose_inventory: unsafe extern "C" fn(world: *mut WorldCtx, slots: u32, pos: *const Vec3) -> u64,
     /// Moves an entity (players too, their client follows) at the end of the tick; `dim` is a
     /// dimension id, `u32::MAX` = the same one.
-    pub entity_teleport: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, dim: u32, pos: *const [f64; 3]),
+    pub entity_teleport: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, dim: u32, pos: *const Vec3),
     /// Sets this dimension's time of day counter at the end of the tick.
     pub set_day_time: unsafe extern "C" fn(world: *mut WorldCtx, time: u64),
     /// The time of day's clock, which `set_day_time` sets (0 sunrise, 6000 noon, then on past a day).
@@ -2522,9 +2688,9 @@ pub struct Host {
     /// cubes on every core, the rest when they load (`FillDesc`).
     pub fill: unsafe extern "C" fn(world: *mut WorldCtx, desc: *const FillDesc),
     /// Whether `p` is inside a shape; 0 also for steps that don't make one.
-    pub shape_contains: unsafe extern "C" fn(shape: Slice<ShapeStep>, p: *const [f64; 3]) -> u32,
+    pub shape_contains: unsafe extern "C" fn(shape: Slice<ShapeStep>, p: *const Vec3) -> u32,
     /// A box around a shape; 0 for steps that don't make one.
-    pub shape_bounds: unsafe extern "C" fn(shape: Slice<ShapeStep>, min: *mut [f64; 3], max: *mut [f64; 3]) -> u32,
+    pub shape_bounds: unsafe extern "C" fn(shape: Slice<ShapeStep>, min: *mut Vec3, max: *mut Vec3) -> u32,
     /// 0 survival, 1 creative, 2 spectator.
     pub set_game_mode: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, mode: u32),
 
@@ -2545,12 +2711,12 @@ pub struct Host {
     /// (`client_op::RUN_COMMAND`) was answered, 0 before. An answer is read once.
     pub client_command_reply: unsafe extern "C" fn(client: *mut ClientCtx, id: u32, out: *mut Str) -> u32,
     /// Block the client has at `pos`, `u32::MAX` if that cube is not loaded there.
-    pub client_block_in: unsafe extern "C" fn(client: *mut ClientCtx, body: u64, pos: *const [i32; 3]) -> u32,
+    pub client_block_in: unsafe extern "C" fn(client: *mut ClientCtx, body: u64, pos: *const BlockPos) -> u32,
     /// 1 if the cube holding `pos` is here and has been drawn.
-    pub client_cube_shown: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const [i32; 3]) -> u32,
+    pub client_cube_shown: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const BlockPos) -> u32,
     /// Light the client has at `pos` (sky level in the low byte, then block red, green, blue),
     /// `u32::MAX` if that cube is not loaded there.
-    pub client_light: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const [i32; 3]) -> u32,
+    pub client_light: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const BlockPos) -> u32,
     /// Group `name` of the player inventory (`reg_player_inventory`, equipment slots,
     /// `core:equipment`): first slot and count.
     pub player_inventory_group: unsafe extern "C" fn(name: Str, out: *mut SlotGroup) -> u32,
@@ -2573,8 +2739,8 @@ pub struct Host {
         client: *mut ClientCtx,
         group: Str,
         kind: u32,
-        a: *const [f64; 3],
-        b: *const [f64; 3],
+        a: *const Vec3,
+        b: *const Vec3,
         color: u32,
         key: Str,
         args: Slice<UiArg>,
@@ -2643,7 +2809,7 @@ pub struct Host {
     /// Breaks a block as if mined with `tool` (by `player`, 0 for none): asks `break_block`,
     /// drops its loot when the tool may harvest it and `drops` is non-zero, fires `block_broken`.
     /// 0 if nothing was broken.
-    pub break_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3], tool: ItemStack, player: u64, drops: u32) -> u32,
+    pub break_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos, tool: ItemStack, player: u64, drops: u32) -> u32,
     /// Declares a stack component's flags (`stack_flags`).
     pub reg_stack_component: unsafe extern "C" fn(reg: *mut Registrar, name: Str, schema: Str, flags: u32),
     /// Client: the entity the open menu belongs to (a machine), 0 if none.
@@ -2703,7 +2869,7 @@ pub struct Host {
     /// Server: particles for every player that sees `burst.pos`.
     pub particle_burst: unsafe extern "C" fn(world: *mut WorldCtx, burst: *const ParticleBurst),
     /// The strongest redstone power coming into a cell.
-    pub signal_at: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u32,
+    pub signal_at: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos) -> u32,
     /// Client: particles only this client shows.
     pub client_particle_burst: unsafe extern "C" fn(client: *mut ClientCtx, burst: *const ParticleBurst),
 
@@ -2728,17 +2894,17 @@ pub struct Host {
     pub action_override: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, from: Str, to: Str),
     /// Server: sound event `sound` (`find` with `entry_kind::SOUND`) at `pos` for every player in
     /// its range; `pitch` 0 picks one from the event's range.
-    pub play_sound: unsafe extern "C" fn(world: *mut WorldCtx, sound: u32, pos: *const [f64; 3], volume: f32, pitch: f32),
+    pub play_sound: unsafe extern "C" fn(world: *mut WorldCtx, sound: u32, pos: *const Vec3, volume: f32, pitch: f32),
     /// Client: only this client hears it; `pos` null = not positioned (UI).
-    pub client_play_sound: unsafe extern "C" fn(client: *mut ClientCtx, sound: u32, pos: *const [f64; 3], volume: f32, pitch: f32),
+    pub client_play_sound: unsafe extern "C" fn(client: *mut ClientCtx, sound: u32, pos: *const Vec3, volume: f32, pitch: f32),
     /// A natural spawning rule, see `SpawnDesc`.
     pub reg_spawn: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SpawnDesc),
     /// Biome id at a block (underground biomes included); 0 where nothing is loaded.
-    pub biome_at: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u32,
+    pub biome_at: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos) -> u32,
     /// Entity `id` walks to `target` by itself along a path around obstacles (a moving target can
     /// be given every tick), at `speed` times its walking speed; 0 stops it. Returns 1 when the
     /// walk was accepted.
-    pub navigate: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, target: *const [f64; 3], speed: f32) -> u32,
+    pub navigate: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, target: *const Vec3, speed: f32) -> u32,
     /// Whether `id` is still walking somewhere.
     pub navigating: unsafe extern "C" fn(world: *mut WorldCtx, id: u64) -> u32,
     pub reg_structure: unsafe extern "C" fn(reg: *mut Registrar, desc: *const StructureDesc),
@@ -2747,15 +2913,15 @@ pub struct Host {
     pub block_list: unsafe extern "C" fn(index: u32) -> Slice<[u32; 2]>,
     /// Places template `name` with its lowest corner at `pos`; 0 if it doesn't exist or part of
     /// it isn't loaded (nothing is placed then).
-    pub place_template: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, pos: *const [i32; 3]) -> u32,
+    pub place_template: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, pos: *const BlockPos) -> u32,
     /// The world's seed, the one terrain is generated from.
     pub world_seed: unsafe extern "C" fn(world: *mut WorldCtx) -> u64,
     /// The nearest structure `name` within `radius` blocks of `pos` (whether generated yet or
     /// not): its lowest corner in `out`. Returns 0 if none.
-    pub structure_near: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, pos: *const [i32; 3], radius: i32, out: *mut [i32; 3]) -> u32,
+    pub structure_near: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, pos: *const BlockPos, radius: i32, out: *mut BlockPos) -> u32,
     /// The block at `pos` falls as an entity and is placed again where it lands; returns the
     /// entity (0 if there was no block).
-    pub fall_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]) -> u64,
+    pub fall_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos) -> u64,
     /// Gives every entity of `kind` the component `component` (any mod's or the engine's) at
     /// spawn, starting as `value` (the component's size in bytes), empty: the component's default.
     pub reg_attach: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, component: Str, value: Slice<u8>),
@@ -2804,7 +2970,7 @@ pub struct Host {
     pub entity_kind_size: unsafe extern "C" fn(kind: Str, out: *mut EntitySize) -> u32,
     /// Takes blocks of the world out into a new moving body: `center` is its block
     /// (0, 0, 0), they keep their places around that. Returns its entity, 0 if nothing came.
-    pub body_from_blocks: unsafe extern "C" fn(world: *mut WorldCtx, center: *const [i32; 3], cells: *const [i32; 3], count: usize) -> u64,
+    pub body_from_blocks: unsafe extern "C" fn(world: *mut WorldCtx, center: *const BlockPos, cells: *const BlockPos, count: usize) -> u64,
     /// A moving body's blocks go back into the world where it is, at the nearest whole block.
     pub body_to_blocks: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64),
     /// A moving body goes to `pos` in exactly `ticks`, whatever it was doing.
@@ -2813,14 +2979,14 @@ pub struct Host {
     pub body_fall: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64),
     /// What a piston behind `pos` facing `dir` (`FACE_DIRS` index) would push goes one block
     /// that way, slime and all, as a piston moves it. 0 if it can't.
-    pub push_blocks: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3], dir: u32) -> u32,
+    pub push_blocks: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos, dir: u32) -> u32,
     /// Every call with this world addresses body `entity`'s blocks, in its coordinates, until
     /// `world_leave_body`; they nest. 0 if it isn't a body here.
     pub world_enter_body: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64) -> u32,
     pub world_leave_body: unsafe extern "C" fn(world: *mut WorldCtx),
-    pub body_move_to: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, pos: *const [f64; 3], ticks: u32),
+    pub body_move_to: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, pos: *const Vec3, ticks: u32),
     /// What a comparator would read of the block at `pos` may be different now.
-    pub signal_read_changed: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const [i32; 3]),
+    pub signal_read_changed: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos),
     /// Adds `cb` (`UiArgs`) to place `area` of screen `screen` (`core:title` has `buttons` and
     /// `side`), lowest `order` first. Engine screens and mods' own build these places.
     pub reg_screen_part: unsafe extern "C" fn(reg: *mut Registrar, screen: Str, area: Str, order: i32, cb: Callback),
@@ -3081,7 +3247,7 @@ pub struct ConditionArgs {
     /// The client when it asks (music, text), else null.
     pub client: *mut ClientCtx,
     /// Where: the spot, the block, the player.
-    pub pos: [f64; 3],
+    pub pos: Vec3,
     /// Who it is about, 0 for nobody: the killer or breaker of loot.
     pub entity: u64,
     /// Out: non-zero when the condition holds.
@@ -3256,7 +3422,7 @@ defaults!(SkyDesc {
 pub struct ParticleBurst {
     /// Particle id (`find` with `entry_kind::PARTICLE`).
     pub kind: u32,
-    pub pos: [f64; 3],
+    pub pos: Vec3,
     /// Each particle starts up to this far from `pos` on each axis.
     pub spread: [f32; 3],
     /// Starting velocity in blocks per second.
@@ -3270,7 +3436,7 @@ pub struct ParticleBurst {
     /// Block state the textureless kinds take their texture from.
     pub block: u32,
 }
-defaults!(ParticleBurst { kind: 0, pos: [0.0; 3], spread: [0.0; 3], velocity: [0.0; 3], speed: 0.0, outward: 0, count: 1, block: 0 });
+defaults!(ParticleBurst { kind: 0, pos: Vec3::ZERO, spread: [0.0; 3], velocity: [0.0; 3], speed: 0.0, outward: 0, count: 1, block: 0 });
 
 /// Particle kinds the engine itself uses.
 pub mod particle {
@@ -3361,7 +3527,7 @@ pub struct ItemUsed {
     pub player: u64,
     /// As it was before the use.
     pub stack: ItemStack,
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
     /// 1 when used on the block at `pos`.
     pub has_target: u32,
 }
@@ -3390,7 +3556,7 @@ impl Schema for Hurt {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockChange {
     pub player: u64,
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
     pub state: u32,
     pub item: u32,
 }
@@ -3405,7 +3571,7 @@ pub struct Death {
     pub source: u64,
     pub kind: u32,
     pub cause: u32,
-    pub pos: [f64; 3],
+    pub pos: Vec3,
 }
 impl Schema for Death {
     const SCHEMA: &'static str = "{entity:u64,killer:u64,kind:u32,cause:u32,pos:[f64;3]}";
@@ -3516,7 +3682,7 @@ pub struct Query {
     pub verdict: u32,
     pub entity: u64,
     pub other: u64,
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
     pub state: u32,
     pub item: u32,
     pub dim: u32,
@@ -3525,7 +3691,18 @@ pub struct Query {
     /// Valid for the call.
     pub text: Str,
 }
-defaults!(Query { verdict: 0, entity: 0, other: 0, pos: [0; 3], state: 0, item: 0, dim: 0, cause: 0, amount: 0.0, text: Str::EMPTY });
+defaults!(Query {
+    verdict: 0,
+    entity: 0,
+    other: 0,
+    pos: BlockPos::ZERO,
+    state: 0,
+    item: 0,
+    dim: 0,
+    cause: 0,
+    amount: 0.0,
+    text: Str::EMPTY
+});
 
 #[repr(C)]
 pub struct InterceptArgs {
@@ -3572,8 +3749,6 @@ pub mod attribute {
     pub const VISIBILITY: &str = "core:visibility";
     /// Multiplier on jump speed (1: a block and a quarter high).
     pub const JUMP_STRENGTH: &str = "core:jump_strength";
-    /// 1 or more: can swim in any liquid, also those that are not `swimmable`.
-    pub const SWIM_ANYWHERE: &str = "core:swim_anywhere";
     /// Multiplier on how fast a swing recharges.
     pub const ATTACK_SPEED: &str = "core:attack_speed";
     /// Below 1: can't sprint (the base game while too hungry).
@@ -3723,8 +3898,6 @@ pub struct LiquidDesc {
     pub density: i32,
     /// Roughly Kelvin: water 300, lava 1300. From 1000 up it burns what touches it.
     pub temperature: u32,
-    /// Non-zero: sprinting in it swims. Others can be swum in with the `SWIM_ANYWHERE` attribute.
-    pub swimmable: u32,
     /// The fog seen from inside: 0xRRGGBB (`u32::MAX`: the average color of its texture) and the
     /// blocks it takes to hide everything.
     pub fog_color: u32,
@@ -3742,7 +3915,6 @@ defaults!(LiquidDesc {
     renewable: u32::MAX,
     density: 1000,
     temperature: 300,
-    swimmable: 1,
     fog_color: u32::MAX,
     fog_distance: 96.0,
     overlay: Str::EMPTY,
@@ -3755,20 +3927,12 @@ defaults!(LiquidDesc {
 #[derive(Clone, Copy)]
 pub struct LiquidEdit {
     pub name: Str,
-    pub swimmable: u32,
     pub fog_color: u32,
     pub fog_distance: f32,
     pub overlay: Str,
     pub overlay_opacity: f32,
 }
-defaults!(LiquidEdit {
-    name: Str::EMPTY,
-    swimmable: u32::MAX,
-    fog_color: u32::MAX,
-    fog_distance: f32::NAN,
-    overlay: Str::EMPTY,
-    overlay_opacity: f32::NAN
-});
+defaults!(LiquidEdit { name: Str::EMPTY, fog_color: u32::MAX, fog_distance: f32::NAN, overlay: Str::EMPTY, overlay_opacity: f32::NAN });
 
 /// What happens where two liquids meet. `liquid` and `touching` are block names or `#tags` of
 /// liquid blocks. When `liquid` has `touching` beside or above it, it turns into `source` (if
@@ -3814,7 +3978,7 @@ pub struct ClientEntityArgs {
     pub client: *mut ClientCtx,
     pub entity: u64,
     pub kind: u32,
-    pub pos: [f64; 3],
+    pub pos: Vec3,
     pub yaw: f32,
     /// Distance walked so far (it drives the limbs); steps go by how it grows.
     pub walked: f32,
@@ -3888,8 +4052,8 @@ pub struct ClientState {
     pub gui_scale: f32,
     pub dim: u32,
     pub player: u64,
-    pub pos: [f64; 3],
-    pub vel: [f64; 3],
+    pub pos: Vec3,
+    pub vel: Vec3,
     /// Radians, like `EntityState`.
     pub yaw: f32,
     pub pitch: f32,
@@ -3925,10 +4089,10 @@ pub struct ClientState {
     /// Sounds started since the game started (0 without a sound device).
     pub sounds: u32,
     /// Where the player is drawn this frame (between physics ticks), unlike `pos`.
-    pub shown: [f64; 3],
+    pub shown: Vec3,
     /// The block looked at and the structure (entity) it is part of, 0 for the world;
     /// `target_body` `u64::MAX` when nothing is looked at.
-    pub target: [i32; 3],
+    pub target: BlockPos,
     pub target_body: u64,
     /// Cubes whose terrain the GPU made, and how many of them differed from the CPU's (counted
     /// with `core:terrain_check` on).
@@ -3950,8 +4114,8 @@ defaults!(ClientState {
     gui_scale: 1.0,
     dim: 0,
     player: 0,
-    pos: [0.0; 3],
-    vel: [0.0; 3],
+    pos: Vec3::ZERO,
+    vel: Vec3::ZERO,
     yaw: 0.0,
     pitch: 0.0,
     selected: 0,
@@ -3975,8 +4139,8 @@ defaults!(ClientState {
     bench_server_ms: 0.0,
     particles: 0,
     sounds: 0,
-    shown: [0.0; 3],
-    target: [0; 3],
+    shown: Vec3::ZERO,
+    target: BlockPos::ZERO,
     target_body: u64::MAX,
     gpu_cubes: 0,
     gpu_mismatches: 0,
@@ -4015,8 +4179,8 @@ pub mod control_mask {
 #[derive(Clone, Copy)]
 pub struct PlayerControl {
     pub mask: u32,
-    pub pos: [f64; 3],
-    pub vel: [f64; 3],
+    pub pos: Vec3,
+    pub vel: Vec3,
     pub yaw: f32,
     pub pitch: f32,
     pub flying: u32,
@@ -4024,7 +4188,7 @@ pub struct PlayerControl {
     pub fly_speed: f32,
     pub selected: u32,
 }
-defaults!(PlayerControl { mask: 0, pos: [0.0; 3], vel: [0.0; 3], yaw: 0.0, pitch: 0.0, flying: 0, fly_speed: 1.0, selected: 0 });
+defaults!(PlayerControl { mask: 0, pos: Vec3::ZERO, vel: Vec3::ZERO, yaw: 0.0, pitch: 0.0, flying: 0, fly_speed: 1.0, selected: 0 });
 
 /// `Host::client_op` operations.
 pub mod client_op {
@@ -4363,7 +4527,7 @@ pub struct CommandValue {
     pub float: f64,
     /// Text, or the full registry name for ids.
     pub text: Str,
-    pub pos: [f64; 3],
+    pub pos: Vec3,
     /// The parameter's name in the usage string.
     pub name: Str,
 }
@@ -4448,7 +4612,7 @@ pub enum Who {
     /// Everyone in the dimension of this id (`World::dimension`).
     Dimension(u32),
     /// Everyone in a dimension within a distance of a point.
-    Near(u32, [f64; 3], f64),
+    Near(u32, Vec3, f64),
 }
 
 impl From<u64> for Who {

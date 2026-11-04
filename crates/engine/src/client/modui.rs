@@ -588,8 +588,8 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
         if id == cl.player_id || id == 0 {
             let state = abi::EntityState {
                 kind: content.game.player_kind,
-                pos: cl.player.pos.to_array(),
-                vel: cl.player.vel.to_array(),
+                pos: cl.player.pos.to_array().into(),
+                vel: cl.player.vel.to_array().into(),
                 yaw: cl.player.yaw,
                 pitch: cl.player.pitch,
                 on_ground: cl.player.on_ground as u32,
@@ -609,7 +609,7 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
             Some(e) => {
                 let state = abi::EntityState {
                     kind: e.kind,
-                    pos: e.pos.to_array(),
+                    pos: e.pos.to_array().into(),
                     yaw: e.yaw,
                     pitch: e.pitch,
                     moved: e.swing,

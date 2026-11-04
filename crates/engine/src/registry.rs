@@ -321,6 +321,8 @@ pub struct Game {
     pub game_mode_names: FxHashMap<String, u32>,
     /// By id: the engine's (`abi::pose`) first.
     pub poses: Vec<PoseDef>,
+    /// Poses by priority, highest first.
+    pub pose_order: Vec<crate::world::Pose>,
     pub pose_names: FxHashMap<String, u32>,
     /// By id: the engine's (`abi::weather`) first.
     pub weathers: Vec<WeatherDef>,
@@ -1058,7 +1060,7 @@ pub struct PrecipitationDef {
 }
 
 /// A pose: its box and eyes as shares of standing, how fast it goes, how the model lies and
-/// the clip it plays.
+/// the clip it plays, and when a player takes it (`abi::PoseDesc`).
 #[derive(Clone, Debug)]
 pub struct PoseDef {
     pub name: String,
@@ -1070,26 +1072,76 @@ pub struct PoseDef {
     pub action: String,
     /// The camera bobs while walking in it.
     pub bob: bool,
+    pub priority: i32,
+    /// The action held for it, empty for none.
+    pub key: String,
+    /// `abi::pose_when`.
+    pub when: u32,
+    /// Names as registered, then the poses they are (`fallback`).
+    pub fallback_names: String,
+    pub fallback: Vec<crate::world::Pose>,
 }
 
 pub fn engine_pose_defs() -> &'static [PoseDef] {
     static DEFS: std::sync::OnceLock<Vec<PoseDef>> = std::sync::OnceLock::new();
-    DEFS.get_or_init(|| engine_poses().into_iter().map(|(_, d)| d).collect())
+    DEFS.get_or_init(|| {
+        let mut defs: Vec<PoseDef> = engine_poses().into_iter().map(|(_, d)| d).collect();
+        let names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
+        for d in &mut defs {
+            d.fallback = d
+                .fallback_names
+                .split_whitespace()
+                .filter_map(|n| names.iter().position(|x| x == n))
+                .map(|i| crate::world::Pose(i as u16))
+                .collect();
+        }
+        defs
+    })
 }
 
 fn engine_poses() -> Vec<(usize, PoseDef)> {
-    use abi::pose_tilt as t;
-    let pose = |name: &str, height: f64, eye: f64, speed: f32, tilt: u32, action: &str, bob: bool| {
-        (0, PoseDef { name: format!("core:{name}"), height, eye, speed, tilt, action: action.into(), bob })
+    use abi::{pose_tilt as t, pose_when as w};
+    let pose = |name: &str, height: f64, eye: f64, speed: f32, tilt: u32, action: &str, bob: bool| PoseDef {
+        name: format!("core:{name}"),
+        height,
+        eye,
+        speed,
+        tilt,
+        action: action.into(),
+        bob,
+        priority: 0,
+        key: String::new(),
+        when: 0,
+        fallback_names: String::new(),
+        fallback: Vec::new(),
     };
-    // Modern vanilla's: the player's 1.8 and 1.62 standing.
+    let taken = |p: PoseDef, priority: i32, key: &str, when: u32, fallback: &str| PoseDef {
+        priority,
+        key: key.into(),
+        when,
+        fallback_names: fallback.into(),
+        ..p
+    };
+    // Modern vanilla's: the player's 1.8 and 1.62 standing. Under a low ceiling it crouches, and
+    // where that has no room either it swims in a liquid and crawls out of one.
+    let low = "core:swim core:crawl";
     vec![
-        pose("stand", 1.0, 1.0, 1.0, t::UPRIGHT, "", true),
-        pose("crouch", 1.5 / 1.8, 1.27 / 1.62, 0.3, t::UPRIGHT, "sneak", true),
-        pose("swim", 0.6 / 1.8, 0.4 / 1.62, 1.0, t::ALONG_LOOK, "swim", false),
-        pose("crawl", 0.6 / 1.8, 0.4 / 1.62, 0.3, t::FACE_DOWN, "crawl", true),
-        pose("sleep", 0.2 / 1.8, 0.45 / 1.62, 0.0, t::ON_BACK, "", false),
+        taken(pose("stand", 1.0, 1.0, 1.0, t::UPRIGHT, "", true), 0, "", 0, &format!("core:crouch {low}")),
+        taken(pose("crouch", 1.5 / 1.8, 1.27 / 1.62, 0.3, t::UPRIGHT, "sneak", true), 10, "core:sneak", w::NOT_FLYING, low),
+        taken(
+            pose("swim", 0.6 / 1.8, 0.4 / 1.62, 1.0, t::ALONG_LOOK, "swim", false),
+            30,
+            "",
+            w::SPRINTING | w::SWIM_LIQUID | w::NOT_FLYING,
+            "core:crouch core:crawl",
+        ),
+        taken(pose("crawl", 0.6 / 1.8, 0.4 / 1.62, 0.3, t::FACE_DOWN, "crawl", true), 20, "core:crawl", w::NOT_FLYING, ""),
+        // Only where a mod holds it.
+        taken(pose("sleep", 0.2 / 1.8, 0.45 / 1.62, 0.0, t::ON_BACK, "", false), i32::MIN, "", 0, ""),
     ]
+    .into_iter()
+    .map(|p| (0, p))
+    .collect()
 }
 
 /// A game mode: what its players may do (`abi::game_mode_flags`) and the attribute modifiers
@@ -1578,7 +1630,6 @@ pub fn freeze(
         (abi::attribute::MOVEMENT_SPEED.into(), 1.0, 0.0, 16.0),
         (abi::attribute::VISIBILITY.into(), 1.0, 0.0, 16.0),
         (abi::attribute::JUMP_STRENGTH.into(), 1.0, 0.0, 16.0),
-        (abi::attribute::SWIM_ANYWHERE.into(), 0.0, 0.0, 16.0),
         (abi::attribute::ATTACK_SPEED.into(), 1.0, 0.0, 16.0),
         (abi::attribute::CAN_SPRINT.into(), 1.0, 0.0, 1.0),
         (abi::attribute::BLOCK_REACH.into(), 4.5, 0.0, 1024.0),
@@ -1889,6 +1940,23 @@ pub fn freeze(
         g.pose_names.insert(d.name.clone(), id);
         g.poses.push(d);
     }
+    for i in 0..g.poses.len() {
+        let names = g.poses[i].fallback_names.clone();
+        g.poses[i].fallback = names
+            .split_whitespace()
+            .filter_map(|n| match g.pose_names.get(n) {
+                Some(&p) => Some(crate::world::Pose(p as u16)),
+                None => {
+                    errors.push(format!("pose {}: no pose {n} to fall back to", g.poses[i].name));
+                    None
+                }
+            })
+            .collect();
+    }
+    // Tried highest first, the engine's before a mod's of the same priority.
+    g.pose_order = (0..g.poses.len() as u16).map(crate::world::Pose).collect();
+    g.pose_order
+        .sort_by_key(|p| std::cmp::Reverse(g.poses[p.0 as usize].priority));
     for (cell, d) in text_places {
         if g.text_place_names.contains_key(&d.name) {
             errors.push(format!("text place {} registered twice", d.name));

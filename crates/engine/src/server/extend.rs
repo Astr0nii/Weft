@@ -181,12 +181,11 @@ pub const MAX_HEALTH: u32 = 0;
 pub const MOVEMENT_SPEED: u32 = 1;
 
 pub const JUMP_STRENGTH: u32 = 3;
-pub const SWIM_ANYWHERE: u32 = 4;
-pub const ATTACK_SPEED: u32 = 5;
-pub const CAN_SPRINT: u32 = 6;
-pub const BLOCK_REACH: u32 = 7;
-pub const ENTITY_REACH: u32 = 8;
-pub const MINING_SPEED: u32 = 9;
+pub const ATTACK_SPEED: u32 = 4;
+pub const CAN_SPRINT: u32 = 5;
+pub const BLOCK_REACH: u32 = 6;
+pub const ENTITY_REACH: u32 = 7;
+pub const MINING_SPEED: u32 = 8;
 
 impl Dim {
     fn base_attribute(&self, c: &Content, entity: u64, attr: u32) -> Option<f64> {

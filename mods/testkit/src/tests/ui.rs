@@ -767,7 +767,7 @@ pub async fn rebind(t: T) -> R {
         }
         t.secs(0.8).await?;
         let after = t.state().pos;
-        Ok((after[0] - before[0]).hypot(after[2] - before[2]))
+        Ok((after.x - before.x).hypot(after.z - before.z))
     };
     bind(&[("Escape", 0.0, 0.0)]).await?;
     t.screen("core:controls").await?;

@@ -350,7 +350,7 @@ pub async fn redstone_piston_moves(t: T) -> R {
     t.secs(0.5).await?;
     // What the player sees: where they are shown, frame by frame.
     let steps = |t: &T, frames: u32| {
-        let (t, mut last, mut largest) = (t.clone(), t.state().shown[0], 0.0f64);
+        let (t, mut last, mut largest) = (t.clone(), t.state().shown.x, 0.0f64);
         async move {
             // What a step has beyond the speed it goes at: a long frame makes a long step too.
             let mut frame = std::time::Instant::now();
@@ -359,17 +359,17 @@ pub async fn redstone_piston_moves(t: T) -> R {
                 let dt = std::mem::replace(&mut frame, std::time::Instant::now())
                     .elapsed()
                     .as_secs_f64();
-                let x = t.state().shown[0];
+                let x = t.state().shown.x;
                 largest = largest.max((x - last).abs() - 10.0 * dt);
                 last = x;
             }
             Ok::<_, String>(largest)
         }
     };
-    let start = t.state().pos[0];
+    let start = t.state().pos.x;
     t.set(switch, &lever(true)).await?;
     let largest = steps(&t, 150).await?;
-    let went = t.state().pos[0] - start;
+    let went = t.state().pos.x - start;
     t.probe("carried along", went as f32, (0.9..1.1).contains(&went));
     t.probe("largest step of a frame when carried", largest as f32, largest < 0.15);
     t.check(t.block(add(f, [1, -1, 0])).await?.contains("cobblestone"), "the block got there");
@@ -387,10 +387,10 @@ pub async fn redstone_piston_moves(t: T) -> R {
     t.set(add(f, [1, -1, 0]), "base:cobblestone").await?;
     t.set(switch, &lever(false)).await?;
     t.secs(0.3).await?;
-    let start = t.state().pos[0];
+    let start = t.state().pos.x;
     t.set(switch, &lever(true)).await?;
     let largest = steps(&t, 150).await?;
-    let went = t.state().pos[0] - start;
+    let went = t.state().pos.x - start;
     t.probe("shoved out of the way", went as f32, went > 0.2);
     t.probe("largest step of a frame when shoved", largest as f32, largest < 0.15);
     t.cmd(&format!("/tp {} {} {}", f[0], f[1] + 12, f[2]))
@@ -834,7 +834,7 @@ pub async fn redstone_floater(t: T) -> R {
     t.cmd(&format!("/tp {} {} {}", f[0] as f64 + 2.5, f[1] + y + 2, f[2] as f64 + z as f64 + 0.5))
         .await?;
     t.secs(0.5).await?;
-    let start = t.state().pos[0];
+    let start = t.state().pos.x;
     // Power to the floater from what comes along.
     // Under the floater, stuck to the slime next to it: it goes along.
     t.set(at(1, -1), "base:redstone_block").await?;
@@ -865,7 +865,7 @@ pub async fn redstone_floater(t: T) -> R {
     t.check(t.block(at(7, 0)).await?.contains("floater"), "the floater with it");
     t.check(t.block(at(8, 1)).await?.contains("stone"), "and the block on the slime");
     t.check(!t.block(at(1, 0)).await?.contains("floater"), "nothing left behind");
-    let now = t.state().pos[0];
+    let now = t.state().pos.x;
     let slip = (now - start) - (now - start).round();
     t.probe("how far what stood on it slipped", slip.abs() as f32, slip.abs() < 0.02);
     t.probe("how far what stood on it went", (now - start) as f32, (now - start) > 4.0);
@@ -1526,22 +1526,22 @@ pub async fn redstone_flying_rider(t: T) -> R {
         t.cmd(&format!("/tp {} {} {}", f[0] as f64 + x, f[1] + top, f[2] as f64 + z as f64 + 0.5))
             .await?;
         t.secs(0.5).await?;
-        let start = t.state().pos[0];
+        let start = t.state().pos.x;
         // A pulse into the piston, as its observer would give it: someone may stand on that one.
         t.set(at(0, y), "base:redstone_block").await?;
         t.set(at(0, y), "air").await?;
         // What is shown only goes forward.
-        let (mut was, mut back) = (t.state().shown[0], 0.0f64);
+        let (mut was, mut back) = (t.state().shown.x, 0.0f64);
         let began = std::time::Instant::now();
         while began.elapsed() < Duration::from_secs(4) {
             t.frames(1).await?;
-            let now = t.state().shown[0];
+            let now = t.state().shown.x;
             back = back.max(was - now);
             was = now;
         }
         t.probe(&format!("how far back {name} went at most"), back as f32, back < 0.01);
         // Whichever block of its row the machine ended on, the rider is as far along it as before.
-        let now = t.state().pos[0];
+        let now = t.state().pos.x;
         let slip = (now - start) - (now - start).round();
         t.probe(&format!("how far {name} slipped"), slip.abs() as f32, slip.abs() < 0.02);
         t.probe(&format!("blocks {name} went"), (now - start) as f32, now - start > 2.0);
@@ -1558,10 +1558,10 @@ pub async fn redstone_flying_rider(t: T) -> R {
         .await?;
     let id: u64 = idol.trim().parse().map_err(|_| format!("spawned {idol}"))?;
     t.secs(0.5).await?;
-    let start = t.c().entity(id).map_or(0.0, |e| e.pos[0]);
+    let start = t.c().entity(id).map_or(0.0, |e| e.pos.x);
     t.set(add(f, [1, 1, z]), "base:redstone_block").await?;
     t.secs(1.0).await?;
-    let went = t.c().entity(id).map_or(0.0, |e| e.pos[0]) - start;
+    let went = t.c().entity(id).map_or(0.0, |e| e.pos.x) - start;
     t.probe("how far what stood on the block went", went as f32, (went - 1.0).abs() < 0.02);
     Ok(())
 }
@@ -1599,8 +1599,8 @@ pub async fn redstone_flying_machine(t: T) -> R {
         t.frames(1).await?;
         let now = t.state().shown;
         largest = largest
-            .max((now[0] - last[0]).abs())
-            .max((now[1] - last[1]).abs());
+            .max((now.x - last.x).abs())
+            .max((now.y - last.y).abs());
         last = now;
     }
     // At most half a block a tick, and a frame isn't longer than that even under load.
@@ -1615,7 +1615,7 @@ pub async fn redstone_flying_machine(t: T) -> R {
     }
     t.probe("blocks a flying machine went in 1000 frames", reached.unwrap_or(0) as f32, reached.is_some_and(|x| x > 4));
     let now = t.state().shown;
-    t.probe("blocks the player rode", (now[0] - from[0]) as f32, now[0] - from[0] > 5.0);
+    t.probe("blocks the player rode", (now.x - from.x) as f32, now.x - from.x > 5.0);
     Ok(())
 }
 
@@ -2055,14 +2055,14 @@ pub async fn redstone_on_a_structure(t: T) -> R {
     for _ in 0..40 {
         t.frames(1).await?;
         let Some(o) = t.c().entity(uid).map(|e| e.pos) else { continue };
-        let at = [o[0] + 0.0, o[1] + 1.03, o[2] - 1.0];
+        let at = [o.x + 0.0, o.y + 1.03, o.z - 1.0];
         let st = t.state();
-        let (dx, dy, dz) = (at[0] - st.shown[0], at[1] - st.shown[1] - 1.62, at[2] - st.shown[2]);
+        let (dx, dy, dz) = (at[0] - st.shown.x, at[1] - st.shown.y - 1.62, at[2] - st.shown.z);
         t.c()
             .set_look((-dx).atan2(-dz).to_degrees() as f32, dy.atan2((dx * dx + dz * dz).sqrt()).to_degrees() as f32);
         t.frames(2).await?;
         let Some(o) = t.c().entity(uid).map(|e| e.pos) else { continue };
-        if let Some((x, y)) = t.on_screen([o[0] + 0.0, o[1] + 1.03, o[2] - 1.0]) {
+        if let Some((x, y)) = t.on_screen([o.x + 0.0, o.y + 1.03, o.z - 1.0]) {
             // Beside the crosshair.
             let px = t.pixel(x + 0.012, y + 0.01).await?;
             red |= px[0] as i32 > px[1] as i32 * 2 && px[0] > 60;

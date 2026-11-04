@@ -121,7 +121,7 @@ async fn sync_edits(t: T, o: [i32; 3]) -> R {
     t.frames(20).await?;
     let s = pos_of(&t, pig).await?;
     if let Some(e) = t.c().entity(pig) {
-        let d = ((e.pos[0] - s[0]).powi(2) + (e.pos[1] - s[1]).powi(2) + (e.pos[2] - s[2]).powi(2)).sqrt();
+        let d = ((e.pos.x - s[0]).powi(2) + (e.pos.y - s[1]).powi(2) + (e.pos.z - s[2]).powi(2)).sqrt();
         t.check(d < 1.5, format!("pig is {d:.2} blocks off between server and client"));
     }
     Ok(())

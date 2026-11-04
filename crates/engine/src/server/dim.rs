@@ -217,7 +217,8 @@ pub fn finish_generated(
     let def = &c.dims[dim as usize];
     if !builtin {
         let columns = cols.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-        let mut args = abi::GenArgs { seed, cube: pos.to_array(), blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), dim, columns };
+        let mut args =
+            abi::GenArgs { seed, cube: pos.to_array().into(), blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), dim, columns };
         if let Some(cb) = def.generator {
             host::invoke(def.owner, cb, &mut args);
         }
@@ -456,7 +457,7 @@ fn scatter_sites(c: &Content, def: &crate::content::DimensionDef, dim: u32, seed
     def.scatter_cache.get(seed, x, z, || {
         let o = IVec3::new(x, 0, z) * 16;
         let mut out = Vec::new();
-        let mut buf = vec![abi::ScatterBlock { offset: [0; 3], state: 0, force: 0 }; 4096];
+        let mut buf = vec![abi::ScatterBlock { offset: [0; 3].into(), state: 0, force: 0 }; 4096];
         let states = c.states.len() as u32;
         for s in &def.scatters {
             let cells = |lo: i32| (lo - s.reach).div_euclid(s.cell)..=(lo + 15 + s.reach).div_euclid(s.cell);
@@ -466,7 +467,7 @@ fn scatter_sites(c: &Content, def: &crate::content::DimensionDef, dim: u32, seed
                     let mut args = abi::ScatterArgs {
                         seed,
                         dim,
-                        pos: pos.to_array(),
+                        pos: pos.to_array().into(),
                         biome,
                         random,
                         out: buf.as_mut_ptr(),
@@ -476,11 +477,11 @@ fn scatter_sites(c: &Content, def: &crate::content::DimensionDef, dim: u32, seed
                     host::invoke(s.owner, s.shape, &mut args);
                     let blocks: Vec<abi::ScatterBlock> = buf[..(args.len as usize).min(buf.len())]
                         .iter()
-                        .filter(|b| b.state < states && (-s.reach_y[0]..=s.reach_y[1]).contains(&b.offset[1]))
+                        .filter(|b| b.state < states && (-s.reach_y[0]..=s.reach_y[1]).contains(&b.offset.y))
                         .copied()
                         .collect();
                     let (lo, hi) = blocks.iter().fold((IVec3::MAX, IVec3::MIN), |(lo, hi), b| {
-                        (lo.min(pos + IVec3::from_array(b.offset)), hi.max(pos + IVec3::from_array(b.offset)))
+                        (lo.min(pos + crate::world::ivec(b.offset)), hi.max(pos + crate::world::ivec(b.offset)))
                     });
                     if !blocks.is_empty() {
                         out.push(Site { pos, blocks, lo, hi });
@@ -515,7 +516,7 @@ fn place_scatters(c: &Content, def: &crate::content::DimensionDef, dim: u32, see
     {
         let p = site.pos;
         for b in &site.blocks {
-            let l = p + IVec3::from_array(b.offset) - o;
+            let l = p + crate::world::ivec(b.offset) - o;
             if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(16)).all() {
                 let i = local_index(l);
                 if b.force != 0 || blocks[i] == AIR {
@@ -1449,7 +1450,7 @@ impl Dim {
                             .get(abi::particle::CRIT)
                             .copied()
                             .unwrap_or(0),
-                        pos: pos.to_array(),
+                        pos: pos.to_array().into(),
                         count: 16,
                         spread: [0.3, 0.5, 0.3],
                         speed: 3.0,
@@ -1525,7 +1526,7 @@ impl Dim {
             bursts.push(abi::ParticleBurst {
                 kind,
                 block: under,
-                pos: pos.to_array(),
+                pos: pos.to_array().into(),
                 count,
                 velocity: [0.0, 2.0, 0.0],
                 speed: 3.6,
@@ -1549,7 +1550,7 @@ impl Dim {
                 };
                 bursts.push(abi::ParticleBurst {
                     kind,
-                    pos: pos.to_array(),
+                    pos: pos.to_array().into(),
                     count,
                     spread: [w * 2.0, 0.2, w * 2.0],
                     speed: 3.0,
@@ -1661,7 +1662,7 @@ impl Dim {
             self.entities.killed.push(id);
         }
         if health <= 0.0 {
-            self.emit_engine(c, abi::action::DIE, &abi::Death { entity: id, source: source, kind, cause, pos: pos.to_array() });
+            self.emit_engine(c, abi::action::DIE, &abi::Death { entity: id, source: source, kind, cause, pos: pos.to_array().into() });
             if !player {
                 let by_player = self.entities.get(source).is_some_and(|s| s.player);
                 let tool = self
@@ -1807,7 +1808,7 @@ impl Dim {
                             c,
                             state,
                             |b| b.on_scheduled,
-                            |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: 0 },
+                            |w| abi::BlockEventArgs { world: w, pos: p.to_array().into(), state, other: [0; 3].into(), entity: 0 },
                         )
                     });
                 }
@@ -2626,7 +2627,7 @@ impl Dim {
                 c,
                 state,
                 |b| b.on_neighbor,
-                |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: from.to_array(), entity: 0 },
+                |w| abi::BlockEventArgs { world: w, pos: p.to_array().into(), state, other: from.to_array().into(), entity: 0 },
             )
         });
     }
@@ -2661,7 +2662,7 @@ impl Dim {
         self.replace_part(c, p, state, AIR);
         self.block_dust(c, p, state);
         self.drop_block_loot(c, p, state, ItemStack::EMPTY, false, 0);
-        self.emit_engine(c, abi::action::BREAK_BLOCK, &abi::BlockChange { player: 0, pos: p.to_array(), state, item: 0 });
+        self.emit_engine(c, abi::action::BREAK_BLOCK, &abi::BlockChange { player: 0, pos: p.to_array().into(), state, item: 0 });
     }
 
     /// What happened since the last settling takes effect: neighbor updates, then events.
@@ -2717,7 +2718,7 @@ impl Dim {
 
     /// What `action::BREAK_BLOCK` says about it.
     pub fn may_break(&mut self, c: &'static Content, p: IVec3, state: u32, item: u32, player: u64) -> bool {
-        let mut q = abi::Query { entity: player, pos: p.to_array(), state, item, ..abi::Query::DEFAULT };
+        let mut q = abi::Query { entity: player, pos: p.to_array().into(), state, item, ..abi::Query::DEFAULT };
         self.ask(c, abi::action::BREAK_BLOCK, &mut q)
     }
 
@@ -2788,7 +2789,7 @@ impl Dim {
         if drops {
             self.drop_block_loot(c, p, state, tool, true, 0);
         }
-        self.emit_engine(c, abi::action::BREAK_BLOCK, &abi::BlockChange { player, pos: p.to_array(), state, item: tool.item });
+        self.emit_engine(c, abi::action::BREAK_BLOCK, &abi::BlockChange { player, pos: p.to_array().into(), state, item: tool.item });
         true
     }
 
@@ -2862,7 +2863,7 @@ impl Dim {
         if drops {
             self.drop_block_loot(c, p, state, tool, true, carried);
         }
-        self.emit_engine(c, abi::action::BREAK_BLOCK, &abi::BlockChange { player, pos: p.to_array(), state, item: tool.item });
+        self.emit_engine(c, abi::action::BREAK_BLOCK, &abi::BlockChange { player, pos: p.to_array().into(), state, item: tool.item });
         true
     }
 
@@ -2939,7 +2940,7 @@ impl Dim {
         let mut chosen = on_wire.unwrap_or(def.first_state);
         if let (Some(cb), false) = (def.cb.placement, is_wire) {
             let mut args = abi::PlaceArgs {
-                pos: p.to_array(),
+                pos: p.to_array().into(),
                 face: face as u32,
                 look,
                 state: def.first_state,
@@ -2962,8 +2963,15 @@ impl Dim {
                 .iter()
                 .filter(|&&s| c.states[s as usize].block == c.states[chosen as usize].block)
             {
-                let mut args =
-                    abi::PlaceArgs { pos: p.to_array(), face: face as u32, look, state: part, first: def.first_state, hit, placed: chosen };
+                let mut args = abi::PlaceArgs {
+                    pos: p.to_array().into(),
+                    face: face as u32,
+                    look,
+                    state: part,
+                    first: def.first_state,
+                    hit,
+                    placed: chosen,
+                };
                 host::invoke(def.owner, cb, &mut args);
                 if args.state != part && args.state >= def.first_state && args.state < def.first_state + def.states {
                     merged = Some((part, args.state));
@@ -3010,7 +3018,7 @@ impl Dim {
         if taken {
             return false;
         }
-        let mut q = abi::Query { entity: player, pos: p.to_array(), state: chosen, item, ..abi::Query::DEFAULT };
+        let mut q = abi::Query { entity: player, pos: p.to_array().into(), state: chosen, item, ..abi::Query::DEFAULT };
         if !self.ask(c, abi::action::PLACE_BLOCK, &mut q) {
             return false;
         }
@@ -3040,7 +3048,7 @@ impl Dim {
         }
         self.drain_if_no_room(c, p);
         self.sound(c.states[chosen as usize].sounds[crate::content::block_sound::PLACE], p.as_dvec3() + DVec3::splat(0.5), 1.0, 0.0);
-        self.emit_engine(c, abi::action::PLACE_BLOCK, &abi::BlockChange { player, pos: p.to_array(), state: chosen, item });
+        self.emit_engine(c, abi::action::PLACE_BLOCK, &abi::BlockChange { player, pos: p.to_array().into(), state: chosen, item });
         true
     }
 
@@ -3052,13 +3060,13 @@ impl Dim {
         }
         let opens = c.block_of(state).opens;
         if c.block_of(state).cb.on_use.is_some() || opens.is_some() {
-            let mut q = abi::Query { entity: player, pos: p.to_array(), state, ..abi::Query::DEFAULT };
+            let mut q = abi::Query { entity: player, pos: p.to_array().into(), state, ..abi::Query::DEFAULT };
             if !self.ask(c, abi::action::USE_BLOCK, &mut q) {
                 // Refused uses are consumed: no item use or placement behind them.
                 return true;
             }
             let item = self.entities.held(player).item;
-            self.emit_engine(c, abi::action::USE_BLOCK, &abi::BlockChange { player, pos: p.to_array(), state, item });
+            self.emit_engine(c, abi::action::USE_BLOCK, &abi::BlockChange { player, pos: p.to_array().into(), state, item });
         }
         if let Some(menu) = opens {
             // Its block entity's menu, or one of its own (a crafting table).
@@ -3072,7 +3080,7 @@ impl Dim {
                 c,
                 state,
                 |b| b.on_use,
-                |w| abi::UseArgs { world: w, pos: p.to_array(), state, face: face as u32, player, handled: 0 },
+                |w| abi::UseArgs { world: w, pos: p.to_array().into(), state, face: face as u32, player, handled: 0 },
             )
         });
         r.is_some_and(|a| a.handled != 0)
@@ -3217,7 +3225,7 @@ impl Dim {
                             c,
                             state,
                             |b| b.on_grow,
-                            |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: 0 },
+                            |w| abi::BlockEventArgs { world: w, pos: p.to_array().into(), state, other: [0; 3].into(), entity: 0 },
                         );
                     }
                     None => {
@@ -3298,7 +3306,7 @@ impl Dim {
             let spread = [0, 1, 2].map(|i| size[i] * (0.5 - 0.5 / cells[i] as f32));
             let burst = abi::ParticleBurst {
                 kind,
-                pos,
+                pos: pos.into(),
                 spread,
                 velocity: [0.0, 2.0, 0.0],
                 speed: 3.6,

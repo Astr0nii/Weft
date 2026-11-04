@@ -302,6 +302,8 @@ pub fn register(r: &mut Registry) {
     leaves(r, &SPRUCE_LEAVES, "leaves_spruce");
 
     // Vanilla numbers: water steps every 5 ticks and reaches 7 blocks, lava every 30 and 3.
+    // Players swim in water; what they wear may add more (`SWIMS_IN` on an item).
+    r.set_text_on(Target::Entity("core:player"), &SWIMS_IN, "#water");
     r.liquid(&WATER)
         .tint(&tints::WATER)
         .translucent()
@@ -319,7 +321,6 @@ pub fn register(r: &mut Registry) {
         .drop_off(2)
         .slope_find(2)
         .temperature(1300)
-        .swimmable(false)
         .fog(0x991A00, 1.0)
         .no_overlay()
         .tag("lava")
@@ -346,7 +347,7 @@ pub fn register(r: &mut Registry) {
         .plant()
         .needs_below("#plant_soil")
         .grows(470.0, 9)
-        .on_grow(|e| worldgen::grow_tree(e.world(), e.pos()))
+        .on_grow(|e| worldgen::grow_tree(e.world(), e.pos().to_array()))
         .tab(&crate::tabs::NATURAL);
     r.block(&SUGAR_CANE)
         .sound_group("grass")
@@ -568,12 +569,12 @@ pub fn torch_state<'a>(d: Dir, s: State<'a>, texture: &str) -> State<'a> {
 fn grow_column(e: &mut BlockEvent, me: &'static Block) {
     let w = e.world();
     let p = e.pos();
-    let above = [p[0], p[1] + 1, p[2]];
+    let above = [p.x, p.y + 1, p.z];
     if w.block(above) != 0 {
         return;
     }
     let mut height = 1;
-    while height < 3 && me.is(w.block([p[0], p[1] - height, p[2]])) {
+    while height < 3 && me.is(w.block([p.x, p.y - height, p.z])) {
         height += 1;
     }
     if height < 3 {

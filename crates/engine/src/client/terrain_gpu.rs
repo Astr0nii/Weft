@@ -149,7 +149,7 @@ pub fn describe_lod(c: &Content, dim: u32, seed: u64) -> Option<Vec<i32>> {
     w[d::SCATTER_OFF as usize] = w.len() as i32;
     w.push(def.scatters.len() as i32);
     let biomes = c.biomes.len().max(1);
-    let mut buf = vec![weft_abi::ScatterBlock { offset: [0; 3], state: 0, force: 0 }; 4096];
+    let mut buf = vec![weft_abi::ScatterBlock { offset: [0; 3].into(), state: 0, force: 0 }; 4096];
     for sc in &def.scatters {
         let key = seed ^ sc.salt;
         w.extend_from_slice(&[sc.cell, sc.reach, key as u32 as i32, (key >> 32) as u32 as i32, biomes as i32]);
@@ -164,7 +164,7 @@ pub fn describe_lod(c: &Content, dim: u32, seed: u64) -> Option<Vec<i32>> {
                 let mut args = weft_abi::ScatterArgs {
                     seed,
                     dim,
-                    pos: [0, 64, 0],
+                    pos: [0, 64, 0].into(),
                     biome: b,
                     random: weft_noise::mix(k),
                     out: buf.as_mut_ptr(),
@@ -175,13 +175,13 @@ pub fn describe_lod(c: &Content, dim: u32, seed: u64) -> Option<Vec<i32>> {
                     continue;
                 }
                 let blocks = &buf[..(args.len as usize).min(buf.len())];
-                let Some(top) = blocks.iter().map(|b| b.offset[1]).max() else { continue };
+                let Some(top) = blocks.iter().map(|b| b.offset.y).max() else { continue };
                 tops.push(top);
                 radii.push(
                     blocks
                         .iter()
-                        .filter(|b| b.offset[1] >= 1)
-                        .map(|b| b.offset[0].abs().max(b.offset[2].abs()))
+                        .filter(|b| b.offset.y >= 1)
+                        .map(|b| b.offset.x.abs().max(b.offset.z.abs()))
                         .max()
                         .unwrap_or(0),
                 );

@@ -387,10 +387,11 @@ pub fn register(r: &mut Registry) {
                         if !stack.is_empty() {
                             items.set(i, ItemStack { count: stack.count - 1, ..stack });
                             let center = block_center(p);
-                            let at = [0, 1, 2].map(|a| center[a] + dir[a] as f64 * 0.8);
+                            let dir = Vec3::new(dir.x as f64, dir.y as f64, dir.z as f64);
+                            let at = center + dir * 0.8;
                             // Shot out about as fast as vanilla's, a little to either side.
                             let r = |_| (w.random_below(1000) as f64 / 1000.0 - 0.5) * 0.6;
-                            let v = [0, 1, 2].map(|a| dir[a] as f64 * 5.0 + r(a));
+                            let v = dir * 5.0 + Vec3::new(r(0), r(1), r(2));
                             let how = Spawn::new()
                                 .stack(ItemStack { count: 1, ..stack })
                                 .velocity(v);

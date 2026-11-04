@@ -128,7 +128,7 @@ pub fn wander(speed: f32, radius: f64) -> impl Goal {
         }
         let a = w.random_below(628) as f64 / 100.0;
         let r = radius * (0.3 + w.random_below(70) as f64 / 100.0);
-        w.navigate(id, [st.pos[0] + a.cos() * r, st.pos[1], st.pos[2] + a.sin() * r], speed);
+        w.navigate(id, [st.pos.x + a.cos() * r, st.pos.y, st.pos.z + a.sin() * r], speed);
         true
     }
 }
@@ -141,7 +141,7 @@ pub fn nearest_player(w: &World, st: &EntityState, range: f64) -> Option<(u64, E
 
 /// The usual zone a mob looks for players in: `range` around, 8 up and down.
 fn around(st: &EntityState, range: f64) -> crate::Shape {
-    crate::Shape::cylinder([st.pos[0], st.pos[1] - 8.0, st.pos[2]], range, 16.0, crate::Dir::Up)
+    crate::Shape::cylinder([st.pos.x, st.pos.y - 8.0, st.pos.z], range, 16.0, crate::Dir::Up)
 }
 
 /// The nearest living player in `area` that `wanted` accepts, by horizontal distance. A player
@@ -153,12 +153,12 @@ pub fn nearest_player_by(
     area: &crate::Shape,
     wanted: impl Fn(u64, &EntityState) -> bool,
 ) -> Option<(u64, EntityState)> {
-    let d2 = |s: &EntityState| (s.pos[0] - st.pos[0]).powi(2) + (s.pos[2] - st.pos[2]).powi(2);
+    let d2 = |s: &EntityState| (s.pos.x - st.pos.x).powi(2) + (s.pos.z - st.pos.z).powi(2);
     w.players_iter()
         .filter_map(|p| w.entity(p).map(|s| (p, s)))
         .filter(|(p, s)| {
             let seen = w.attribute(*p, &crate::attribute::VISIBILITY);
-            s.health > 0.0 && seen > 0.0 && area.contains([0, 1, 2].map(|a| st.pos[a] + (s.pos[a] - st.pos[a]) / seen)) && wanted(*p, s)
+            s.health > 0.0 && seen > 0.0 && area.contains(st.pos + (s.pos - st.pos) * (1.0 / seen)) && wanted(*p, s)
         })
         .min_by(|a, b| d2(&a.1).total_cmp(&d2(&b.1)))
 }
@@ -185,8 +185,8 @@ pub fn watch_player(range: f64) -> impl Goal {
     move |w: &World, id: u64, st: &EntityState| {
         if !w.navigating(id) {
             if let Some((_, ps)) = nearest_player(w, st, range) {
-                let (dx, dz) = (ps.pos[0] - st.pos[0], ps.pos[2] - st.pos[2]);
-                let dy = ps.eye()[1] - st.eye()[1];
+                let (dx, dz) = (ps.pos.x - st.pos.x, ps.pos.z - st.pos.z);
+                let dy = ps.eye().y - st.eye().y;
                 let mut now = *st;
                 now.yaw = crate::yaw_toward(st.pos, ps.pos);
                 now.pitch = dy.atan2((dx * dx + dz * dz).sqrt()) as f32;
@@ -218,12 +218,12 @@ pub fn melee_within(reach: f64) -> impl Goal {
         if let Some((p, ps)) = find_target(w, id, st, reach + 2.0) {
             let eye = st.eye();
             let half = ps.size.width as f64 / 2.0;
-            let near = [
-                eye[0].clamp(ps.pos[0] - half, ps.pos[0] + half),
-                eye[1].clamp(ps.pos[1], ps.pos[1] + ps.size.height as f64),
-                eye[2].clamp(ps.pos[2] - half, ps.pos[2] + half),
-            ];
-            let d2: f64 = (0..3).map(|a| (near[a] - eye[a]).powi(2)).sum();
+            let near = crate::Vec3::new(
+                eye.x.clamp(ps.pos.x - half, ps.pos.x + half),
+                eye.y.clamp(ps.pos.y, ps.pos.y + ps.size.height as f64),
+                eye.z.clamp(ps.pos.z - half, ps.pos.z + half),
+            );
+            let d2 = (near - eye).length_squared();
             if d2 <= reach * reach {
                 w.attack(id, p);
             }

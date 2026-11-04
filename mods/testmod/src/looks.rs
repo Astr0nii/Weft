@@ -218,7 +218,7 @@ pub fn register(r: &mut Registry) {
         let w = u.world();
         w.action_play(u.player(), "wave", false);
         if let Some(st) = w.entity(u.player()) {
-            w.spawn_particles(&SPARK, [st.pos[0], st.pos[1] + 1.2, st.pos[2]])
+            w.spawn_particles(&SPARK, [st.pos.x, st.pos.y + 1.2, st.pos.z])
                 .count(40)
                 .spread(0.2)
                 .random_speed(4.0);
@@ -244,8 +244,9 @@ pub fn register(r: &mut Registry) {
         // Holding the rune shows what it would reach: a see-through sheet over the ground around.
         let st = c.state();
         if c.inventory_slot(st.selected).item == RUNE.id() {
-            let p = st.pos.map(f64::floor);
-            c.draw_fill(None, [p[0] - 2.0, p[1], p[2] - 2.0], [p[0] + 3.0, p[1] + 0.06, p[2] + 3.0], 0x60D0FF50);
+            let p = st.pos.block();
+            let (x, y, z) = (p.x as f64, p.y as f64, p.z as f64);
+            c.draw_fill(None, [x - 2.0, y, z - 2.0], [x + 3.0, y + 0.06, z + 3.0], 0x60D0FF50);
         }
     });
 }
@@ -263,11 +264,11 @@ fn wisps(t: &EntityTick) {
             let a = w.random_below(360) as f32 * std::f32::consts::PI / 180.0;
             st.yaw = a;
         }
-        st.vel[1] = ((time as f64 + phase as f64) * 0.1).sin() * 0.8;
+        st.vel.y = ((time as f64 + phase as f64) * 0.1).sin() * 0.8;
         w.set_entity(id, &st);
         w.walk(id, yaw_dir(st.yaw), 1.0, false);
         if (time + phase) % 20 == 0 {
-            w.spawn_particles(&SPARK, [st.pos[0], st.pos[1] + 0.2, st.pos[2]])
+            w.spawn_particles(&SPARK, [st.pos.x, st.pos.y + 0.2, st.pos.z])
                 .count(WISP_SPARKS.get().max(0) as u32)
                 .spread(0.15)
                 .random_speed(0.3);

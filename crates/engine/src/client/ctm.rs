@@ -40,7 +40,7 @@ use std::sync::{Arc, RwLock};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::looks::{Drawn, Looks, Names};
-use super::mesher::{Neighborhood, pidx};
+use super::mesher::{NORMALS, Neighborhood, pidx};
 use crate::assets::Assets;
 use crate::content::{Content, ModelBox};
 
@@ -203,8 +203,6 @@ const AXES: [([i32; 3], [i32; 3]); 6] = [
     ([-1, 0, 0], [0, 1, 0]),
     ([1, 0, 0], [0, 1, 0]),
 ];
-
-const NORMALS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
 
 fn faces(v: &str) -> u8 {
     v.split_whitespace().fold(0, |m, f| {

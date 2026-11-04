@@ -378,7 +378,6 @@ pub struct LiquidDef {
     /// Lighter than air: flows up.
     pub rises: bool,
     pub temperature: u32,
-    pub swimmable: bool,
     /// 0xRRGGBB, `None` for the average of its texture.
     pub fog_color: Option<u32>,
     pub fog_distance: f32,
@@ -3632,7 +3631,6 @@ fn freeze_liquids(
             renewable: d.renewable,
             rises: d.density < 0,
             temperature: d.temperature,
-            swimmable: d.swimmable != 0,
             fog_color: (d.fog_color != u32::MAX).then_some(d.fog_color),
             fog_distance: d.fog_distance.max(0.1),
             overlay: overlays[i].clone(),
@@ -3646,9 +3644,6 @@ fn freeze_liquids(
                 errors.push(format!("change of liquid {name}: no such liquid"));
                 continue;
             };
-            if d.swimmable != u32::MAX {
-                l.swimmable = d.swimmable != 0;
-            }
             if d.fog_color != u32::MAX {
                 l.fog_color = Some(d.fog_color);
             }

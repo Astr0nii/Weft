@@ -272,7 +272,7 @@ pub async fn rich_text(t: T) -> R {
     t.op("put me 0 testmod:rune 1").await?;
     // A fall hurts the player, which the test mod's `{if:testmod:hurt}` shows.
     let s = t.state();
-    t.c().teleport([s.pos[0], s.pos[1] + 6.0, s.pos[2]]);
+    t.c().teleport([s.pos.x, s.pos.y + 6.0, s.pos.z]);
     t.until("hurt by the fall", Duration::from_secs(5), |t| t.state().health < 20.0)
         .await?;
     t.press("core:inventory");
@@ -356,7 +356,7 @@ pub async fn clouds(t: T) -> R {
     let white = |c: probe::C| c.iter().all(|&v| v > 205);
     let s = t.state();
     // Near the horizon from well below them: what is there is thousands of blocks away.
-    t.c().teleport([s.pos[0], 150.0, s.pos[2]]);
+    t.c().teleport([s.pos.x, 150.0, s.pos.z]);
     t.c().set_look(0.0, 2.0);
     t.secs(1.0).await?;
     let (x0, y0, x1, y1) = (0.0, 0.47, 1.0, 0.53);
@@ -369,7 +369,7 @@ pub async fn clouds(t: T) -> R {
     t.check(far > lifted + 0.02, format!("clouds far away: {far:.3}, lifted out of reach {lifted:.3}"));
     // From above they cover the ground; lifted over the camera they don't.
     LIFT.set(0);
-    t.c().teleport([s.pos[0], 330.0, s.pos[2]]);
+    t.c().teleport([s.pos.x, 330.0, s.pos.z]);
     t.c().set_look(0.0, -60.0);
     t.secs(1.0).await?;
     let above = t.shot("above").await?.share(0.0, 0.3, 1.0, 1.0, white);
@@ -383,10 +383,10 @@ pub async fn clouds(t: T) -> R {
     t.check(above > lifted + 0.02, format!("over the ground: {above:.3}, lifted away {lifted:.3}"));
     // A wall nearer than they are hides them.
     LIFT.set(0);
-    let at = [s.pos[0].floor() as i32, 150, s.pos[2].floor() as i32];
+    let at = [s.pos.x.floor() as i32, 150, s.pos.z.floor() as i32];
     t.fill(add(at, [-30, 0, -12]), add(at, [30, 70, -12]), "stone")
         .await?;
-    t.c().teleport([s.pos[0], 150.0, s.pos[2]]);
+    t.c().teleport([s.pos.x, 150.0, s.pos.z]);
     t.c().set_look(0.0, 35.0);
     t.secs(1.0).await?;
     let wall = t.shot("wall").await?.share(0.2, 0.3, 0.8, 0.7, white);

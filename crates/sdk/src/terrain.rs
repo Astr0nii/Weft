@@ -17,6 +17,7 @@
 //! r.terrain(&OVERWORLD).biome_before("base:desert", BiomeRule::new("savanna"));
 //! ```
 
+use crate::abi::BlockPos;
 use std::marker::PhantomData;
 use std::ops::{Add, Bound, Mul, Neg, RangeBounds, Sub};
 
@@ -844,7 +845,7 @@ impl Site {
         unsafe { &mut *(a as *mut abi::ScatterArgs as *mut Site) }
     }
     /// The block above the ground.
-    pub fn pos(&self) -> [i32; 3] {
+    pub fn pos(&self) -> BlockPos {
         self.args.pos
     }
     pub fn biome(&self) -> u32 {
@@ -861,18 +862,20 @@ impl Site {
         self.args.random
     }
     /// `state` at `pos` where there is air.
-    pub fn put(&mut self, pos: [i32; 3], state: u32) {
+    pub fn put(&mut self, pos: impl Into<BlockPos>, state: u32) {
+        let pos = pos.into();
         self.push(pos, state, 0);
     }
     /// `state` at `pos` whatever is there (a trunk through another tree's leaves).
-    pub fn put_force(&mut self, pos: [i32; 3], state: u32) {
+    pub fn put_force(&mut self, pos: impl Into<BlockPos>, state: u32) {
+        let pos = pos.into();
         self.push(pos, state, 1);
     }
-    fn push(&mut self, pos: [i32; 3], state: u32, force: u32) {
+    fn push(&mut self, pos: BlockPos, state: u32, force: u32) {
         let a = &mut self.args;
         if a.len < a.cap {
-            let offset = [pos[0] - a.pos[0], pos[1] - a.pos[1], pos[2] - a.pos[2]];
-            unsafe { *a.out.add(a.len as usize) = abi::ScatterBlock { offset, state, force } };
+            let offset = [pos.x - a.pos.x, pos.y - a.pos.y, pos.z - a.pos.z];
+            unsafe { *a.out.add(a.len as usize) = abi::ScatterBlock { offset: offset.into(), state, force } };
             a.len += 1;
         }
     }

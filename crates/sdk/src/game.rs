@@ -1,4 +1,5 @@
 use crate::abi::{self, Holder, ItemStack, Slice, Str};
+use crate::abi::{BlockPos, Vec3};
 use crate::component::{Component, Value};
 use crate::content::{
     Biome, Block, EntityCategory, EntityKind, EquipmentSlot, GizmoGroup, HudElement, Menu, Pending, RecipeKind, Screen, TintKind,
@@ -30,10 +31,10 @@ impl Spawn {
         Spawn {
             desc: abi::SpawnEntityDesc {
                 kind: 0,
-                pos: [0.0; 3],
+                pos: [0.0; 3].into(),
                 set: 0,
                 stack: ItemStack::EMPTY,
-                velocity: [0.0; 3],
+                velocity: [0.0; 3].into(),
                 yaw: 0.0,
                 pickup_delay: 0,
             },
@@ -45,7 +46,8 @@ impl Spawn {
         self
     }
     /// Blocks per second.
-    pub fn velocity(mut self, v: [f64; 3]) -> Self {
+    pub fn velocity(mut self, v: impl Into<Vec3>) -> Self {
+        let v = v.into();
         self.desc.velocity = v;
         self.desc.set |= abi::spawn_set::VELOCITY;
         self
@@ -90,32 +92,38 @@ impl World {
         unsafe { (host().action_override)(self.raw(), id, Str::new(from), Str::new("")) }
     }
 
-    pub fn light(&self, pos: [i32; 3]) -> u32 {
+    pub fn light(&self, pos: impl Into<BlockPos>) -> u32 {
+        let pos = pos.into();
         unsafe { (host().light)(self.raw(), &pos) }
     }
     /// Biome id at `pos` (`Biome::id`, `Tag::on_biome`); underground biomes differ from the
     /// surface's.
-    pub fn biome(&self, pos: [i32; 3]) -> u32 {
+    pub fn biome(&self, pos: impl Into<BlockPos>) -> u32 {
+        let pos = pos.into();
         unsafe { (host().biome_at)(self.raw(), &pos) }
     }
     /// Sky light level at `pos` (0..15).
-    pub fn sky_light(&self, pos: [i32; 3]) -> u32 {
+    pub fn sky_light(&self, pos: impl Into<BlockPos>) -> u32 {
+        let pos = pos.into();
         abi::light::sky(self.light(pos))
     }
     /// Strongest block light channel at `pos`.
-    pub fn block_light(&self, pos: [i32; 3]) -> u32 {
+    pub fn block_light(&self, pos: impl Into<BlockPos>) -> u32 {
+        let pos = pos.into();
         abi::light::block(self.light(pos))
     }
     pub fn daylight(&self) -> f32 {
         unsafe { (host().daylight)(self.raw()) }
     }
     /// An entity of a kind (a handle, or its id); 0 if there is no such kind.
-    pub fn spawn(&self, kind: impl Into<Id<EntityKind>>, pos: [f64; 3]) -> u64 {
+    pub fn spawn(&self, kind: impl Into<Id<EntityKind>>, pos: impl Into<Vec3>) -> u64 {
+        let pos = pos.into();
         self.spawn_with(kind, pos, &Spawn::new())
     }
     /// `spawn` with what it starts with: `Spawn::new().velocity(v).yaw(1.57)`, and for an item
     /// entity its stack.
-    pub fn spawn_with(&self, kind: impl Into<Id<EntityKind>>, pos: [f64; 3], how: &Spawn) -> u64 {
+    pub fn spawn_with(&self, kind: impl Into<Id<EntityKind>>, pos: impl Into<Vec3>, how: &Spawn) -> u64 {
+        let pos = pos.into();
         let desc = abi::SpawnEntityDesc { kind: kind.into().raw(), pos, ..how.desc };
         unsafe { (host().entity_spawn)(self.raw(), &desc) }
     }
@@ -128,14 +136,16 @@ impl World {
     }
     /// Places `template` with its lowest corner at `pos`; false (and nothing placed) when part
     /// of it isn't loaded.
-    pub fn place_template(&self, template: &crate::Template, pos: [i32; 3]) -> bool {
+    pub fn place_template(&self, template: &crate::Template, pos: impl Into<BlockPos>) -> bool {
+        let pos = pos.into();
         unsafe { (host().place_template)(self.raw(), Str::new(template.name()), &pos) != 0 }
     }
     pub fn set_entity(&self, id: u64, s: &EntityState) {
         unsafe { (host().entity_set)(self.raw(), id, s) }
     }
     /// Adds `v` (blocks per second) to its velocity, players included: a trampoline, a blast.
-    pub fn push(&self, id: u64, v: [f64; 3]) {
+    pub fn push(&self, id: u64, v: impl Into<Vec3>) {
+        let v = v.into();
         unsafe { (host().entity_push)(self.raw(), id, &v) }
     }
     /// The entity's own box; `None` goes back to its kind's. Crouching still shrinks it.
@@ -155,7 +165,8 @@ impl World {
     /// `id` walks to `target` by itself, around obstacles, at `speed` times its walking speed
     /// (0 stops it). Call it again as the target moves. The path is found later in the tick;
     /// `navigating` turns false when the walk ends (arrived, or stuck for two seconds).
-    pub fn navigate(&self, id: u64, target: [f64; 3], speed: f32) -> bool {
+    pub fn navigate(&self, id: u64, target: impl Into<Vec3>, speed: f32) -> bool {
+        let target = target.into();
         unsafe { (host().navigate)(self.raw(), id, &target, speed) != 0 }
     }
     /// The world's seed, the one its terrain comes from. The same in every dimension.
@@ -166,22 +177,26 @@ impl World {
     /// should hold when first opened, a villager's trades. Several from one spot:
     /// `noise::hash(w.seed_at(pos), 1, 0, 0)`, and so on. On a body `pos` is in the body's
     /// coordinates, like anything there.
-    pub fn seed_at(&self, pos: [i32; 3]) -> u64 {
-        crate::noise::hash(self.seed(), pos[0] as i64, pos[1] as i64, pos[2] as i64)
+    pub fn seed_at(&self, pos: impl Into<BlockPos>) -> u64 {
+        let pos = pos.into();
+        crate::noise::hash(self.seed(), pos.x as i64, pos.y as i64, pos.z as i64)
     }
     /// The same for the whole cube (16 blocks each way) `pos` is in.
-    pub fn seed_of_cube(&self, pos: [i32; 3]) -> u64 {
-        crate::noise::hash(self.seed() ^ 0x5EED_C0BE, (pos[0] >> 4) as i64, (pos[1] >> 4) as i64, (pos[2] >> 4) as i64)
+    pub fn seed_of_cube(&self, pos: impl Into<BlockPos>) -> u64 {
+        let pos = pos.into();
+        crate::noise::hash(self.seed() ^ 0x5EED_C0BE, (pos.x >> 4) as i64, (pos.y >> 4) as i64, (pos.z >> 4) as i64)
     }
     /// Lowest corner of the nearest structure `name` (full name) within `radius` blocks of
     /// `pos`, generated yet or not.
-    pub fn structure_near(&self, name: &str, pos: [i32; 3], radius: i32) -> Option<[i32; 3]> {
-        let mut out = [0; 3];
+    pub fn structure_near(&self, name: &str, pos: impl Into<BlockPos>, radius: i32) -> Option<BlockPos> {
+        let pos = pos.into();
+        let mut out = BlockPos::ZERO;
         (unsafe { (host().structure_near)(self.raw(), Str::new(name), &pos, radius, &mut out) } != 0).then_some(out)
     }
     /// The block at `pos` falls as an entity (sand, gravel) and is placed again where it lands:
     /// `body_fall` of a body of that one block.
-    pub fn fall_block(&self, pos: [i32; 3]) -> u64 {
+    pub fn fall_block(&self, pos: impl Into<BlockPos>) -> u64 {
+        let pos = pos.into();
         unsafe { (host().fall_block)(self.raw(), &pos) }
     }
     /// Whether `id` is still walking where `navigate` sent it.
@@ -194,8 +209,10 @@ impl World {
     /// The first block a ray from `from` along `dir` hits within `max` blocks (liquids count if
     /// `liquids`): position, face hit (-X, +X, -Y, +Y, -Z, +Z) and state. A turret's line, a
     /// mob checking whether it sees a player, an arrow's next step.
-    pub fn raycast(&self, from: [f64; 3], dir: [f64; 3], max: f64, liquids: bool) -> Option<LookAt> {
-        let (mut pos, mut face, mut body) = ([0; 3], 0, 0);
+    pub fn raycast(&self, from: impl Into<Vec3>, dir: impl Into<Vec3>, max: f64, liquids: bool) -> Option<LookAt> {
+        let from = from.into();
+        let dir = dir.into();
+        let (mut pos, mut face, mut body) = (BlockPos::ZERO, 0, 0);
         let s = unsafe { (host().raycast)(self.raw(), &from, &dir, max, liquids as u32, &mut pos, &mut face, &mut body) };
         (s != 0).then(|| LookAt { pos, face, state: s - 1, body })
     }
@@ -229,7 +246,8 @@ impl World {
 
     /// Whether that point is under a liquid's surface, which a block that isn't full lies below
     /// its top: for what the block alone can't tell, like a head above shallow water.
-    pub fn in_liquid(&self, pos: [f64; 3]) -> bool {
+    pub fn in_liquid(&self, pos: impl Into<Vec3>) -> bool {
+        let pos = pos.into();
         unsafe { (host().in_liquid)(self.raw(), &pos) != 0 }
     }
     /// How charged a player's next swing is, 0..1, with what it holds now.
@@ -296,11 +314,13 @@ impl World {
     }
     /// A dropped stack, tossed a little; 0 for an empty one. `spawn_with(&ITEM, ..)` to throw
     /// it somewhere.
-    pub fn spawn_item(&self, pos: [f64; 3], stack: ItemStack) -> u64 {
+    pub fn spawn_item(&self, pos: impl Into<Vec3>, stack: ItemStack) -> u64 {
+        let pos = pos.into();
         self.spawn_with(&ITEM, pos, &Spawn::new().stack(stack))
     }
     /// Entity attached to the block at `pos` (furnace, chest), 0 if none.
-    pub fn block_entity(&self, pos: [i32; 3]) -> u64 {
+    pub fn block_entity(&self, pos: impl Into<BlockPos>) -> u64 {
+        let pos = pos.into();
         unsafe { (host().block_entity)(self.raw(), &pos) }
     }
     /// Opens a menu (a handle, or its id) on a holder: an entity, a block, a held stack, or
@@ -316,14 +336,20 @@ impl World {
         unsafe { (host().gizmo_shown)(self.raw(), Str::new(group.name())) != 0 }
     }
     /// A line seen by players showing `group`, color `0xRRGGBBAA`, for `ticks`.
-    pub fn draw_line(&self, group: &GizmoGroup, a: [f64; 3], b: [f64; 3], color: u32, ticks: u32) {
+    pub fn draw_line(&self, group: &GizmoGroup, a: impl Into<Vec3>, b: impl Into<Vec3>, color: u32, ticks: u32) {
+        let a = a.into();
+        let b = b.into();
         self.draw(group, abi::gizmo_kind::LINE, a, b, color, ticks, "", &[]);
     }
-    pub fn draw_box(&self, group: &GizmoGroup, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
+    pub fn draw_box(&self, group: &GizmoGroup, min: impl Into<Vec3>, max: impl Into<Vec3>, color: u32, ticks: u32) {
+        let min = min.into();
+        let max = max.into();
         self.draw(group, abi::gizmo_kind::BOX, min, max, color, ticks, "", &[]);
     }
     /// See-through by `color`'s alpha.
-    pub fn draw_fill(&self, group: &GizmoGroup, min: [f64; 3], max: [f64; 3], color: u32, ticks: u32) {
+    pub fn draw_fill(&self, group: &GizmoGroup, min: impl Into<Vec3>, max: impl Into<Vec3>, color: u32, ticks: u32) {
+        let min = min.into();
+        let max = max.into();
         self.draw(group, abi::gizmo_kind::FILL, min, max, color, ticks, "", &[]);
     }
     /// The outline of a shape: where a fill or a search will reach, before it does.
@@ -335,11 +361,12 @@ impl World {
     /// The translation `key` with `args` at `pos`, in each viewer's language.
     /// `size` times as big as menu text.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw_text(&self, group: &GizmoGroup, pos: [f64; 3], key: &str, args: &[crate::Arg], color: u32, size: f32, ticks: u32) {
-        self.draw(group, abi::gizmo_kind::TEXT, pos, [size as f64, 0.0, 0.0], color, ticks, key, args);
+    pub fn draw_text(&self, group: &GizmoGroup, pos: impl Into<Vec3>, key: &str, args: &[crate::Arg], color: u32, size: f32, ticks: u32) {
+        let pos = pos.into();
+        self.draw(group, abi::gizmo_kind::TEXT, pos, [size as f64, 0.0, 0.0].into(), color, ticks, key, args);
     }
     #[allow(clippy::too_many_arguments)]
-    fn draw(&self, group: &GizmoGroup, kind: u32, a: [f64; 3], b: [f64; 3], color: u32, ticks: u32, key: &str, args: &[crate::Arg]) {
+    fn draw(&self, group: &GizmoGroup, kind: u32, a: Vec3, b: Vec3, color: u32, ticks: u32, key: &str, args: &[crate::Arg]) {
         let raw = crate::ui::raw_args(args);
         unsafe { (host().gizmo)(self.raw(), Str::new(group.name()), kind, &a, &b, color, ticks, Str::new(key), abi::Slice::new(&raw)) }
     }
@@ -2163,7 +2190,7 @@ impl Drop for ScreenBuilder<'_> {
 /// moving body (`body` its entity, `pos` in its blocks).
 #[derive(Clone, Copy, Debug)]
 pub struct LookAt {
-    pub pos: [i32; 3],
+    pub pos: BlockPos,
     pub face: u32,
     pub state: u32,
     pub body: u64,

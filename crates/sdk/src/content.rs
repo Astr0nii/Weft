@@ -1,3 +1,4 @@
+use crate::abi::BlockPos;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -407,17 +408,28 @@ pub mod poses {
 /// static SIT: Pose = Pose::named("sit");
 /// r.pose(&SIT).height(0.7).eye(0.62).speed(0.0).action("sit");
 /// w.set_pose(pet, Some(&SIT), None);
+/// // Taken by the player: a slide while sprinting and holding crawl, above the engine's crawl.
+/// r.pose(&SLIDE).height(0.4).eye(0.35).speed(1.2).key(&keys::CRAWL).when(pose_when::SPRINTING).priority(25);
 /// ```
 pub struct PoseBuilder<'a> {
     reg: &'a mut crate::Registry,
     handle: &'static Pose,
     action: String,
+    key: String,
+    fallback: String,
     desc: abi::PoseDesc,
 }
 
 impl crate::Registry {
     pub fn pose<'a>(&'a mut self, pose: &'static Pose) -> PoseBuilder<'a> {
-        PoseBuilder { reg: self, handle: pose, action: String::new(), desc: abi::PoseDesc::DEFAULT }
+        PoseBuilder {
+            reg: self,
+            handle: pose,
+            action: String::new(),
+            key: String::new(),
+            fallback: String::new(),
+            desc: abi::PoseDesc::DEFAULT,
+        }
     }
 }
 
@@ -452,6 +464,28 @@ impl PoseBuilder<'_> {
         self.desc.bob = yes as u32;
         self
     }
+    /// Of the poses a player may take, the highest is taken (the engine's: stand 0, crouch 10,
+    /// crawl 20, swim 30). Without `key` or `when` a pose is only ever held by a mod.
+    pub fn priority(mut self, p: i32) -> Self {
+        self.desc.priority = p;
+        self
+    }
+    /// Taken while the player holds this action.
+    pub fn key(mut self, key: &crate::Key) -> Self {
+        self.key = key.name().to_string();
+        self
+    }
+    /// And only where these hold (`abi::pose_when`).
+    pub fn when(mut self, flags: u32) -> Self {
+        self.desc.when = flags;
+        self
+    }
+    /// Where it has no room, the first of these that has and whose `when` holds; the last
+    /// even without room.
+    pub fn fallback(mut self, poses: &[&Pose]) -> Self {
+        self.fallback = poses.iter().map(|p| p.name()).collect::<Vec<_>>().join(" ");
+        self
+    }
 }
 
 impl Drop for PoseBuilder<'_> {
@@ -459,8 +493,14 @@ impl Drop for PoseBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
-        let d =
-            abi::PoseDesc { name: Str::new(self.handle.name()), cell: self.handle.id_cell(), action: Str::new(&self.action), ..self.desc };
+        let d = abi::PoseDesc {
+            name: Str::new(self.handle.name()),
+            cell: self.handle.id_cell(),
+            action: Str::new(&self.action),
+            key: Str::new(&self.key),
+            fallback: Str::new(&self.fallback),
+            ..self.desc
+        };
         unsafe { (host().reg_pose)(self.reg.raw, &d) }
     }
 }
@@ -1574,11 +1614,11 @@ type NeighborFn = Box<dyn Fn(&mut BlockEvent) + Send + Sync>;
 /// The blocks around one (`BlockBuilder::derived`).
 pub struct Neighbors {
     world: World,
-    pos: [i32; 3],
+    pos: BlockPos,
 }
 
 impl Neighbors {
-    pub fn pos(&self) -> [i32; 3] {
+    pub fn pos(&self) -> BlockPos {
         self.pos
     }
     pub fn world(&self) -> World {
@@ -1588,7 +1628,7 @@ impl Neighbors {
     pub fn at(&self, side: crate::Dir) -> u32 {
         let o = side.offset();
         self.world
-            .block([self.pos[0] + o[0], self.pos[1] + o[1], self.pos[2] + o[2]])
+            .block([self.pos.x + o.x, self.pos.y + o.y, self.pos.z + o.z])
     }
 }
 
@@ -1841,8 +1881,10 @@ impl<'a> BlockBuilder<'a> {
     /// Where `spreads` reaches, from this block to the target: min and max offsets, at most 4
     /// each way (grass: `[-1, -3, -1]` to `[1, 1, 1]`, the default). With `covered`, targets
     /// with something opaque on top count too, lit by their brightest side (moss up a wall).
-    pub fn spread_reach(mut self, min: [i32; 3], max: [i32; 3], covered: bool) -> Self {
-        let v = [min[0], min[1], min[2], max[0], max[1], max[2]];
+    pub fn spread_reach(mut self, min: impl Into<BlockPos>, max: impl Into<BlockPos>, covered: bool) -> Self {
+        let min = min.into();
+        let max = max.into();
+        let v = [min.x, min.y, min.z, max.x, max.y, max.z];
         self.each(|s, _| {
             s.set(&c::SPREAD_REACH, v);
         });
@@ -1982,7 +2024,7 @@ impl<'a> BlockBuilder<'a> {
             crate::reg_mistake("two_part needs a block registered by its handle");
             return self;
         };
-        let other = move |pos: [i32; 3], state: u32| crate::other_part(pos, state, prop, parts[1], way);
+        let other = move |pos: BlockPos, state: u32| crate::other_part(pos, state, prop, parts[1], way);
         self.reg.intercept(&crate::actions::PLACE_BLOCK, move |q| {
             if !block.is(q.state()) {
                 return crate::Verdict::Abstain;
@@ -2017,7 +2059,7 @@ impl<'a> BlockBuilder<'a> {
         self.on_neighbor(|e| e.world().schedule_tick(e.pos(), 2))
             .on_scheduled(|e| {
                 let (w, p) = (e.world(), e.pos());
-                if w.block_flags([p[0], p[1] - 1, p[2]]) & abi::block_flags::REPLACEABLE != 0 {
+                if w.block_flags([p.x, p.y - 1, p.z]) & abi::block_flags::REPLACEABLE != 0 {
                     w.fall_block(p);
                 }
             })
@@ -2126,7 +2168,7 @@ impl<'a> BlockBuilder<'a> {
     }
     /// What a comparator behind it reads, 0..15, instead of how full it is. It looks again when
     /// the block changes; for anything else it depends on, call `World::signal_read_changed`.
-    pub fn signal_read(mut self, f: impl Fn(&World, [i32; 3]) -> u8 + Send + Sync + 'static) -> Self {
+    pub fn signal_read(mut self, f: impl Fn(&World, BlockPos) -> u8 + Send + Sync + 'static) -> Self {
         self.callbacks.signal_read =
             Some(callback(move |a: &mut abi::SignalReadArgs| a.output = f(&World::from_raw(a.world), a.pos) as u32));
         self
@@ -2560,7 +2602,7 @@ impl ItemBuilder<'_> {
         self.on_use(move |u| {
             let Some((p, face)) = u.target_block() else { return false };
             let (w, side) = (u.world(), crate::Dir::from_face(face).offset());
-            w.spawn(entity, [(p[0] + side[0]) as f64 + 0.5, (p[1] + side[1]) as f64, (p[2] + side[2]) as f64 + 0.5]);
+            w.spawn(entity, [(p.x + side.x) as f64 + 0.5, (p.y + side.y) as f64, (p.z + side.z) as f64 + 0.5]);
             if !w.creative(u.player()) {
                 u.set_stack(crate::StackData::shrink(u.stack(), 1));
             }
@@ -2702,7 +2744,7 @@ impl DimensionBuilder<'_> {
     /// The block a player starts on top of in this dimension, for a seed. Without one the engine
     /// finds open ground near 0, 0 on the dimension's columns (biomes tagged `spawn_biome`
     /// first), out of caves and trees.
-    pub fn spawn_point(mut self, f: impl Fn(u64) -> [i32; 3] + Send + Sync + 'static) -> Self {
+    pub fn spawn_point(mut self, f: impl Fn(u64) -> BlockPos + Send + Sync + 'static) -> Self {
         self.desc.spawn = callback(move |a: &mut abi::SpawnArgs| a.pos = f(a.seed));
         self
     }
@@ -2866,7 +2908,7 @@ pub struct TemplateBuilder<'a> {
     name: String,
     layers: Vec<Vec<String>>,
     keys: Vec<(char, String)>,
-    fills: Vec<(String, [i32; 3], [i32; 3])>,
+    fills: Vec<(String, BlockPos, BlockPos)>,
     _p: PhantomData<&'a mut Registry>,
 }
 
@@ -2882,7 +2924,9 @@ impl TemplateBuilder<'_> {
         self
     }
     /// A box of `block` from `from` to `to`, inclusive (a moving body's deck).
-    pub fn fill(mut self, block: &str, from: [i32; 3], to: [i32; 3]) -> Self {
+    pub fn fill(mut self, block: &str, from: impl Into<BlockPos>, to: impl Into<BlockPos>) -> Self {
+        let from = from.into();
+        let to = to.into();
         self.fills.push((qualify_block(self.ns, block), from, to));
         self
     }
@@ -2897,21 +2941,21 @@ impl Drop for TemplateBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
-        let mut names: Vec<([i32; 3], &str)> = Vec::new();
+        let mut names: Vec<(BlockPos, &str)> = Vec::new();
         for (y, layer) in self.layers.iter().enumerate() {
             for (z, row) in layer.iter().enumerate() {
                 for (x, ch) in row.chars().enumerate() {
                     if let Some((_, b)) = self.keys.iter().find(|k| k.0 == ch) {
-                        names.push(([x as i32, y as i32, z as i32], b));
+                        names.push(([x as i32, y as i32, z as i32].into(), b));
                     }
                 }
             }
         }
         for (b, f, t) in &self.fills {
-            for y in f[1].min(t[1])..=f[1].max(t[1]) {
-                for z in f[2].min(t[2])..=f[2].max(t[2]) {
-                    for x in f[0].min(t[0])..=f[0].max(t[0]) {
-                        names.push(([x, y, z], b));
+            for y in f.y.min(t.y)..=f.y.max(t.y) {
+                for z in f.z.min(t.z)..=f.z.max(t.z) {
+                    for x in f.x.min(t.x)..=f.x.max(t.x) {
+                        names.push(([x, y, z].into(), b));
                     }
                 }
             }
@@ -3066,12 +3110,12 @@ impl Gen {
         self.args.seed
     }
     /// Cube coordinates (block coords = cube * 16).
-    pub fn cube(&self) -> [i32; 3] {
+    pub fn cube(&self) -> BlockPos {
         self.args.cube
     }
-    pub fn origin(&self) -> [i32; 3] {
+    pub fn origin(&self) -> BlockPos {
         let c = self.args.cube;
-        [c[0] * 16, c[1] * 16, c[2] * 16]
+        [c.x * 16, c.y * 16, c.z * 16].into()
     }
     pub fn blocks(&mut self) -> &mut [u32; 4096] {
         unsafe { &mut *(self.args.blocks as *mut [u32; 4096]) }
@@ -3163,7 +3207,7 @@ impl SignalEvent {
     pub fn world(&self) -> World {
         World::from_raw(self.args.world)
     }
-    pub fn pos(&self) -> [i32; 3] {
+    pub fn pos(&self) -> BlockPos {
         self.args.pos
     }
     pub fn state(&self) -> u32 {
@@ -3245,7 +3289,7 @@ impl GateInputs {
     pub fn world(&self) -> World {
         World::from_raw(self.args.world)
     }
-    pub fn pos(&self) -> [i32; 3] {
+    pub fn pos(&self) -> BlockPos {
         self.args.pos
     }
     /// Power coming in at `side`, 0 for a face it doesn't read.
@@ -3269,18 +3313,18 @@ impl BlockEvent {
     pub fn world(&self) -> World {
         World::from_raw(self.args.world)
     }
-    pub fn pos(&self) -> [i32; 3] {
+    pub fn pos(&self) -> BlockPos {
         self.args.pos
     }
     pub fn state(&self) -> u32 {
         self.args.state
     }
     /// The neighbor that changed, for `on_neighbor`.
-    pub fn neighbor(&self) -> [i32; 3] {
+    pub fn neighbor(&self) -> BlockPos {
         self.args.other
     }
     /// Where the block is on the body, for `on_carried`.
-    pub fn body_pos(&self) -> [i32; 3] {
+    pub fn body_pos(&self) -> BlockPos {
         self.args.other
     }
     pub fn entity(&self) -> u64 {
@@ -3299,7 +3343,7 @@ impl Use {
     pub fn world(&self) -> World {
         World::from_raw(self.args.world)
     }
-    pub fn pos(&self) -> [i32; 3] {
+    pub fn pos(&self) -> BlockPos {
         self.args.pos
     }
     pub fn state(&self) -> u32 {
@@ -3322,7 +3366,7 @@ impl Place {
     fn wrap(a: &mut abi::PlaceArgs) -> &Place {
         unsafe { &*(a as *mut abi::PlaceArgs as *const Place) }
     }
-    pub fn pos(&self) -> [i32; 3] {
+    pub fn pos(&self) -> BlockPos {
         self.args.pos
     }
     /// Face of the block that was clicked.
@@ -3361,7 +3405,7 @@ impl ItemUse {
     pub fn player(&self) -> u64 {
         self.args.player
     }
-    pub fn target_block(&self) -> Option<([i32; 3], u32)> {
+    pub fn target_block(&self) -> Option<(BlockPos, u32)> {
         (self.args.has_target != 0).then_some((self.args.pos, self.args.face))
     }
     pub fn stack(&self) -> crate::ItemStack {
@@ -3463,12 +3507,6 @@ impl LiquidBuilder<'_> {
     /// Roughly Kelvin; 1000 and more burns what touches it.
     pub fn temperature(mut self, t: u32) -> Self {
         self.desc.temperature = t;
-        self
-    }
-    /// `false`: sprinting in it does not swim, whatever its temperature. Someone with the
-    /// `core:swim_anywhere` attribute still can, for as long as a modifier on it lasts.
-    pub fn swimmable(mut self, swimmable: bool) -> Self {
-        self.desc.swimmable = swimmable as u32;
         self
     }
     /// The fog seen from inside: its color (0xRRGGBB) and how many blocks away it hides
@@ -3608,10 +3646,6 @@ pub struct LiquidEditBuilder<'a> {
 }
 
 impl LiquidEditBuilder<'_> {
-    pub fn swimmable(mut self, on: bool) -> Self {
-        self.desc.swimmable = on as u32;
-        self
-    }
     /// The fog seen from inside: its color (0xRRGGBB) and how many blocks away it hides everything.
     pub fn fog(mut self, rgb: u32, blocks: f32) -> Self {
         self.desc.fog_color = rgb;

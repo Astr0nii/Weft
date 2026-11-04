@@ -1,18 +1,19 @@
 //! Models that lie on any face: boxes written for a floor with the front to the north, placed for
 //! what holds the block and where it faces.
 
+use crate::abi::BlockPos;
 use crate::{Dir, abi};
 
-fn pos_add(a: [i32; 3], b: [i32; 3], k: i32) -> [i32; 3] {
-    [a[0] + b[0] * k, a[1] + b[1] * k, a[2] + b[2] * k]
+fn pos_add(a: BlockPos, b: BlockPos, k: i32) -> BlockPos {
+    [a.x + b.x * k, a.y + b.y * k, a.z + b.z * k].into()
 }
 
 /// How a block is turned, from a floor with its front to the north.
 #[derive(Clone, Copy)]
 pub struct Orientation {
-    east: [i32; 3],
-    up: [i32; 3],
-    north: [i32; 3],
+    east: BlockPos,
+    up: BlockPos,
+    north: BlockPos,
 }
 
 impl Orientation {
@@ -25,13 +26,13 @@ impl Orientation {
             (attach, front)
         };
         let (up, n) = (attach.opposite().offset(), front.offset());
-        Orientation { east: [n[1] * up[2] - n[2] * up[1], n[2] * up[0] - n[0] * up[2], n[0] * up[1] - n[1] * up[0]], up, north: n }
+        Orientation { east: [n.y * up.z - n.z * up.y, n.z * up.x - n.x * up.z, n.x * up.y - n.y * up.x].into(), up, north: n }
     }
 
     /// For a torch on a wall: its own west toward what holds it, its top up.
     pub fn leaning(attach: Dir) -> Orientation {
         let east = attach.opposite().offset();
-        Orientation { east, up: [0, 1, 0], north: [east[2], 0, -east[0]] }
+        Orientation { east, up: [0, 1, 0].into(), north: [east.z, 0, -east.x].into() }
     }
 
     /// A point in texels, in the world's axes.
@@ -41,7 +42,7 @@ impl Orientation {
 
     /// One of its own directions, in the world's axes.
     pub(crate) fn along(&self, d: Dir) -> [f32; 3] {
-        self.vector(d.offset()).map(|v| v as f32)
+        self.vector(d.offset()).to_array().map(|v| v as f32)
     }
 
     /// A box's corners, in the world's axes.
@@ -51,20 +52,21 @@ impl Orientation {
     }
 
     /// A vector in the block's own axes.
-    fn vector(&self, v: [i32; 3]) -> [i32; 3] {
-        pos_add(pos_add(pos_add([0; 3], self.east, v[0]), self.up, v[1]), self.north, -v[2])
+    fn vector(&self, v: BlockPos) -> BlockPos {
+        pos_add(pos_add(pos_add(BlockPos::ZERO, self.east, v.x), self.up, v.y), self.north, -v.z)
     }
 
     /// A point in texels, 0..16.
     fn point(&self, p: [f32; 3]) -> [f32; 3] {
         let c = [p[0] - 8.0, p[1] - 8.0, p[2] - 8.0];
-        std::array::from_fn(|i| 8.0 + c[0] * self.east[i] as f32 + c[1] * self.up[i] as f32 - c[2] * self.north[i] as f32)
+        let (e, u, n) = (self.east.to_array(), self.up.to_array(), self.north.to_array());
+        std::array::from_fn(|i| 8.0 + c[0] * e[i] as f32 + c[1] * u[i] as f32 - c[2] * n[i] as f32)
     }
 
     /// Where a corner of the block goes, 0 or 1 each way.
-    fn corner(&self, c: [i32; 3]) -> [i32; 3] {
-        let p = self.point([c[0] as f32 * 16.0, c[1] as f32 * 16.0, c[2] as f32 * 16.0]);
-        p.map(|v| (v / 16.0).round() as i32)
+    fn corner(&self, c: BlockPos) -> BlockPos {
+        let p = self.point([c.x as f32 * 16.0, c.y as f32 * 16.0, c.z as f32 * 16.0]);
+        p.map(|v| (v / 16.0).round() as i32).into()
     }
 
     /// Which face a face of its own (-X, +X, -Y, +Y, -Z, +Z) becomes.
@@ -79,10 +81,10 @@ impl Orientation {
 
     /// Quarter turns for a face's picture to read as it does on the floor.
     fn turn(&self, face: usize, to: usize) -> u8 {
-        let first = self.corner(abi::FACE_CORNERS[face][0]);
+        let first = self.corner(abi::FACE_CORNERS[face][0].into());
         abi::FACE_CORNERS[to]
             .iter()
-            .position(|c| *c == first)
+            .position(|&c| BlockPos::from(c) == first)
             .unwrap_or(0) as u8
     }
 
@@ -107,7 +109,7 @@ pub(crate) fn dir_along_face(attach: Dir, look: [f32; 3]) -> Dir {
     for d in Dir::ALL {
         if d.face() / 2 != attach.face() / 2 {
             let o = d.offset();
-            let v = o[0] as f32 * look[0] + o[1] as f32 * look[1] + o[2] as f32 * look[2];
+            let v = o.x as f32 * look[0] + o.y as f32 * look[1] + o.z as f32 * look[2];
             if v > best.1 {
                 best = (d, v);
             }
@@ -145,7 +147,7 @@ mod tests {
                 assert_eq!(faces[attach.opposite().face() as usize], 3, "top away, {attach:?} {front:?}");
                 assert_eq!(faces[attach.face() as usize], 2, "bottom on it, {attach:?} {front:?}");
                 assert_eq!(faces[front.face() as usize], 4, "north to the front, {attach:?} {front:?}");
-                let at = if attach.offset()[axis] < 0 { lo[axis] } else { hi[axis] };
+                let at = if attach.offset().to_array()[axis] < 0 { lo[axis] } else { hi[axis] };
                 assert!(at == 0.0 || at == 16.0, "{attach:?} {front:?}");
             }
         }

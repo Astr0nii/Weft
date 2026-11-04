@@ -10,6 +10,7 @@
 //! Shaders for text (`{fx:..}`), GUI panels (`shader` in a class's `.gui`), particles, entities and screen
 //! effects are assets: `shaders/fx|gui|particle|entity|block|sky|post/<name>.wgsl` in the mod's folder.
 
+use crate::abi::Vec3;
 use std::marker::PhantomData;
 
 use crate::abi::{self, Slice, Str, particle_flags as pf};
@@ -329,7 +330,7 @@ impl ConditionCtx {
         (!self.0.client.is_null()).then(|| ClientView::from_raw(self.0.client))
     }
     /// The spot, the block, the player.
-    pub fn pos(&self) -> [f64; 3] {
+    pub fn pos(&self) -> Vec3 {
         self.0.pos
     }
     /// Who it is about (the killer or breaker for loot), 0 for nobody.
@@ -404,8 +405,7 @@ impl Drop for Burst {
         let Some(area) = &self.area else { return send(&self.burst) };
         // One particle per point inside, found by trying points in the box around the shape.
         let (lo, hi) = area.bounds();
-        let mut seed =
-            self.burst.pos[0].to_bits() ^ self.burst.pos[1].to_bits().rotate_left(21) ^ self.burst.pos[2].to_bits().rotate_left(42);
+        let mut seed = self.burst.pos.x.to_bits() ^ self.burst.pos.y.to_bits().rotate_left(21) ^ self.burst.pos.z.to_bits().rotate_left(42);
         let mut next = || {
             seed = abi::fnv(&seed.to_le_bytes());
             (seed >> 11) as f64 / (1u64 << 53) as f64
@@ -419,13 +419,13 @@ impl Drop for Burst {
             if placed >= self.burst.count {
                 break;
             }
-            let p = [0, 1, 2].map(|a| lo[a] + (hi[a] - lo[a]) * next());
+            let p = Vec3::new(lo.x + (hi.x - lo.x) * next(), lo.y + (hi.y - lo.y) * next(), lo.z + (hi.z - lo.z) * next());
             if !area.contains(p) {
                 continue;
             }
             let mut one = abi::ParticleBurst { pos: p, count: 1, spread: [0.0; 3], outward: 0, ..self.burst };
             if self.burst.outward != 0 {
-                let d = [0, 1, 2].map(|a| (p[a] - c[a]) as f32);
+                let d = (p - c).to_array().map(|v| v as f32);
                 let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
                 one.velocity = d.map(|x| x / len * speed);
             }
@@ -435,20 +435,22 @@ impl Drop for Burst {
     }
 }
 
-fn burst(target: Target, kind: &Particle, pos: [f64; 3]) -> Burst {
+fn burst(target: Target, kind: &Particle, pos: Vec3) -> Burst {
     Burst { target, burst: abi::ParticleBurst { kind: kind.id(), pos, ..abi::ParticleBurst::DEFAULT }, area: None }
 }
 
 impl World {
     /// Particles every player near `pos` sees (one by default).
-    pub fn spawn_particles(&self, kind: &Particle, pos: [f64; 3]) -> Burst {
+    pub fn spawn_particles(&self, kind: &Particle, pos: impl Into<Vec3>) -> Burst {
+        let pos = pos.into();
         burst(Target::World(*self), kind, pos)
     }
 }
 
 impl Client {
     /// Particles only this client shows.
-    pub fn spawn_particles(&self, kind: &Particle, pos: [f64; 3]) -> Burst {
+    pub fn spawn_particles(&self, kind: &Particle, pos: impl Into<Vec3>) -> Burst {
+        let pos = pos.into();
         burst(Target::Client(*self), kind, pos)
     }
 
@@ -615,14 +617,15 @@ impl Registry {
 impl World {
     /// Sound event `sound` at `pos` for the players in its range, sent at the end of the
     /// statement; `.pitch(p)` sets the playback speed.
-    pub fn play_sound(&self, sound: &crate::Sound, pos: [f64; 3], volume: f32) -> PlaySound {
+    pub fn play_sound(&self, sound: &crate::Sound, pos: impl Into<Vec3>, volume: f32) -> PlaySound {
+        let pos = pos.into();
         PlaySound { to: Hearer::World(*self), sound: sound.id(), pos: Some(pos), volume, pitch: 0.0 }
     }
 }
 
 impl Client {
     /// Only this client hears it; `None` = not positioned (UI sounds).
-    pub fn play_sound(&self, sound: &crate::Sound, pos: Option<[f64; 3]>, volume: f32) -> PlaySound {
+    pub fn play_sound(&self, sound: &crate::Sound, pos: Option<Vec3>, volume: f32) -> PlaySound {
         PlaySound { to: Hearer::Client(*self), sound: sound.id(), pos, volume, pitch: 0.0 }
     }
 }
@@ -636,7 +639,7 @@ enum Hearer {
 pub struct PlaySound {
     to: Hearer,
     sound: u32,
-    pos: Option<[f64; 3]>,
+    pos: Option<Vec3>,
     volume: f32,
     pitch: f32,
 }
@@ -655,7 +658,7 @@ impl Drop for PlaySound {
         let p = self
             .pos
             .as_ref()
-            .map_or(std::ptr::null(), |p| p as *const [f64; 3]);
+            .map_or(std::ptr::null(), |p| p as *const Vec3);
         unsafe {
             match self.to {
                 Hearer::World(w) => (host().play_sound)(w.raw(), self.sound, p, self.volume, self.pitch),

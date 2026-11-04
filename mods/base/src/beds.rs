@@ -64,7 +64,7 @@ const OBSTRUCTED: &str = "bed.base.obstructed";
 /// The other half of the bed half `state` at `pos`: the head lies away from where the bed faces
 /// (the player who placed it), the foot toward it.
 fn other_half(pos: [i32; 3], state: u32) -> [i32; 3] {
-    other_part(pos, state, "part", "head", head_way)
+    other_part(pos, state, "part", "head", head_way).to_array()
 }
 
 fn head_way(state: u32) -> Dir {
@@ -217,7 +217,7 @@ pub fn register(r: &mut Registry) {
                 w.hint(e.player, MISSING, &[]);
                 continue;
             };
-            *arriving = Arriving { from: st.pos, dim: w.dimension(), on_way: 1 };
+            *arriving = Arriving { from: st.pos.to_array(), dim: w.dimension(), on_way: 1 };
             w.teleport(e.player, Some(Dimension::generated(dim.to_string())), on_bed(spawn.bed));
         }
     });
@@ -236,7 +236,7 @@ pub fn register(r: &mut Registry) {
 fn use_bed(u: &mut Use) -> bool {
     let w = u.world();
     let player = u.player();
-    let foot = foot_of(u.pos(), u.state());
+    let foot = foot_of(u.pos().to_array(), u.state());
     // Vanilla's order: nothing is set on a bed that can't be used at all.
     if w.players().into_iter().any(|o| {
         o != player
@@ -284,9 +284,9 @@ fn monsters_near(w: &World, foot: [i32; 3]) -> bool {
         .into_iter()
         .filter_map(|id| w.entity(id))
         .any(|e| {
-            (e.pos[0] - c[0]).abs() <= MONSTERS[0]
-                && (e.pos[2] - c[2]).abs() <= MONSTERS[0]
-                && (e.pos[1] - c[1]).abs() <= MONSTERS[1]
+            (e.pos.x - c[0]).abs() <= MONSTERS[0]
+                && (e.pos.z - c[2]).abs() <= MONSTERS[0]
+                && (e.pos.y - c[1]).abs() <= MONSTERS[1]
                 && HOSTILE.on_entity(e.kind)
         })
 }
@@ -332,7 +332,7 @@ fn watch_sleepers(w: &World) {
         let mut ready = false;
         if s.asleep != 0 {
             let left = w.entity(id).is_none_or(|e| {
-                let d = [e.pos[0] - (s.bed[0] as f64 + 0.5), e.pos[2] - (s.bed[2] as f64 + 0.5)];
+                let d = [e.pos.x - (s.bed[0] as f64 + 0.5), e.pos.z - (s.bed[2] as f64 + 0.5)];
                 d[0] * d[0] + d[1] * d[1] > 2.5 * 2.5
             });
             if s.night < night || left || !BED.is(w.block(s.bed)) {

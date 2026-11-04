@@ -168,7 +168,7 @@ fn check_players(w: &World) {
                 .filter(|&i| ARMOR.on_item(g.get(i).item).is_some())
                 .count() as u32
         });
-        let y = st.pos[1];
+        let y = st.pos.y;
         grant_where(w, id, |rule| match *rule {
             Rule::Have(tag) => items.iter().any(|&i| tag.on_item(i)),
             Rule::Wear(n) => worn >= n,

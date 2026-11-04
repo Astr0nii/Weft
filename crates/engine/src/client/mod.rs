@@ -72,8 +72,8 @@ pub struct LocalPlayer {
     pub sprinting: bool,
     /// Holding the use button on an item that takes time.
     pub using: bool,
-    /// Can swim in liquids that are not swimmable (`core:swim_anywhere`).
-    pub swim_anywhere: bool,
+    /// By liquid: whether sprinting swims in it (`comp::SWIMS_IN` of its kind and what it wears).
+    pub swims_in: Vec<bool>,
     pub can_sprint: bool,
     /// The solid body it rides.
     pub support: Option<u64>,
@@ -242,7 +242,7 @@ impl ClientEntity {
             client: std::ptr::null_mut(),
             entity: id,
             kind: self.kind,
-            pos: self.pos.to_array(),
+            pos: self.pos.to_array().into(),
             yaw: self.yaw,
             walked: self.walked,
             dying: self.dying.unwrap_or(-1.0),
@@ -663,7 +663,7 @@ impl Client {
                 forced: None,
                 sprinting: false,
                 using: false,
-                swim_anywhere: false,
+                swims_in: Vec::new(),
                 can_sprint: true,
                 support: None,
                 size: c.game.entities[c.game.player_kind as usize].size(),
@@ -1484,7 +1484,7 @@ impl Client {
                     self.particles.spawn(
                         &weft_abi::ParticleBurst {
                             kind,
-                            pos: at.to_array(),
+                            pos: at.to_array().into(),
                             spread,
                             velocity,
                             speed: 0.72,
@@ -1601,7 +1601,7 @@ impl Client {
             self.particles.spawn(
                 &weft_abi::ParticleBurst {
                     kind,
-                    pos: at.to_array(),
+                    pos: at.to_array().into(),
                     count: 2,
                     spread: [0.2, 0.1, 0.2],
                     speed: 0.5,
@@ -1632,7 +1632,7 @@ impl Client {
             &weft_abi::ParticleBurst {
                 kind,
                 block: under,
-                pos: (pos + DVec3::Y * 0.1).to_array(),
+                pos: (pos + DVec3::Y * 0.1).to_array().into(),
                 count: 1,
                 spread: [half_width, 0.0, half_width],
                 velocity,
@@ -1742,7 +1742,7 @@ impl Client {
                 let pos = (p.as_dvec3() + wall.map_or(DVec3::new(0.5, 0.7, 0.5), |d| DVec3::new(0.5, 0.92, 0.5) - d * 0.27)).to_array();
                 bursts.push(weft_abi::ParticleBurst {
                     kind,
-                    pos,
+                    pos: pos.into(),
                     spread: [0.1, 0.1, 0.1],
                     speed: 0.1,
                     count: 1,
@@ -1756,7 +1756,7 @@ impl Client {
                     let pos = [p.x as f64 + 0.5, p.y as f64 - 1.05, p.z as f64 + 0.5];
                     bursts.push(weft_abi::ParticleBurst {
                         kind,
-                        pos,
+                        pos: pos.into(),
                         spread: [0.4, 0.0, 0.4],
                         count: 1,
                         ..weft_abi::ParticleBurst::DEFAULT
@@ -1778,7 +1778,7 @@ impl Client {
         use crate::registry::entity_sound;
         let c = content();
         let k = &c.game.entities[a.kind as usize];
-        let pos = DVec3::from_array(a.pos);
+        let pos = crate::world::dvec(a.pos);
         if a.dying >= 1.0 {
             if let Some(&kind) = c.game.particle_names.get(weft_abi::particle::POOF) {
                 let crate::physics::Dims { half_width: hw, height: h, .. } = physics::posed(k.size(), Pose::STAND);
@@ -1787,7 +1787,7 @@ impl Client {
                 self.particles.spawn(
                     &weft_abi::ParticleBurst {
                         kind,
-                        pos: at,
+                        pos: at.into(),
                         spread: [w, h, w],
                         velocity: [0.0, 0.4, 0.0],
                         speed: 0.8,
@@ -2158,6 +2158,7 @@ impl Client {
         (me.arm_swing, me.swing_off, me.pose, me.walked) = (self.hand_swing, self.hand_swing_off, self.player.pose, me.walk);
         me.sprinting = self.player.sprinting && self.player.on_ground;
         me.age = self.start.elapsed().as_secs_f32();
+        self.player.swims_in = swims_in(content(), self.me.kind, &self.worn());
     }
 
     pub fn set_view_distance(&mut self, r: i32) {
@@ -2453,6 +2454,34 @@ fn angle_diff(a: f32, b: f32) -> f32 {
 /// One 20 Hz tick of player movement with vanilla's numbers (blocks per tick): acceleration
 /// scaled by ground slipperiness, 0.91 air drag, 0.98 vertical drag, 0.08 gravity, 0.42 jump,
 /// so jumps, sprint-jumps and parkur distances match.
+/// By liquid, whether `kind` wearing `worn` swims in it: what its `comp::SWIMS_IN` and theirs name.
+fn swims_in(c: &crate::content::Content, kind: u32, worn: &[u32]) -> Vec<bool> {
+    use crate::components as comps;
+    let Some(id) = c.components.id(weft_abi::comp::SWIMS_IN) else { return vec![false; c.liquids.len()] };
+    let words: Vec<&str> = c
+        .components
+        .text(comps::ENTITY, kind, id)
+        .into_iter()
+        .chain(
+            worn.iter()
+                .filter_map(|&i| c.components.text(comps::ITEM, i, id)),
+        )
+        .flat_map(str::split_whitespace)
+        .collect();
+    c.liquids
+        .iter()
+        .map(|l| {
+            words.iter().any(|w| match w.strip_prefix('#') {
+                Some(tag) => c
+                    .components
+                    .id(tag)
+                    .is_some_and(|t| c.components.has(comps::BLOCK, l.first_state, t)),
+                None => *w == l.name,
+            })
+        })
+        .collect()
+}
+
 fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl physics::Cells, gravity: f64, bodies: &[physics::Body]) {
     let c = content();
     // Held facing one way it stays put: in a bed.
@@ -2491,37 +2520,45 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl physics::Cells, 
     let jump = input.held("core:jump");
     // Sprinting needs forward movement and stops when walking backwards, sneaking or crawling.
     let sprint = input.held("core:sprint") && fwd_in > 0.0 && !sneak && !crawl && !p.using && (p.can_sprint || p.flying);
-    // Sprinting swims once the eyes are in a liquid that can be swum in, and keeps at it while the
-    // body is. In a liquid it is no use otherwise.
-    let can_swim = |at: DVec3| physics::liquid_at(c, block, at).is_some_and(|l| p.swim_anywhere || c.liquids[l as usize].swimmable);
+    // A liquid it swims in, at the eyes, or at the feet once it lies down.
+    let low = p.pose.def().tilt != weft_abi::pose_tilt::UPRIGHT;
+    let swim_at = p.pos + DVec3::Y * if low { 0.1 } else { p.dims().eye };
+    let in_swim_liquid = physics::liquid_at(c, block, swim_at).is_some_and(|l| p.swims_in.get(l as usize) == Some(&true));
     let feet_wet = physics::in_liquid(c, block, p.pos, 0.0);
-    let start_at = p.pos + DVec3::Y * if matches!(p.pose, Pose::SWIM | Pose::CRAWL) { 0.1 } else { p.dims().eye };
-    let swimming = sprint && !p.flying && !p.noclip && can_swim(start_at);
-    let sprint = sprint && (swimming || !feet_wet);
-    p.sprinting = sprint;
-    // A pose where it fits, and if nothing else fits it crawls (a swimming box under a trapdoor).
-    let want = if let Some((held, _)) = p.forced {
-        held
-    } else if swimming {
-        Pose::SWIM
-    } else if crawl && !p.flying && !p.noclip {
-        Pose::CRAWL
-    } else if sneak && !p.flying && !p.noclip {
-        Pose::CROUCH
-    } else {
-        Pose::STAND
+    // `input`: the action held and sprinting count, which a pose fallen back to goes without.
+    let holds = |d: &crate::registry::PoseDef, input_too: bool| {
+        use weft_abi::pose_when as w;
+        let on = |f: u32| d.when & f != 0;
+        (!input_too || ((d.key.is_empty() || input.held(&d.key)) && (!on(w::SPRINTING) || sprint)))
+            && (!on(w::NOT_FLYING) || !(p.flying || p.noclip))
+            && (!on(w::SWIM_LIQUID) || in_swim_liquid)
+    };
+    let want = match p.forced {
+        Some((held, _)) => held,
+        None => c
+            .game
+            .pose_order
+            .iter()
+            .copied()
+            .find(|q| holds(q.def(), true))
+            .unwrap_or(Pose::STAND),
     };
     let fits =
         |pose: Pose| p.noclip || !physics::collides(c, block, physics::Aabb::around(p.pos, hw - 1e-3, physics::posed(p.size, pose).height));
     p.pose = if fits(want) {
         want
-    } else if fits(Pose::CROUCH) {
-        Pose::CROUCH
-    } else if feet_wet {
-        Pose::SWIM
     } else {
-        Pose::CRAWL
+        let back = &want.def().fallback;
+        back.iter()
+            .copied()
+            .find(|&q| holds(q.def(), false) && fits(q))
+            .or(back.last().copied())
+            .unwrap_or(want)
     };
+    // Sprinting swims in a pose for it; in a liquid it is no use otherwise.
+    let swimming = sprint && p.pose.def().when & weft_abi::pose_when::SWIM_LIQUID != 0;
+    let sprint = sprint && (swimming || !feet_wet);
+    p.sprinting = sprint;
     if !p.flying {
         let speed = p.pose.def().speed as f64;
         fwd_in *= speed;
