@@ -580,16 +580,33 @@ impl Running {
             self.window.set_cursor_visible(false);
         } else if self.settings.read_only {
         } else if on {
-            let _ = self
-                .window
-                .set_cursor_grab(CursorGrabMode::Locked)
-                .or_else(|_| self.window.set_cursor_grab(CursorGrabMode::Confined));
+            // Into the middle first, like vanilla: a cursor left by the edge (or outside, after an
+            // alt-tab) is no cursor kept in, where Windows only confines it.
+            self.center_cursor();
+            self.grab_cursor();
             self.window.set_cursor_visible(false);
         } else {
             let _ = self.window.set_cursor_grab(CursorGrabMode::None);
+            // A screen opening from play starts with the pointer in the middle, as vanilla's.
+            if self.input.captured {
+                self.center_cursor();
+            }
             self.window.set_cursor_visible(true);
         }
         self.input.captured = on;
+    }
+
+    fn grab_cursor(&self) {
+        let _ = self
+            .window
+            .set_cursor_grab(CursorGrabMode::Locked)
+            .or_else(|_| self.window.set_cursor_grab(CursorGrabMode::Confined));
+    }
+
+    fn center_cursor(&self) {
+        let size = self.window.inner_size();
+        let middle = winit::dpi::PhysicalPosition::new(size.width as f64 / 2.0, size.height as f64 / 2.0);
+        let _ = self.window.set_cursor_position(middle);
     }
 
     fn start_world(&mut self, meta: WorldMeta) {
@@ -1515,6 +1532,11 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 r.gpu.resize(size.width, size.height);
                 r.rebuild_all();
+            }
+            // Windows lets go of a confined cursor while another window has the focus.
+            WindowEvent::Focused(true) if !self.opts.automated && r.input.captured && !r.settings.read_only => {
+                r.center_cursor();
+                r.grab_cursor();
             }
             WindowEvent::Focused(false) if !self.opts.automated => {
                 r.input.release_all();

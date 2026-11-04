@@ -1420,10 +1420,11 @@ macro_rules! state_setters {
             self.each(|s| s.set_text(abi::comp::SUPPORT_NEAR, "tag", tag));
             self
         }
-        /// A plant: tagged `plantable`, cross model, no collision, replaced by placing a block.
+        /// A plant: tagged `plantable`, cross model, no collision. Placing a block into it is
+        /// refused, as for vanilla's flowers and sugar cane; grass that gives way is `.replaceable()`.
         pub fn plant(mut self) -> Self {
             self.each(|s| {
-                s.flags = (s.flags & !(bf::SOLID | bf::OPAQUE)) | bf::REPLACEABLE;
+                s.flags &= !(bf::SOLID | bf::OPAQUE);
                 s.model = BlockModel::Cross;
                 s.layer = RenderLayer::Cutout;
                 s.set(&c::HARDNESS, 0.0);

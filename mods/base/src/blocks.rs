@@ -117,6 +117,7 @@ fn plant(r: &mut Registry, handle: &'static Block, tex: &str) {
         .sound_group("grass")
         .texture(tex)
         .plant()
+        .replaceable()
         .hitbox([5.0, 0.0, 5.0], [11.0, 10.0, 11.0])
         .needs_below("#plant_soil")
         .tab(&crate::tabs::NATURAL);
@@ -334,6 +335,7 @@ pub fn register(r: &mut Registry) {
         .sound_group("grass")
         .texture("tallgrass")
         .plant()
+        .replaceable()
         .needs_below("#plant_soil")
         .tint(&tints::GRASS)
         .no_item();
