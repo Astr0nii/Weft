@@ -8,17 +8,21 @@ use super::probe;
 use super::{add, at};
 use crate::runner::{R, T};
 
-/// A player saved in a dimension that is gone (its mod removed) keeps everything and starts at
-/// the spawn; the world remembers the mods it was played with.
+/// A player saved in a dimension that is gone (its mod removed) keeps everything, storages too,
+/// and starts at the spawn; the world remembers the mods it was played with.
 pub async fn missing_dimension(t: T) -> R {
     t.world(7).await?;
     t.op("put me 3 diamond 5").await?;
+    t.op("stash base:chest stick 7").await?;
+    t.screen("core:menu").await?;
+    t.c().screen_close();
+    t.no_screen().await?;
     let flat = Dimension::lookup("base:flatlands").ok_or("no flatlands")?;
     t.cmd("/dim base:flatlands").await?;
     t.until("in the flatlands", Duration::from_secs(20), |t| t.state().dim == flat)
         .await?;
     let name = format!("test-{}", t.name());
-    t.c().leave_world();
+    t.c().world_leave();
     t.screen("core:title").await?;
     let dir = format!("{}/saves/{name}", t.c().run_dir());
     let world = std::fs::read_to_string(format!("{dir}/world.txt")).map_err(|e| e.to_string())?;
@@ -32,7 +36,7 @@ pub async fn missing_dimension(t: T) -> R {
         std::fs::write(f.path(), src.replace("dim = base:flatlands", "dim = ghost:gone")).map_err(|e| e.to_string())?;
     }
     // Opened from the list like a player would: the missing mod is named first.
-    t.c().open_screen(&screens::WORLDS);
+    t.c().screen_open(&screens::WORLDS);
     t.screen("core:worlds").await?;
     t.frames(2).await?;
     // A click lasts 50 ms; buttons act on release.
@@ -48,23 +52,91 @@ pub async fn missing_dimension(t: T) -> R {
     t.loaded().await?;
     t.check_eq(t.state().dim, Dimension::lookup("base:overworld").unwrap_or(u32::MAX), "the player is in the spawn dimension");
     t.check_eq(t.slot("me", 3).await?, ("base:diamond".into(), 5, 0), "and kept the inventory");
+    t.check_eq(t.op("stashed 0").await?, "base:stick 7 0".to_string(), "and the stash");
     Ok(())
 }
 
-/// Menus open on virtual inventories and on far away blocks; a menu for a block without an
-/// entity is refused with a reason instead of opening something broken.
+/// Mods change a player's state from the server, and its client follows: a mace's smash by the
+/// fall it reads, then the look, the hand, flight and fire set from outside.
+pub async fn entity_edit(t: T) -> R {
+    t.flat().await?;
+    let (dmg, fell) = {
+        let s = t.op("attack_damage testmod:mace 5").await?;
+        let mut p = s
+            .split_whitespace()
+            .map(|v| v.parse::<f64>().unwrap_or(f64::NAN));
+        (p.next().unwrap_or(f64::NAN), p.next().unwrap_or(f64::NAN))
+    };
+    t.check_eq(fell, 5.0, "the fall distance a mod set");
+    t.check_eq(dmg, 22.0, "a mace after five blocks: 6 + 4 * 3 + 2 * 2");
+    let (plain, _) = {
+        let s = t.op("attack_damage base:stick 5").await?;
+        (s.split_whitespace().next().unwrap_or("").to_string(), ())
+    };
+    t.check_eq(plain, "6".to_string(), "anything else doesn't care how far it fell");
+    let ground = t.state().pos.y;
+    t.check_eq(t.op("edit_me 1.5 4 1 60").await?, "4 60".to_string(), "slot and fire on the server");
+    t.until("the client follows", Duration::from_secs(10), |t| {
+        let s = t.state();
+        (s.yaw - 1.5).abs() < 1e-3 && s.selected == 4 && t.flag(client::client_flags::FLYING) && s.pos.y > ground + 2.5
+    })
+    .await?;
+
+    // The smash throws back what stands around the one hit.
+    let f = t.feet();
+    let f = [f[0], f[1] - 3, f[2]];
+    t.op("put me 4 testmod:mace").await?;
+    let hit = t
+        .op(&format!("spawn base:pig {} {} {}", f[0], f[1], f[2] - 3))
+        .await?;
+    let near = t
+        .op(&format!("spawn base:pig {} {} {}", f[0] + 1, f[1], f[2] - 3))
+        .await?;
+    t.secs(0.5).await?;
+    let x = |s: String| {
+        s.split_whitespace()
+            .nth(1)
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(f64::NAN)
+    };
+    let before = x(t.op(&format!("entity {near}")).await?);
+    t.op(&format!("hit_falling {hit} 5")).await?;
+    t.secs(0.5).await?;
+    let after = x(t.op(&format!("entity {near}")).await?);
+    t.probe("the pig beside is thrown back", (after - before) as f32, after - before > 0.8);
+    Ok(())
+}
+
+/// Menus open on a storage a player carries and on far away blocks; a menu for a block without
+/// an entity is refused with a reason instead of opening something broken.
 pub async fn virtual_menus(t: T) -> R {
     t.flat().await?;
-    let id = t.op("vmenu base:chest 27 diamond 3 stick 10").await?;
+    t.check_eq(t.op("stash base:chest diamond 3 stick 10").await?, "54".to_string(), "stash slots");
     t.screen("core:menu").await?;
     let diamond = Item::lookup("base:diamond").ok_or("no item base:diamond")?;
     t.until("chest contents on the client", Duration::from_secs(5), |t| t.c().menu_slot(0).item == diamond)
         .await?;
-    t.check_eq(t.c().menu_slot(1).count, 10, "second virtual slot");
+    t.check_eq(t.c().menu_slot(1).count, 10, "second stash slot");
     t.shot("virtual_chest").await?;
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await?;
-    t.op(&format!("remove {id}")).await?;
+
+    // On a held stack: what goes in stays in that stack, and the menu closes when it goes.
+    t.op("put me 8 testmod:pouch").await?;
+    t.check_eq(t.op("hput 8 2 base:stick 5").await?, "9".to_string(), "pouch slots");
+    t.op("hmenu testmod:pouch 8").await?;
+    t.screen("core:menu").await?;
+    let stick = Item::lookup("base:stick").ok_or("no item base:stick")?;
+    t.until("pouch contents on the client", Duration::from_secs(5), |t| t.c().menu_slot(2).item == stick)
+        .await?;
+    t.op("put me 8 base:dirt").await?;
+    t.no_screen().await?;
+    t.op("put me 8 testmod:pouch").await?;
+    t.op("hmenu testmod:pouch 8").await?;
+    t.frames(10).await?;
+    t.check(t.c().menu_slot(2).is_empty(), "a new pouch shows the old one's items");
+    t.c().screen_close();
+    t.no_screen().await?;
 
     let f = t.feet();
     let plain = add(f, [2, -1, 0]);
@@ -92,11 +164,11 @@ pub async fn virtual_menus(t: T) -> R {
         t.op(&format!("menu {menu} {} {} {}", p[0], p[1], p[2]))
             .await?;
         let want = Menu::lookup(menu).unwrap_or(u32::MAX);
-        t.until(&format!("{menu} open"), Duration::from_secs(5), |t| t.c().menu().is_some_and(|m| m[0] == want))
+        t.until(&format!("{menu} open"), Duration::from_secs(5), |t| t.c().menu().is_some_and(|m| m.kind == want))
             .await?;
         t.screen("core:menu").await?;
     }
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await
 }
 
@@ -155,10 +227,10 @@ pub async fn fly_load(t: T) -> R {
     t.secs(0.5).await?;
     t.loaded().await?;
     t.idle().await?;
-    t.c().look(0.0, 0.0);
+    t.c().set_look(0.0, 0.0);
     // A step of the wheel per frame, up to spectators' top speed.
     for _ in 0..12 {
-        t.c().scroll(1.0);
+        t.c().input_scroll(1.0);
         t.frames(2).await?;
     }
     let secs = 45.0;
@@ -171,13 +243,13 @@ pub async fn fly_load(t: T) -> R {
     while begin.elapsed().as_secs_f32() < secs - 12.0 {
         t.secs(1.0).await?;
         let s = t.state();
-        let speed = ((s.pos[0] - last_pos[0]).powi(2) + (s.pos[2] - last_pos[2]).powi(2)).sqrt();
+        let speed = ((s.pos.x - last_pos.x).powi(2) + (s.pos.z - last_pos.z).powi(2)).sqrt();
         last_pos = s.pos;
         // Yaw 0 looks along -Z: the ground ahead, the first column not there yet.
         let reach = (1..=64)
             .map(|i| i * 16)
             .find(|d| {
-                let (x, z) = (s.pos[0].floor() as i32, s.pos[2].floor() as i32 - d);
+                let (x, z) = (s.pos.x.floor() as i32, s.pos.z.floor() as i32 - d);
                 t.c()
                     .block([x, OVERWORLD.column(5, x, z).height, z])
                     .is_none()
@@ -193,7 +265,7 @@ pub async fn fly_load(t: T) -> R {
         // Every few seconds: the ground ahead, well behind the front of what has arrived, has to
         // be drawn: a cube here but waiting for its mesh is a hole in the picture.
         if samples.len() % 5 == 4 {
-            let (px, pz) = (s.pos[0].floor() as i32, s.pos[2].floor() as i32);
+            let (px, pz) = (s.pos.x.floor() as i32, s.pos.z.floor() as i32);
             for dz in (32..(reach / 2).max(33)).step_by(16) {
                 for dx in (-448..=448).step_by(16) {
                     let (x, z) = (px + dx, pz - dz);
@@ -213,7 +285,7 @@ pub async fn fly_load(t: T) -> R {
     t.shot("flying").await?;
     let b = t.bench(10.0, "flying").await?;
     let s = t.state();
-    t.note(format!("flew to {:.0}: worst reach ahead {worst} blocks, seconds under 512: {lows}, peak meshes waiting {peak_pending}, generated {} cubes on the way, p99 {:.1} ms", s.pos[2], s.generated - cubes_at_start, b[2]));
+    t.note(format!("flew to {:.0}: worst reach ahead {worst} blocks, seconds under 512: {lows}, peak meshes waiting {peak_pending}, generated {} cubes on the way, p99 {:.1} ms", s.pos.z, s.generated - cubes_at_start, b[2]));
     // Stopped, the rest of the columns comes.
     t.secs(2.5).await?;
     let stop = std::time::Instant::now();
@@ -292,7 +364,7 @@ pub async fn crater(t: T) -> R {
         let rim = f[2] + r + 40;
         let top = OVERWORLD.column(5, f[0], rim).height.max(f[1]);
         t.cmd(&format!("/tp {} {} {}", f[0], top + 40, rim)).await?;
-        t.c().look(0.0, -25.0);
+        t.c().set_look(0.0, -25.0);
         t.secs(1.0).await?;
         t.loaded().await?;
         t.secs(1.0).await?;
@@ -314,9 +386,9 @@ pub async fn crater_saved(t: T) -> R {
     let built = add(f, [3, -20, 0]);
     t.set(built, "gold_block").await?;
     let name = format!("test-{}", t.name());
-    t.c().leave_world();
+    t.c().world_leave();
     t.screen("core:title").await?;
-    t.c().open_world(&name, 8);
+    t.c().world_open(&name, 8);
     t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED))
         .await?;
     t.loaded().await?;
@@ -480,7 +552,7 @@ pub async fn tick_control(t: T) -> R {
 pub async fn item_farm(t: T) -> R {
     t.flat().await?;
     t.op("drops 3000").await?;
-    t.c().look(0.0, -30.0);
+    t.c().set_look(0.0, -30.0);
     t.secs(2.0).await?;
     t.note(format!("{} entities on the client", t.c().entities().len()));
     t.shot("farm").await?;
@@ -498,7 +570,7 @@ pub async fn mob_crowd(t: T) -> R {
     t.cmd("/rule testkit:peace 1").await?;
     t.op("crowd base:zombie 4000").await?;
     t.op("crowd base:pig 4000").await?;
-    t.c().look(0.0, -20.0);
+    t.c().set_look(0.0, -20.0);
     t.secs(4.0).await?;
     t.note(format!("{} entities on the client", t.c().entities().len()));
     t.shot("crowd").await?;
@@ -624,11 +696,11 @@ pub async fn persistence(t: T) -> R {
     t.op("secret me 0 1234").await?;
     t.check_eq(t.op("secret me 0").await?, "1234".into(), "server keeps the secret");
     t.frames(5).await?;
-    t.check_eq(crate::server::SECRET.stack_only(&t.c().inventory_slot(0)), None, "client never sees the secret");
+    t.check_eq(crate::server::SECRET.on_stack_own(&t.c().inventory_slot(0)), None, "client never sees the secret");
     // What a mod makes with a handle, data and all: the client has it, and damage is its own.
     static STICK: Item = Item::named("base:stick");
-    let made = STICK.stack(3).with_damage(5);
-    t.check_eq((made.item, made.count, made.damage(), made.without(&DAMAGE).data), (STICK.id(), 3, 5, 0), "a stack made from a handle");
+    let made = STICK.stack(3).with_wear(5);
+    t.check_eq((made.item, made.count, made.wear(), made.without(&DAMAGE).data), (STICK.id(), 3, 5, 0), "a stack made from a handle");
     t.check_eq(value(&t.op("attr me core:movement_speed").await?), 1.0, "speed without modifiers");
     t.op("attr_mod me core:movement_speed testkit:haste 1 0.5 40")
         .await?;
@@ -647,9 +719,9 @@ pub async fn persistence(t: T) -> R {
     t.cmd("/rule testkit:count_marks 1").await?;
 
     let name = format!("test-{}", t.name());
-    t.c().leave_world();
+    t.c().world_leave();
     t.screen("core:title").await?;
-    t.c().open_world(&name, 7);
+    t.c().world_open(&name, 7);
     t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED))
         .await?;
     t.loaded().await?;
@@ -761,7 +833,7 @@ pub async fn dimensions(t: T) -> R {
         t.loaded().await?;
         t.idle().await?;
         t.settled().await?;
-        t.c().look(30.0, -20.0);
+        t.c().set_look(30.0, -20.0);
         t.frames(3).await?;
         let shot = t.shot(dim.split(':').nth(1).unwrap_or(dim)).await?;
         if let Some(look) = look {
@@ -784,9 +856,9 @@ pub async fn dimensions(t: T) -> R {
     let p = add(t.feet(), [0, -1, 0]);
     t.check(t.set(p, "stone").await.is_err(), "no block can be set in the void");
     t.check(t.block(p).await? != "base:stone", "the void stays empty");
-    let y = t.state().pos[1];
+    let y = t.state().pos.y;
     t.secs(1.0).await?;
-    t.check((t.state().pos[1] - y).abs() < 0.01, format!("no gravity in the void (y {y:.2} -> {:.2})", t.state().pos[1]));
+    t.check((t.state().pos.y - y).abs() < 0.01, format!("no gravity in the void (y {y:.2} -> {:.2})", t.state().pos.y));
 
     t.cmd("/dim core:debug_blocks").await?;
     t.secs(0.5).await?;
@@ -837,12 +909,12 @@ pub async fn dimensions(t: T) -> R {
     if let [lx, ly, lz] = l[..] {
         t.cmd(&format!("/tp {} {} {}", lx as f64 + 0.5, ly + 2, lz as f64 + 4.5))
             .await?;
-        t.c().look(0.0, -30.0);
+        t.c().set_look(0.0, -30.0);
         t.frames(20).await?;
         t.shot("lava").await?;
     }
     t.cmd("/tp -3 1 -3").await?;
-    t.c().look(225.0, -25.0);
+    t.c().set_look(225.0, -25.0);
     t.frames(20).await?;
     let grid = t.shot("debug_blocks").await?;
     // Many different blocks in view: no color class covers most of the grid (it floats in the
@@ -994,12 +1066,12 @@ async fn edit_while_loading_once(t: &T) -> Result<f64, String> {
     t.world(5).await?;
     t.idle().await?;
     t.op("mode spectator").await?;
-    let low = t.state().pos[1];
+    let low = t.state().pos.y;
     t.cmd("/tp ~ ~40 ~").await?;
     // Read too early, "here" is still the ground, and the block goes where the camera doesn't look.
-    t.until("up in the air", Duration::from_secs(5), |t| t.state().pos[1] > low + 30.0)
+    t.until("up in the air", Duration::from_secs(5), |t| t.state().pos.y > low + 30.0)
         .await?;
-    t.c().look(0.0, 0.0);
+    t.c().set_look(0.0, 0.0);
     t.frames(5).await?;
     // Eye level, three blocks north.
     let f = t.feet();
@@ -1028,19 +1100,26 @@ async fn edit_while_loading_once(t: &T) -> Result<f64, String> {
 }
 
 /// Terrain the GPU makes is the CPU's to the bit (integer math on both sides): every cube of a
-/// fresh world is made again on the CPU and compared.
+/// fresh world is made again on the CPU and compared, in the overworld and on Mars, whose
+/// presets use the rest of the expression steps.
 pub async fn gpu_terrain(t: T) -> R {
     static CHECK: Config<i32> = Config::named("core:terrain_check");
+    static MARS: Dimension = Dimension::named("testmod:mars");
     let before = CHECK.get();
     CHECK.set(1);
-    let start = t.state().gpu_cubes;
     let out = async {
+        let start = t.state().gpu_cubes;
         t.world(5).await?;
         t.idle().await?;
+        let overworld = t.state().gpu_cubes - start;
+        t.cmd("/dim testmod:mars").await?;
+        t.until("on Mars", Duration::from_secs(20), |t| t.state().dim == MARS.id())
+            .await?;
+        t.idle().await?;
         let s = t.state();
-        let made = s.gpu_cubes - start;
-        t.note(format!("{made} cubes made on the GPU, {} differing", s.gpu_mismatches));
-        t.check(made > 1000, format!("the GPU made the terrain ({made} cubes)"));
+        let mars = s.gpu_cubes - start - overworld;
+        t.note(format!("{overworld} cubes made on the GPU in the overworld, {mars} on Mars, {} differing", s.gpu_mismatches));
+        t.check(overworld > 1000 && mars > 1000, format!("the GPU made the terrain ({overworld} and {mars} cubes)"));
         t.check_eq(s.gpu_mismatches, 0, "cubes the GPU made differently from the CPU");
         Ok(())
     }

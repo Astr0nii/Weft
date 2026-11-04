@@ -25,8 +25,8 @@ const MATERIALS: [Material; 5] = [
     Material { name: "wood", level: tool_tier::WOOD, speed: 2.0, durability: 59, damage: 0.0 },
     Material { name: "stone", level: tool_tier::STONE, speed: 4.0, durability: 131, damage: 1.0 },
     Material { name: "iron", level: tool_tier::IRON, speed: 6.0, durability: 250, damage: 2.0 },
-    Material { name: "diamond", level: tool_tier::DIAMOND, speed: 8.0, durability: 1561, damage: 3.0 },
     Material { name: "gold", level: tool_tier::WOOD, speed: 12.0, durability: 32, damage: 0.0 },
+    Material { name: "diamond", level: tool_tier::DIAMOND, speed: 8.0, durability: 1561, damage: 3.0 },
 ];
 
 pub fn register(r: &mut Registry) {
@@ -59,7 +59,7 @@ pub fn register(r: &mut Registry) {
         .tag("materials/diamond")
         .tab(&crate::tabs::INGREDIENTS);
     r.item(&WHEAT_SEEDS)
-        .placed_block(&crate::blocks::WHEAT)
+        .places(&crate::blocks::WHEAT)
         .tab(&crate::tabs::NATURAL);
     r.item(&WHEAT)
         .tag("crops/wheat")
@@ -87,7 +87,7 @@ pub fn register(r: &mut Registry) {
         let i = r
             .item(Item::generated(name.into()))
             .set(&FOOD, Food { hunger, saturation })
-            .use_time(1.6)
+            .use_ticks(32)
             .on_use(base_api::eat)
             .tab(&crate::tabs::FOOD);
         let i = if tag.starts_with("cooked_meat/") { i.tag("cooked_meat") } else { i };

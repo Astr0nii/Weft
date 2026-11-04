@@ -163,7 +163,7 @@ macro_rules! tuples {
         impl<$($t: Wire),*> Item for ($($t,)*) {}
     )*};
 }
-tuples!((0 A, 1 B), (0 A, 1 B, 2 C), (0 A, 1 B, 2 C, 3 D), (0 A, 1 B, 2 C, 3 D, 4 E, 5 F));
+tuples!((0 A, 1 B), (0 A, 1 B, 2 C), (0 A, 1 B, 2 C, 3 D), (0 A, 1 B, 2 C, 3 D, 4 E, 5 F), (0 A, 1 B, 2 C, 3 D, 4 E, 5 F, 6 G));
 
 impl Wire for IVec3 {
     fn put(&self, w: &mut W) {
@@ -185,19 +185,19 @@ impl Wire for DVec3 {
 
 impl Wire for Pose {
     fn put(&self, w: &mut W) {
-        (*self as u8).put(w);
+        (self.0 as u32).put(w);
     }
     fn get(r: &mut R) -> Option<Self> {
-        Some(Pose::from_u8(u8::get(r)?))
+        Some(Pose::from_id(u32::get(r)?))
     }
 }
 
 impl Wire for GameMode {
     fn put(&self, w: &mut W) {
-        (*self as u8).put(w);
+        (self.0 as u32).put(w);
     }
     fn get(r: &mut R) -> Option<Self> {
-        Some(GameMode::from_u8(u8::get(r)?))
+        Some(GameMode::from_id(u32::get(r)?))
     }
 }
 
@@ -271,11 +271,25 @@ impl Wire for Msg {
 
 impl Wire for ParticleBurst {
     fn put(&self, w: &mut W) {
-        (self.kind, self.pos, self.spread, self.velocity, self.speed, (self.count, self.block, self.outward)).put(w);
+        // Spread and speeds go as floats: they need no more.
+        let small = |v: weft_abi::Vec3| [v.x as f32, v.y as f32, v.z as f32];
+        let tail = (self.count, self.block, self.outward, self.color);
+        (self.kind, crate::world::dvec(self.pos), small(self.spread), small(self.velocity), self.speed, tail).put(w);
     }
     fn get(r: &mut R) -> Option<Self> {
-        let (kind, pos, spread, velocity, speed, (count, block, outward)) = Wire::get(r)?;
-        Some(ParticleBurst { kind, pos, spread, velocity, speed, count, block, outward })
+        let (kind, pos, spread, velocity, speed, (count, block, outward, color)): (u32, DVec3, [f32; 3], [f32; 3], _, _) = Wire::get(r)?;
+        let wide = |v: [f32; 3]| weft_abi::Vec3::new(v[0] as f64, v[1] as f64, v[2] as f64);
+        Some(ParticleBurst {
+            kind,
+            pos: pos.to_array().into(),
+            spread: wide(spread),
+            velocity: wide(velocity),
+            speed,
+            count,
+            block,
+            outward,
+            color,
+        })
     }
 }
 
@@ -328,7 +342,7 @@ mod tests {
                 yaw: 1.0,
                 pitch: -0.5,
                 on_ground: true,
-                pose: crate::world::Pose::Swim,
+                pose: crate::world::Pose::SWIM,
                 sprint: true,
                 flying: false,
                 frame: Some((7, DVec3::ONE)),
@@ -383,6 +397,7 @@ mod tests {
             b: DVec3::splat(-4.5),
             color: 0xFF8000FF,
             ticks: 21,
+            size: 1.5,
             text: Msg::new("gizmo.value", vec![Arg::Text("r0".into())]),
         };
         let Some(ToClient::Gizmos(back)) = decode_client(&encode_client(&ToClient::Gizmos(vec![g.clone()]))) else { panic!("not decoded") };

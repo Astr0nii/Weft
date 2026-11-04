@@ -37,8 +37,8 @@ pub struct Listener {
     /// No sky light at the head: caves echo.
     pub enclosed: bool,
     pub dim: u32,
-    pub day: bool,
-    pub creative: bool,
+    /// The conditions music asks for that hold now, by id.
+    pub holds: Vec<u32>,
 }
 
 pub struct Audio {
@@ -223,7 +223,6 @@ impl Audio {
     }
 
     fn music(&mut self, assets: &Assets, l: &Listener) {
-        use weft_abi::music_when as mw;
         if self
             .music
             .as_ref()
@@ -234,15 +233,7 @@ impl Audio {
         }
         self.music = None;
         let c = content();
-        let fits = |m: &crate::registry::MusicDef| {
-            let w = m.when;
-            m.dimension.is_none_or(|d| d == l.dim)
-                && (w & (mw::DAY | mw::NIGHT) == 0 || (w & mw::DAY != 0 && l.day) || (w & mw::NIGHT != 0 && !l.day))
-                && (w & (mw::UNDERGROUND | mw::SURFACE) == 0
-                    || (w & mw::UNDERGROUND != 0 && l.enclosed)
-                    || (w & mw::SURFACE != 0 && !l.enclosed))
-                && (w & mw::CREATIVE == 0 || l.creative)
-        };
+        let fits = |m: &crate::registry::MusicDef| m.dimension.is_none_or(|d| d == l.dim) && m.when.iter().all(|w| l.holds.contains(w));
         // Quiet for a few minutes between tracks, like vanilla's (shorter: there is less music).
         self.next_music = Instant::now() + Duration::from_secs(120 + (self.random() * 180.0) as u64);
         let Some(m) = c
@@ -325,10 +316,17 @@ impl Audio {
         let group = &mut self.groups[g];
         let played = match p.pos {
             Some(pos) => {
-                // Heard up to `range` blocks (further for loud ones), full volume within one.
+                // Heard up to `range` blocks (further for loud ones).
                 let reach = def.range * volume.max(1.0);
+                let near = def.full_within.min(reach - 0.5);
+                let curve = match def.falloff {
+                    0 => kira::Easing::Linear,
+                    n if n > 0 => kira::Easing::InPowi(n),
+                    n => kira::Easing::OutPowi(-n),
+                };
                 let b = SpatialTrackBuilder::new()
-                    .distances((1.0, reach.max(1.5)))
+                    .distances((near.max(0.0), reach.max(1.5)))
+                    .attenuation_function(curve)
                     .persist_until_sounds_finish(true);
                 group
                     .add_spatial_sub_track(&self.listener, pos.as_vec3(), b)

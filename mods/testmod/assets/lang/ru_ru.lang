@@ -47,6 +47,7 @@ config.testmod.dream_style = Вид грёз
 config.testmod.dream_style.warm = Тёплые
 config.testmod.dream_style.cold = Холодные
 item.testmod.steel_pickaxe = Стальная кирка
+item.testmod.mace = Булава
 block.testmod.reinforced_stone = Укреплённый камень
 block.testmod.vent = Вентиляция
 config.testmod.volume_machines = Громкотсь машин

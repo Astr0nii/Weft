@@ -322,26 +322,21 @@ impl Server {
             .collect();
         let def = &c.dims[dim as usize];
         let in_view = |cp: IVec3| views.iter().any(|v| v.contains_in(def, cp));
-        // Unbreakable blocks or liquids it keeps may be anywhere in terrain: such cubes are generated.
-        let keeps = fill.keep_liquids
-            || fill.keep_unbreakable
-                && c.states
-                    .iter()
-                    .any(|s| s.hardness < 0.0 && s.liquid.is_none());
+        // Blocks it keeps may be anywhere in terrain: such cubes are generated.
+        let keeps = fill.keeps_any(c);
         let d = &self.dims[dim as usize];
-        let reach = (fill.radius / 16.0).ceil() as i32 + 2;
-        let mid = (fill.center / 16.0).floor().as_ivec3();
+        let (lo, hi) = fill.shape.bounds();
+        let (lo, hi) = (((lo - 17.0) / 16.0).floor().as_ivec3(), ((hi + 17.0) / 16.0).floor().as_ivec3());
         let (mut whole, mut load) = (Vec::new(), Vec::new());
-        for z in -reach..=reach {
-            for y in -reach..=reach {
-                for x in -reach..=reach {
-                    let cp = mid + IVec3::new(x, y, z);
+        for z in lo.z..=hi.z {
+            for y in lo.y..=hi.y {
+                for x in lo.x..=hi.x {
+                    let cp = IVec3::new(x, y, z);
                     // The cubes it changes and the ones next to them.
-                    let (near, far) = fill.reach(cp);
-                    if near > (fill.radius + 17.0).powi(2) || d.has(cp) || !in_view(cp) {
+                    if !fill.near(cp, 17.0) || d.has(cp) || !in_view(cp) {
                         continue;
                     }
-                    if far <= fill.radius * fill.radius && !keeps {
+                    if fill.covers(cp) && !keeps {
                         whole.push(cp);
                     } else {
                         load.push(cp);
@@ -365,9 +360,10 @@ impl Server {
         for (pos, cube, entities, conn) in made {
             self.dims[dim as usize].insert(c, pos, cube, &entities, conn, true);
         }
+        let size = hi - lo + 1;
         log::info!(
-            "area fill r {:.0}: loaded {loaded} cubes it opens up, made {} it fills whole, {:.0} ms",
-            fill.radius,
+            "area fill of {} cubes across: loaded {loaded} cubes it opens up, made {} it fills whole, {:.0} ms",
+            size.max_element(),
             whole.len(),
             start.elapsed().as_secs_f64() * 1000.0
         );

@@ -409,7 +409,7 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
                 }
                 id
             }
-            uk::PARTS => {
+            uk::SCREEN_PARTS => {
                 let id = b.ui.open(Kind::Container { class: None }, style);
                 let (screen, area) = (class.clone(), n.text.as_str().to_string());
                 parts(b.ui, lang, input, b.client, &screen, &area);
@@ -442,12 +442,22 @@ pub unsafe extern "C" fn ui_open(u: *mut abi::UiCtx, node: *const abi::UiNode) {
             uk::ICONS => {
                 let bind =
                     if n.bind.is_some() { float_bind(owner, n.bind) } else { Box::new(|_: &Ctx| 0.0f32) as Box<dyn Fn(&Ctx) -> f32> };
-                b.ui.open(Kind::Icons { class, count: n.count, bind, value: -1.0, dir: n.dir, shake: n.data != 0 }, style)
+                b.ui.open(
+                    Kind::Icons {
+                        class,
+                        count: n.count,
+                        bind,
+                        value: -1.0,
+                        dir: n.dir,
+                        shake: if n.data == 0 { None } else { Some(f32::from_bits(n.data)) },
+                    },
+                    style,
+                )
             }
             uk::IMAGE => {
                 b.ui.open(Kind::Image { texture: n.text.as_str().to_string(), color: 0xFFFFFFFF }, style)
             }
-            uk::ENTITY => b.ui.open(Kind::Custom { tag: TAG_ENTITY, data: 0 }, style),
+            uk::PLAYER_MODEL => b.ui.open(Kind::Custom { tag: TAG_ENTITY, data: 0 }, style),
             uk::SPACER => {
                 b.ui.open(Kind::Container { class: None }, Style { grow: n.grow.max(1.0), ..style })
             }
@@ -518,8 +528,8 @@ pub unsafe extern "C" fn client_day_time(c: *mut abi::ClientCtx) -> u64 {
     unsafe { view(c).map_or(0, |cl| cl.world.time) }
 }
 
-pub unsafe extern "C" fn client_raining(c: *mut abi::ClientCtx) -> u32 {
-    unsafe { view(c).is_some_and(|cl| cl.weather.0) as u32 }
+pub unsafe extern "C" fn client_weather(c: *mut abi::ClientCtx) -> u32 {
+    unsafe { view(c).map_or(0, |cl| cl.weather_id as u32) }
 }
 
 pub unsafe extern "C" fn client_permission(c: *mut abi::ClientCtx) -> u32 {
@@ -578,21 +588,18 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
         if id == cl.player_id || id == 0 {
             let state = abi::EntityState {
                 kind: content.game.player_kind,
-                pos: cl.player.pos.to_array(),
-                vel: cl.player.vel.to_array(),
+                pos: cl.player.pos.to_array().into(),
+                vel: cl.player.vel.to_array().into(),
                 yaw: cl.player.yaw,
                 pitch: cl.player.pitch,
                 on_ground: cl.player.on_ground as u32,
                 in_liquid: cl.player.in_liquid as u32,
                 sprinting: cl.player.sprinting as u32,
-                pose: cl.player.pose as u32,
+                pose: cl.player.pose.0 as u32,
                 flying: cl.player.flying as u32,
-                health: cl.health,
+                health: cl.health(),
                 max_health: cl.max_health,
-                size: {
-                    let (hw, h, eye) = cl.player.dims();
-                    [hw as f32 * 2.0, h as f32, eye as f32]
-                },
+                size: cl.player.dims().size(),
                 ..Default::default()
             };
             *out = state;
@@ -602,7 +609,7 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
             Some(e) => {
                 let state = abi::EntityState {
                     kind: e.kind,
-                    pos: e.pos.to_array(),
+                    pos: e.pos.to_array().into(),
                     yaw: e.yaw,
                     pitch: e.pitch,
                     moved: e.swing,
@@ -618,10 +625,7 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
                             })
                             .unwrap_or(attr.default) as f32
                     },
-                    size: {
-                        let (hw, h, eye) = e.dims();
-                        [hw as f32 * 2.0, h as f32, eye as f32]
-                    },
+                    size: e.dims().size(),
                     ..Default::default()
                 };
                 *out = state;
@@ -633,5 +637,5 @@ pub unsafe extern "C" fn client_entity(c: *mut abi::ClientCtx, id: u64, out: *mu
 }
 
 pub unsafe extern "C" fn client_game_mode(c: *mut abi::ClientCtx) -> u32 {
-    unsafe { view(c).map_or(0, |cl| cl.mode as u32) }
+    unsafe { view(c).map_or(0, |cl| cl.mode.0 as u32) }
 }

@@ -158,6 +158,8 @@ pub struct EntityRenderer {
     glows: FxHashMap<String, (TextureId, u32)>,
     /// Shader slot of each entity kind.
     kind_shaders: Vec<u32>,
+    /// Shader slot of each entity effect, by effect id.
+    effect_slots: Vec<u32>,
     sprites: FxHashMap<String, Option<Sprite>>,
     /// Entities to pose this frame, kept between frames.
     posed: Vec<Posed>,
@@ -191,6 +193,17 @@ pub const HOOK: crate::shaders::Hook = crate::shaders::Hook {
     fallback: "return vec4(p.albedo.rgb * p.light, p.albedo.a);",
 };
 
+/// Entity effects (`World::entity_effect`) over whatever shaded the pixel.
+pub const EFFECT_HOOK: crate::shaders::Hook = crate::shaders::Hook {
+    kind: "entity_effect",
+    entry: "effect",
+    dispatch: "entity_effect",
+    params: "p: EntityPixel, c: vec4<f32>, strength: f32",
+    args: "p, c, strength",
+    ret: "vec4<f32>",
+    fallback: "return c;",
+};
+
 /// Light on boxes and model layers drawn without any (the inventory figure, flames).
 const FULL_LIGHT: u32 = u32::MAX;
 
@@ -204,7 +217,7 @@ fn light_boxes(boxes: &mut [GpuBox], from: usize, light: u32) {
 impl EntityRenderer {
     pub fn new(gpu: &mut dyn Backend, assets: &Assets) -> Result<EntityRenderer, String> {
         let (pipeline, overlay) = Self::pipelines(gpu, assets)?;
-        let ([model_pipe, preview_pipe, model_hand_pipe], kind_shaders) = Self::model_pipelines(gpu, assets)?;
+        let ([model_pipe, preview_pipe, model_hand_pipe], kind_shaders, effect_slots) = Self::model_pipelines(gpu, assets)?;
         let models = Models::new(gpu, assets);
         let frames = gpu.frames_in_flight();
         let hand_views = (0..frames)
@@ -259,6 +272,7 @@ impl EntityRenderer {
             local: 0,
             glows: FxHashMap::default(),
             kind_shaders,
+            effect_slots,
             sprites: FxHashMap::default(),
             posed: Vec::new(),
             seen_kinds: Vec::new(),
@@ -318,11 +332,26 @@ impl EntityRenderer {
 
     /// The model pipelines (screen, inventory figure image) with every entity shader snippet,
     /// and each kind's slot.
-    fn model_pipelines(gpu: &mut dyn Backend, assets: &Assets) -> Result<([PipelineId; 3], Vec<u32>), String> {
+    fn model_pipelines(gpu: &mut dyn Backend, assets: &Assets) -> Result<([PipelineId; 3], Vec<u32>, Vec<u32>), String> {
         let snippets = crate::shaders::snippets(assets, &HOOK);
-        let (s, mut slots) = crate::packs::compose(assets, "model.wgsl", &[(&HOOK, &snippets)]).map_err(|e| e.0)?;
+        let effects = crate::shaders::snippets(assets, &EFFECT_HOOK);
+        let (s, mut slots) =
+            crate::packs::compose(assets, "model.wgsl", &[(&HOOK, &snippets), (&EFFECT_HOOK, &effects)]).map_err(|e| e.0)?;
+        let effect_slots = slots.pop().unwrap_or_default();
         let slots = slots.pop().unwrap_or_default();
         let c = content();
+        let effect_slots = c
+            .game
+            .entity_effects
+            .iter()
+            .map(|d| {
+                let slot = effect_slots.slot(&d.shader);
+                if slot == 0 {
+                    log::warn!("entity effect {}: no shader entity_effect/{}", d.name, d.shader);
+                }
+                slot
+            })
+            .collect();
         let comp = c.components.id(weft_abi::comp::SHADER);
         let kinds = (0..c.game.entities.len() as u32)
             .map(|k| {
@@ -351,12 +380,13 @@ impl EntityRenderer {
         let (world, preview) = (make("models", "vs", Format::Surface)?, make("entity preview", "vs", Format::Rgba8Srgb)?);
         // A shader pack's older copy of the file has no `vs_hand`.
         let hand = make("model hand", "vs_hand", Format::Surface).or_else(|_| make("model hand", "vs", Format::Surface))?;
-        Ok(([world, preview, hand], kinds))
+        Ok(([world, preview, hand], kinds, effect_slots))
     }
 
     pub fn reload(&mut self, gpu: &mut dyn Backend, assets: &Assets) {
         match Self::model_pipelines(gpu, assets) {
-            Ok(([p, q, h], kinds)) => {
+            Ok(([p, q, h], kinds, effects)) => {
+                self.effect_slots = effects;
                 gpu.destroy_pipeline(self.model_pipe);
                 gpu.destroy_pipeline(self.model_hand_pipe);
                 gpu.destroy_pipeline(self.preview_pipe);
@@ -376,21 +406,9 @@ impl EntityRenderer {
         // Clips and models have new numbers.
         self.fades.clear();
         self.icon_of_model.clear();
-        for s in self.icon_sheets.drain(..) {
-            gpu.destroy_texture(s.color);
-            gpu.destroy_texture(s.depth);
-        }
         self.icons_todo.clear();
-        // Skins and masks are read again the next time they are used.
-        for t in self
-            .skins
-            .drain()
-            .filter_map(|(_, v)| v)
-            .map(|v| v.0)
-            .chain(self.glows.drain().map(|(_, g)| g.0))
-        {
-            gpu.destroy_texture(t);
-        }
+        // Skins, masks and icons are made again the next time they are used.
+        self.free_loaded(gpu);
         if let Ok((a, b)) = Self::item_pipelines(gpu, assets) {
             gpu.destroy_pipeline(self.item_pipe);
             gpu.destroy_pipeline(self.hand_item_pipe);
@@ -469,16 +487,29 @@ impl EntityRenderer {
         self.avatar_sent.insert(entity, sent);
     }
 
+    /// Skins, glow masks and icon sheets: loaded when first used, freed on a reload and at the end.
+    fn free_loaded(&mut self, gpu: &mut dyn Backend) {
+        for t in self
+            .skins
+            .drain()
+            .filter_map(|(_, v)| v)
+            .map(|v| v.0)
+            .chain(self.glows.drain().map(|(_, g)| g.0))
+        {
+            gpu.destroy_texture(t);
+        }
+        for s in self.icon_sheets.drain(..) {
+            gpu.destroy_texture(s.color);
+            gpu.destroy_texture(s.depth);
+        }
+    }
+
     pub fn destroy(&mut self, gpu: &mut dyn Backend) {
         for (t, ..) in self.player_skins.drain().map(|(_, v)| v) {
             gpu.destroy_texture(t);
         }
         for a in self.avatars.drain().map(|(_, v)| v) {
             a.destroy(gpu);
-        }
-        for s in self.icon_sheets.drain(..) {
-            gpu.destroy_texture(s.color);
-            gpu.destroy_texture(s.depth);
         }
         for b in self.icon_views.drain(..) {
             gpu.destroy_buffer(b);
@@ -498,15 +529,7 @@ impl EntityRenderer {
         for b in self.hand_views.drain(..).chain(preview) {
             gpu.destroy_buffer(b);
         }
-        for t in self
-            .skins
-            .drain()
-            .filter_map(|(_, v)| v)
-            .map(|v| v.0)
-            .chain(self.glows.drain().map(|(_, g)| g.0))
-        {
-            gpu.destroy_texture(t);
-        }
+        self.free_loaded(gpu);
         gpu.destroy_pipeline(self.pipeline);
         gpu.destroy_pipeline(self.overlay);
         gpu.destroy_pipeline(self.item_pipe);
@@ -608,7 +631,7 @@ impl EntityRenderer {
     }
 
     /// The instance of a model that isn't an entity kind's, painted with its own texture.
-    fn model_layer(&self, kind: u32, light: u32, hurt: f32) -> Option<Instance> {
+    fn model_layer(&self, kind: u32, light: u32, effect: (u32, f32)) -> Option<Instance> {
         let m = self.models.kinds.get(kind as usize)?;
         let skin = m.skin.as_ref()?;
         let (_, tex, size) = self.skins.get(skin)?.as_ref()?;
@@ -616,7 +639,8 @@ impl EntityRenderer {
         Some(Instance {
             color: [1.0; 3],
             light,
-            hurt,
+            effect: effect.0,
+            strength: effect.1,
             tex: *tex,
             tex_size: [size[0] as f32, size[1] as f32],
             roles: u32::MAX,
@@ -788,7 +812,7 @@ impl EntityRenderer {
 
     /// Model instances of `entity`, of `kind`: its skin (a player's own if they sent one) and what
     /// it wears (how many in `.1`).
-    fn layers(&self, kind: u32, entity: u64, worn: &[u32], light: u32, hurt: f32) -> ([Instance; MAX_LAYERS], usize) {
+    fn layers(&self, kind: u32, entity: u64, worn: &[u32], light: u32, effect: (u32, f32)) -> ([Instance; MAX_LAYERS], usize) {
         let c = content();
         let k = &c.game.entities[kind as usize];
         let mut out = ([Instance::default(); MAX_LAYERS], 0);
@@ -808,7 +832,8 @@ impl EntityRenderer {
         let base = Instance {
             color: [1.0; 3],
             light,
-            hurt,
+            effect: effect.0,
+            strength: effect.1,
             tex: *skin,
             tex_size: [size[0] as f32, size[1] as f32],
             roles: u32::MAX,
@@ -833,10 +858,20 @@ impl EntityRenderer {
         for &i in worn {
             if let Some((w, t)) = c.worn(i) {
                 if let Some(Some((_, idx, size))) = self.skins.get(t).filter(|_| out.1 < MAX_LAYERS) {
+                    let names = c.worn_bones(i);
+                    let bone_mask = self.models.kinds.get(kind as usize).map_or(0, |m| {
+                        m.parts
+                            .iter()
+                            .take(32)
+                            .enumerate()
+                            .filter(|(_, p)| names.iter().any(|n| n.eq_ignore_ascii_case(&p.name)))
+                            .fold(0u32, |mask, (b, _)| mask | 1 << b)
+                    });
                     out.0[out.1] = Instance {
                         tex: *idx,
                         tex_size: [size[0] as f32, size[1] as f32],
-                        roles: crate::model::role_mask(w.roles),
+                        roles: c.worn_roles(i),
+                        bone_mask,
                         inflate: w.inflate,
                         glow: glow(t),
                         ..base
@@ -918,7 +953,7 @@ impl EntityRenderer {
                 super::models::icon_done(stack, Some(icon));
                 continue;
             }
-            let Some(layer) = self.model_layer(kind, FULL_LIGHT, 0.0) else {
+            let Some(layer) = self.model_layer(kind, FULL_LIGHT, (0, 0.0)) else {
                 super::models::icon_done(stack, None);
                 continue;
             };
@@ -1008,7 +1043,7 @@ impl EntityRenderer {
             Vec4::new(0.0, 0.0, 0.1, 0.0),
             Vec4::new(2.0 * cx / sw - 1.0, 1.0 - 2.0 * feet / sh, 0.5, 1.0),
         );
-        let layers = self.layers(c.game.player_kind, self.local, worn, FULL_LIGHT, 0.0);
+        let layers = self.layers(c.game.player_kind, self.local, worn, FULL_LIGHT, (0, 0.0));
         self.models.begin();
         let root = Mat4::from_rotation_y(yaw) * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
         let kind = self
@@ -1032,7 +1067,7 @@ impl EntityRenderer {
         self.models
             .carried_by(kind, worn, |model, bone| on.push((model, bone)));
         for (model, bone) in on {
-            let Some(layer) = self.model_layer(model, FULL_LIGHT, 0.0) else { continue };
+            let Some(layer) = self.model_layer(model, FULL_LIGHT, (0, 0.0)) else { continue };
             let at = self.models.bone(first as usize + bone);
             let clips = self
                 .models
@@ -1134,42 +1169,15 @@ impl EntityRenderer {
                 }
             }
             let lit = shade(e.pos + DVec3::Y * 0.5);
-            // Below zero the model's shader flashes white instead of red.
-            let hurt = if e.flash > 0.0 { -1.0 } else { (e.hurt / 0.5).clamp(0.0, 1.0) };
+            // The effect a mod put on it, else the red of a recent hit; boxes only show the red.
+            let hurt = (e.hurt / 0.5).clamp(0.0, 1.0);
+            let effect = match e.effect {
+                Some((id, s, _)) => (self.effect_slots.get(id as usize).copied().unwrap_or(0), s),
+                None if hurt > 0.0 => (self.effect_slots[weft_abi::entity_effect::HURT as usize], hurt),
+                None => (0, 0.0),
+            };
             if !e.item.is_empty() {
-                // Made of bones: posed like anything else that is, its feet off the ground.
-                let bones = self
-                    .models
-                    .model_seen(e.item)
-                    .and_then(|k| Some((k, self.model_layer(k, lit, hurt)?)));
-                if let Some((kind, layer)) = bones {
-                    let m = &self.models.kinds[kind as usize];
-                    let mut clips = Clips::default();
-                    let how = Play { clock: e.age, looping: true, ..Play::default() };
-                    m.play(&mut clips, m.act(Act::Idle), &how);
-                    m.play(&mut clips, m.act(Act::Ground), &how);
-                    let (lo, hi) = m.bounds;
-                    let root = ground_spin(base, e.age)
-                        * Mat4::from_scale(Vec3::splat(0.5 / 16.0))
-                        * Mat4::from_translation(Vec3::new(-(lo.x + hi.x) / 2.0, -lo.y, -(lo.z + hi.z) / 2.0));
-                    let from = self.models.clips.len() as u32;
-                    self.models.clips.extend_from_slice(clips.all());
-                    let mut layers = [Instance::default(); MAX_LAYERS];
-                    layers[0] = layer;
-                    posed.push(Posed {
-                        id,
-                        kind,
-                        lod: PoseLod::Direct,
-                        root,
-                        pitch: 0.0,
-                        head_yaw: 0.0,
-                        clips: (from, self.models.clips.len() as u32),
-                        layers,
-                        layer_count: 1,
-                    });
-                } else if let Some(m) = self.item_model(textures, e.item.item) {
-                    instances.push((e.item.item, item_instance(ground_transform(base, e.age, e.item.item), m.0, hurt, lit)));
-                }
+                self.pose_ground_item(id, e, base, lit, effect, hurt, textures, &mut posed, &mut instances);
                 continue;
             }
             let look = e.look();
@@ -1179,27 +1187,28 @@ impl EntityRenderer {
             // Without it there is nothing for them to be attached to: they are held in the view.
             let body = own_view && hand.as_ref().is_some_and(|h| h.body);
             let in_view = own_view && !body;
-            let hurt = if own_view { 0.0 } else { hurt };
-            let (mut layers, mut layer_count) = self.layers(look, id, &e.worn, lit, hurt);
+            let effect = if own_view { (0, 0.0) } else { effect };
+            let (mut layers, mut layer_count) = self.layers(look, id, &e.worn, lit, effect);
             if layer_count == 0 {
                 continue;
             }
             if e.burning && !own_view {
-                let (hw, h, _) = e.dims();
+                let crate::physics::Dims { half_width: hw, height: h, .. } = e.dims();
                 let from = boxes.len();
                 fire_boxes(&mut boxes, textures, base, hw as f32 * 2.0, h as f32, cam.yaw, e.age);
                 light_boxes(&mut boxes, from, FULL_LIGHT);
             }
             // Lying down in its low box: head first where it looks when swimming (vanilla's
             // setupRotations), flat when crawling, turned around the middle of the body.
-            let lying = match e.pose {
-                crate::world::Pose::Swim => Some(e.pitch - std::f32::consts::FRAC_PI_2),
-                crate::world::Pose::Crawl => Some(-std::f32::consts::FRAC_PI_2),
+            let pose = e.pose.def();
+            let lying = match pose.tilt {
+                weft_abi::pose_tilt::ALONG_LOOK => Some(e.pitch - std::f32::consts::FRAC_PI_2),
+                weft_abi::pose_tilt::FACE_DOWN => Some(-std::f32::consts::FRAC_PI_2),
                 // On its back, the head toward its back's side.
-                crate::world::Pose::Sleep => Some(std::f32::consts::FRAC_PI_2),
+                weft_abi::pose_tilt::ON_BACK => Some(std::f32::consts::FRAC_PI_2),
                 _ => None,
             };
-            let sleeping = e.pose == crate::world::Pose::Sleep;
+            let sleeping = pose.tilt == weft_abi::pose_tilt::ON_BACK;
             let body_yaw = if sleeping { e.yaw } else { e.body_yaw };
             let swim = lying.map_or(Mat4::IDENTITY, |a| {
                 Mat4::from_translation(Vec3::new(0.0, 0.3, 0.0))
@@ -1216,10 +1225,9 @@ impl EntityRenderer {
             } else {
                 (e.pitch, e.yaw - e.body_yaw)
             };
-            let (mut clips, mut standing) = (Clips::default(), 0);
             // Far away a pose lasts a few frames, each entity at its own turn. Who is dying or was
             // just hit still shows it.
-            let every = if id == self.local || e.dying.is_some() || e.flash > 0.0 || e.hurt > 0.0 {
+            let every = if id == self.local || e.dying.is_some() || e.effect.is_some() || e.hurt > 0.0 {
                 1
             } else if far2 < 32.0 * 32.0 {
                 1
@@ -1237,109 +1245,11 @@ impl EntityRenderer {
             } else {
                 PoseLod::Fresh
             };
-            if let Some(m) = self
-                .models
-                .kinds
-                .get(kind as usize)
-                .filter(|_| lod != PoseLod::Kept)
-            {
-                let how = Play { clock: e.age, distance: e.walk * 0.6, speed: e.swing, ..Play::default() };
-                // Stands for what it says unless a mod swapped it for now, and has a clip for that.
-                let swapped = |item: u32, name: &'static str| -> &str {
-                    match e.swaps.iter().find(|s| s.0 == name) {
-                        Some(s) if !m.action_seen(item, &s.1, in_view).is_empty() => &s.1,
-                        _ => name,
-                    }
-                };
-                let act = |a: Act| if e.swaps.is_empty() { m.act(a) } else { m.action(0, swapped(0, a.name())) };
-                m.play(&mut clips, act(Act::Idle), &Play { looping: true, ..how });
-                if lying.is_none() {
-                    m.play(&mut clips, act(Act::Walk), &Play { drive: Drive::Distance, by_speed: true, ..how });
-                }
-                if e.crouched > 0.0 {
-                    m.play(&mut clips, act(Act::Sneak), &Play { looping: true, weight: e.crouched, ..how });
-                }
-                if !sleeping && lying.is_some() {
-                    let crawl = act(Act::Crawl);
-                    let limbs = if e.pose == crate::world::Pose::Crawl && !crawl.is_empty() { crawl } else { act(Act::Swim) };
-                    m.play(&mut clips, limbs, &Play { drive: Drive::Distance, ..how });
-                }
-                standing = clips.n;
-                // From the eyes it stays in view whatever the body does.
-                if lying.is_none() || (in_view && !sleeping) {
-                    // What it holds, and what it does with that. An item for both hands in the
-                    // other hand, or with something there, plays what it has for one.
-                    let hold_in = |item: u32, busy: bool| -> &str {
-                        let one =
-                            if busy && crate::content::two_handed(c, item) { crate::content::one_handed_action(c, item) } else { None };
-                        one.unwrap_or_else(|| swapped(item, hold_of(c, m, item)))
-                    };
-                    let held_how = Play { looping: true, aim: true, hand: true, ..how };
-                    if e.held != 0 {
-                        m.play(&mut clips, m.action_seen(e.held, hold_in(e.held, e.off_held != 0), in_view), &held_how);
-                    } else if in_view {
-                        m.play(&mut clips, m.action_seen(0, "hold_empty", true), &held_how);
-                    }
-                    if e.off_held != 0 {
-                        m.play(
-                            &mut clips,
-                            m.action_seen(e.off_held, hold_in(e.off_held, true), in_view),
-                            &Play { mirror: true, ..held_how },
-                        );
-                    }
-                    let progress = Play { drive: Drive::Progress, aim: in_view, hand: true, ..how };
-                    if let Some(h) = hand.as_ref().filter(|_| in_view) {
-                        m.play(
-                            &mut clips,
-                            m.action_seen(e.held, swapped(e.held, "equip"), true),
-                            &Play { progress: h.lowered, ..progress },
-                        );
-                    }
-                    if let Some(p) = e.arm_swing {
-                        let item = if e.swing_off { e.off_held } else { e.held };
-                        let swing = if item == 0 && !in_view {
-                            act(Act::Swing)
-                        } else {
-                            m.action_seen(item, swapped(item, m.swing_of(item)), in_view)
-                        };
-                        m.play(&mut clips, swing, &Play { progress: p, mirror: e.swing_off, ..progress });
-                    }
-                    if let Some((p, off)) = e.using {
-                        let item = if off { e.off_held } else { e.held };
-                        m.play(
-                            &mut clips,
-                            m.action_seen(item, swapped(item, "use"), in_view),
-                            &Play { progress: p, mirror: off, ..progress },
-                        );
-                    }
-                }
-                if let Some(d) = e.dying {
-                    m.play(&mut clips, act(Act::Death), &Play { clock: d, ..how });
-                }
-                if let Some((name, start, looping)) = &e.action {
-                    let secs = e.age - start;
-                    let list = m.action_seen(e.held, name, in_view);
-                    if list.is_empty() && !self.warned_actions.contains(&(kind, name.clone())) {
-                        log::warn!("no clip for action {name} on {}", c.game.entities[look as usize].name);
-                        self.warned_actions.insert((kind, name.clone()));
-                    }
-                    let running = list
-                        .last()
-                        .and_then(|&i| m.anims.get(i as usize))
-                        .is_some_and(|b| !b.finished(secs, *looping));
-                    if running {
-                        m.play(&mut clips, list, &Play { clock: secs, looping: *looping, aim: in_view, ..how });
-                    }
-                }
-                // Coming and going smoothly. Nearly all of a crowd has nothing here to look at.
-                if clips.n > standing || (!self.fades.is_empty() && self.fades.contains_key(&(id, kind))) {
-                    let fades = self.fades.entry((id, kind)).or_default();
-                    super::models::fade_clips(fades, m, &mut clips, standing, dt);
-                    if fades.is_empty() {
-                        self.fades.remove(&(id, kind));
-                    }
-                }
-            }
+            let (clips, standing) = if lod == PoseLod::Kept {
+                (Clips::default(), 0)
+            } else {
+                self.clips_of(id, e, kind, look, lying, in_view, hand.as_ref().filter(|_| in_view).map(|h| h.lowered), dt)
+            };
             if own_view {
                 // Its model goes where the camera is: the camera doesn't sit in the torso, whatever pose it's in.
                 let eye = c.game.entities[look as usize].eye;
@@ -1360,47 +1270,7 @@ impl EntityRenderer {
                             * Mat4::from_translation(-p);
                         (posed.len(), view_root)
                     });
-                let acting = &clips.all()[standing..];
-                let mut arms_up = 0u32;
-                let mut kick = (Vec3::ZERO, 0.0, 0.0);
-                let mut head_moves = false;
-                if let Some(m) = self.models.kinds.get(kind as usize) {
-                    let names = |i: usize| {
-                        acting.iter().any(|c| {
-                            m.anims
-                                .get(c.anim as usize)
-                                .is_some_and(|b| b.names(i, c.mirror))
-                        })
-                    };
-                    for (i, p) in m.parts.iter().enumerate() {
-                        if in_view && (p.role == role::ARM_LEFT || p.role == role::ARM_RIGHT) && names(i) {
-                            arms_up |= 1 << p.role;
-                        }
-                    }
-                    for c in acting {
-                        let Some((pos, rot)) = m
-                            .anims
-                            .get(c.anim as usize)
-                            .and_then(|b| b.anim.free_bone("camera", c.t))
-                        else {
-                            continue;
-                        };
-                        kick.0 -= steady.transform_vector3(root.transform_vector3(pos * c.w));
-                        kick.1 -= rot.z * c.w;
-                        kick.2 -= rot.x * c.w;
-                    }
-                    head_moves = m
-                        .parts
-                        .iter()
-                        .position(|p| p.role == role::HEAD)
-                        .is_some_and(names);
-                }
-                if head_moves {
-                    // The pose has its eyes at the camera; what the action does on top of it, the camera does too.
-                    if let Some(at) = self.models.eye_point(kind, root, clips.all(), eye) {
-                        kick.0 -= steady.transform_vector3(at);
-                    }
-                }
+                let (arms_up, kick) = self.view_motion(kind, root, &clips, standing, in_view, steady, eye);
                 self.camera_kick = kick;
                 own_hand = in_view.then_some((posed.len(), layers, layer_count, arms_up));
                 for l in &mut layers[..layer_count] {
@@ -1440,12 +1310,376 @@ impl EntityRenderer {
             }
         }
         let vb = scene_buf;
+        let own_index = own_hand.as_ref().map(|o| o.0);
+        let (firsts, own_first) = self.pose_bones(&posed, aim_root, own_index, hand.as_ref(), steady, dt, moved);
+        let (hand_items, own_items) = self.place_carried(&posed, &firsts, carried, own_index, textures, &mut instances, dt, moved);
+        self.models.end_located(cam.pos);
+        if self.models.frame_number() % 256 == 0 {
+            let alive = |id: &u64| *id == self.local || entities.contains_key(id);
+            self.fades.retain(|id, _| alive(&id.0));
+            let local = self.local;
+            self.models
+                .retain_kept(|id| id == local || entities.contains_key(&id));
+        }
+        self.posed = posed;
+        self.models
+            .draw(gpu, list, frame, super::models::Batch::World, self.model_pipe, vb);
+
+        if let Some((hit, at)) = target {
+            outline_boxes(&mut boxes, &c.states[hit.state as usize].selection, rel(hit.block.as_dvec3() + at));
+        }
+        gizmo_line_boxes(&mut boxes, gizmo_lines, cam.pos);
+        let overlay_start = boxes.len();
+        gizmo_fill_boxes(&mut boxes, gizmo_fills, cam.pos);
+        crack_boxes(&mut boxes, breaking, textures, cam.pos, light);
+        // Item instances after the rest, grouped by item: one instanced draw each.
+        let overlay_end = boxes.len();
+        instances.sort_unstable_by_key(|i| i.0);
+        boxes.extend(instances.iter().map(|i| i.1));
+        boxes.extend(hand_items.iter().map(|h| h.0));
+        // The buffer for them may not be empty, and arms alone have no boxes.
+        if boxes.is_empty() {
+            boxes.push(GpuBox::default());
+        }
+        if !instances.is_empty() || !hand_items.is_empty() {
+            self.upload_items(gpu);
+        }
+
+        let buf =
+            crate::gpu_layout::frame_buffer(gpu, &mut self.buffers, frame.slot, boxes.len() as u32, 128, usage::STORAGE, "entity boxes");
+        gpu.mapped(buf)[..boxes.len() * 128].copy_from_slice(bytemuck::cast_slice(&boxes));
+        let glow = textures.glow_buffer();
+
+        if overlay_start > 0 {
+            list.pipeline(self.pipeline);
+            list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
+            list.bind(crate::gpu_layout::bind::entity::SCENE, vb);
+            list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
+            list.draw(overlay_start as u32 * 36, 1);
+        }
+        let item_buf = self.item_buf.map(|b| b.0);
+        if let (Some(ib), false) = (item_buf, instances.is_empty()) {
+            list.pipeline(self.item_pipe);
+            list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
+            list.bind(crate::gpu_layout::bind::entity::SCENE, vb);
+            list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
+            list.bind(crate::gpu_layout::bind::entity::ITEM_BOXES, ib);
+            self.draw_item_runs(list, &instances, overlay_end);
+        }
+        // Cracks, filled gizmos and the own hands come after translucent blocks.
+        let list = late;
+        if overlay_end > overlay_start {
+            list.pipeline(self.overlay);
+            list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
+            list.bind(crate::gpu_layout::bind::entity::SCENE, vb);
+            list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
+            list.push(Cmd::Draw {
+                vertices: (overlay_end - overlay_start) as u32 * 36,
+                instances: 1,
+                first_vertex: overlay_start as u32 * 36,
+                first_instance: 0,
+            });
+        }
+        if let Some(own) = own_hand {
+            self.draw_own_hand(gpu, list, frame, cam, scene, own, own_first, own_items, &hand_items, boxes.len(), buf, glow);
+        }
+        self.instances = instances;
+    }
+
+    /// A dropped item at `base`: a model of bones posed with its feet off the ground, or the
+    /// item's boxes spinning.
+    #[allow(clippy::too_many_arguments)]
+    fn pose_ground_item(
+        &mut self,
+        id: u64,
+        e: &ClientEntity,
+        base: Vec3,
+        lit: u32,
+        effect: (u32, f32),
+        hurt: f32,
+        textures: &GameTextures,
+        posed: &mut Vec<Posed>,
+        instances: &mut Vec<(u32, GpuBox)>,
+    ) {
+        // Made of bones: posed like anything else that is, its feet off the ground.
+        let bones = self
+            .models
+            .model_seen(e.item)
+            .and_then(|k| Some((k, self.model_layer(k, lit, effect)?)));
+        if let Some((kind, layer)) = bones {
+            let m = &self.models.kinds[kind as usize];
+            let mut clips = Clips::default();
+            let how = Play { clock: e.age, looping: true, ..Play::default() };
+            m.play(&mut clips, m.act(Act::Idle), &how);
+            m.play(&mut clips, m.act(Act::Ground), &how);
+            let (lo, hi) = m.bounds;
+            let root = ground_spin(base, e.age)
+                * Mat4::from_scale(Vec3::splat(0.5 / 16.0))
+                * Mat4::from_translation(Vec3::new(-(lo.x + hi.x) / 2.0, -lo.y, -(lo.z + hi.z) / 2.0));
+            let from = self.models.clips.len() as u32;
+            self.models.clips.extend_from_slice(clips.all());
+            let mut layers = [Instance::default(); MAX_LAYERS];
+            layers[0] = layer;
+            posed.push(Posed {
+                id,
+                kind,
+                lod: PoseLod::Direct,
+                root,
+                pitch: 0.0,
+                head_yaw: 0.0,
+                clips: (from, self.models.clips.len() as u32),
+                layers,
+                layer_count: 1,
+            });
+        } else if let Some(m) = self.item_model(textures, e.item.item) {
+            instances.push((e.item.item, item_instance(ground_transform(base, e.age, e.item.item), m.0, hurt, lit)));
+        }
+    }
+
+    /// One instanced draw per run of the same item in `instances` (sorted), their boxes from
+    /// `first` on.
+    fn draw_item_runs(&self, list: &mut CommandList, instances: &[(u32, GpuBox)], first: usize) {
+        let mut i = 0;
+        while i < instances.len() {
+            let item = instances[i].0;
+            let run = instances[i..].iter().take_while(|x| x.0 == item).count();
+            let boxes_per = self.item_models.get(&item).map_or(0, |m| m.1);
+            list.push(Cmd::Draw { vertices: boxes_per * 36, instances: run as u32, first_vertex: 0, first_instance: (first + i) as u32 });
+            i += run;
+        }
+    }
+
+    /// The first person's arms and what they hold, in a pass of their own with vanilla's fixed
+    /// 70 degree view; `boxes` holds the held items' instances at its end.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_own_hand(
+        &mut self,
+        gpu: &mut dyn Backend,
+        list: &mut CommandList,
+        frame: &FrameInfo,
+        cam: &Camera,
+        scene: &Scene,
+        (i, own, count, arms_up): (usize, [Instance; MAX_LAYERS], usize, u32),
+        own_first: usize,
+        own_items: Vec<(u32, u32, Instance)>,
+        hand_items: &[(GpuBox, u32)],
+        boxes: usize,
+        buf: BufferId,
+        glow: BufferId,
+    ) {
+        let aspect = frame.width as f32 / frame.height.max(1) as f32;
+        let item_buf = self.item_buf.map(|b| b.0);
+        let hand_cam = Camera { fov: 70.0, ..*cam };
+        let hv = Scene { view_proj: (hand_cam.proj(aspect) * cam.view()).to_cols_array_2d(), ..*scene };
+        let hb = self.hand_views[frame.slot];
+        gpu.mapped(hb)[..size_of::<Scene>()].copy_from_slice(bytemuck::bytes_of(&hv));
+        self.models.begin_batch();
+        let kind = self.posed[i].kind;
+        let arms = own[..count].iter().copied().map(|mut l| {
+            l.roles &= arms_up;
+            l
+        });
+        self.models.queue(kind, own_first as u32, arms);
+        for (kind, first, l) in own_items {
+            self.models.queue(kind, first, [l]);
+        }
+        self.models
+            .draw(gpu, list, frame, super::models::Batch::Hand, self.model_hand_pipe, hb);
+        if let Some(ib) = item_buf.filter(|_| !hand_items.is_empty()) {
+            list.pipeline(self.hand_item_pipe);
+            list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
+            list.bind(crate::gpu_layout::bind::entity::SCENE, hb);
+            list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
+            list.bind(crate::gpu_layout::bind::entity::ITEM_BOXES, ib);
+            let first = boxes - hand_items.len();
+            for (k, (_, n)) in hand_items.iter().enumerate() {
+                list.push(Cmd::Draw { vertices: n * 36, instances: 1, first_vertex: 0, first_instance: (first + k) as u32 });
+            }
+        }
+    }
+
+    /// What entity `id` (of model `kind`, looking like `look`) plays this frame: its clips, and
+    /// how many of them come first as its standing pose (what the eyes follow; actions after).
+    /// `lying`: how far its pose tilts it; `lowered`: the first person's hand, when held in view.
+    #[allow(clippy::too_many_arguments)]
+    fn clips_of(
+        &mut self,
+        id: u64,
+        e: &ClientEntity,
+        kind: u32,
+        look: u32,
+        lying: Option<f32>,
+        in_view: bool,
+        lowered: Option<f32>,
+        dt: f32,
+    ) -> (Clips, usize) {
+        let c = content();
+        let pose = e.pose.def();
+        let sleeping = pose.tilt == weft_abi::pose_tilt::ON_BACK;
+        let (mut clips, mut standing) = (Clips::default(), 0);
+        let Some(m) = self.models.kinds.get(kind as usize) else { return (clips, standing) };
+        let how = Play { clock: e.age, distance: e.walk * 0.6, speed: e.swing, ..Play::default() };
+        // Stands for what it says unless a mod swapped it for now, and has a clip for that.
+        let swapped = |item: u32, name: &'static str| -> &str {
+            match e.swaps.iter().find(|s| s.0 == name) {
+                Some(s) if !m.action_seen(item, &s.1, in_view).is_empty() => &s.1,
+                _ => name,
+            }
+        };
+        let act = |a: Act| if e.swaps.is_empty() { m.act(a) } else { m.action(0, swapped(0, a.name())) };
+        m.play(&mut clips, act(Act::Idle), &Play { looping: true, ..how });
+        if lying.is_none() {
+            m.play(&mut clips, act(Act::Walk), &Play { drive: Drive::Distance, by_speed: true, ..how });
+        }
+        if e.crouched > 0.0 {
+            m.play(&mut clips, act(Act::Sneak), &Play { looping: true, weight: e.crouched, ..how });
+        }
+        // Lying, its pose's own clip; one the model hasn't got swims.
+        if !sleeping && lying.is_some() {
+            let own = m.action(0, &pose.action);
+            let limbs = if own.is_empty() { act(Act::Swim) } else { own };
+            m.play(&mut clips, limbs, &Play { drive: Drive::Distance, ..how });
+        } else if lying.is_none() && !pose.action.is_empty() && e.pose != crate::world::Pose::CROUCH {
+            m.play(&mut clips, m.action(0, &pose.action), &Play { looping: true, ..how });
+        }
+        standing = clips.n;
+        // From the eyes it stays in view whatever the body does.
+        if lying.is_none() || (in_view && !sleeping) {
+            // What it holds, and what it does with that. An item for both hands in the
+            // other hand, or with something there, plays what it has for one.
+            let hold_in = |item: u32, busy: bool| -> &str {
+                let one = if busy && crate::content::two_handed(c, item) { crate::content::one_handed_action(c, item) } else { None };
+                one.unwrap_or_else(|| swapped(item, hold_of(c, m, item)))
+            };
+            let held_how = Play { looping: true, aim: true, hand: true, ..how };
+            if e.held != 0 {
+                m.play(&mut clips, m.action_seen(e.held, hold_in(e.held, e.off_held != 0), in_view), &held_how);
+            } else if in_view {
+                m.play(&mut clips, m.action_seen(0, "hold_empty", true), &held_how);
+            }
+            if e.off_held != 0 {
+                m.play(&mut clips, m.action_seen(e.off_held, hold_in(e.off_held, true), in_view), &Play { mirror: true, ..held_how });
+            }
+            let progress = Play { drive: Drive::Progress, aim: in_view, hand: true, ..how };
+            if let Some(lowered) = lowered {
+                m.play(&mut clips, m.action_seen(e.held, swapped(e.held, "equip"), true), &Play { progress: lowered, ..progress });
+            }
+            if let Some(p) = e.arm_swing {
+                let item = if e.swing_off { e.off_held } else { e.held };
+                let swing =
+                    if item == 0 && !in_view { act(Act::Swing) } else { m.action_seen(item, swapped(item, m.swing_of(item)), in_view) };
+                m.play(&mut clips, swing, &Play { progress: p, mirror: e.swing_off, ..progress });
+            }
+            if let Some((p, off)) = e.using {
+                let item = if off { e.off_held } else { e.held };
+                m.play(&mut clips, m.action_seen(item, swapped(item, "use"), in_view), &Play { progress: p, mirror: off, ..progress });
+            }
+        }
+        if let Some(d) = e.dying {
+            m.play(&mut clips, act(Act::Death), &Play { clock: d, ..how });
+        }
+        if let Some((name, start, looping)) = &e.action {
+            let secs = e.age - start;
+            let list = m.action_seen(e.held, name, in_view);
+            if list.is_empty() && !self.warned_actions.contains(&(kind, name.clone())) {
+                log::warn!("no clip for action {name} on {}", c.game.entities[look as usize].name);
+                self.warned_actions.insert((kind, name.clone()));
+            }
+            let running = list
+                .last()
+                .and_then(|&i| m.anims.get(i as usize))
+                .is_some_and(|b| !b.finished(secs, *looping));
+            if running {
+                m.play(&mut clips, list, &Play { clock: secs, looping: *looping, aim: in_view, ..how });
+            }
+        }
+        // Coming and going smoothly. Nearly all of a crowd has nothing here to look at.
+        if clips.n > standing || (!self.fades.is_empty() && self.fades.contains_key(&(id, kind))) {
+            let fades = self.fades.entry((id, kind)).or_default();
+            super::models::fade_clips(fades, m, &mut clips, standing, dt);
+            if fades.is_empty() {
+                self.fades.remove(&(id, kind));
+            }
+        }
+        (clips, standing)
+    }
+
+    /// What the first person's actions (`clips` after its `standing` ones) do: which arms they
+    /// bring into view, and how they move the camera (a bone named `camera`, and the head).
+    #[allow(clippy::too_many_arguments)]
+    fn view_motion(
+        &mut self,
+        kind: u32,
+        root: Mat4,
+        clips: &Clips,
+        standing: usize,
+        in_view: bool,
+        steady: Mat4,
+        eye: f32,
+    ) -> (u32, (Vec3, f32, f32)) {
+        let acting = &clips.all()[standing..];
+        let mut arms_up = 0u32;
+        let mut kick = (Vec3::ZERO, 0.0, 0.0);
+        let mut head_moves = false;
+        if let Some(m) = self.models.kinds.get(kind as usize) {
+            let names = |i: usize| {
+                acting.iter().any(|c| {
+                    m.anims
+                        .get(c.anim as usize)
+                        .is_some_and(|b| b.names(i, c.mirror))
+                })
+            };
+            for (i, p) in m.parts.iter().enumerate() {
+                if in_view && (p.role == role::ARM_LEFT || p.role == role::ARM_RIGHT) && names(i) {
+                    arms_up |= 1 << p.role;
+                }
+            }
+            for c in acting {
+                let Some((pos, rot)) = m
+                    .anims
+                    .get(c.anim as usize)
+                    .and_then(|b| b.anim.free_bone("camera", c.t))
+                else {
+                    continue;
+                };
+                kick.0 -= steady.transform_vector3(root.transform_vector3(pos * c.w));
+                kick.1 -= rot.z * c.w;
+                kick.2 -= rot.x * c.w;
+            }
+            head_moves = m
+                .parts
+                .iter()
+                .position(|p| p.role == role::HEAD)
+                .is_some_and(names);
+        }
+        if head_moves {
+            // The pose has its eyes at the camera; what the action does on top of it, the camera does too.
+            if let Some(at) = self.models.eye_point(kind, root, clips.all(), eye) {
+                kick.0 -= steady.transform_vector3(at);
+            }
+        }
+        (arms_up, kick)
+    }
+
+    /// Poses the bones of `posed`; returns where each one's start and where the first person's
+    /// do (0 without one), whose arms lag behind a turning camera.
+    #[allow(clippy::too_many_arguments)]
+    fn pose_bones(
+        &mut self,
+        posed: &[Posed],
+        aim_root: Option<(usize, Mat4)>,
+        own_hand: Option<usize>,
+        hand: Option<&Hand>,
+        steady: Mat4,
+        dt: f32,
+        moved: Vec3,
+    ) -> (Vec<usize>, usize) {
         let first_bone = self.models.bones_so_far();
-        self.models.add_many(&posed, aim_root);
+        self.models.add_many(posed, aim_root);
         // Where each one's bones start.
         let mut firsts = Vec::with_capacity(posed.len());
         let mut at = first_bone;
-        for p in &posed {
+        for p in posed {
             firsts.push(at);
             at += self
                 .models
@@ -1455,13 +1689,13 @@ impl EntityRenderer {
         }
         // The first person's arms lag behind a turning camera. Its bones are the last ones.
         let mut own_first = 0;
-        if let (Some((i, ..)), Some(h)) = (&own_hand, &hand) {
+        if let (Some(i), Some(h)) = (own_hand, hand) {
             let parts = self
                 .models
                 .kinds
-                .get(posed[*i].kind as usize)
+                .get(posed[i].kind as usize)
                 .map_or(&[][..], |m| m.parts.as_slice());
-            own_first = firsts[*i];
+            own_first = firsts[i];
             let arms: Vec<usize> = parts
                 .iter()
                 .enumerate()
@@ -1469,7 +1703,7 @@ impl EntityRenderer {
                 .map(|(i, _)| i)
                 .collect();
             let lag = steady.inverse() * Mat4::from_rotation_x(-h.lag.0 * 0.1) * Mat4::from_rotation_y(-h.lag.1 * 0.1) * steady;
-            let kind = posed[*i].kind;
+            let kind = posed[i].kind;
             for a in arms {
                 self.models.move_subtree(kind, own_first, a, lag);
             }
@@ -1479,6 +1713,24 @@ impl EntityRenderer {
             self.models.located_at(p.id, p.kind, at);
             self.models.move_live(p.id, p.kind, 0, at, dt, moved);
         }
+        (firsts, own_first)
+    }
+
+    /// Places what posed entities hold and have on: items in the hand as instances (`instances`,
+    /// the first person's apart), models posed by the holder's clips. Returns the first person's
+    /// held items and models.
+    #[allow(clippy::too_many_arguments)]
+    fn place_carried(
+        &mut self,
+        posed: &[Posed],
+        firsts: &[usize],
+        carried: Vec<Carry>,
+        own_holder: Option<usize>,
+        textures: &GameTextures,
+        instances: &mut Vec<(u32, GpuBox)>,
+        dt: f32,
+        moved: Vec3,
+    ) -> (Vec<(GpuBox, u32)>, Vec<(u32, u32, Instance)>) {
         let mut hand_items: Vec<(GpuBox, u32)> = Vec::new();
         let mut own_items: Vec<(u32, u32, Instance)> = Vec::new();
         for Carry { holder, what, lit, age, id } in carried {
@@ -1489,7 +1741,7 @@ impl EntityRenderer {
                 .get(posed[holder].kind as usize)
                 .map(|m| m.parts.as_slice())
                 .unwrap_or_default();
-            let own = own_hand.as_ref().is_some_and(|o| o.0 == holder);
+            let own = own_holder == Some(holder);
             let (model, root, off, slot) = match what {
                 Carrying::On { model, bone } => (Some(model), self.models.bone(at + bone), false, model + 2),
                 Carrying::Held { item, model, off } => {
@@ -1533,7 +1785,7 @@ impl EntityRenderer {
             self.models.located_at(id, kind, bones as usize);
             self.models
                 .move_live(id, kind, slot, bones as usize, dt, moved);
-            if let Some(l) = self.model_layer(kind, lit, 0.0) {
+            if let Some(l) = self.model_layer(kind, lit, (0, 0.0)) {
                 if own {
                     own_items.push((kind, bones, l));
                 } else {
@@ -1541,200 +1793,97 @@ impl EntityRenderer {
                 }
             }
         }
-        self.models.end_located(cam.pos);
-        if self.models.frame_number() % 256 == 0 {
-            let alive = |id: &u64| *id == self.local || entities.contains_key(id);
-            self.fades.retain(|id, _| alive(&id.0));
-            let local = self.local;
-            self.models
-                .retain_kept(|id| id == local || entities.contains_key(&id));
-        }
-        self.posed = posed;
-        self.models
-            .draw(gpu, list, frame, super::models::Batch::World, self.model_pipe, vb);
+        (hand_items, own_items)
+    }
+}
 
-        // Selection outline: twelve thin dark boxes along the edges of each selection box.
-        let outlined = target.map(|(hit, at)| (&c.states[hit.state as usize].selection, rel(hit.block.as_dvec3() + at)));
-        for (sel, o) in outlined
-            .iter()
-            .flat_map(|(sel, o)| sel.iter().map(move |s| (s, *o)))
-        {
-            let (mn, mx) = (Vec3::new(sel[0], sel[1], sel[2]), Vec3::new(sel[3], sel[4], sel[5]));
-            let t = 0.006;
-            let (a, b) = (o + mn - Vec3::splat(t), o + mx + Vec3::splat(t));
-            for axis in 0..3 {
-                for corner in 0..4 {
-                    let mut lo = a;
-                    let mut size = Vec3::splat(t * 2.0);
-                    size[axis] = b[axis] - a[axis];
-                    let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
-                    lo[u] = if corner & 1 == 0 { a[u] } else { b[u] - t * 2.0 };
-                    lo[v] = if corner & 2 == 0 { a[v] } else { b[v] - t * 2.0 };
-                    let m = Mat4::from_translation(lo) * Mat4::from_scale(size);
-                    boxes.push(GpuBox {
-                        rows: rows(m),
-                        color: [0.02, 0.02, 0.02, 0.0],
-                        ids: [0, box_mode::SOLID, 0, 0],
-                        ..Default::default()
-                    });
-                }
+/// The selection outline at `o`: twelve thin dark boxes along the edges of each selection box.
+fn outline_boxes(out: &mut Vec<GpuBox>, selection: &[[f32; 6]], o: Vec3) {
+    for sel in selection {
+        let (mn, mx) = (Vec3::new(sel[0], sel[1], sel[2]), Vec3::new(sel[3], sel[4], sel[5]));
+        let t = 0.006;
+        let (a, b) = (o + mn - Vec3::splat(t), o + mx + Vec3::splat(t));
+        for axis in 0..3 {
+            for corner in 0..4 {
+                let mut lo = a;
+                let mut size = Vec3::splat(t * 2.0);
+                size[axis] = b[axis] - a[axis];
+                let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+                lo[u] = if corner & 1 == 0 { a[u] } else { b[u] - t * 2.0 };
+                lo[v] = if corner & 2 == 0 { a[v] } else { b[v] - t * 2.0 };
+                let m = Mat4::from_translation(lo) * Mat4::from_scale(size);
+                out.push(GpuBox { rows: rows(m), color: [0.02, 0.02, 0.02, 0.0], ids: [0, box_mode::SOLID, 0, 0], ..Default::default() });
             }
         }
-        // Gizmo lines: thin boxes like the outline, a little thicker so they read from afar.
-        for &(a, b, color) in gizmo_lines {
-            let (a, b) = (rel(a), rel(b));
-            let d = b - a;
-            let len = d.length();
-            if len < 1e-4 || a.length_squared().min(b.length_squared()) > 160.0 * 160.0 {
-                continue;
-            }
-            let t = 0.012 + 0.0012 * a.length().min(b.length());
-            let rot = Quat::from_rotation_arc(Vec3::X, d / len);
-            let m = Mat4::from_rotation_translation(rot, a)
-                * Mat4::from_translation(Vec3::new(0.0, -t / 2.0, -t / 2.0))
-                * Mat4::from_scale(Vec3::new(len, t, t));
-            let rgb = |s: u32| ((color >> s) & 255) as f32 / 255.0;
-            boxes.push(GpuBox {
+    }
+}
+
+/// Gizmo lines: thin boxes like the outline, a little thicker so they read from afar.
+fn gizmo_line_boxes(out: &mut Vec<GpuBox>, lines: &[super::gizmo::Line], cam: DVec3) {
+    for &(a, b, color) in lines {
+        let (a, b) = ((a - cam).as_vec3(), (b - cam).as_vec3());
+        let d = b - a;
+        let len = d.length();
+        if len < 1e-4 || a.length_squared().min(b.length_squared()) > 160.0 * 160.0 {
+            continue;
+        }
+        let t = 0.012 + 0.0012 * a.length().min(b.length());
+        let rot = Quat::from_rotation_arc(Vec3::X, d / len);
+        let m = Mat4::from_rotation_translation(rot, a)
+            * Mat4::from_translation(Vec3::new(0.0, -t / 2.0, -t / 2.0))
+            * Mat4::from_scale(Vec3::new(len, t, t));
+        let rgb = |s: u32| ((color >> s) & 255) as f32 / 255.0;
+        out.push(GpuBox { rows: rows(m), color: [rgb(24), rgb(16), rgb(8), 0.0], ids: [0, box_mode::SOLID, 0, 0], ..Default::default() });
+    }
+}
+
+/// Filled gizmo boxes: see-through by their own alpha (mode 5), slightly grown so they do not
+/// fight with the faces of the blocks they cover.
+fn gizmo_fill_boxes(out: &mut Vec<GpuBox>, fills: &[super::gizmo::Fill], cam: DVec3) {
+    for &(a, b, color) in fills {
+        let (a, b) = ((a - cam).as_vec3() - Vec3::splat(0.002), (b - cam).as_vec3() + Vec3::splat(0.002));
+        if a.length_squared().min(b.length_squared()) > 160.0 * 160.0 {
+            continue;
+        }
+        let m = Mat4::from_translation(a) * Mat4::from_scale(b - a);
+        let ch = |s: u32| ((color >> s) & 255) as f32 / 255.0;
+        out.push(GpuBox {
+            rows: rows(m),
+            color: [ch(24), ch(16), ch(8), 0.0],
+            ids: [0, box_mode::FILLED, ch(0).to_bits(), 0],
+            ..Default::default()
+        });
+    }
+}
+
+/// Break progress over the faces of the block's model (a ladder's board, not its whole cube),
+/// textured like the block's own faces there.
+fn crack_boxes(out: &mut Vec<GpuBox>, breaking: &[Crack], textures: &GameTextures, cam: DVec3, light: &impl Fn(IVec3) -> u32) {
+    let c = content();
+    for &Crack { pos: p, progress, at, state } in breaking {
+        if progress <= 0.0 {
+            continue;
+        }
+        let stage = ((progress * 10.0) as usize).min(9);
+        let l = textures.texture(c.crack_textures[stage]);
+        let lit = light((p.as_dvec3() + at + DVec3::splat(0.5)).floor().as_ivec3());
+        let shape = c
+            .states
+            .get(state as usize)
+            .map_or(&[][..], |s| &s.selection[..]);
+        for b in shape {
+            let (mn, mx) = (Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5]));
+            let (a, b) = (mn - Vec3::splat(0.004), mx + Vec3::splat(0.004));
+            let m = Mat4::from_translation((p.as_dvec3() + at - cam).as_vec3() + a) * Mat4::from_scale(b - a);
+            out.push(GpuBox {
                 rows: rows(m),
-                color: [rgb(24), rgb(16), rgb(8), 0.0],
-                ids: [0, box_mode::SOLID, 0, 0],
-                ..Default::default()
+                dims: mn.extend(1.0).to_array(),
+                uvo: mx.extend(0.0).to_array(),
+                color: [1.0, 1.0, 1.0, 0.0],
+                ids: [0, box_mode::FACES, l | l << 16, l | l << 16],
+                ids2: [l | l << 16, lit, 0, 0],
             });
         }
-
-        let overlay_start = boxes.len();
-        // Filled gizmo boxes: see-through by their own alpha (mode 5), slightly grown so they do
-        // not fight with the faces of the blocks they cover.
-        for &(a, b, color) in gizmo_fills {
-            let (a, b) = (rel(a) - Vec3::splat(0.002), rel(b) + Vec3::splat(0.002));
-            if a.length_squared().min(b.length_squared()) > 160.0 * 160.0 {
-                continue;
-            }
-            let m = Mat4::from_translation(a) * Mat4::from_scale(b - a);
-            let ch = |s: u32| ((color >> s) & 255) as f32 / 255.0;
-            boxes.push(GpuBox {
-                rows: rows(m),
-                color: [ch(24), ch(16), ch(8), 0.0],
-                ids: [0, box_mode::FILLED, ch(0).to_bits(), 0],
-                ..Default::default()
-            });
-        }
-        for &Crack { pos: p, progress, at, state } in breaking {
-            if progress > 0.0 {
-                // Over the faces of the block's model (a ladder's board, not its whole cube),
-                // textured like the block's own faces there.
-                let stage = ((progress * 10.0) as usize).min(9);
-                let l = textures.texture(c.crack_textures[stage]);
-                let lit = shade(p.as_dvec3() + at + DVec3::splat(0.5));
-                let shape = c
-                    .states
-                    .get(state as usize)
-                    .map_or(&[][..], |s| &s.selection[..]);
-                for b in shape {
-                    let (mn, mx) = (Vec3::new(b[0], b[1], b[2]), Vec3::new(b[3], b[4], b[5]));
-                    let (a, b) = (mn - Vec3::splat(0.004), mx + Vec3::splat(0.004));
-                    let m = Mat4::from_translation(rel(p.as_dvec3() + at) + a) * Mat4::from_scale(b - a);
-                    boxes.push(GpuBox {
-                        rows: rows(m),
-                        dims: mn.extend(1.0).to_array(),
-                        uvo: mx.extend(0.0).to_array(),
-                        color: [1.0, 1.0, 1.0, 0.0],
-                        ids: [0, box_mode::FACES, l | l << 16, l | l << 16],
-                        ids2: [l | l << 16, lit, 0, 0],
-                    });
-                }
-            }
-        }
-        // Item instances after the rest, grouped by item: one instanced draw each.
-        let overlay_end = boxes.len();
-        instances.sort_unstable_by_key(|i| i.0);
-        boxes.extend(instances.iter().map(|i| i.1));
-        boxes.extend(hand_items.iter().map(|h| h.0));
-        // The buffer for them may not be empty, and arms alone have no boxes.
-        if boxes.is_empty() {
-            boxes.push(GpuBox::default());
-        }
-        if !instances.is_empty() || !hand_items.is_empty() {
-            self.upload_items(gpu);
-        }
-
-        let buf =
-            crate::gpu_layout::frame_buffer(gpu, &mut self.buffers, frame.slot, boxes.len() as u32, 128, usage::STORAGE, "entity boxes");
-        gpu.mapped(buf)[..boxes.len() * 128].copy_from_slice(bytemuck::cast_slice(&boxes));
-        let glow = textures.glow_buffer();
-
-        if overlay_start > 0 {
-            list.pipeline(self.pipeline);
-            list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
-            list.bind(crate::gpu_layout::bind::entity::SCENE, vb);
-            list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
-            list.draw(overlay_start as u32 * 36, 1);
-        }
-        let item_buf = self.item_buf.map(|b| b.0);
-        if let (Some(ib), false) = (item_buf, instances.is_empty()) {
-            list.pipeline(self.item_pipe);
-            list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
-            list.bind(crate::gpu_layout::bind::entity::SCENE, vb);
-            list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
-            list.bind(crate::gpu_layout::bind::entity::ITEM_BOXES, ib);
-            let mut i = 0;
-            while i < instances.len() {
-                let item = instances[i].0;
-                let run = instances[i..].iter().take_while(|x| x.0 == item).count();
-                let boxes_per = self.item_models.get(&item).map_or(0, |m| m.1);
-                list.push(Cmd::Draw {
-                    vertices: boxes_per * 36,
-                    instances: run as u32,
-                    first_vertex: 0,
-                    first_instance: (overlay_end + i) as u32,
-                });
-                i += run;
-            }
-        }
-        // Cracks, filled gizmos and the own hands come after translucent blocks.
-        let list = late;
-        if overlay_end > overlay_start {
-            list.pipeline(self.overlay);
-            list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
-            list.bind(crate::gpu_layout::bind::entity::SCENE, vb);
-            list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
-            list.push(Cmd::Draw {
-                vertices: (overlay_end - overlay_start) as u32 * 36,
-                instances: 1,
-                first_vertex: overlay_start as u32 * 36,
-                first_instance: 0,
-            });
-        }
-        if let Some((i, own, count, arms_up)) = own_hand {
-            let hand_cam = Camera { fov: 70.0, ..*cam };
-            let hv = Scene { view_proj: (hand_cam.proj(aspect) * cam.view()).to_cols_array_2d(), ..*scene };
-            let hb = self.hand_views[frame.slot];
-            gpu.mapped(hb)[..size_of::<Scene>()].copy_from_slice(bytemuck::bytes_of(&hv));
-            self.models.begin_batch();
-            let kind = self.posed[i].kind;
-            let arms = own[..count].iter().copied().map(|mut l| {
-                l.roles &= arms_up;
-                l
-            });
-            self.models.queue(kind, own_first as u32, arms);
-            for (kind, first, l) in own_items {
-                self.models.queue(kind, first, [l]);
-            }
-            self.models
-                .draw(gpu, list, frame, super::models::Batch::Hand, self.model_hand_pipe, hb);
-            if let Some(ib) = item_buf.filter(|_| !hand_items.is_empty()) {
-                list.pipeline(self.hand_item_pipe);
-                list.bind(crate::gpu_layout::bind::entity::BOXES, buf);
-                list.bind(crate::gpu_layout::bind::entity::SCENE, hb);
-                list.bind(crate::gpu_layout::bind::entity::GLOW_MAP, glow);
-                list.bind(crate::gpu_layout::bind::entity::ITEM_BOXES, ib);
-                let first = boxes.len() - hand_items.len();
-                for (k, (_, n)) in hand_items.iter().enumerate() {
-                    list.push(Cmd::Draw { vertices: n * 36, instances: 1, first_vertex: 0, first_instance: (first + k) as u32 });
-                }
-            }
-        }
-        self.instances = instances;
     }
 }
 

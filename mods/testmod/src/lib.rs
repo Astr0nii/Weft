@@ -14,6 +14,7 @@
 
 mod bodies;
 mod looks;
+mod mace;
 
 use weft_sdk::terrain::*;
 use weft_sdk::*;
@@ -23,6 +24,8 @@ declare_mod!(deps: ["base"], init: init);
 static GENERATOR: Block = Block::named("generator");
 static HUM: Sound = Sound::named("machine.hum");
 static CABLE: Block = Block::named("cable");
+static PIPE: Block = Block::named("pipe");
+static AND_GATE: Block = Block::named("and_gate");
 /// Its shape is `models/block/pedestal.json`, a Blockbench Java block model.
 static PEDESTAL: Block = Block::named("pedestal");
 static DYNAMITE: Block = Block::named("dynamite");
@@ -31,6 +34,7 @@ static BOOM: Sound = Sound::named("boom");
 static DYNAMITE_RADIUS: Config<i32> = Config::named("dynamite_radius");
 static ELECTRIC_FURNACE: Block = Block::named("electric_furnace");
 static BATTERY: Block = Block::named("battery");
+static TANK: Block = Block::named("tank");
 static RED_SAND: Block = Block::named("red_sand");
 static VENT: Block = Block::named("vent");
 static REINFORCED_STONE: Block = Block::named("reinforced_stone");
@@ -42,12 +46,13 @@ static ENERGY_GIZMOS: GizmoGroup = GizmoGroup::named("energy");
 // The base game's things, by name: no code dependency on it.
 pub use base_api::OVERWORLD;
 static BUCKET: Item = Item::named("base:bucket");
-static ZOMBIE: Entity = Entity::named("base:zombie");
+static ZOMBIE: EntityKind = EntityKind::named("base:zombie");
 use base_api::tabs::{BUILDING as BASE_BUILDING, TOOLS as BASE_TOOLS};
 static SOUL_TORCH: Block = Block::named("base:torch");
 static GENERATOR_MENU: Menu = Menu::named("generator");
 static FURNACE_MENU: Menu = Menu::named("electric_furnace");
 static BATTERY_MENU: Menu = Menu::named("battery");
+static TANK_MENU: Menu = Menu::named("tank");
 use base_api::SMELTING as SMELTING_RECIPES;
 static VOID: Dimension = Dimension::named("void");
 static MARS: Dimension = Dimension::named("mars");
@@ -61,6 +66,9 @@ static BASALT: Block = Block::named("basalt");
 static TIN_ORE: Block = Block::named("tin_ore");
 static TIN_INGOT: Item = Item::named("tin_ingot");
 static ANOTHER_STICK: Item = Item::named("another_stick");
+static POUCH: Item = Item::named("pouch");
+static POUCH_MENU: Menu = Menu::named("pouch");
+static NOTES: TextPlace = TextPlace::named("notes");
 
 value! {
     /// A generator's fire.
@@ -84,6 +92,7 @@ const FURNACE_USE: i64 = 20;
 
 fn init(r: &mut Registry) {
     looks::register(r);
+    mace::register(r);
     bodies::register(r);
     debug_panel(r);
     about_screen(r);
@@ -94,6 +103,47 @@ fn init(r: &mut Registry) {
         .tag("conductor")
         .tag("cables")
         .hardness(0.5);
+    // A gate of its own faces: both sides, not the rear.
+    r.block(&AND_GATE)
+        .texture("machine_top")
+        .model_box([0.0, 0.0, 0.0], [16.0, 2.0, 16.0])
+        .signal_gate(Gate::new().inputs(&[Side::Left, Side::Right]), |g| {
+            if g.side(Side::Left) > 0 && g.side(Side::Right) > 0 { 15 } else { 0 }
+        });
+    // Joins whatever pipe is next to it, any mod's, by the shared tag.
+    r.block(&PIPE)
+        .tag("pipes")
+        .joins(Facings::ALL, "#pipes")
+        .states(|p, s| {
+            let mut s = s
+                .texture("machine_top")
+                .model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0]);
+            for d in Dir::ALL.into_iter().filter(|d| p.is(d.name(), "true")) {
+                let o = d.offset().to_array().map(|v| v as f32);
+                let lo = [0, 1, 2].map(|a| {
+                    if o[a] < 0.0 {
+                        0.0
+                    } else if o[a] > 0.0 {
+                        11.0
+                    } else {
+                        5.0
+                    }
+                });
+                let hi = [0, 1, 2].map(|a| {
+                    if o[a] < 0.0 {
+                        5.0
+                    } else if o[a] > 0.0 {
+                        16.0
+                    } else {
+                        11.0
+                    }
+                });
+                s = s.model_box(lo, hi);
+            }
+            s
+        })
+        .hardness(0.5)
+        .tab(&BASE_TOOLS);
     // Faces the file leaves to the block (`#top`, `#side`) show these.
     r.block(&PEDESTAL)
         .textures("machine_top", "generator", "machine_top")
@@ -127,7 +177,7 @@ fn init(r: &mut Registry) {
             b.textures("machine_top", "generator", "machine_top")
                 .hardness(3.0)
                 .mineable("pickaxe")
-                .needs_tool(0)
+                .needs_tool_level(0)
         })
         // Only fuel goes in (the base game's `fuel` component), and stays in until burnt.
         .group(
@@ -141,7 +191,7 @@ fn init(r: &mut Registry) {
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 20_000, max_in: 0, max_out: 200 })
         .screen(|ui| {
             machine_screen(ui, |ui| {
-                ui.column(S::col().gap(2.0).center(), |ui| {
+                ui.column(S::column().gap(2.0).center(), |ui| {
                     ui.group("fuel");
                     ui.progress_bind_dir("flame", S::default().size(14.0, 14.0), abi::ui_dir::UP, |c| {
                         c.menu_component(&BURNER)
@@ -150,12 +200,20 @@ fn init(r: &mut Registry) {
                 });
             })
         });
+    // Eight buckets of one liquid, in and out by bucket.
+    r.machine(&TANK, &TANK_MENU)
+        .block(|b| {
+            b.textures("machine_top", "machine_top", "machine_top")
+                .hardness(3.0)
+        })
+        .group("liquid", Slots::single().liquid(8000))
+        .screen(|ui| machine_screen(ui, |ui| ui.group("liquid")));
     r.machine(&ELECTRIC_FURNACE, &FURNACE_MENU)
         .block(|b| {
             b.textures("machine_top", "electric_furnace", "machine_top")
                 .hardness(3.0)
                 .mineable("pickaxe")
-                .needs_tool(0)
+                .needs_tool_level(0)
         })
         // At most 16 to smelt at a time.
         .group("input", Slots::single().limit(16))
@@ -181,7 +239,7 @@ fn init(r: &mut Registry) {
             b.textures("machine_top", "battery", "machine_top")
                 .hardness(3.0)
                 .mineable("pickaxe")
-                .needs_tool(0)
+                .needs_tool_level(0)
         })
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 100_000, max_in: 400, max_out: 400 })
         .screen(|ui| machine_screen(ui, |_| {}));
@@ -207,11 +265,36 @@ fn init(r: &mut Registry) {
     r.block(&TIN_ORE)
         .hardness(3.0)
         .mineable("pickaxe")
-        .needs_tool(0)
+        .needs_tool_level(0)
         .tag("ores/tin");
     r.item(&TIN_INGOT).tag("ingots/tin");
 
     r.item(&ANOTHER_STICK).tag("stick");
+
+    // A place of its own for text, in the top right corner; players move it like any element.
+    r.text_place(&NOTES)
+        .hud(hud_anchor::TOP_RIGHT, 5)
+        .stacks()
+        .sample("testmod.notes.sample");
+    // Each pouch keeps its own nine stacks.
+    r.item(&POUCH)
+        .inventory(9)
+        .max_stack(1)
+        .tab(&BASE_TOOLS)
+        .on_use(|u| {
+            u.world().open_menu(u.player(), &POUCH_MENU, u.holder());
+            true
+        });
+    r.menu(&POUCH_MENU)
+        .group("items", Slots::row(9).machine())
+        .player_inventory()
+        .screen(|ui| {
+            ui.panel("panel", S::column().pad(7.0).gap(4.0), |ui| {
+                ui.title();
+                ui.group("items");
+                ui.player_inventory(true);
+            });
+        });
 
     // A tier between vanilla's iron (200) and diamond (300): mines everything iron does plus
     // reinforced stone, which iron cannot.
@@ -235,7 +318,7 @@ fn init(r: &mut Registry) {
         .shader("stripes")
         .hardness(4.0)
         .mineable("pickaxe")
-        .needs_tool(250)
+        .needs_tool_level(250)
         .tab(&BASE_BUILDING);
     r.biome(&DUST)
         .surface("regolith", "regolith", 3)
@@ -256,24 +339,31 @@ fn init(r: &mut Registry) {
     r.terrain(&OVERWORLD)
         .biome_before("base:desert", BiomeRule::new("scorched"))
         .feature(
-            Feature::new(|_, x, z| if (x - NEEDLE[0] * 16).abs().max((z - NEEDLE[1] * 16).abs()) < 3 * 16 { 90 * 16 } else { 0 })
-                .named("needle"),
+            // 90 blocks up within 3 of the spot: a step where the distance passes 3.
+            Feature::new(
+                ((Expr::x() - Expr::blocks(NEEDLE[0] as f64)).abs())
+                    .max((Expr::z() - Expr::blocks(NEEDLE[1] as f64)).abs())
+                    .ramp_blocks(3.0, 3.0)
+                    .not()
+                    * Expr::blocks(90.0),
+            )
+            .named("needle"),
         );
-    r.decorate(boulders).dimension(&OVERWORLD);
+    r.decoration(boulders).dimension(&OVERWORLD);
     // One ore for every dimension: base's stone and Mars' basalt both take it.
     r.ore(&TIN_ORE)
         .y(-64, 90)
         .veins(5)
-        .size(8)
+        .vein_size(8)
         .replace("#stone_ore_replaceables");
     r.terrain(&MARS)
         .stone("basalt")
         .base_height(60.0)
         .feature(preset::hills(8.0, 220.0))
-        .feature(preset::plateaus(24.0, 320.0, 6.0).mask(Mask::noise(900.0, 0.1, 0.4)))
-        .feature(preset::canyons(26.0, 9.0).mask(Mask::noise(1200.0, -0.2, 0.1)))
+        .feature(preset::plateaus(24.0, 320.0, 6.0).mask(Expr::noise(900.0).ramp(0.1, 0.4)))
+        .feature(preset::canyons(26.0, 9.0).mask(Expr::noise(1200.0).ramp(-0.2, 0.1)))
         .feature(preset::craters(32.0, 16.0, 150.0))
-        .feature(preset::dunes(3.0, 22.0).mask(Mask::noise(500.0, 0.15, 0.45)))
+        .feature(preset::dunes(3.0, 22.0).mask(Expr::noise(500.0).ramp(0.15, 0.45)))
         // Base's forest in the cold parts of Mars (any humidity, unlike at home): it brings its
         // grass, and the engine grows its trees here like in base's overworld.
         .biome(
@@ -283,17 +373,17 @@ fn init(r: &mut Registry) {
         )
         .biome(BiomeRule::new("dust"));
     r.dimension(&MARS)
-        .spawn(|seed| [8, MARS.column(seed, 8, 8).height + 1, 8])
-        .height(-4, 12)
+        .spawn_point(|seed| [8, MARS.column(seed, 8, 8).height + 1, 8].into())
+        .height_cubes(-4, 12)
         .sky_above(11)
         .gravity(12.0)
         .fixed_time(5000)
-        .sky(0xd8a080, 0xe0b090);
+        .sky_color(0xd8a080, 0xe0b090);
     // Two moons of their own, unrelated to the fixed time of day, and a sun that stands still.
     r.sky_body(&MARS, &MARS_SUN)
         .texture("base:sun")
         .size(18.0)
-        .still()
+        .orbit_still()
         .phase(0.2);
     r.sky_body(&MARS, &PHOBOS)
         .texture("phobos")
@@ -310,7 +400,7 @@ fn init(r: &mut Registry) {
 
     // A liquid of its own, flowing by the engine's rules; its bucket fills from the base game's.
     r.liquid(&OIL)
-        .opacity(4)
+        .light_opacity(4)
         .drag(0.4)
         .flow_delay(15)
         .drop_off(2)
@@ -320,7 +410,7 @@ fn init(r: &mut Registry) {
 
     // Healing food without touching the base game's eating code: any used item that heals.
     r.set("#cooked_meat/*", &FOOD_HEAL, 2.0);
-    r.on(&ITEM_USED, |b| {
+    r.on(&actions::USE_ITEM, |b| {
         let w = b.world();
         for e in b.iter() {
             if let Some(heal) = FOOD_HEAL.on_stack(&e.stack) {
@@ -328,7 +418,7 @@ fn init(r: &mut Registry) {
             }
         }
     });
-    r.loot_modify(&ZOMBIE)
+    r.loot_edit(&ZOMBIE)
         .add_pool(Pool::new().when(Cond::Chance(0.05)).item("tin_ingot"));
 
     r.command("tagbench", "[millions:int]", tag_bench);
@@ -337,13 +427,13 @@ fn init(r: &mut Registry) {
 
     r.dimension(&VOID)
         .generator(island)
-        .spawn(|_| [0, 64, 0])
-        .height(2, 6)
+        .spawn_point(|_| [0, 64, 0].into())
+        .height_cubes(2, 6)
         .sky_above(5)
         .gravity(14.0)
         .fixed_time(18000)
-        .ambient(5)
-        .sky(0x2a1040, 0x40206a);
+        .ambient_light(5)
+        .sky_color(0x2a1040, 0x40206a);
 }
 
 /// `/morph base:pig 0.9 0.9`: the player looks like another kind and gets a box of that size
@@ -354,11 +444,14 @@ fn morph(r: &mut Registry) {
         match cmd.text("kind").map(str::to_string) {
             Some(kind) => {
                 // The size of what it turns into, unless told otherwise.
-                let own = w.kind_size(&kind).unwrap_or([0.9, 0.9, 0.765]);
-                let (width, height) = (cmd.float("width").map_or(own[0], |v| v as f32), cmd.float("height").map_or(own[1], |v| v as f32));
-                let eye = if cmd.float("height").is_some() { height * 0.85 } else { own[2] };
+                let own = w
+                    .kind_size(&kind)
+                    .unwrap_or(EntitySize { width: 0.9, height: 0.9, eye: 0.765 });
+                let (width, height) =
+                    (cmd.float("width").map_or(own.width, |v| v as f32), cmd.float("height").map_or(own.height, |v| v as f32));
+                let eye = if cmd.float("height").is_some() { height * 0.85 } else { own.eye };
                 w.set_appearance(me, Some(&kind));
-                w.set_size(me, Some([width, height, eye]));
+                w.set_size(me, Some(EntitySize { width, height, eye }));
                 cmd.reply("command.testmod.morph", &[Arg::Text(&kind), Arg::Float(width as f64, 2), Arg::Float(height as f64, 2)]);
             }
             None => {
@@ -380,30 +473,30 @@ fn about_screen(r: &mut Registry) {
     static NAME: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
     static VOLUME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     r.screen(&ABOUT, |ui| {
-        ui.panel("testmod_panel", S::col().pad(8.0).gap(4.0).min_w(220.0), |ui| {
-            ui.text_styled(S::col().class("title").scale(2.0).no_wrap(), "testmod.about.title", &[]);
+        ui.panel("testmod_panel", S::column().pad(8.0).gap(4.0).min_w(220.0), |ui| {
+            ui.text_styled(S::column().class("title").scale(2.0).no_wrap(), "testmod.about.title", &[]);
             ui.text("testmod.about.text");
             ui.panel(
                 "well",
-                S::col()
+                S::column()
                     .pad(4.0)
                     .tooltip_args("testmod.about.tip", &[Arg::Int(3)]),
                 |ui| ui.text("testmod.about.hover"),
             );
-            ui.input("", 16, S::col().class("about_name").w(200.0), |_, text| *NAME.lock().unwrap() = text.to_string());
+            ui.input("", 16, S::column().class("about_name").w(200.0), |_, text| *NAME.lock().unwrap() = text.to_string());
             ui.text_bind(|_, out| out.set("testmod.about.name", &[Arg::Text(&NAME.lock().unwrap())]));
             ui.slider(
-                S::col().w(200.0).h(20.0),
+                S::column().w(200.0).h(20.0),
                 |_| VOLUME.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0,
                 |_, v| VOLUME.store((v * 100.0).round() as u32, std::sync::atomic::Ordering::Relaxed),
             );
             ui.text_bind(|_, out| out.set("testmod.about.fov", &[Arg::Float(weft_sdk::settings::FOV.get() as f64, 0)]));
-            ui.text_bind_styled(S::col().mono(), |_, out| {
+            ui.text_bind_styled(S::column().mono(), |_, out| {
                 out.set("testmod.about.volume", &[Arg::Int(VOLUME.load(std::sync::atomic::Ordering::Relaxed) as i64)])
             });
             ui.row(S::row().gap(4.0), |ui| {
                 ui.item(Item::lookup("base:coal").unwrap_or(0), 3, S::default());
-                ui.button("testmod.about.closed", S::col().disabled(true), |_| {});
+                ui.button("testmod.about.closed", S::column().disabled(true), |_| {});
             });
         });
     })
@@ -411,11 +504,11 @@ fn about_screen(r: &mut Registry) {
     // A button of its own in the main menu, next to the engine's and other mods'.
     r.screen_part(&screens::TITLE, "buttons", 0, |ui| {
         ui.button("testmod.about.button", S::default(), |c| {
-            c.client().open_screen(&ABOUT);
+            c.client().screen_open(&ABOUT);
         });
     });
     r.client_command("about", "", |c| {
-        c.client().open_screen(&ABOUT);
+        c.client().screen_open(&ABOUT);
     });
 }
 
@@ -423,19 +516,19 @@ fn about_screen(r: &mut Registry) {
 fn debug_panel(r: &mut Registry) {
     r.hud_element(&DEBUG_PANEL, hud_anchor::DEBUG_LEFT, 0, |ui| {
         ui.text_bind(|c, out| {
-            let Some(me) = c.me() else { return };
-            let speed = (me.vel[0] * me.vel[0] + me.vel[2] * me.vel[2]).sqrt() * 20.0;
-            out.set("testmod.debug.speed", &[Arg::Float(speed, 2), Arg::Float(me.fall as f64, 1)]);
+            let Some(me) = c.player_state() else { return };
+            let speed = (me.vel.x * me.vel.x + me.vel.z * me.vel.z).sqrt() * 20.0;
+            out.set("testmod.debug.speed", &[Arg::Float(speed, 2), Arg::Float(me.fall_distance as f64, 1)]);
         });
     });
 }
 
 fn machine_screen(ui: &mut Ui, slots: impl FnOnce(&mut Ui)) {
     // Drawn by the mod's GUI shader (`shader` in `gui/testmod_panel.gui`).
-    ui.panel("testmod_panel", S::col().pad(7.0).gap(4.0), |ui| {
+    ui.panel("testmod_panel", S::column().pad(7.0).gap(4.0), |ui| {
         ui.title();
         ui.row(S::row().gap(8.0), |ui| {
-            ui.column(S::col().gap(2.0), |ui| {
+            ui.column(S::column().gap(2.0), |ui| {
                 ui.text_bind(|c, out| {
                     let e = c.menu_component(&ENERGY).unwrap_or_default();
                     out.set("testmod.energy", &[Arg::Int(e.stored), Arg::Int(e.capacity)]);
@@ -454,13 +547,13 @@ fn machine_screen(ui: &mut Ui, slots: impl FnOnce(&mut Ui)) {
 
 /// `/gizmo testmod:energy`: stored energy above every machine, the mod-side use of gizmos.
 fn energy_gizmos(w: &World, ids: &[u64]) {
-    if w.time() % 10 != 0 || !w.gizmo_on(&ENERGY_GIZMOS) {
+    if w.game_time() % 10 != 0 || !w.gizmo_shown(&ENERGY_GIZMOS) {
         return;
     }
     for &id in ids {
-        if let (Some(st), Some(e)) = (w.entity(id), w.energy(id)) {
+        if let (Some(st), Some(e)) = (w.entity(id), w.component(id, &ENERGY)) {
             let args = [Arg::Int(e.stored as i64), Arg::Int(e.capacity as i64)];
-            w.draw_text(&ENERGY_GIZMOS, [st.pos[0], st.pos[1] + 1.3, st.pos[2]], "testmod.energy_label", &args, 0x60FF60FF, 1.0, 11);
+            w.draw_text(&ENERGY_GIZMOS, [st.pos.x, st.pos.y + 1.3, st.pos.z], "testmod.energy_label", &args, 0x60FF60FF, 1.0, 11);
         }
     }
 }
@@ -484,8 +577,8 @@ fn dynamite(r: &mut Registry) {
         .on_use(|u| {
             let (w, pos) = (u.world(), u.pos());
             if w.prop(pos, "fuse") == Some("0") {
-                w.set_prop(pos, "fuse", "10");
-                w.schedule(pos, 10);
+                w.prop_set(pos, "fuse", "10");
+                w.schedule_tick(pos, 10);
             }
             true
         })
@@ -496,15 +589,15 @@ fn dynamite(r: &mut Registry) {
             };
             let center = block_center(pos);
             if left > 1 {
-                w.set_prop(pos, "fuse", &(left - 1).to_string());
-                w.spawn_particles(&looks::SPARK, [center[0], center[1] + 0.6, center[2]])
+                w.prop_set(pos, "fuse", &(left - 1).to_string());
+                w.spawn_particles(&looks::SPARK, [center.x, center.y + 0.6, center.z])
                     .count(6)
                     .spread(0.2)
                     .speed(0.5);
-                w.schedule(pos, 10);
+                w.schedule_tick(pos, 10);
             } else {
                 w.play_sound(&BOOM, center, 4.0);
-                w.fill_sphere(center, DYNAMITE_RADIUS.get() as f64, 0)
+                w.fill(Shape::ball(center, DYNAMITE_RADIUS.get() as f64), 0)
                     .keep_unbreakable();
             }
         });
@@ -514,7 +607,7 @@ fn tick_generators(b: &mut SystemBatch<Burner>) {
     let w = b.world();
     energy_gizmos(&w, b.ids());
     for (id, m, ticks) in b.iter_mut() {
-        let Some(e) = w.energy(id) else { continue };
+        let Some(e) = w.component(id, &ENERGY) else { continue };
         let room = e.capacity - e.stored;
         if ticks > 1 {
             // Catching up: it runs while there is room for what it makes, lighting fuel as it
@@ -526,16 +619,17 @@ fn tick_generators(b: &mut SystemBatch<Burner>) {
             let slot = w.inventory(id).group("fuel");
             while want > 0 {
                 let fuel = slot.get(0);
-                let Some(t) = FUEL.on_filled(&fuel) else { break };
+                let Some(t) = FUEL.on_stack_item(&fuel) else { break };
                 (m.burn, m.burn_max) = (t, t);
-                slot.set(0, use_one(fuel));
+                slot.set(0, consume_one(fuel));
                 let r = want.min(m.burn);
                 m.burn -= r;
                 ran += r;
                 want -= r;
             }
-            if let Some(e) = w.energy_mut(id) {
+            if let Some(mut e) = w.component(id, &ENERGY) {
                 e.stored = (e.stored + ran as i64 * PER_TICK).min(e.capacity);
+                w.set_component(id, &ENERGY, e);
             }
             continue;
         }
@@ -547,16 +641,17 @@ fn tick_generators(b: &mut SystemBatch<Burner>) {
                 m.burn = ticks;
                 m.burn_max = ticks;
                 // A lava bucket leaves its bucket, like in the furnace.
-                slot.set(0, use_one(fuel));
+                slot.set(0, consume_one(fuel));
             }
         }
         if m.burn > 0 {
             m.burn -= 1;
-            if let Some(e) = w.energy_mut(id) {
+            if let Some(mut e) = w.component(id, &ENERGY) {
                 e.stored = (e.stored + PER_TICK).min(e.capacity);
+                w.set_component(id, &ENERGY, e);
             }
             // A low hum every two seconds, under the test mod's own volume setting.
-            if w.time() % 40 == 0 && looks::GENERATOR_HUM.get() {
+            if w.game_time() % 40 == 0 && looks::GENERATOR_HUM.get() {
                 if let Some(st) = w.entity(id) {
                     w.play_sound(&HUM, st.pos, 0.4);
                 }
@@ -569,7 +664,7 @@ fn tick_furnaces(b: &mut SystemBatch<Work>) {
     let w = b.world();
     energy_gizmos(&w, b.ids());
     for (id, m, ticks) in b.iter_mut() {
-        let Some(e) = w.energy(id) else { continue };
+        let Some(e) = w.component(id, &ENERGY) else { continue };
         let stored = e.stored;
         let inv = w.inventory(id);
         let (input_slot, output_slot) = (inv.group("input"), inv.group("output"));
@@ -592,8 +687,9 @@ fn tick_furnaces(b: &mut SystemBatch<Work>) {
             let total = m.progress + steps as u32;
             let done = total / m.progress_max;
             m.progress = total % m.progress_max;
-            if let Some(e) = w.energy_mut(id) {
+            if let Some(mut e) = w.component(id, &ENERGY) {
                 e.stored -= steps * FURNACE_USE;
+                w.set_component(id, &ENERGY, e);
             }
             if done > 0 {
                 input_slot.set(0, input.shrink(done));
@@ -606,8 +702,9 @@ fn tick_furnaces(b: &mut SystemBatch<Work>) {
         if done {
             m.progress = 0;
         }
-        if let Some(e) = w.energy_mut(id) {
+        if let Some(mut e) = w.component(id, &ENERGY) {
             e.stored -= FURNACE_USE;
+            w.set_component(id, &ENERGY, e);
         }
         if done {
             input_slot.set(0, input.shrink(1));
@@ -638,10 +735,10 @@ fn recipe_showcase(r: &mut Registry) {
         .info_line("recipe.testmod.alloying.info", &["testmod:energy_per_tick", "time"]);
     r.shapeless(&ALLOYING, "tin_ingot", 2, &["#ingots/iron", "#gems/coal"], 100)
         .input_amounts(&[3, 1])
-        .chance_output("base:diamond", 1, 0.05)
+        .output_chance("base:diamond", 1, 0.05)
         .value(&ENERGY_PER_TICK, 32);
     r.recipe_kind(&INFUSING).layout(|ui, recipe| {
-        ui.column(S::col().gap(2.0), |ui| {
+        ui.column(S::column().gap(2.0), |ui| {
             ui.row(S::row().gap(4.0).center(), |ui| {
                 ui.recipe_input(0);
                 ui.text("testmod.infusing.plus");
@@ -652,7 +749,7 @@ fn recipe_showcase(r: &mut Registry) {
             ui.text_args("testmod.infusing.time", &[Arg::Int(recipe.time() as i64 / 20)]);
         });
     });
-    r.shapeless(&INFUSING, "glow_crystal", 1, &["#gems/diamond", "fluid:#water"], 200)
+    r.shapeless(&INFUSING, "glow_crystal", 1, &["#gems/diamond", "#water"], 200)
         .input_amounts(&[1, 1000]);
 }
 
@@ -662,7 +759,7 @@ pub const NEEDLE: [i32; 2] = [1000, 1000];
 /// Basalt boulders on the scorched biome of base's overworld.
 fn boulders(g: &mut Gen) {
     let Some(&cols) = g.columns() else { return };
-    let [ox, oy, oz] = g.origin();
+    let BlockPos { x: ox, y: oy, z: oz } = g.origin();
     let (scorched, basalt) = (SCORCHED.id(), BASALT.id());
     for (i, c) in cols.iter().enumerate() {
         let y = c.height + 1 - oy;
@@ -678,7 +775,7 @@ fn boulders(g: &mut Gen) {
 }
 
 fn island(g: &mut Gen) {
-    let [ox, oy, oz] = g.origin();
+    let BlockPos { x: ox, y: oy, z: oz } = g.origin();
     let (stone, grass, dirt) = (STONE.id(), GRASS.id(), DIRT.id());
     for y in 0..16usize {
         for z in 0..16usize {

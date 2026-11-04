@@ -69,7 +69,7 @@ fn blocks(_r: &mut Registry) {
     // r.block(&RUBY_ORE)
     //     .hardness(3.0)
     //     .mineable("pickaxe")
-    //     .needs_tool(tool_tier::IRON)      // drops nothing without at least an iron pickaxe
+    //     .needs_tool_level(tool_tier::IRON)      // drops nothing without at least an iron pickaxe
     //     .drops("ruby", 1)
     //     .tab(&NATURAL);
     //
@@ -88,10 +88,10 @@ fn blocks(_r: &mut Registry) {
     // static CRYSTAL: Block = Block::named("crystal");
     // static ALARM: Block = Block::named("alarm");
     // static AND_GATE: Block = Block::named("and_gate");
-    // r.block(&CRYSTAL).signal_block();                        // always on
+    // r.block(&CRYSTAL).signal_constant();                        // always on
     // r.block(&ALARM).signal_sink().on_signal(|e| { e.rising(); e.world(); });
     // r.block(&AND_GATE)
-    //     .signal_logic(1, |s| if s.rear() > 0 && s.sides().iter().any(|v| *v > 0) { 15 } else { 0 })
+    //     .signal_gate(Gate::new(), |s| if s.side(Side::Rear) > 0 && (s.side(Side::Left) > 0 || s.side(Side::Right) > 0) { 15 } else { 0 })
     //     .model_box([0.0, 0.0, 0.0], [16.0, 2.0, 16.0])
     //     .not_solid();
     //
@@ -129,7 +129,7 @@ fn recipes(_r: &mut Registry) {
 fn worldgen(_r: &mut Registry) {
     // static OVERWORLD: Dimension = Dimension::named("base:overworld");
     // static RUBY_ORE: Block = Block::named("ruby_ore");
-    // r.ore(&RUBY_ORE).y(-64, 16).veins(2).size(5).replace("#stone_ore_replaceables");
+    // r.ore(&RUBY_ORE).y(-64, 16).veins(2).vein_size(5).replace("#stone_ore_replaceables");
     // static SHRINE: Template = Template::named("shrine");
     // r.template(&SHRINE).layer(&["ccc", "c c", "ccc"]).key('c', "base:cobblestone");
     // r.structure(&OVERWORLD, &SHRINE).spacing(256).chance(0.3);
@@ -142,9 +142,9 @@ fn worldgen(_r: &mut Registry) {
 /// Models in code (`biped`, `quadruped`) or Blockbench files in `assets/models`
 /// More at `mods/base/src/mobs.rs` (AI goals, spawn rules, etc.).
 fn entities(_r: &mut Registry) {
-    // static GHOST: Entity = Entity::named("ghost");
-    // r.entity(&GHOST).size(0.6, 1.8).health(10.0).speed(3.0).hostile().model(biped(false)).sound("hurt");
-    // r.spawn(&GHOST).light(0, 4).weight(1);
+    // static GHOST: EntityKind = EntityKind::named("ghost");
+    // r.entity(&GHOST).size(0.6, 1.8).max_health(10.0).walk_speed(3.0).hostile().model(humanoid(false)).sound("hurt");
+    // r.natural_spawn(&GHOST).light(0, 4).weight(1);
 }
 
 /// Reacting to the game, events arrive batched once per tick
@@ -164,8 +164,8 @@ fn events(r: &mut Registry) {
             info!("gave player {} an example item", joined.player);
         }
     });
-    // r.on(&BLOCK_BROKEN, |b| for e in b.iter() { /* e.player, e.pos, e.state */ });
-    // r.intercept(&question::BREAK_BLOCK, |q| if q.pos()[1] < -60 { Verdict::Deny } else { Verdict::Abstain });
+    // r.on(&actions::BREAK_BLOCK, |b| for e in b.iter() { /* e.player, e.pos, e.state */ });
+    // r.intercept(&actions::BREAK_BLOCK, |q| if q.pos().y < -60 { Verdict::Deny } else { Verdict::Abstain });
     // r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.9);
 }
 
@@ -193,8 +193,8 @@ fn client(_r: &mut Registry) {
     // static DASH: Key = Key::named("dash");
     // static ABOUT: Screen = Screen::named("about");
     // static MANA: HudElement = HudElement::named("mana");
-    // r.key(&DASH, "R").on_press_server(|p| { let w = p.world(); info!("{} dashes", p.player()); w.time(); });
-    // r.screen(&ABOUT, |ui| ui.panel("background", S::col().pad(8.0), |ui| ui.text("examplemod.about")));
+    // r.key(&DASH, "R").on_press_server(|p| { let w = p.world(); info!("{} dashes", p.player()); w.game_time(); });
+    // r.screen(&ABOUT, |ui| ui.panel("background", S::column().pad(8.0), |ui| ui.text("examplemod.about")));
     // r.hud_element(&MANA, hud_anchor::HOTBAR_RIGHT, 2, |ui| ui.text_bind(|c, out| { /* ... */ }));
     //
     // In the hands: both or none, one with its own action, first on a right click. An item's clips
@@ -208,8 +208,8 @@ fn client(_r: &mut Registry) {
     // r.item(&WAND).use_priority(10);
     //
     // A mob's goal that plays its own run instead of walking:
-    // static SCARED: Entity = Entity::named("scared");
-    // r.entity(&SCARED).goals(ai::Goals::new().then(ai::replacing_action("walk", "flee", ai::wander(4.0, 12.0))));
+    // static SCARED: EntityKind = EntityKind::named("scared");
+    // r.entity(&SCARED).goals(ai::Goals::new().then(ai::with_action_override("walk", "flee", ai::wander(4.0, 12.0))));
     //
     // Any item as a model, in the hand, on the ground and in slots: models/apple.geo.json and
     // textures/apple.png. All food at once, what has no file stays as it was:
@@ -220,20 +220,20 @@ fn client(_r: &mut Registry) {
     // static TAIL: Item = Item::named("tail");
     // r.item(&TAIL).wearable_model(&EquipmentSlot::named("base:chest"), "tail", "body");
     // r.bone_motion("tail", "tail2", BoneMotion::SPRINGY);
-    // r.on_entity_frame(&PLAYER, |c, e| {
-    //     c.turn_bone(e.id(), "tail1", [0.0, (e.age() * 6.0).sin() * 20.0, 0.0]);
+    // r.client_entity_frame(&PLAYER, |c, e| {
+    //     c.bone_turn(e.id(), "tail1", [0.0, (e.age() * 6.0).sin() * 20.0, 0.0]);
     // });
     //
     // A stack with data of its own, what a custom workbench might make:
     // static GRADE: Component<u32> = Component::named("grade");
     // static CHISEL: Item = Item::named("chisel");
     // r.stack_component(&GRADE, 0);
-    // fn made(grade: u32) -> ItemStack { CHISEL.stack(1).with(&GRADE, grade).with_damage(5) }
+    // fn made(grade: u32) -> ItemStack { CHISEL.stack(1).with(&GRADE, grade).with_wear(5) }
     //
     // Sparks around a mob while it lives, the engine's steps and idle noises kept:
-    // static WISP: Entity = Entity::named("wisp");
+    // static WISP: EntityKind = EntityKind::named("wisp");
     // static SPARK: Particle = Particle::named("spark");
-    // r.client_entity_frame(&WISP, |c, e| {
+    // r.client_entity_cosmetics(&WISP, |c, e| {
     //     if e.dying().is_none() {
     //         c.spawn_particles(&SPARK, e.pos());
     //     }

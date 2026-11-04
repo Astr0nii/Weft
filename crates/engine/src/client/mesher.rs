@@ -5,7 +5,7 @@
 //! corners.
 
 use crate::gpu_layout::{face, quad};
-use weft_abi::{Layer, Model, block_flags as bf};
+use weft_abi::{BlockModel, RenderLayer, block_flags as bf};
 
 use crate::content::Content;
 
@@ -59,7 +59,7 @@ impl Mesh {
 
 use crate::gpu_layout::CORNERS;
 
-const NORMALS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
+pub const NORMALS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
 
 #[cfg(test)]
 pub fn corners(dir: usize) -> [[i32; 3]; 4] {
@@ -147,11 +147,11 @@ fn draw_block(
     let tile = ctm.model(c, n, x, y, z, s);
     let boxes = tile.unwrap_or(drawn.boxes);
     let textures = drawn.textures;
-    let model = if tile.is_some() { Model::Boxes } else { drawn.model };
+    let model = if tile.is_some() { BlockModel::Boxes } else { drawn.model };
     match model {
         // Drawn apart, for its power to change without a new mesh (`wires.rs`).
-        Model::None | Model::Wire => {}
-        Model::Cube => {
+        BlockModel::None | BlockModel::Wire => {}
+        BlockModel::Cube => {
             for dir in 0..6 {
                 let [dx, dy, dz] = NORMALS[dir];
                 let ni = pidx(x + dx, y + dy, z + dz);
@@ -160,17 +160,17 @@ fn draw_block(
                 if ctm.hides(ninfo.flags, ns) {
                     continue;
                 }
-                if ninfo.block == info.block && info.layer != Layer::Opaque && info.flags & bf::CULL_SAME != 0 {
+                if ninfo.block == info.block && info.layer != RenderLayer::Opaque && info.flags & bf::CULL_SAME != 0 {
                     continue;
                 }
                 let (ao, light) = corner_data(n, ctm, opaque, x, y, z, dir);
                 let tex = ctm.resolve(c, n, x, y, z, dir, textures[dir] & face::TEX_MASK);
                 let tint = face_tint(info, ctm, dir, tex);
                 // All that is translucent is kept far to near as one list of quads.
-                if info.layer == Layer::Translucent {
+                if info.layer == RenderLayer::Translucent {
                     let corners = CORNERS[dir].map(|k| [(x + k[0]) as f32, (y + k[1]) as f32, (z + k[2]) as f32]);
                     let light = std::array::from_fn(|k| darker_by_ao(light[k], (ao >> (k * 2)) & 3));
-                    mesh.quads[Layer::Translucent as usize].push(quad(corners, WHOLE, tex, biome, tint, light));
+                    mesh.quads[RenderLayer::Translucent as usize].push(quad(corners, WHOLE, tex, biome, tint, light));
                 } else {
                     mesh.faces[info.layer as usize].push(crate::gpu_layout::face_record(
                         [x, y, z],
@@ -184,7 +184,7 @@ fn draw_block(
                 }
             }
         }
-        Model::Cross => {
+        BlockModel::Cross => {
             let l = light16(n.light[i]);
             let t = ctm.resolve(c, n, x, y, z, 0, textures[0] & face::TEX_MASK);
             let b = [x as f32, y as f32, z as f32];
@@ -195,15 +195,15 @@ fn draw_block(
                 let corners = [[p0[0], p0[1], p0[2]], [p1[0], p0[1], p1[2]], [p1[0], p1[1], p1[2]], [p0[0], p1[1], p0[2]]];
                 let back = [corners[1], corners[0], corners[3], corners[2]];
                 for q in [corners, back] {
-                    mesh.quads[Layer::Cutout as usize].push(quad(q, WHOLE, t, biome, info.tint | FLAT, [l; 4]));
+                    mesh.quads[RenderLayer::Cutout as usize].push(quad(q, WHOLE, t, biome, info.tint | FLAT, [l; 4]));
                 }
             }
         }
-        Model::Boxes => {
+        BlockModel::Boxes => {
             let l = light16(n.light[i]);
             // A file's model on a block with no holes may have them, which a texture
             // of a block with none wouldn't get to show otherwise.
-            let layer = if info.layer == Layer::Opaque { Layer::Cutout } else { info.layer };
+            let layer = if info.layer == RenderLayer::Opaque { RenderLayer::Cutout } else { info.layer };
             // No light is kept inside an opaque block, whatever a pack drew there,
             // nor in others like it next to it: the brightest around goes for all.
             let dark_inside = info.flags & bf::OPAQUE != 0;

@@ -17,7 +17,7 @@ Examples to copy from:
 A screen is a tree of parts built by a function that receives a `Ui`. Parts that hold others take a closure for their children:
 
 ```rust
-ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
+ui.panel("panel", S::column().pad(7.0).gap(4.0), |ui| {
     ui.text("examplemod.title");
     ui.row(S::row().gap(8.0), |ui| {
         ui.group("input");
@@ -42,12 +42,12 @@ ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
 | `player_inventory(title)` | the player's inventory and hotbar in a menu |
 | `progress_bind`, `icons` | bars and icon rows driven by live values |
 
-Text is a translation key rather than a raw string, which keeps everything translatable and lets it use the rich text of the [tooltips guide](localization.md), pictures included. Text that isn't words of yours (a number, a player's name) goes in as an argument, `Arg::Text(..)` shows exactly what it holds; `Arg::Float(v, 2)` has two decimals. Any part with a style can have a tooltip too: `S::col().tooltip("examplemod.what_this_does")`, or `tooltip_args(key, &[..])` with arguments.
+Text is a translation key rather than a raw string, which keeps everything translatable and lets it use the rich text of the [tooltips guide](localization.md), pictures included. Text that isn't words of yours (a number, a player's name) goes in as an argument, `Arg::Text(..)` shows exactly what it holds; `Arg::Float(v, 2)` has two decimals. Any part with a style can have a tooltip too: `S::column().tooltip("examplemod.what_this_does")`, or `tooltip_args(key, &[..])` with arguments.
 
 The engine's own pause, death and settings screens are built from exactly these parts, so a screen that replaces one can look and work the same.
 
 ## Layout
-Layout works like flexbox, and all sizes are in GUI pixels, so the GUI scale in the settings makes them bigger or smaller. `S` describes one part, starting from `S::col()` or `S::row()` (rows center their children vertically, columns start at the top left):
+Layout works like flexbox, and all sizes are in GUI pixels, so the GUI scale in the settings makes them bigger or smaller. `S` describes one part, starting from `S::column()` or `S::row()` (rows center their children vertically, columns start at the top left):
 - `gap(n)` is the space between children and `pad(n)` the space around them inside
 - `size(w, h)` and `w(n)` fix a size, otherwise a part is as big as its content
 - `grow()` takes whatever space is left in the parent
@@ -63,15 +63,15 @@ Layout works like flexbox, and all sizes are in GUI pixels, so the GUI scale in 
 Text and bars can change while a screen is open. A binding's closure runs every frame, and the part is redrawn when the value changed.
 - `text_bind(|view, out| out.set("examplemod.energy", &[Arg::Int(stored), Arg::Int(capacity)]))` for text from data
 - `progress_bind(class, s, |view| 0.0..1.0)` for a bar, hidden while the value is negative, and `progress_bind_dir(.., dir, ..)` to fill another way, `abi::ui_dir::UP` for a flame
-- `icons(class, count, |view| value)` for a row of icons that shows a number in half-icon steps, like hearts. `.rtl()` fills it from the right, like hunger, `.dir(abi::ui_dir::UP)` any other way, and `.shaking()` makes it jump about at 4 or less, like hearts near the end. A negative value hides the row
+- `icons(class, count, |view| value)` for a row of icons that shows a number in half-icon steps, like hearts. `.from_right()` fills it from the right, like hunger, `.dir(abi::ui_dir::UP)` any other way, and `.shaking()` makes it jump about at 4 or less, like hearts near the end. A negative value hides the row
 
-`view` is a read-only look at the client, the same in HUD bindings, screens and frame hooks (`c.view()`): `view.me()` has your health and position, `view.inventory_group("core:equipment")` the stacks of a group of your inventory, `view.component(&C)` a synced component of yours, `view.game_mode()` the game mode (`view.creative()`, `view.exempt()` for anything but survival), and `view.menu_component(&C)` a component of the machine whose menu is open (it needs the `SYNC_MENU` flag on that component, see the [machines guide](machines.md#creating-a-machine)).
+`view` is a read-only look at the client, the same in HUD bindings, screens and frame hooks (`c.view()`): `view.player_state()` has your health and position, `view.inventory_group("core:equipment")` the stacks of a group of your inventory, `view.component(&C)` a synced component of yours, `view.game_mode()` the game mode (`view.creative()`, `view.outside_survival()` for anything but survival), and `view.menu_component(&C)` a component of the machine whose menu is open (it needs the `SYNC_MENU` flag on that component, see the [machines guide](machines.md#creating-a-machine)).
 Anything the client already has is better read than mirrored into a component: base's armor bar adds up the points of what you wear, the way the server's damage does. A component read without the flag that sends it there says so in the log.
 
 ```rust
 static HEALTH: HudElement = HudElement::named("health");
 r.hud_element(&HEALTH, hud_anchor::HOTBAR_LEFT, 0, |ui| {
-    ui.icons("heart", 10, |c| if c.exempt() { -1.0 } else { c.me().map_or(20.0, |s| s.health.ceil()) });
+    ui.icons("heart", 10, |c| if c.outside_survival() { -1.0 } else { c.player_state().map_or(20.0, |s| s.health.ceil()) });
 });
 ```
 The `class` ("heart", "arrow", "flame") names the textures, see [looks](#looks).
@@ -87,13 +87,13 @@ The `class` ("heart", "arrow", "flame") names the textures, see [looks](#looks).
 ```rust
 static ABOUT: Screen = Screen::named("about");
 r.screen(&ABOUT, |ui| {
-    ui.panel("panel", S::col().pad(8.0).gap(4.0), |ui| {
+    ui.panel("panel", S::column().pad(8.0).gap(4.0), |ui| {
         ui.text("examplemod.about.title");
     });
 });
-r.client_command("about", "", |c| { c.client().open_screen(&ABOUT); });
+r.client_command("about", "", |c| { c.client().screen_open(&ABOUT); });
 ```
-`open_screen(&ABOUT)` works from a client command, a key or a button, and the command line takes it too as `--screen examplemod:about`.
+`screen_open(&ABOUT)` works from a client command, a key or a button, and the command line takes it too as `--screen examplemod:about`.
 
 Registering an engine screen's handle replaces that screen, so `r.screen(&screens::PAUSE, ..).pauses()` is your own pause screen. The engine's are in `screens::*`: `TITLE`, `PAUSE`, `SETTINGS`, `LANGUAGE`, `CONTROLS`, `SOUND`, `MOD_SETTINGS`, `MODS`, `PROFILE`, `WORLDS`, `CREATE_WORLD`, `MULTIPLAYER`, `RESOURCE_PACKS`, `SHADER_PACKS`, `CHAT` and `DEATH`. The engine's own screens open each other through the same names, so a replaced settings screen is the one the main menu's button opens.
 
@@ -101,7 +101,7 @@ Most of the time a whole new screen is more than you need. A screen part adds to
 ```rust
 r.screen_part(&screens::TITLE, "buttons", 0, |ui| {
     ui.button("examplemod.guide", S::default(), |c| {
-        c.client().open_screen(&GUIDE);
+        c.client().screen_open(&GUIDE);
     });
 });
 ```
@@ -126,10 +126,10 @@ The engine's own parts are elements like these: `core:hotbar`, `core:held_name`,
 
 F3+F6 says when each line of the F3 overlay shows: with F3, always or never. A line set to always stays on the HUD without F3, and the editor can move it like the rest. A mod's F3 panel is one row there.
 
-Labels a mod draws (`w.draw_text`, `client.draw_text`, `client.screen_text`) are text like everywhere else, icons and `{mono}` included, with a size: 1 is menu text, 2 twice that.
+Labels a mod draws (`w.draw_text`, `client.draw_text`, `client.draw_screen_text`) are text like everywhere else, icons and `{mono}` included, with a size: 1 is menu text, 2 twice that.
 
 ## Menus
-A menu is a set of slots that the server runs, plus the screen that shows them. `world.open_menu(player, &MENU, owner)` opens one, and `r.player_menu(&INVENTORY)` picks the one the inventory key opens. Its slots come in named groups, described once; the server and the screen both build them from that, so nothing is numbered by hand. Here is the crafting table:
+A menu is a set of slots that the server runs, plus the screen that shows them. `world.open_menu(player, &MENU, holder)` opens one (on an entity, a block position, a held stack, or `Holder::NONE`), and `r.player_menu(&INVENTORY)` picks the one the inventory key opens. Its slots come in named groups, described once; the server and the screen both build them from that, so nothing is numbered by hand. Here is the crafting table:
 
 ```rust
 static CRAFTING: Menu = Menu::named("crafting_table");
@@ -141,11 +141,11 @@ r.menu(&CRAFTING)
         // a slot changed: show what the grid makes
         let grid = m.group("grid");
         let cells: Vec<ItemStack> = (0..grid.len()).map(|i| grid.get(i)).collect();
-        m.group("result").set(0, recipe_match(&CRAFTING_RECIPES, &cells, 3, 3));
+        m.group("result").set(0, recipe_grid_output(&CRAFTING_RECIPES, &cells, 3, 3));
     })
     .on_take(|m| /* the result was taken: use up the grid */ {})
     .screen(|ui| {
-        ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
+        ui.panel("panel", S::column().pad(7.0).gap(4.0), |ui| {
             ui.row(S::row().gap(8.0), |ui| {
                 ui.group("grid");
                 ui.group("result");

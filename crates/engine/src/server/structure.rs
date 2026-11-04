@@ -279,7 +279,7 @@ impl Dim {
                 .copied()
                 .unwrap_or(IVec3::ZERO)
                 * level as i32;
-            breaks |= s.mode == 1;
+            breaks |= s.flags as u32 & weft_abi::signal_flags::BREAKS != 0;
         }
         (sum.signum(), breaks)
     }
@@ -343,10 +343,10 @@ impl Dim {
         Some(out)
     }
 
-    fn break_for_body(&mut self, c: &'static Content, cells: Vec<IVec3>) {
+    pub(super) fn break_for_body(&mut self, c: &'static Content, cells: Vec<IVec3>) {
         for p in cells {
             if let Some(s) = self.get(p).filter(|s| *s != AIR) {
-                self.drop_block_loot(c, p, s, abi::ItemStack::EMPTY, false, None);
+                self.drop_block_loot(c, p, s, abi::ItemStack::EMPTY, false, 0);
                 self.set(c, p, AIR);
             }
         }
@@ -456,7 +456,7 @@ impl Dim {
                     for p in off {
                         if let Some(s) = d.get(p).filter(|s| *s != AIR) {
                             log::debug!("{} riding on a platform at {p} came off", c.state_name(s));
-                            d.drop_block_loot(c, p, s, abi::ItemStack::EMPTY, false, None);
+                            d.drop_block_loot(c, p, s, abi::ItemStack::EMPTY, false, 0);
                             d.set(c, p, AIR);
                         }
                     }
@@ -627,7 +627,7 @@ impl Dim {
             self.drop_inventory(c, id);
             self.entities.remove(id);
         }
-        self.drop_block_loot(c, at, state, abi::ItemStack::EMPTY, false, None);
+        self.drop_block_loot(c, at, state, abi::ItemStack::EMPTY, false, 0);
     }
 
     /// Landed bodies, a tick on: they get shown, and go.
@@ -712,10 +712,16 @@ impl Dim {
             }
         }
         for (at, state) in blocks {
-            if let Some(cb) = c.block_of(state).cb.on_pass {
+            if let Some(cb) = c.block_of(state).cb.on_carried {
                 let owner = c.block_of(state).owner;
                 let cell = at + now;
-                self.call(owner, cb, |w| abi::BlockEventArgs { world: w, pos: cell.to_array(), state, other: at.to_array(), entity: id });
+                self.call(owner, cb, |w| abi::BlockEventArgs {
+                    world: w,
+                    pos: cell.to_array().into(),
+                    state,
+                    other: at.to_array().into(),
+                    entity: id,
+                });
             }
         }
     }

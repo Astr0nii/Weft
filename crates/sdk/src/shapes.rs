@@ -3,6 +3,7 @@
 //! one has never heard of. `.tab(..)` and the rest go on what they return, as on any block.
 
 use crate::Dir;
+use crate::abi::BlockPos;
 use crate::component::Tag;
 use crate::content::{Block, BlockBuilder, Place, Props, Registry, WithComponents};
 use crate::world::state_prop;
@@ -10,9 +11,9 @@ use crate::world::state_prop;
 /// How neighboring stairs find each other: every stair has it.
 static STAIRS: Tag = Tag::named("stairs");
 
-fn step(pos: [i32; 3], side: Dir) -> [i32; 3] {
+fn pos_step(pos: BlockPos, side: Dir) -> BlockPos {
     let o = side.offset();
-    [pos[0] + o[0], pos[1] + o[1], pos[2] + o[2]]
+    [pos.x + o.x, pos.y + o.y, pos.z + o.z].into()
 }
 
 /// The part of a layer towards `a` (and `b`, for a corner), in 1/16 of a block: (x, z) ranges.
@@ -31,25 +32,25 @@ fn towards(a: Dir, b: Option<Dir>) -> ([f32; 2], [f32; 2]) {
 
 /// Whether what is placed goes in the top half.
 fn upper_half(p: &Place) -> bool {
-    p.hit()[1] > 0.5
+    p.hit().y > 0.5
 }
 
 /// A stair's shape from the stairs around it, as vanilla has it.
-fn stair_shape(w: &crate::World, pos: [i32; 3]) -> &'static str {
+fn stair_shape(w: &crate::World, pos: BlockPos) -> &'static str {
     let (Some(facing), Some(half)) = (w.prop(pos, "facing").and_then(Dir::from_name), w.prop(pos, "half")) else { return "straight" };
-    let stair_at = |at: [i32; 3]| {
-        let s = w.get(at);
+    let stair_at = |at: BlockPos| {
+        let s = w.block(at);
         (STAIRS.on_block(s) && state_prop(s, "half") == Some(half))
             .then(|| state_prop(s, "facing").and_then(Dir::from_name))
             .flatten()
     };
     let across = |side: Dir| side != facing && side != facing.opposite();
     // Nothing the same way on that side to keep in line with.
-    let free = |side: Dir| stair_at(step(pos, side)) != Some(facing);
-    if let Some(back) = stair_at(step(pos, facing)).filter(|&b| across(b) && free(b.opposite())) {
+    let free = |side: Dir| stair_at(pos_step(pos, side)) != Some(facing);
+    if let Some(back) = stair_at(pos_step(pos, facing)).filter(|&b| across(b) && free(b.opposite())) {
         return if back == facing.counter_clockwise() { "outer_left" } else { "outer_right" };
     }
-    if let Some(front) = stair_at(step(pos, facing.opposite())).filter(|&f| across(f) && free(f)) {
+    if let Some(front) = stair_at(pos_step(pos, facing.opposite())).filter(|&f| across(f) && free(f)) {
         return if front == facing.counter_clockwise() { "inner_left" } else { "inner_right" };
     }
     "straight"
@@ -64,7 +65,7 @@ impl Registry {
     /// `r.shaped(C, "#wall/{m}", 6, &["###", "###"], &[('#', "#wall_of/{m}")])`.
     pub fn shapes_of<'a>(&'a mut self, name: &str, sources: &str, suffix: &str) -> BlockBuilder<'a> {
         self.block(Block::generated(name.to_string()))
-            .made_of(sources, suffix)
+            .shapes_of(sources, suffix)
     }
 
     /// Stairs of `sources` (see `shapes_of`): `<name>_stairs`, turned the way the player looks,
@@ -72,8 +73,8 @@ impl Registry {
     pub fn stairs<'a>(&'a mut self, sources: &str) -> BlockBuilder<'a> {
         self.shapes_of("stairs", sources, "_stairs")
             .tag("stairs")
-            .redstone_blocker()
-            .holds_liquids()
+            .signal_blocker()
+            .holds_liquid()
             .prop("facing", ["north", "east", "south", "west"])
             .prop("half", ["bottom", "top"])
             .prop("shape", ["straight", "inner_left", "inner_right", "outer_left", "outer_right"])
@@ -94,16 +95,10 @@ impl Registry {
                 s
             })
             .placement(|p, props| {
-                props.set("facing", p.looking().name());
+                props.set("facing", p.look_facing().name());
                 props.set("half", if upper_half(p) { "top" } else { "bottom" });
             })
-            .on_neighbor(|e| {
-                let (w, pos) = (e.world(), e.pos());
-                let shape = stair_shape(&w, pos);
-                if w.prop(pos, "shape") != Some(shape) {
-                    w.set_prop(pos, "shape", shape);
-                }
-            })
+            .derived("shape", |n| stair_shape(&n.world(), n.pos()))
     }
 
     /// Slabs of `sources` (see `shapes_of`): `<name>_slab`, in the half of the block clicked. The
@@ -115,12 +110,12 @@ impl Registry {
             .states(|p: &Props, s| match p.get("type") {
                 "bottom" => s
                     .model_box([0.0, 0.0, 0.0], [16.0, 8.0, 16.0])
-                    .redstone_blocker()
-                    .holds_liquids(),
+                    .signal_blocker()
+                    .holds_liquid(),
                 "top" => s
                     .model_box([0.0, 8.0, 0.0], [16.0, 16.0, 16.0])
-                    .redstone_blocker()
-                    .holds_liquids(),
+                    .signal_blocker()
+                    .holds_liquid(),
                 _ => s.loot_rolls(2),
             })
             .placement(|p, props| props.set("type", if upper_half(p) { "top" } else { "bottom" }))
@@ -143,12 +138,12 @@ impl Registry {
                 side => {
                     let (x, z) = towards(Dir::from_name(side).unwrap_or(Dir::North), None);
                     s.model_box([x[0], 0.0, z[0]], [x[1], 16.0, z[1]])
-                        .redstone_blocker()
-                        .holds_liquids()
+                        .signal_blocker()
+                        .holds_liquid()
                 }
             })
             .placement(|p, props| {
-                let [x, _, z] = p.hit().map(|v| v - 0.5);
+                let (x, z) = (p.hit().x - 0.5, p.hit().z - 0.5);
                 let along_x = match p.face() {
                     Dir::West | Dir::East => true,
                     Dir::North | Dir::South => false,

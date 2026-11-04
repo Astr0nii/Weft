@@ -67,13 +67,14 @@ impl Server {
         let off_hand = c.game.player_layout.off == Some(slot);
         let Some((r, entity)) = self.region(pi) else { return false };
         let Some(e) = r.entities.get(entity) else { return false };
-        let creative = e.mode == GameMode::Creative;
+        let creative = e.mode.has(weft_abi::game_mode_flags::NO_COSTS);
+        let no_place = e.mode.has(weft_abi::game_mode_flags::NO_PLACE);
         let held = r.entities.inventory_slot(entity, slot);
         let Some(state) = c
             .items
             .get(held.item as usize)
             .and_then(|i| i.block)
-            .filter(|_| !held.is_empty())
+            .filter(|_| !held.is_empty() && !no_place)
         else {
             // Items used on a block (buckets) work on the world's blocks only, so far.
             return self.use_in_hand(c, pi, slot, (frame == 0).then_some((pos, face)), false);
@@ -81,11 +82,13 @@ impl Server {
         let placed = r.with_space(c, frame, |d, _| {
             let hit = hit.map(|v| v.clamp(0.0, 1.0));
             let target = d.place_clicked(c, pos, face, state, look, hit, entity, held.item)?;
-            // A named stack names the block entity it becomes (a renamed chest).
-            if let (Some(name), Some(id)) = (crate::stack::name(&held), d.anchored(target)) {
-                d.entities
-                    .comps
-                    .insert((id, c.game.name_comp), name.into_bytes().into_boxed_slice());
+            // What the stack carries goes onto the block entity it becomes (a renamed chest).
+            if let Some(id) = d.anchored(target) {
+                for &comp in &c.game.carried {
+                    if let Some(v) = crate::stack::value(held.data, comp) {
+                        d.entities.comps.insert((id, comp), v.into());
+                    }
+                }
             }
             Some(())
         });
@@ -112,8 +115,8 @@ impl Server {
         let Some(def) = c.items.get(held.item as usize) else { return false };
         let (pos, face) = target.unwrap_or((IVec3::ZERO, 0));
         let state = target.and_then(|_| r.get(pos)).unwrap_or(0);
-        let mut q = abi::Query { entity, item: held.item, pos: pos.to_array(), state, ..abi::Query::DEFAULT };
-        if !r.ask(c, abi::question::USE_ITEM, &mut q) {
+        let mut q = abi::Query { entity, item: held.item, pos: pos.to_array().into(), state, ..abi::Query::DEFAULT };
+        if !r.ask(c, abi::action::USE_ITEM, &mut q) {
             return false;
         }
         // An item that takes time starts here, and comes back through this when it is done.
@@ -143,7 +146,8 @@ impl Server {
                 world: w,
                 player: entity,
                 stack: held,
-                pos: pos.to_array(),
+                slot,
+                pos: pos.to_array().into(),
                 face: face as u32,
                 has_target: target.is_some() as u32,
                 handled: 0,
@@ -156,8 +160,8 @@ impl Server {
         if used {
             r.emit_engine(
                 c,
-                abi::event::ITEM_USED,
-                &abi::ItemUsed { player: entity, stack: held, pos: pos.to_array(), has_target: target.is_some() as u32 },
+                abi::action::USE_ITEM,
+                &abi::ItemUsed { player: entity, stack: held, pos: pos.to_array().into(), has_target: target.is_some() as u32 },
             );
             r.events
                 .push(DimEvent::EntitySwing { id: entity, off: off_hand });
@@ -194,7 +198,7 @@ impl Server {
             M::Use { face, .. } | M::UseItem { target: Some((_, face)) } if *face >= 6 => false,
             M::Respawn => !e.alive(),
             M::Break { .. } | M::Use { .. } | M::UseItem { .. } | M::Attack(_) | M::Swing | M::Interact(_) | M::Drop { .. } => {
-                e.alive() && e.mode != GameMode::Spectator
+                e.alive() && !e.mode.has(weft_abi::game_mode_flags::NO_INTERACT)
             }
             M::Move { .. } | M::OpenInventory | M::Click { .. } | M::Drag { .. } | M::CreativeTake { .. } | M::Pick { .. } => e.alive(),
             _ => true,
@@ -236,7 +240,7 @@ impl Server {
                 let Some(e) = r
                     .entities
                     .get(entity)
-                    .filter(|e| e.mode != GameMode::Spectator)
+                    .filter(|e| !e.mode.has(weft_abi::game_mode_flags::NO_INTERACT))
                 else {
                     return;
                 };
@@ -276,8 +280,9 @@ impl Server {
                 let Some(e) = r.entities.get_mut(entity) else { return };
                 e.pose = pose;
                 let here = crate::physics::around(c, &*r.space, pos, e.height(c));
-                let land = entity::track_fall(&mut e.fall, walked.y, on_ground, here.in_liquid || here.climbing)
-                    .and_then(|f| entity::fall_damage(&c.game.entities[e.kind as usize], f));
+                let splash = entity::splashes(e.in_liquid, here.in_liquid, -walked.y);
+                let fell = entity::track_fall(&mut e.fall, walked.y, on_ground, here.in_liquid || here.climbing);
+                let land = fell.and_then(|f| entity::fall_damage(&c.game.entities[e.kind as usize], f));
                 e.sprinting = sprint;
                 e.flying = flying;
                 e.jumped |= jumped;
@@ -288,8 +293,9 @@ impl Server {
                 e.pitch = pitch;
                 e.on_ground = on_ground;
                 e.in_liquid = here.in_liquid;
+                r.fall_effects(c, entity, fell, splash);
                 if let Some(amount) = land {
-                    r.damage(c, entity, amount, 0, damage::FALL);
+                    r.damage(c, entity, amount, 0, abi::damage_cause::FALL);
                 }
             }
 
@@ -299,7 +305,8 @@ impl Server {
                 let mining = self.players[pi].mining.take();
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get(entity) else { return };
-                let (eye, sel, creative) = (e.pos + DVec3::Y * e.eye(c), e.selected, e.mode == GameMode::Creative);
+                let (eye, sel, creative) = (e.pos + DVec3::Y * e.eye(c), e.selected, e.mode.has(weft_abi::game_mode_flags::INSTANT_BREAK));
+                let no_break = e.mode.has(weft_abi::game_mode_flags::NO_BREAK);
                 let reach = r.block_reach(c, entity);
                 let rate = r.mining_rate_of(c, entity, frame, pos, part);
                 let progress = mining
@@ -312,7 +319,7 @@ impl Server {
                     // only that it is, and a modified one could say anything.
                     let part = d.aimed_part(c, pos, part);
                     let too_soon = rate < 1.0 && progress + 2.0 * rate < 0.7;
-                    let keeps = creative && c.no_creative_break(held.item);
+                    let keeps = (creative && c.no_creative_break(held.item)) || no_break;
                     let free = c
                         .states
                         .get(part as usize)
@@ -382,7 +389,7 @@ impl Server {
             ToServer::Pick { item } => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get(entity) else { return };
-                let (sel, creative) = (e.selected, e.mode == GameMode::Creative);
+                let (sel, creative) = (e.selected, e.mode.has(weft_abi::game_mode_flags::NO_COSTS));
                 let Some(inv) = r.entities.inventories.get(&entity) else { return };
                 let current = inv.get(sel as usize).copied().unwrap_or_default();
                 if let Some(j) = c
@@ -441,9 +448,14 @@ impl Server {
                 }
                 let held = r.entities.held(entity);
                 let mut q = abi::Query { entity: target, other: entity, item: held.item, ..abi::Query::DEFAULT };
-                if !r.ask(c, abi::question::INTERACT_ENTITY, &mut q) {
+                if !r.ask(c, abi::action::INTERACT_ENTITY, &mut q) {
                     return;
                 }
+                r.emit_engine(
+                    c,
+                    abi::action::INTERACT_ENTITY,
+                    &abi::Interaction { player: entity, entity: target, item: held.item, pad: 0 },
+                );
                 let mut handled = false;
                 for &(owner, cb) in &c.game.entities[kind as usize].on_interact {
                     handled |= r
@@ -459,7 +471,7 @@ impl Server {
             }
             ToServer::OpenInventory => {
                 if let Some(m) = c.game.player_menu {
-                    self.open_menu(c, pi, m, 0, 0);
+                    self.open_menu(c, pi, m, None, 0);
                 }
             }
             ToServer::Click { slot, button, shift } => {
@@ -474,7 +486,7 @@ impl Server {
                 let p = &mut players[pi];
                 let creative = dims[p.dim as usize]
                     .entity(p.entity)
-                    .is_some_and(|e| e.mode == GameMode::Creative);
+                    .is_some_and(|e| e.mode.has(weft_abi::game_mode_flags::CREATIVE_INVENTORY));
                 if let (true, Some(m), true) = (creative, &mut p.menu, item != 0 && (item as usize) < c.items.len()) {
                     // Like vanilla: the same item adds one, anything else held is thrown away
                     // first, an empty hand takes a stack (left) or one (right).
@@ -530,7 +542,7 @@ impl Server {
                     let mode = r
                         .entities
                         .get(entity)
-                        .map_or(GameMode::Survival, |e| e.mode);
+                        .map_or(GameMode::SURVIVAL, |e| e.mode);
                     mode_modifiers(c, r, entity, mode);
                     // After the components: modifiers are gone with them. Sent as any change.
                     let max = r.max_health(c, entity);
@@ -556,14 +568,14 @@ impl Server {
                     let mut line = None;
                     if let Some((r, player)) = self.region(pi) {
                         let mut q = abi::Query { entity: player, text: abi::Str::new(&text), ..abi::Query::DEFAULT };
-                        if !r.ask(c, abi::question::CHAT, &mut q) {
+                        if !r.ask(c, abi::action::CHAT, &mut q) {
                             return;
                         }
                         if let Some((owner, cb)) = c.game.chat_format {
                             let out = &raw mut line as *mut std::ffi::c_void;
                             r.call(owner, cb, |world| abi::ChatFormatArgs { world, player, text: abi::Str::new(&text), out });
                         }
-                        r.emit_engine(c, abi::event::CHAT_MESSAGE, &abi::ChatMessage::new(player, &text));
+                        r.emit_engine(c, abi::action::CHAT, &abi::ChatMessage::new(player, &text));
                     }
                     log::info!("<{name}> {text}");
                     let line = line.unwrap_or_else(|| Msg::new("chat.message", vec![Arg::Text(name), Arg::Text(text)]));
@@ -650,12 +662,13 @@ impl Server {
     }
 }
 
-/// The block is within reach of these eyes.
-/// From the eyes to the nearest point of the target's box, like modern's.
-pub(super) fn in_reach(c: &Content, d: &Dim, me: &Entity, target: &Entity) -> bool {
+/// Within its `ENTITY_REACH`, from the eyes to the nearest point of the target's box, like
+/// modern's; a player's with room for what its client saw last.
+pub(crate) fn in_reach(c: &Content, d: &Dim, me: &Entity, target: &Entity) -> bool {
     let eye = me.pos + DVec3::Y * me.eye(c);
     let b = target.aabb(c);
-    let reach = d.attribute(c, me.id, extend::ENTITY_REACH, false) + ENTITY_SLACK;
+    let slack = if me.player { ENTITY_SLACK } else { 0.0 };
+    let reach = d.attribute(c, me.id, extend::ENTITY_REACH, false) + slack;
     (eye.clamp(b.min, b.max) - eye).length_squared() <= reach * reach
 }
 
@@ -667,7 +680,7 @@ pub(super) fn within(eye: DVec3, block: IVec3, reach: f64) -> bool {
 pub(super) fn wear(c: &Content, d: &mut Dim, player: u64, slot: u32, amount: u32) {
     if d.entities
         .get(player)
-        .is_some_and(|e| e.mode == GameMode::Creative)
+        .is_some_and(|e| e.mode.has(weft_abi::game_mode_flags::NO_COSTS))
     {
         return;
     }

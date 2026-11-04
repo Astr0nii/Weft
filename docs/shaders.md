@@ -25,6 +25,7 @@ A snippet is a file `shaders/<kind>/<name>.wgsl` in your mod, holding one functi
 | text effects | `shaders/fx/` | `fn effect(g: Glyph) -> Glyph` | `{fx:mymod:name}` in a translation |
 | panels | `shaders/gui/` | `fn fill(p: GuiPixel) -> vec4<f32>` | a class's `.gui`: `shader = mymod:name` |
 | entities | `shaders/entity/` | `fn shade(p: EntityPixel) -> vec4<f32>` | `r.entity(..).shader("name")` |
+| entity effects | `shaders/entity_effect/` | `fn effect(p: EntityPixel, c: vec4<f32>, strength: f32) -> vec4<f32>` | `r.entity_effect(&E)`, then `w.entity_effect(id, &E, strength, ticks)` |
 | blocks | `shaders/block/` | `fn shade(p: BlockPixel) -> vec4<f32>` | `r.block(..).shader("name")` |
 | particles | `shaders/particle/` | `fn shade(p: ParticleFrag) -> vec4<f32>` | `r.particle(..).shader("name")` |
 | sky | `shaders/sky/` | `fn shade(p: SkyPixel) -> vec4<f32>` | `r.sky_body(..).shader("name")`, see the [sky guide](sky.md#shaders) |
@@ -73,9 +74,11 @@ fn shade(p: EntityPixel) -> vec4<f32> {
 }
 ```
 ```rust
-r.entity(&WISP).texture("wisp").model(model.uv(32, 16)).shader("ghost");
+r.entity(&WISP).texture("wisp").model(model.uv_size(32, 16)).shader("ghost");
 ```
-`EntityPixel` has `uv`, `albedo` (the skin's texel, linear, `a` is its alpha), `light` (a vec3 with shading, the hurt flash and glow already included) and `time`. A returned alpha under 0.5 cuts the pixel out, which is how the wisp gets its holes. The `_e` glow masks of the [textures guide](textures.md#emission) are a separate and simpler way to make parts of a skin shine.
+`EntityPixel` has `uv`, `albedo` (the skin's texel, linear, `a` is its alpha), `light` (a vec3 with shading and the glow mask already included) and `time`. A returned alpha under 0.5 cuts the pixel out, which is how the wisp gets its holes. The `_e` glow masks of the [textures guide](textures.md#emission) are a separate and simpler way to make parts of a skin shine.
+
+An entity effect goes on top of whatever shaded a mob, for a while: it gets the color `c` and a `strength`, and returns the new color. The engine's are effects too, `core:hurt` is the red a hit leaves, `core:flash` a creeper's white and `core:glow` lights a mob up whatever the light around (`entity_effects::GLOW`). `w.entity_effect(id, &MY_EFFECT, 0.6, 40)` puts one on for everyone who sees it, players arriving later included, and one at a time: a new one replaces it, `0` ticks takes it off. `w.flash(id)` is the white one for two ticks.
 
 ## Blocks
 A block shader colors the pixels of a block's faces and takes over from the normal lighting the same way:
@@ -117,7 +120,7 @@ fn apply(p: PostPixel) -> vec4<f32> {
 ```
 ```rust
 static DREAM: Key = Key::named("dream");
-r.key(&DREAM, "N").on_press(|c| c.post_effect("dream", 1.0));
+r.key(&DREAM, "N").on_press_client(|c| c.post_effect("dream", 1.0));
 ```
 `PostPixel` has `uv` (0 to 1, top left first), `color` (the picture so far at that point, linear), `strength`, `time` and `size` in pixels, and `scene_at(p, uv)` reads the picture anywhere else, for blur and waves. `post_effect(name, 0.0)` turns an effect off, and several can be on at once, applied one after another in the order they were turned on.
 

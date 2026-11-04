@@ -147,7 +147,7 @@ impl Dim {
         self.set(c, p, state);
         // Plants and torches wash away with their drops, like vanilla.
         for old in was {
-            self.drop_block_loot(c, p, old, ItemStack::EMPTY, false, None);
+            self.drop_block_loot(c, p, old, ItemStack::EMPTY, false, 0);
         }
     }
 
@@ -281,7 +281,7 @@ impl Dim {
         let creative = self
             .entities
             .get(player)
-            .is_some_and(|e| e.mode == crate::world::GameMode::Creative);
+            .is_some_and(|e| e.mode.has(weft_abi::game_mode_flags::NO_COSTS));
         if let Some(&(l, empty)) = c.item_liquid.get(&held.item) {
             let hit = self
                 .look_ray(c, player, self.block_reach(c, player), false)
@@ -294,12 +294,12 @@ impl Dim {
             {
                 let mut q = weft_abi::Query {
                     entity: player,
-                    pos: hit.block.to_array(),
+                    pos: hit.block.to_array().into(),
                     state: source,
                     item: held.item,
                     ..weft_abi::Query::DEFAULT
                 };
-                if !self.ask(c, weft_abi::question::PLACE_BLOCK, &mut q) || !self.add_part(c, hit.block, source) {
+                if !self.ask(c, weft_abi::action::PLACE_BLOCK, &mut q) || !self.add_part(c, hit.block, source) {
                     return None;
                 }
                 return Some(if creative || empty == 0 { held } else { ItemStack::new(empty, 1) });
@@ -311,9 +311,14 @@ impl Dim {
             if old == source {
                 return None;
             }
-            let mut q =
-                weft_abi::Query { entity: player, pos: target.to_array(), state: source, item: held.item, ..weft_abi::Query::DEFAULT };
-            if !self.ask(c, weft_abi::question::PLACE_BLOCK, &mut q) {
+            let mut q = weft_abi::Query {
+                entity: player,
+                pos: target.to_array().into(),
+                state: source,
+                item: held.item,
+                ..weft_abi::Query::DEFAULT
+            };
+            if !self.ask(c, weft_abi::action::PLACE_BLOCK, &mut q) {
                 return None;
             }
             if c.states[old as usize].liquid.is_some() {
@@ -328,9 +333,14 @@ impl Dim {
             .filter(|h| h.frame == 0)?;
         let f = decode(c, hit.state).filter(|f| f.source)?;
         let filled = *c.containers.get(&(held.item, f.id))?;
-        let mut q =
-            weft_abi::Query { entity: player, pos: hit.block.to_array(), state: hit.state, item: held.item, ..weft_abi::Query::DEFAULT };
-        if !self.ask(c, weft_abi::question::BREAK_BLOCK, &mut q) {
+        let mut q = weft_abi::Query {
+            entity: player,
+            pos: hit.block.to_array().into(),
+            state: hit.state,
+            item: held.item,
+            ..weft_abi::Query::DEFAULT
+        };
+        if !self.ask(c, weft_abi::action::BREAK_BLOCK, &mut q) {
             return None;
         }
         self.replace_part(c, hit.block, hit.state, AIR);
@@ -354,7 +364,13 @@ impl Dim {
     pub fn look_ray(&self, c: &Content, id: u64, max: f64, liquids: bool) -> Option<crate::physics::Hit> {
         let e = self.entities.get(id)?;
         let eye = e.pos + DVec3::Y * e.eye(c);
-        let dir = crate::physics::look_dir(e.yaw, e.pitch);
+        let from = if self.frame != 0 { self.place.to_local(eye) } else { eye };
+        self.ray(c, from, crate::physics::look_dir(e.yaw, e.pitch), max, liquids)
+    }
+
+    /// The first block along a ray from `from` (in this dimension's frame: a body's blocks when
+    /// asked from them), bodies included when asked from the world.
+    pub fn ray(&self, c: &Content, from: DVec3, dir: DVec3, max: f64, liquids: bool) -> Option<crate::physics::Hit> {
         let structures: Vec<(u64, crate::physics::Transform, &dyn crate::physics::Blocks)> = self
             .bodies
             .iter()
@@ -366,8 +382,8 @@ impl Dim {
             .collect();
         // Asked from a body's blocks, it looks along those.
         if self.frame != 0 {
-            return crate::physics::pick(c, &*self.space, &[], self.place.to_local(eye), dir, max, liquids);
+            return crate::physics::pick(c, &*self.space, &[], from, dir, max, liquids);
         }
-        crate::physics::pick(c, &*self.space, &structures, eye, dir, max, liquids)
+        crate::physics::pick(c, &*self.space, &structures, from, dir, max, liquids)
     }
 }

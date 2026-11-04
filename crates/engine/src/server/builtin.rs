@@ -2,7 +2,7 @@
 //! side by side, so a listed command always has one.
 
 use glam::{DVec3, IVec3};
-use weft_abi::{ItemStack, Who, damage};
+use weft_abi::{ItemStack, Who, damage_cause as damage};
 
 use super::Server;
 use crate::commands::Args;
@@ -66,12 +66,12 @@ pub const COMMANDS: &[(&str, &str, Handler, u32)] = &[
     ("setblock", "<pos:pos> <block:block>", set_block, p::GAME_MASTER),
     ("insert", "<pos:pos> <item:item> [count:int]", insert, p::GAME_MASTER),
     ("block", "<pos:pos>", block, p::GAME_MASTER),
-    ("gamemode", "survival [who:targets] | creative [who:targets] | spectator [who:targets]", game_mode, p::GAME_MASTER),
+    ("gamemode", "<mode:word(#core:game_modes)> [who:targets]", game_mode, p::GAME_MASTER),
     ("heal", "[who:targets]", heal, p::GAME_MASTER),
     ("tick", "query | rate <tps:int> | freeze | unfreeze | step [ticks:int] | sprint <ticks:int>", tick, p::ADMIN),
     ("regions", "", regions, p::GAME_MASTER),
     ("seed", "", seed, p::GAME_MASTER),
-    ("weather", "clear [ticks:int] | rain [ticks:int] | thunder [ticks:int]", weather, p::GAME_MASTER),
+    ("weather", "<weather:word(#core:weathers)> [ticks:int]", weather, p::GAME_MASTER),
     ("op", "<who:targets> [level:int]", op, p::ADMIN),
     ("deop", "<who:targets>", deop, p::ADMIN),
     ("rule", "[name:word(#core:rules)] [value:int]", rule, p::ADMIN),
@@ -332,10 +332,10 @@ fn block(s: &mut Server, x: &Ctx) -> Vec<Msg> {
 
 fn game_mode(s: &mut Server, x: &Ctx) -> Vec<Msg> {
     let a = x.a;
-    let mode = GameMode::ALL
-        .into_iter()
-        .find(|m| a.get(m.name()).is_some())
-        .unwrap_or_default();
+    let named = a.text("mode").unwrap_or("");
+    let Some(mode) = GameMode::parse(named) else {
+        return say("gamemode.unknown", vec![text(named)]);
+    };
     let who: Vec<usize> = x
         .targets(s, "who")
         .iter()
@@ -349,12 +349,19 @@ fn game_mode(s: &mut Server, x: &Ctx) -> Vec<Msg> {
 
 fn weather(s: &mut Server, x: &Ctx) -> Vec<Msg> {
     let d = &mut s.dims[x.me.0 as usize];
-    if !x.c.dims[d.id as usize].weather {
+    if !x.c.dims[d.id as usize].has_weather() {
         return say("weather.none", Vec::new());
     }
-    let (raining, thunder) = (x.a.get("rain").is_some() || x.a.get("thunder").is_some(), x.a.get("thunder").is_some());
+    let named = x.a.text("weather").unwrap_or("");
+    let names = &x.c.game.weather_names;
+    let Some(&w) = names
+        .get(named)
+        .or_else(|| names.get(&format!("core:{named}")))
+    else {
+        return say("weather.unknown", vec![text(named)]);
+    };
     let ticks = x.a.int("ticks").map_or(12000, |t| t.max(1) as u64);
-    d.set_weather(raining, thunder, ticks);
+    d.set_weather(w as u16, ticks);
     say("weather.done", Vec::new())
 }
 

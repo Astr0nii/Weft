@@ -22,7 +22,7 @@ The texture goes to `assets/textures/sky/planet.png` and can be any size, and ev
 |---|---|
 | `orbit(ticks)` | ticks per turn around the sky, and a negative value makes it go the other way. Without it, the body follows the day of the dimension like the sun does, which means it slows down a little around noon and midnight |
 | `still()` | keeps the body where its phase, tilt and heading put it |
-| `follow_day()` | makes the body follow the day again, for example if it comes from another mod and you gave it an orbit |
+| `orbit_day()` | makes the body follow the day again, for example if it comes from another mod and you gave it an orbit |
 | `phase(turns)` | sets where the body starts: 0 is rising in the east, 0.25 is overhead, 0.5 is setting, and 0.75 is under your feet |
 | `tilt(degrees)` | leans the orbit to the south, away from overhead |
 | `heading(degrees)` | rotates the orbit around the vertical axis, so with a value of 90 the body rises in the north |
@@ -33,10 +33,10 @@ The texture goes to `assets/textures/sky/planet.png` and can be any size, and ev
 | `frames(columns, rows)` | treats the texture as a grid of frames that are shown one after another, like the phases of the moon |
 | `frame_ticks(ticks)` | sets how long each frame lasts, which is one day of the dimension by default |
 | `glow(rgb)` | lights the horizon while the body rises and sets. The sunset of the sun is `glow(0xFFE633)`, and two suns will give you two sunsets |
-| `additive()`, `covers()` | `additive()` adds the body's light to what is behind it instead of covering it, and `covers()` switches it back |
+| `blend_add()`, `blend_cover()` | `blend_add()` adds the body's light to what is behind it instead of covering it, and `blend_cover()` switches it back |
 | `order(n)` | sets the drawing order from low to high, and bodies with equal values are drawn in the order they were registered |
 
-Daylight and the light on blocks come from the day of the dimension (`day_length`, `fixed_time`) and not from any body, which means that if you remove the sun, the day will still happen, and if you give the sun a different orbit, it will no longer match the light.
+Daylight and the light on blocks come from the day of the dimension (`day_length`, `fixed_time`, `daylight` for its curve) and not from any body, which means that if you remove the sun, the day will still happen, and if you give the sun a different orbit, it will no longer match the light.
 
 ## Changing what is there
 When you use an object from another mod, only the fields you set are changed and the object stays the same type, so this example makes the moon bigger, while its texture, phases and orbit stay the same:
@@ -44,7 +44,7 @@ When you use an object from another mod, only the fields you set are changed and
 use base_api::{MOON, OVERWORLD, STARS, SUN};
 r.sky_body(&OVERWORLD, &MOON).size(40.0);
 r.sky_body(&OVERWORLD, &SUN).texture("mymod:blue_sun").glow(0x80C0FF);
-r.remove_sky(&OVERWORLD, &STARS);
+r.sky_remove(&OVERWORLD, &STARS);
 ```
 Mods run in dependency order, so your mod has to depend on base to change its objects, and if several mods change the same field, the last one wins. All of this works per dimension, and since base registers its three objects in both `OVERWORLD` and `FLATLANDS`, you have to change or remove them in each dimension separately. A resource pack can also replace the textures themselves, for example `textures/sky/sun.png`.
 
@@ -62,7 +62,7 @@ Stars turn together on the orbit you give them, or with the day if you don't giv
 ```rust
 r.sky_clouds(&OVERWORLD, &MY_CLOUDS).texture("clouds").height(300.0).drift(0.03).color(0xFFE0E0);
 ```
-Every filled pixel of the texture becomes a box that is 12 blocks wide and 4 blocks high, and the texture repeats across the sky, further than the terrain and distant terrain reach. They are one draw whatever the size of the picture, as a shader walks it pixel by pixel. Without `.height` the underside is at 224.33, and players can raise any clouds in the video settings. Clouds exist in the world, which means that they hide what is behind them and you can fly through them. Rain makes them grey and hides bodies and stars, and it is controlled by the `.weather()` of the dimension, while `w.raining()` and `w.set_weather(raining, thunder, ticks)` let you read and change it.
+Every filled pixel of the texture becomes a box that is 12 blocks wide and 4 blocks high, and the texture repeats across the sky, further than the terrain and distant terrain reach. They are one draw whatever the size of the picture, as a shader walks it pixel by pixel. Without `.height` the underside is at 224.33, and players can raise any clouds in the video settings. Clouds exist in the world, which means that they hide what is behind them and you can fly through them. Rain makes them grey and hides bodies and stars, and which weathers come is the dimension's `.weathers(&[..])`, while `w.raining()`, `w.weather()` and `w.set_weather(&weathers::THUNDER, ticks)` let you read and change it. Weathers are values like any: `r.weather(&ACID_RAIN).darkness(0.5).duration(2400, 6000).weight(1)` adds one, which comes now and then after clear weather where a dimension lists it, and `/weather mymod:acid_rain` sets it. What falls is the biome's: rain, snow with `.snows()`, or your own picture with `r.precipitation(&ASH, "ash", 0.3, 0.4)` and `.precipitation(&ASH)` on the biome.
 
 ## Skyboxes
 A dome covers the entire sky at once and doesn't move unless you give it an orbit, and it is drawn over the sky's colors, but under the stars and bodies:

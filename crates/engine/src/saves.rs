@@ -39,8 +39,8 @@ pub struct WorldMeta {
     pub times: Vec<(String, u64)>,
     /// What `/time` moved each dimension's time of day by.
     pub day_offsets: Vec<(String, i64)>,
-    /// Each dimension's weather: raining, thunder, the tick it changes.
-    pub weather: Vec<(String, bool, bool, u64)>,
+    /// Each dimension's weather by name, and the tick it changes.
+    pub weather: Vec<(String, String, u64)>,
     /// Players given a permission level: their key and the level.
     pub ops: Vec<(String, u32)>,
     /// Area edits per dimension (`server::area::AreaFill::spec`), in order.
@@ -85,13 +85,10 @@ impl WorldMeta {
                 "next_entity" => m.next_entity = v.parse().unwrap_or(1),
                 _ => {
                     if let Some(d) = k.strip_prefix("weather.") {
-                        let n: Vec<u64> = v
-                            .split_whitespace()
-                            .filter_map(|x| x.parse().ok())
-                            .collect();
-                        if let [rain, thunder, until] = n[..] {
+                        let w: Vec<&str> = v.split_whitespace().collect();
+                        if let [name, until] = w[..] {
                             m.weather
-                                .push((d.to_string(), rain != 0, thunder != 0, until));
+                                .push((d.to_string(), name.to_string(), until.parse().unwrap_or(0)));
                         }
                     } else if let Some(key) = k.strip_prefix("op.") {
                         m.ops.push((key.to_string(), v.parse().unwrap_or(0)));
@@ -119,8 +116,8 @@ impl WorldMeta {
             "format = {}\nname = {}\nseed = {}\nlast_played = {}\nnext_entity = {}\n",
             self.format, self.name, self.seed, self.last_played, self.next_entity
         );
-        for (d, rain, thunder, until) in &self.weather {
-            s.push_str(&format!("weather.{d} = {} {} {until}\n", *rain as u8, *thunder as u8));
+        for (d, weather, until) in &self.weather {
+            s.push_str(&format!("weather.{d} = {weather} {until}\n"));
         }
         for (key, level) in &self.ops {
             s.push_str(&format!("op.{key} = {level}\n"));

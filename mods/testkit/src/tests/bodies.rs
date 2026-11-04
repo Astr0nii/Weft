@@ -63,9 +63,9 @@ pub async fn body_chest(t: T) -> R {
     // Open from on board.
     t.op(&format!("onto {id} 1.0")).await?;
     t.secs(0.4).await?;
-    t.c().look(-90.0, -40.0);
+    t.c().set_look(-90.0, -40.0);
     t.secs(0.2).await?;
-    t.check_eq(t.state().target_frame, id, "the chest on the structure is looked at");
+    t.check_eq(t.state().target_body, id, "the chest on the structure is looked at");
     t.press("core:use");
     t.secs(0.4).await?;
     let open = t.c().screen();
@@ -73,14 +73,14 @@ pub async fn body_chest(t: T) -> R {
     // Still open after it flew on.
     t.secs(0.4).await?;
     t.check_eq(t.c().screen(), open, "and stays open as it flies");
-    t.c().close_screen();
+    t.c().screen_close();
     t.no_screen().await?;
 
     // Saved with it.
     let name = format!("test-{}", t.name());
-    t.c().leave_world();
+    t.c().world_leave();
     t.screen("core:title").await?;
-    t.c().open_world(&name, 1);
+    t.c().world_open(&name, 1);
     t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED))
         .await?;
     t.loaded().await?;
@@ -162,7 +162,7 @@ pub async fn body_sneak_edge(t: T) -> R {
                 .await?;
             t.secs(0.2).await?;
             t.op(&format!("onto {id} 1.0")).await?;
-            t.c().look(yaw, 0.0);
+            t.c().set_look(yaw, 0.0);
             t.secs(0.5).await?;
             t.hold("core:sneak", 2.4);
             t.frames(3).await?;
@@ -173,7 +173,7 @@ pub async fn body_sneak_edge(t: T) -> R {
                 t.frames(1).await?;
                 let st = t.state();
                 let Some(on) = t.c().entity(body).map(|e| e.pos) else { continue };
-                let rel = [st.pos[0] - on[0], st.pos[1] - on[1], st.pos[2] - on[2]];
+                let rel = [st.pos.x - on.x, st.pos.y - on.y, st.pos.z - on.z];
                 far = far.max(rel[0].abs()).max(rel[2].abs());
                 log.push(format!("{:.3} {:.3} {:.3} ground {}", rel[0], rel[1], rel[2], t.flag(client::client_flags::ON_GROUND)));
                 if rel[1] < 0.7 {
@@ -196,7 +196,7 @@ pub async fn body_place(t: T) -> R {
     t.flat().await?;
     t.op("mode creative").await?;
     t.op("put me 0 oak_planks 64").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     let f = t.feet();
     // A plate lifted around a spot over it: all it has is a layer under its middle.
     let center = add(f, [0, 4, -5]);
@@ -207,11 +207,11 @@ pub async fn body_place(t: T) -> R {
         .await?;
     t.cmd(&format!("/tp {} {} {}", center[0] as f64 + 0.5, center[1] + 2, center[2] as f64 + 3.5))
         .await?;
-    t.c().fly(true);
+    t.c().set_flying(true);
     t.secs(0.5).await?;
     t.look_at(add(center, [0, -1, 0]));
     t.secs(0.3).await?;
-    t.check(t.state().target_frame.to_string() == id, "looking at the structure");
+    t.check(t.state().target_body.to_string() == id, "looking at the structure");
     t.press("core:use");
     t.secs(0.5).await?;
     t.check_eq(t.op(&format!("sblock {id} 0 0 0")).await?, "base:oak_planks".to_string(), "a block goes on top of the plate");
@@ -236,12 +236,12 @@ pub async fn lift(t: T) -> R {
     t.secs(2.0).await?;
     let (me, lift) = (t.state().pos, pos_of(&t, &format!("{id}")).await?);
     t.check(lift[1] > p[1] + 1.2, "the lift went up");
-    t.check((me[1] - (lift[1] + 1.0)).abs() < 0.15, format!("the player rides on top (feet {:.2}, deck {:.2})", me[1], lift[1] + 1.0));
+    t.check((me.y - (lift[1] + 1.0)).abs() < 0.15, format!("the player rides on top (feet {:.2}, deck {:.2})", me.y, lift[1] + 1.0));
     // Up to the top, then all the way down.
     t.secs(5.0).await?;
     let (me, lift) = (t.state().pos, pos_of(&t, &format!("{id}")).await?);
     t.check(lift[1] < p[1] + 1.5, "the lift came down");
-    t.check((me[1] - (lift[1] + 1.0)).abs() < 0.15, format!("the player rode it down (feet {:.2}, deck {:.2})", me[1], lift[1] + 1.0));
+    t.check((me.y - (lift[1] + 1.0)).abs() < 0.15, format!("the player rode it down (feet {:.2}, deck {:.2})", me.y, lift[1] + 1.0));
     t.check_eq(t.op("health").await?, "20".to_string(), "health after the ride");
     Ok(())
 }
@@ -255,10 +255,10 @@ pub async fn ride_frames(t: T) -> R {
     t.op(&format!("onto {id} 1.0")).await?;
     t.secs(0.5).await?;
     let mut steps = Vec::new();
-    let mut last = t.state().shown[1];
+    let mut last = t.state().shown.y;
     for _ in 0..60 {
         t.frames(1).await?;
-        let y = t.state().shown[1];
+        let y = t.state().shown.y;
         steps.push(y - last);
         last = y;
     }
@@ -291,7 +291,7 @@ pub async fn skiff_smooth(t: T) -> R {
     t.op(&format!("onto {skiff} 1.0 {idol}")).await?;
     // Into a leg, away from its turn (it turns every 3 seconds of its age).
     t.secs(0.5).await?;
-    let x = |t: &T, id| t.c().entity(id).map_or(0.0, |e| e.pos[0]);
+    let x = |t: &T, id| t.c().entity(id).map_or(0.0, |e| e.pos.x);
     // For 3.5 seconds (a turn is in it): it reverses once (overshooting and coming back would
     // reverse three times, jitter many times), never jumps, and its rider stays on its spot.
     // A jump is what a step has beyond its 6 blocks a second: a long frame of the machine's makes
@@ -328,11 +328,11 @@ pub async fn skiff_smooth(t: T) -> R {
     t.secs(0.5).await?;
     // For 3.5 seconds, so a turn is in it.
     let mut steps = Vec::new();
-    let mut last = x(&t, skiff) - t.state().shown[0];
+    let mut last = x(&t, skiff) - t.state().shown.x;
     let start = std::time::Instant::now();
     while start.elapsed().as_secs_f64() < 3.5 {
         t.frames(1).await?;
-        let now = x(&t, skiff) - t.state().shown[0];
+        let now = x(&t, skiff) - t.state().shown.x;
         steps.push((now - last).abs());
         last = now;
     }
@@ -424,7 +424,7 @@ pub async fn skiff_blocks(t: T) -> R {
     t.flat().await?;
     t.op("mode creative").await?;
     t.op("put me 0 stone 64").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     let f = t.feet();
     let id = spawn(&t, "testmod:skiff", add(f, [0, 3, 0])).await?;
     let sb = |p: [i32; 3]| format!("sblock {id} {} {} {}", p[0], p[1], p[2]);
@@ -432,7 +432,7 @@ pub async fn skiff_blocks(t: T) -> R {
     t.op(&format!("onto {id} 1.0")).await?;
     t.secs(0.4).await?;
     // Down at the deck ahead: the block goes on top of it.
-    t.c().look(0.0, -60.0);
+    t.c().set_look(0.0, -60.0);
     t.secs(0.2).await?;
     t.press("core:use");
     t.secs(0.5).await?;
@@ -443,18 +443,18 @@ pub async fn skiff_blocks(t: T) -> R {
     // Looking at a spot of the deck 0.02 from the edge between two planks (along the way it
     // flies) while riding, the same block stays targeted.
     let st = t.state();
-    let o = t.c().entity(id).map_or([0.0; 3], |e| e.pos);
+    let o = t.c().entity(id).map_or([0.0; 3], |e| e.pos.to_array());
     let spot = [o[0] - 0.5 + 0.98, o[1] + 1.0, o[2] - 0.5 + 0.5 - 1.0];
-    let eye = [st.shown[0], st.shown[1] + t.c().entity(0).map_or(1.62, |e| e.size[2] as f64), st.shown[2]];
+    let eye = [st.shown.x, st.shown.y + t.c().entity(0).map_or(1.62, |e| e.size.eye as f64), st.shown.z];
     let (dx, dy, dz) = (spot[0] - eye[0], spot[1] - eye[1], spot[2] - eye[2]);
     t.c()
-        .look((-dx).atan2(-dz).to_degrees() as f32, dy.atan2((dx * dx + dz * dz).sqrt()).to_degrees() as f32);
+        .set_look((-dx).atan2(-dz).to_degrees() as f32, dy.atan2((dx * dx + dz * dz).sqrt()).to_degrees() as f32);
     t.frames(2).await?;
     let mut targets = std::collections::BTreeSet::new();
     for _ in 0..60 {
         t.frames(1).await?;
         let s = t.state();
-        targets.insert((s.target, s.target_frame));
+        targets.insert((s.target, s.target_body));
     }
     t.check(targets.len() == 1, format!("one block looked at while riding ({targets:?})"));
     let (a, sa) = (pos_of(&t, &format!("{id}")).await?, t.op(&sb([0, 1, -1])).await?);
@@ -464,7 +464,7 @@ pub async fn skiff_blocks(t: T) -> R {
     // A mod's write, then the player breaks the stone.
     t.check_eq(t.op(&format!("{} base:cobblestone", sb([1, 1, 1]))).await?, "1".to_string(), "a mod sets a block of it");
     t.check_eq(t.op(&sb([1, 1, 1])).await?, "base:cobblestone".to_string(), "and reads it back");
-    t.c().look(0.0, -60.0);
+    t.c().set_look(0.0, -60.0);
     t.secs(0.2).await?;
     t.hold("core:attack", 0.1);
     t.secs(0.5).await?;

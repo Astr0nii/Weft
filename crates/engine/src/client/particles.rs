@@ -1,7 +1,8 @@
 //! Particles: kinds are data (`registry::ParticleDef`), particles live only on clients. The CPU
 //! only makes them: the GPU moves them every frame (`shaders/particle_sim.wgsl`), stopped by the
-//! blocks around the camera it is told about, and draws them as instanced camera-facing quads:
-//! one draw for the cut-out ones, one for the blended ones.
+//! blocks around the camera it is told about, answers what happens to them by their kinds' rules
+//! (`registry::ParticleRule`), and draws them as instanced camera-facing quads: one pipeline for
+//! the cut-out ones, one for the blended ones.
 
 use std::collections::VecDeque;
 
@@ -13,12 +14,18 @@ use super::textures::GameTextures;
 use super::world::ClientWorld;
 use super::world_render::Camera;
 use crate::content::content;
-use crate::gpu_layout::{GpuParticle, GpuParticleKind, GpuSimParticle};
+use crate::gpu_layout::{GpuParticle, GpuParticleKind, GpuParticleRule, GpuSimParticle};
 use crate::shaders::{Hook, Slots};
 
 /// Particles a client keeps at most, half of them for each way of drawing; bursts beyond it are
 /// dropped.
 const MAX: usize = 1 << 18;
+/// Kinds that may live longer than this (their turning into others included) get rings of their
+/// own: a slot comes back only when the longest of its burst has lived, and one long burst would
+/// hold up every short one after it.
+const LONG_LIFE: f32 = 4.0;
+/// The share of each way of drawing the long-lived ones get.
+const LONG_SHARE: usize = 8;
 
 pub const HOOK: Hook = Hook {
     kind: "particle",
@@ -39,6 +46,7 @@ fn particle_box(pos: DVec3) -> crate::physics::Aabb {
 struct Spawned {
     slot: u32,
     through: bool,
+    in_liquid: bool,
     pos: DVec3,
     vel: Vec3,
     life: f32,
@@ -47,7 +55,8 @@ struct Spawned {
     /// Block dust: the block texture and the corner of its quarter, in sixteenths.
     layer: u32,
     piece: [u8; 2],
-    /// What the block's biome colors it (0xRRGGBB): grass and leaves are gray without it.
+    /// 0xRRGGBB its color is multiplied by: the burst's, and for dust what the block's biome
+    /// colors it (grass and leaves are gray without it).
     tint: u32,
 }
 
@@ -82,7 +91,8 @@ impl Ring {
 }
 
 pub struct Particles {
-    rings: [Ring; 2],
+    /// Short-lived cut out, short-lived blended, then the same for long-lived kinds.
+    rings: [Ring; 4],
     spawned: Vec<Spawned>,
     /// Seconds since this began, and those not yet simulated.
     clock: f32,
@@ -96,13 +106,14 @@ pub struct Particles {
     dst: BufferId,
     cells: BufferId,
     kinds_buf: Vec<(BufferId, u32)>,
+    rules_buf: Vec<(BufferId, u32)>,
     frames_buf: Vec<(BufferId, u32)>,
     /// What `cells` holds per slot: the cube and its revision.
     loaded: Vec<Option<(IVec3, u32)>>,
     /// Offsets of the cubes of the window, nearest first.
     window: Vec<IVec3>,
-    /// A block's solid span as a cell has it, per state.
-    spans: Vec<u32>,
+    /// A block's word in `cells` but for its light, per state.
+    blocks: Vec<u32>,
     origin: IVec3,
 }
 
@@ -113,24 +124,47 @@ const CUBE_CELLS: u64 = 4096;
 /// Cubes copied to the GPU a frame, nearest first: a few hundred kilobytes.
 const CUBES_PER_FRAME: usize = 16;
 
-/// What is solid of a block, as `particle_sim.wgsl` reads it: bottom and top in sixteenths. The
-/// lowest and highest of its boxes, over the whole block: a particle needs no more.
-fn span_of(s: &crate::content::StateInfo) -> u32 {
-    if s.collision.is_empty() {
-        return 0;
-    }
-    let (lo, hi) = s
-        .collision
+/// What `particle_sim.wgsl` reads of a block: bottom and top of what is solid in sixteenths (the
+/// lowest and highest of its boxes, over the whole block: a particle needs no more), whether it
+/// is a liquid, and which of the tags particle rules ask about it has.
+fn block_word(s: &crate::content::StateInfo, tags: &[bool]) -> u32 {
+    let span = if s.collision.is_empty() {
+        0
+    } else {
+        let (lo, hi) = s
+            .collision
+            .iter()
+            .fold((1.0f32, 0.0f32), |(l, h), b| (l.min(b[1]), h.max(b[4])));
+        let sixteenths = |v: f32| (v.clamp(0.0, 1.0) * 16.0).round() as u32;
+        sixteenths(lo) << 16 | sixteenths(hi) << 21
+    };
+    let tags = tags
         .iter()
-        .fold((1.0f32, 0.0f32), |(l, h), b| (l.min(b[1]), h.max(b[4])));
-    let sixteenths = |v: f32| (v.clamp(0.0, 1.0) * 16.0).round() as u32;
-    sixteenths(lo) << 16 | sixteenths(hi) << 21
+        .enumerate()
+        .fold(0, |m, (i, &has)| m | (has as u32) << (TAG_SHIFT + i as u32));
+    span | (s.liquid.is_some() as u32) << LIQUID_BIT | tags
 }
 
-/// A block's word in `cells`: its light as four nibbles and its span.
-fn cell_word(span: u32, light: u32) -> u32 {
+/// Where `block_word` puts the liquid bit and the first tag, as `particle_sim.wgsl` has them.
+const LIQUID_BIT: u32 = 26;
+const TAG_SHIFT: u32 = 27;
+
+/// A block's word in `cells`: its light as four nibbles and the rest from `block_word`.
+fn cell_word(block: u32, light: u32) -> u32 {
     let ch = |c: u32| ((light >> (c * 8)) & 255).min(15);
-    span | ch(0) | ch(1) << 4 | ch(2) << 8 | ch(3) << 12
+    block | ch(0) | ch(1) << 4 | ch(2) << 8 | ch(3) << 12
+}
+
+/// Bits of `GpuSimParticle::data.x` above the kind, as `particle_sim.wgsl` has them.
+const THROUGH: u32 = 1 << 16;
+const IN_LIQUID: u32 = 1 << 19;
+
+/// 0xRRGGBB times 0xRRGGBB.
+fn multiply(a: u32, b: u32) -> u32 {
+    (0..3).fold(0, |out, i| {
+        let ch = |c: u32| (c >> (i * 8)) & 255;
+        out | (ch(a) * ch(b) / 255) << (i * 8)
+    })
 }
 
 fn shader(assets: &crate::assets::Assets) -> Result<(Shader, Slots), String> {
@@ -150,9 +184,27 @@ impl Particles {
             .flat_map(|z| (-REACH..=REACH).flat_map(move |y| (-REACH..=REACH).map(move |x| IVec3::new(x, y, z))))
             .collect();
         window.sort_by_key(|o| o.length_squared());
-        let spans = content().states.iter().map(span_of).collect();
+        let c = content();
+        let tag_ids: Vec<Option<u32>> = c
+            .game
+            .particle_tags
+            .iter()
+            .map(|t| c.components.id(t))
+            .collect();
+        let blocks = (0..c.states.len() as u32)
+            .map(|s| {
+                let tags: Vec<bool> = tag_ids
+                    .iter()
+                    .map(|t| t.is_some_and(|t| c.components.has(crate::components::BLOCK, s, t)))
+                    .collect();
+                block_word(&c.states[s as usize], &tags)
+            })
+            .collect();
+        let half = MAX / 2;
+        let long = half / LONG_SHARE;
+        let ring = |n: usize, start: usize| Ring::new(start as u32, n as u32);
         let mut p = Particles {
-            rings: [Ring::new(0, (MAX / 2) as u32), Ring::new((MAX / 2) as u32, (MAX / 2) as u32)],
+            rings: [ring(half - long, 0), ring(half - long, half), ring(long, half - long), ring(long, MAX - long)],
             spawned: Vec::new(),
             clock: 0.0,
             dt: 0.0,
@@ -164,10 +216,11 @@ impl Particles {
             dst,
             cells,
             kinds_buf: Vec::new(),
+            rules_buf: Vec::new(),
             frames_buf: Vec::new(),
             loaded: vec![None; slots],
             window,
-            spans,
+            blocks,
             origin: IVec3::ZERO,
         };
         p.reload(gpu, assets);
@@ -255,7 +308,12 @@ impl Particles {
         for b in [self.sim, self.dst, self.cells] {
             gpu.destroy_buffer(b);
         }
-        for (b, _) in self.kinds_buf.drain(..).chain(self.frames_buf.drain(..)) {
+        for (b, _) in self
+            .kinds_buf
+            .drain(..)
+            .chain(self.rules_buf.drain(..))
+            .chain(self.frames_buf.drain(..))
+        {
             gpu.destroy_buffer(b);
         }
     }
@@ -277,7 +335,7 @@ impl Particles {
     pub fn spawn(&mut self, b: &ParticleBurst, world: &ClientWorld) {
         let c = content();
         let Some(k) = c.game.particles.get(b.kind as usize) else { return };
-        let pos = DVec3::from_array(b.pos);
+        let pos = crate::world::dvec(b.pos);
         if !pos.is_finite() {
             return;
         }
@@ -286,9 +344,9 @@ impl Particles {
         let side = |s: &crate::content::StateInfo| {
             let d = looks.drawn(b.block as u32, s);
             match d.boxes.first() {
-                Some(b) if d.model == weft_abi::Model::Boxes => b.textures[1],
+                Some(b) if d.model == weft_abi::BlockModel::Boxes => b.textures[1],
                 // A piece of wire shows its dot, red: the picture has no color of its own.
-                _ if d.model == weft_abi::Model::Wire => d.textures[3],
+                _ if d.model == weft_abi::BlockModel::Wire => d.textures[3],
                 _ => d.textures[1],
             }
         };
@@ -298,8 +356,9 @@ impl Particles {
             .filter(|_| k.frames.is_empty());
         let layer = dust.map_or(0, side);
         // Only if the side it shows is a tinted one: grass blocks' sides are dirt with a tinted
-        // overlay, and their dust stays brown like vanilla's.
-        let tint = if dust.is_some_and(|s| s.model == weft_abi::Model::Wire) {
+        // overlay, and their dust stays brown like vanilla's. Wire's picture is gray, its red
+        // comes from its power when drawn: dust takes vanilla's wire at middling power.
+        let dust_tint = if dust.is_some_and(|s| s.model == weft_abi::BlockModel::Wire) {
             0xC8_1414
         } else {
             dust.filter(|s| s.tint != 0 && s.tint_faces & 2 != 0)
@@ -315,8 +374,10 @@ impl Particles {
                         .unwrap_or_else(|| crate::content::item_tint(s.tint))
                 })
         };
-        // Drawn apart by how they blend; bursts beyond what there is room for are dropped.
-        let which = (k.flags & pf::TRANSLUCENT != 0) as usize;
+        let tint = multiply(dust_tint, b.color & 0xFF_FFFF);
+        // Drawn apart by how they blend and kept apart by how long they live; bursts beyond
+        // what there is room for are dropped.
+        let which = (k.flags & pf::TRANSLUCENT != 0) as usize + 2 * (k.longest > LONG_LIFE) as usize;
         let (head, capacity, start) = {
             let r = &self.rings[which];
             (r.head, r.capacity as u64, r.start)
@@ -328,7 +389,7 @@ impl Particles {
         for i in 0..n {
             let mut r3 = || Vec3::new(self.random() * 2.0 - 1.0, self.random() * 2.0 - 1.0, self.random() * 2.0 - 1.0);
             let place = r3();
-            let off = place * Vec3::from_array(b.spread);
+            let off = place * crate::world::dvec(b.spread).as_vec3();
             let mut dir = r3();
             if b.outward != 0 {
                 // Vanilla's `Particle`: away from the middle, loosened, at (r + r + 1) / 3 of the speed.
@@ -338,21 +399,23 @@ impl Particles {
                     dir = r3();
                 }
             }
-            let vel = Vec3::from_array(b.velocity) + dir * b.speed;
-            let life = k.life[0] + (k.life[1] - k.life[0]) * self.random();
-            let size = k.scale[0] + (k.scale[1] - k.scale[0]) * self.random();
+            let vel = crate::world::dvec(b.velocity).as_vec3() + dir * b.speed;
+            let life = k.life_min + (k.life_max - k.life_min) * self.random();
+            let size = k.size_min + (k.size_max - k.size_min) * self.random();
             let piece = [(self.random() * 12.0) as u8, (self.random() * 12.0) as u8];
             let at = pos + off.as_dvec3();
             // A block can still be here on this client: the news of it going come separately.
             let through = k.flags & pf::COLLIDE != 0 && crate::physics::collides(c, &|p| world.block_or_air(p), particle_box(at));
+            // Born in a liquid is no going into one.
+            let middle = (at + DVec3::Y * 0.1).floor().as_ivec3();
+            let in_liquid = c.states[world.block(middle) as usize].liquid.is_some();
             let slot = start + ((head + i as u64) % capacity) as u32;
             self.spawned
-                .push(Spawned { slot, through, pos: at, vel, life, size, kind: b.kind as u16, layer, piece, tint });
+                .push(Spawned { slot, through, in_liquid, pos: at, vel, life, size, kind: b.kind as u16, layer, piece, tint });
         }
         let r = &mut self.rings[which];
         r.head += n as u64;
-        r.bursts
-            .push_back((r.head, self.clock + k.life[1].max(k.life[0])));
+        r.bursts.push_back((r.head, self.clock + k.longest));
     }
 
     /// `dt` seconds more for the next `simulate`, and the slots of what has lived given back.
@@ -392,7 +455,7 @@ impl Particles {
             match cube {
                 Some((cube, _)) => {
                     for (i, w) in words.iter_mut().enumerate() {
-                        *w = cell_word(self.spans.get(cube.get(i) as usize).copied().unwrap_or(0), cube.light(i));
+                        *w = cell_word(self.blocks.get(cube.get(i) as usize).copied().unwrap_or(0), cube.light(i));
                     }
                 }
                 // Under the open sky, as `ClientWorld::light` has it.
@@ -451,7 +514,7 @@ impl Particles {
                 pos_size: [rel.x, rel.y, rel.z, s.size],
                 vel_age: [s.vel.x, s.vel.y, s.vel.z, 0.0],
                 life: [s.life, 0.0, 0.0, 0.0],
-                data: [s.kind as u32 | (s.through as u32) << 16, s.tint, texture, uv],
+                data: [s.kind as u32 | if s.through { THROUGH } else { 0 } | if s.in_liquid { IN_LIQUID } else { 0 }, s.tint, texture, uv],
             });
         }
         if !run.is_empty() {
@@ -461,23 +524,31 @@ impl Particles {
         let ticks = dt * crate::world::TPS as f32;
         let ground = 0.7f32.powf(ticks);
         let mut frames: Vec<u32> = Vec::new();
-        let kinds: Vec<GpuParticleKind> = c
-            .game
-            .particles
-            .iter()
-            .enumerate()
-            .map(|(i, k)| {
-                let at = frames.len() as u32;
-                frames.extend(k.frames.iter().map(|&f| textures.texture(f)));
-                GpuParticleKind {
-                    motion: [k.gravity, k.drag.powf(ticks), ground, 0.0],
-                    data: [k.color, k.color_end, k.flags, self.kind_slots.get(i).copied().unwrap_or(0)],
-                    frames: [at, k.frames.len() as u32, 0, 0],
-                }
-            })
-            .collect();
+        let mut rules: Vec<GpuParticleRule> = Vec::new();
+        let kinds: Vec<GpuParticleKind> =
+            c.game
+                .particles
+                .iter()
+                .enumerate()
+                .map(|(i, k)| {
+                    let (at, first_rule) = (frames.len() as u32, rules.len() as u32);
+                    frames.extend(k.frames.iter().map(|&f| textures.texture(f)));
+                    rules.extend(k.rules.iter().map(|r| GpuParticleRule {
+                        data: [r.event | r.when << 4 | r.tag << 8 | r.then << 16, r.amount.to_bits(), r.into, 0],
+                    }));
+                    GpuParticleKind {
+                        motion: [k.gravity, k.drag.powf(ticks), ground, 0.0],
+                        data: [k.color, k.color_end, k.flags, self.kind_slots.get(i).copied().unwrap_or(0)],
+                        frames: [at, k.frames.len() as u32, first_rule, k.rules.len() as u32],
+                        start: [k.life_min, k.life_max, k.size_min, k.size_max],
+                    }
+                })
+                .collect();
         if frames.is_empty() {
             frames.push(0);
+        }
+        if rules.is_empty() {
+            rules.push(GpuParticleRule::default());
         }
         let upload = |gpu: &mut dyn Backend, slots: &mut Vec<(BufferId, u32)>, bytes: &[u8], n: u32, each: u64, label: &str| {
             let buf = crate::gpu_layout::frame_buffer(gpu, slots, slot, n, each, usage::STORAGE, label);
@@ -492,6 +563,14 @@ impl Particles {
             size_of::<GpuParticleKind>() as u64,
             "particle kinds",
         );
+        let rules_buf = upload(
+            gpu,
+            &mut self.rules_buf,
+            bytemuck::cast_slice(&rules),
+            rules.len() as u32,
+            size_of::<GpuParticleRule>() as u64,
+            "particle rules",
+        );
         let frames_buf = upload(gpu, &mut self.frames_buf, bytemuck::cast_slice(&frames), frames.len() as u32, 4, "particle frames");
         use crate::gpu_layout::bind::particle_sim as b;
         // The last frame's drawing is done with what this one writes.
@@ -500,6 +579,7 @@ impl Particles {
         list.bind(b::SIM, self.sim);
         list.bind(b::DST, self.dst);
         list.bind(b::KINDS, kinds_buf);
+        list.bind(b::RULES, rules_buf);
         list.bind(b::FRAMES, frames_buf);
         list.bind(b::CELLS, self.cells);
         let rel = (self.origin.as_dvec3() - cam.pos).as_vec3();
@@ -523,14 +603,15 @@ impl Particles {
     /// `scene`: the frame's `gpu_layout::Scene`.
     pub fn draw(&mut self, list: &mut CommandList, late: &mut CommandList, scene: BufferId) {
         let Some(pipes) = self.pipes else { return };
-        for (i, list) in [list, late].into_iter().enumerate() {
-            if self.rings[i].len() == 0 {
+        for (blend, list) in [list, late].into_iter().enumerate() {
+            let rings = [&self.rings[blend], &self.rings[blend + 2]];
+            if rings.iter().all(|r| r.len() == 0) {
                 continue;
             }
-            list.pipeline(pipes[i]);
+            list.pipeline(pipes[blend]);
             list.bind(crate::gpu_layout::bind::particle::PARTICLES, self.dst);
             list.bind(crate::gpu_layout::bind::particle::SCENE, scene);
-            for (first, count) in self.rings[i].runs().into_iter().filter(|r| r.1 > 0) {
+            for (first, count) in rings.iter().flat_map(|r| r.runs()).filter(|r| r.1 > 0) {
                 list.push(Cmd::Draw { vertices: 6, instances: count, first_vertex: 0, first_instance: first });
             }
         }
@@ -549,6 +630,12 @@ mod tests {
         assert_eq!(r.runs(), [(107, 3), (100, 2)]);
         (r.tail, r.head) = (2, 4);
         assert_eq!(r.runs(), [(102, 2), (100, 0)]);
+    }
+
+    #[test]
+    fn colors_multiply() {
+        assert_eq!(multiply(0xFF_8000, 0xFF_FFFF), 0xFF_8000);
+        assert_eq!(multiply(0x80_FF00, 0xFF_8080), 0x80_8000);
     }
 
     #[test]

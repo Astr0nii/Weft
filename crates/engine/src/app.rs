@@ -69,7 +69,7 @@ pub enum Request {
     /// Starts the game anew the way it was started, then leaves: what mods are on takes effect.
     Restart,
     Rebuild,
-    Rebind(String, crate::input::Chord),
+    Rebind(String, crate::input::Slots),
     ResetBinds,
     StartWorld(WorldMeta),
     /// Without asking about mods that are missing.
@@ -388,7 +388,7 @@ impl App {
         let post = crate::post::Post::new(&mut *gpu, &assets);
         let mut input = Input::default();
         for (action, key) in &content().game.keys {
-            match crate::input::Chord::parse(key) {
+            match crate::input::Binding::parse_slots(key) {
                 Some(k) => input.register(action, k),
                 None => log::warn!("key binding {action}: unknown key {key}"),
             }
@@ -580,16 +580,33 @@ impl Running {
             self.window.set_cursor_visible(false);
         } else if self.settings.read_only {
         } else if on {
-            let _ = self
-                .window
-                .set_cursor_grab(CursorGrabMode::Locked)
-                .or_else(|_| self.window.set_cursor_grab(CursorGrabMode::Confined));
+            // Into the middle first, like vanilla: a cursor left by the edge (or outside, after an
+            // alt-tab) is no cursor kept in, where Windows only confines it.
+            self.center_cursor();
+            self.grab_cursor();
             self.window.set_cursor_visible(false);
         } else {
             let _ = self.window.set_cursor_grab(CursorGrabMode::None);
+            // A screen opening from play starts with the pointer in the middle, as vanilla's.
+            if self.input.captured {
+                self.center_cursor();
+            }
             self.window.set_cursor_visible(true);
         }
         self.input.captured = on;
+    }
+
+    fn grab_cursor(&self) {
+        let _ = self
+            .window
+            .set_cursor_grab(CursorGrabMode::Locked)
+            .or_else(|_| self.window.set_cursor_grab(CursorGrabMode::Confined));
+    }
+
+    fn center_cursor(&self) {
+        let size = self.window.inner_size();
+        let middle = winit::dpi::PhysicalPosition::new(size.width as f64 / 2.0, size.height as f64 / 2.0);
+        let _ = self.window.set_cursor_position(middle);
     }
 
     fn start_world(&mut self, meta: WorldMeta) {
@@ -727,12 +744,12 @@ impl Running {
                     Some(s) => self.open(s),
                     None => log::warn!("no screen {name}"),
                 },
-                Request::Rebind(action, key) => {
-                    self.input.rebind(&action, key);
-                    self.settings.set_bind(&action, key);
+                Request::Rebind(action, keys) => {
+                    self.input.rebind(&action, keys);
+                    self.settings.set_bind(&action, &keys);
                 }
                 Request::ResetBinds => {
-                    let defaults: Vec<(String, crate::input::Chord)> = self
+                    let defaults: Vec<(String, crate::input::Slots)> = self
                         .input
                         .binds
                         .iter()
@@ -740,7 +757,7 @@ impl Running {
                         .collect();
                     for (a, k) in defaults {
                         self.input.rebind(&a, k);
-                        self.settings.set_bind(&a, k);
+                        self.settings.set_bind(&a, &k);
                     }
                     self.rebuild_all();
                 }
@@ -1036,8 +1053,15 @@ impl Running {
                         .iter()
                         .find(|(_, b)| p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3])
                         .map(|l| l.0.clone());
-                    if let Some(n) = target.and_then(|t| ui.find(&t)) {
-                        ui.focused = Some(n);
+                    match target.as_deref().map(|t| t.strip_prefix("open:").ok_or(t)) {
+                        // A file or folder, opened with what the system opens it with.
+                        Some(Ok(path)) => crate::packs::open_path(std::path::Path::new(path)),
+                        Some(Err(t)) => {
+                            if let Some(n) = ui.find(t) {
+                                ui.focused = Some(n);
+                            }
+                        }
+                        None => {}
                     }
                 }
             }
@@ -1184,7 +1208,7 @@ impl Running {
             let mine = self
                 .game
                 .as_ref()
-                .map(|g| g.client.self_entity().args(g.client.player_id, dt));
+                .map(|g| g.client.me.args(g.client.player_id, dt));
             let others = self.game.as_ref().map_or(Vec::new(), |g| {
                 g.client
                     .entities
@@ -1422,7 +1446,7 @@ impl Running {
                         relayout |= text::refresh(&mut t.spans, &test);
                     }
                     // Jumping about needs drawing again, whatever the value does.
-                    Kind::Icons { bind, value, shake: true, .. } if (0.0..=4.0).contains(value) => {
+                    Kind::Icons { bind, value, shake: Some(s), .. } if (0.0..=*s).contains(value) => {
                         *value = bind(&ctx);
                         redraw = true;
                     }
@@ -1460,23 +1484,21 @@ impl Running {
     }
 }
 
-/// `{if:name}`: the engine's conditions, then mods' (`Host::reg_text_condition`); unknown ones
-/// are false.
+/// `{if:name}`: `debug` and `dev`, else a registered condition (`Host::reg_condition`, game
+/// modes by name); unknown ones are false.
 fn text_condition(name: &str, client: Option<&Client>, debug: bool, dev: bool) -> bool {
-    use crate::world::GameMode;
-    let mode = client.map(|c| c.mode);
     match name {
-        "creative" => mode == Some(GameMode::Creative),
-        "survival" => mode == Some(GameMode::Survival),
-        "spectator" => mode == Some(GameMode::Spectator),
         "debug" => debug,
         "dev" => dev,
         _ => {
-            let Some(&(owner, cb)) = content().game.text_conditions.get(name) else { return false };
-            let mut v = crate::client::modui::ClientView::new(client);
-            let mut a = abi::TextConditionArgs { client: v.raw(), result: 0 };
-            crate::host::invoke(owner, cb, &mut a);
-            a.result != 0
+            // The engine's go without their namespace: `{if:creative}`.
+            let names = &content().game.condition_names;
+            let id = names.get(name).or_else(|| {
+                (!name.contains(':'))
+                    .then(|| names.get(&format!("core:{name}")))
+                    .flatten()
+            });
+            id.is_some_and(|&id| crate::conditions::on_client(client, id))
         }
     }
 }
@@ -1510,6 +1532,11 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 r.gpu.resize(size.width, size.height);
                 r.rebuild_all();
+            }
+            // Windows lets go of a confined cursor while another window has the focus.
+            WindowEvent::Focused(true) if !self.opts.automated && r.input.captured && !r.settings.read_only => {
+                r.center_cursor();
+                r.grab_cursor();
             }
             WindowEvent::Focused(false) if !self.opts.automated => {
                 r.input.release_all();
@@ -1616,7 +1643,15 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.packs_pending = false;
         r.apply_settings();
     }
-    if r.input.pressed("core:reload") || std::mem::take(&mut r.reload_requested) {
+    if r.input.pressed("core:reload") {
+        r.reload_requested = true;
+    }
+    // Not while a world is opening and the server has not let the player in yet: a reload in
+    // those frames left the GPU on work it never finished (NVIDIA: Xid 109; Apple: a hang the
+    // whole machine went down with). It waits for the join.
+    let joining = r.game.as_ref().is_some_and(|g| !g.client.joined);
+    if r.reload_requested && !joining {
+        r.reload_requested = false;
         reload_assets(r, opts);
     }
     window_keys(r);
@@ -1734,7 +1769,7 @@ const F3_COMBOS: &[(KeyCode, F3Action)] = &[
     // Through the command, so permissions still apply.
     (KeyCode::F4, |r| {
         if let Some(g) = &mut r.game {
-            let all = crate::world::GameMode::ALL;
+            let all: Vec<_> = crate::world::GameMode::all().collect();
             let next = all[(all.iter().position(|&m| m == g.client.mode).unwrap_or(0) + 1) % all.len()];
             g.client
                 .send(net::ToServer::Chat(format!("/gamemode {}", next.name())));
@@ -1760,8 +1795,8 @@ fn toggle_gizmo(r: &mut Running, group: &str) {
 fn f3_keys(r: &mut Running) {
     let f3 = r
         .input
-        .key_of("core:debug")
-        .is_some_and(|k| r.input.held_key(k.key));
+        .binding_of("core:debug")
+        .is_some_and(|b| r.input.held_key(b.chord.key));
     if r.input.pressed("core:debug") {
         r.f3_combo = Some(false);
     }
@@ -1881,10 +1916,10 @@ fn update_game(r: &mut Running, dt: f64, frame_start: Instant) {
         g.client.render.occlusion.on = r.settings.occlusion_culling();
         let t = Instant::now();
         if world_input {
-            g.client.update(&mut *r.gpu, &r.textures, &r.input, dt);
+            g.client.update(&mut *r.gpu, &r.textures, &mut r.input, dt);
         } else {
             g.client
-                .update(&mut *r.gpu, &r.textures, &Input::default(), dt);
+                .update(&mut *r.gpu, &r.textures, &mut Input::default(), dt);
         }
         r.prof[0] = t.elapsed().as_secs_f32() * 1000.0;
         r.prof[1] = Instant::now().duration_since(frame_start).as_secs_f32() * 1000.0;
@@ -1938,8 +1973,8 @@ fn world_keys(r: &mut Running) {
         let command = r.input.pressed("core:command");
         let f3_held = r
             .input
-            .key_of("core:debug")
-            .is_some_and(|k| r.input.held_key(k.key));
+            .binding_of("core:debug")
+            .is_some_and(|b| r.input.held_key(b.chord.key));
         if command || (r.input.pressed("core:chat") && !f3_held) {
             r.open(Box::new(crate::game_screens::Chat::new(if command { "/" } else { "" })));
             r.input.typed.clear();
@@ -1994,8 +2029,6 @@ fn handle_disconnect(r: &mut Running) {
 fn end_input(r: &mut Running) {
     r.input.sensitivity = r.settings.sensitivity();
     r.input.invert_y = r.settings.invert_y();
-    r.input.toggle_sneak = r.settings.toggle_sneak();
-    r.input.toggle_sprint = r.settings.toggle_sprint();
     r.input.end_frame();
     let top = (
         r.screens.len(),
@@ -2325,6 +2358,8 @@ fn report_frame(r: &mut Running, dt: f64) {
 fn save_screenshot(r: &mut Running) {
     r.shot_pending = false;
     if let Some(cap) = r.gpu.take_capture() {
+        // The player's own (F2) says where it went; a mod's knows.
+        let own = r.shot_path.is_none();
         let path = r.shot_path.take().unwrap_or_else(|| {
             r.settings
                 .run_dir
@@ -2335,7 +2370,19 @@ fn save_screenshot(r: &mut Running) {
             let _ = std::fs::create_dir_all(dir);
         }
         match crate::assets::encode_png(&path, cap.width, cap.height, &cap.rgba) {
-            Ok(()) => log::info!("screenshot saved to {}", path.display()),
+            Ok(()) => {
+                log::info!("screenshot saved to {}", path.display());
+                if let Some(g) = r.game.as_mut().filter(|_| own) {
+                    let open = |p: &std::path::Path, label: &str| {
+                        Arg::Msg(Msg::template(&format!("{{link:open:{}}}{{lang:{label}}}{{/link}}", p.display())))
+                    };
+                    let folder = path.parent().unwrap_or(&path);
+                    g.client.chat_line(Msg::new(
+                        "chat.screenshot",
+                        vec![open(&path, "chat.screenshot.picture"), open(folder, "chat.screenshot.folder")],
+                    ));
+                }
+            }
             Err(e) => log::error!("screenshot: {e}"),
         }
         if let Some(id) = r.shot_image.take() {

@@ -1,21 +1,22 @@
-//! Particles, text conditions, screen effects: things that only change what players see.
+//! Particles, conditions, screen effects: things that only change what players see.
 //!
 //! ```ignore
 //! static SPARK: Particle = Particle::named("spark");
 //! r.particle(&SPARK).textures(&["glint_0", "glint_1"]).life(0.3, 0.6).fullbright();
 //! w.spawn_particles(&SPARK, pos).count(12).speed(2.0);          // server: everyone nearby sees them
-//! r.text_condition(&CHARGED, |v| v.component(&CHARGE).is_some_and(|c| *c > 0));
+//! // Rain that rings on water and is gone anywhere else:
+//! r.particle(&DROP).on_enter_liquid(When::tag("water"), Then::turn_into_still(&RIPPLE)).on_land(When::any(), Then::die());
+//! r.condition(&CHARGED, |c| c.client().is_some_and(|v| v.component(&CHARGE).is_some_and(|c| c > 0)));
 //! c.post_effect("mymod:underwater", 1.0);                  // client: until turned off
 //! ```
 //! Shaders for text (`{fx:..}`), GUI panels (`shader` in a class's `.gui`), particles, entities and screen
 //! effects are assets: `shaders/fx|gui|particle|entity|block|sky|post/<name>.wgsl` in the mod's folder.
 
+use crate::abi::Vec3;
 use std::marker::PhantomData;
 
 use crate::abi::{self, Slice, Str, particle_flags as pf};
-use crate::{
-    Client, ClientView, Dimension, Music, Particle, Registry, SkyObject, SoundCategory, TextCondition, World, callback, host, qualify,
-};
+use crate::{Client, ClientView, Dimension, Music, Particle, Registry, SkyObject, SoundCategory, World, callback, host, qualify};
 
 pub struct ParticleBuilder<'a> {
     raw: *mut abi::Registrar,
@@ -24,10 +25,98 @@ pub struct ParticleBuilder<'a> {
     shader: String,
     handle: Option<&'static Particle>,
     desc: abi::ParticleDesc,
+    rules: Vec<(u32, When, Then)>,
     _p: PhantomData<&'a mut Registry>,
 }
 
+/// Where a particle's rule holds: the block it hit, or the one it is in.
+pub struct When {
+    kind: u32,
+    tag: String,
+}
+
+impl When {
+    pub fn any() -> When {
+        When { kind: abi::particle_when::ANY, tag: String::new() }
+    }
+    pub fn liquid() -> When {
+        When { kind: abi::particle_when::LIQUID, tag: String::new() }
+    }
+    /// A block with `tag` (`water`, `lava`, a mod's own). At most 5 different tags over all
+    /// particle kinds of the game: the GPU keeps them with each block.
+    pub fn tag(tag: &str) -> When {
+        When { kind: abi::particle_when::TAG, tag: tag.trim_start_matches('#').to_string() }
+    }
+}
+
+/// What a particle's rule does.
+pub struct Then {
+    kind: u32,
+    amount: f32,
+    into: String,
+}
+
+impl Then {
+    fn of(kind: u32) -> Then {
+        Then { kind, amount: 0.0, into: String::new() }
+    }
+    pub fn die() -> Then {
+        Then::of(abi::particle_then::DIE)
+    }
+    /// Stays where it is for the rest of its life.
+    pub fn stop() -> Then {
+        Then::of(abi::particle_then::STOP)
+    }
+    /// Keeps going along what it hit.
+    pub fn slide() -> Then {
+        Then::of(abi::particle_then::SLIDE)
+    }
+    /// Comes back off what it hit with `share` of its speed.
+    pub fn bounce(share: f32) -> Then {
+        Then { amount: share, ..Then::of(abi::particle_then::BOUNCE) }
+    }
+    /// Becomes a particle of `kind` where it is, its speed kept and its life starting anew;
+    /// `kind` must be drawn the same way (`translucent` or not).
+    pub fn turn_into(kind: &Particle) -> Then {
+        Then { into: kind.name().to_string(), ..Then::of(abi::particle_then::BECOME) }
+    }
+    /// `turn_into`, standing still: a ripple where a drop fell.
+    pub fn turn_into_still(kind: &Particle) -> Then {
+        Then { into: kind.name().to_string(), ..Then::of(abi::particle_then::BECOME_STILL) }
+    }
+}
+
 impl ParticleBuilder<'_> {
+    fn rule(mut self, event: u32, when: When, then: Then) -> Self {
+        self.rules.push((event, when, then));
+        self
+    }
+    /// What landing on a block does where `when` holds; rules are tried in order, and without
+    /// one that holds it lies there. Any landing or hitting rule makes it stop on blocks.
+    pub fn on_land(self, when: When, then: Then) -> Self {
+        self.rule(abi::particle_event::LAND, when, then)
+    }
+    /// Running into a block's side; without a rule it slides along.
+    pub fn on_wall(self, when: When, then: Then) -> Self {
+        self.rule(abi::particle_event::WALL, when, then)
+    }
+    /// Running into a block's underside; without a rule it stops.
+    pub fn on_ceiling(self, when: When, then: Then) -> Self {
+        self.rule(abi::particle_event::CEILING, when, then)
+    }
+    /// Going into a liquid (`when` asks about that liquid).
+    pub fn on_enter_liquid(self, when: When, then: Then) -> Self {
+        self.rule(abi::particle_event::ENTER_LIQUID, when, then)
+    }
+    /// Coming out of one: a bubble pops.
+    pub fn on_leave_liquid(self, when: When, then: Then) -> Self {
+        self.rule(abi::particle_event::LEAVE_LIQUID, when, then)
+    }
+    /// The end of its life: by default the end of it, `Then::turn_into` goes on as another kind
+    /// (a spark dying into smoke).
+    pub fn on_expire(self, when: When, then: Then) -> Self {
+        self.rule(abi::particle_event::EXPIRE, when, then)
+    }
     /// Frames over its life; relative names are under `particle/`. None: block dust (pieces of
     /// the burst's block).
     pub fn textures(mut self, names: &[&str]) -> Self {
@@ -36,12 +125,12 @@ impl ParticleBuilder<'_> {
     }
     /// Seconds, picked between the two.
     pub fn life(mut self, min: f32, max: f32) -> Self {
-        self.desc.life = [min, max];
+        (self.desc.life_min, self.desc.life_max) = (min, max);
         self
     }
     /// Edge length in blocks, picked between the two.
     pub fn size(mut self, min: f32, max: f32) -> Self {
-        self.desc.scale = [min, max];
+        (self.desc.size_min, self.desc.size_max) = (min, max);
         self
     }
     /// Blocks per second squared, pulling down (negative rises).
@@ -59,6 +148,7 @@ impl ParticleBuilder<'_> {
         (self.desc.color, self.desc.color_end) = (start, end);
         self
     }
+    /// Stops on blocks: lies where it lands, slides along walls.
     pub fn colliding(mut self) -> Self {
         self.desc.flags |= pf::COLLIDE;
         self
@@ -88,11 +178,24 @@ impl Drop for ParticleBuilder<'_> {
             return;
         }
         let textures: Vec<Str> = self.textures.iter().map(|t| Str::new(t)).collect();
+        let rules: Vec<abi::ParticleRule> = self
+            .rules
+            .iter()
+            .map(|(event, when, then)| abi::ParticleRule {
+                event: *event,
+                when: when.kind,
+                tag: Str::new(&when.tag),
+                then: then.kind,
+                amount: then.amount,
+                into: Str::new(&then.into),
+            })
+            .collect();
         let desc = abi::ParticleDesc {
             name: Str::new(&self.name),
-            cell: self.handle.map_or(std::ptr::null(), |h| h.cell()),
+            cell: self.handle.map_or(std::ptr::null(), |h| h.id_cell()),
             textures: Slice::new(&textures),
             shader: Str::new(&self.shader),
+            rules: Slice::new(&rules),
             ..self.desc
         };
         unsafe { (host().reg_particle)(self.raw, &desc) }
@@ -129,11 +232,11 @@ impl SkyBuilder<'_> {
         self
     }
     /// Stays where its phase, tilt and heading put it.
-    pub fn still(self) -> Self {
+    pub fn orbit_still(self) -> Self {
         self.orbit(0.0)
     }
     /// Back to following the dimension's day, for changing another mod's object.
-    pub fn follow_day(self) -> Self {
+    pub fn orbit_day(self) -> Self {
         self.orbit(f32::INFINITY)
     }
     /// Where on its orbit it starts, in turns: 0 rising in the east, 0.25 overhead, 0.5 setting.
@@ -189,12 +292,12 @@ impl SkyBuilder<'_> {
     }
     /// Adds its light to what is behind it. Without it, it covers what is behind it, so a moon
     /// with an opaque picture hides any other that passes behind it.
-    pub fn additive(mut self) -> Self {
+    pub fn blend_add(mut self) -> Self {
         self.desc.additive = 1;
         self
     }
-    /// Covers what is behind it, for an object someone made `additive`.
-    pub fn covers(mut self) -> Self {
+    /// Covers what is behind it, for an object someone made `blend_add`.
+    pub fn blend_cover(mut self) -> Self {
         self.desc.additive = 0;
         self
     }
@@ -288,7 +391,7 @@ impl Registry {
     /// Takes something out of one dimension's sky, your own or another mod's (that mod has to load
     /// first: depend on it). The base game puts its sun, moon and stars in every dimension of its
     /// own, each to be taken out separately.
-    pub fn remove_sky(&mut self, dimension: &Dimension, object: &SkyObject) {
+    pub fn sky_remove(&mut self, dimension: &Dimension, object: &SkyObject) {
         let mut b = self.sky_object(dimension, object, u32::MAX);
         b.desc.remove = 1;
     }
@@ -304,15 +407,40 @@ impl Registry {
             shader: String::new(),
             handle: Some(particle),
             desc: abi::ParticleDesc::DEFAULT,
+            rules: Vec::new(),
             _p: PhantomData,
         }
     }
 
-    /// `{if:<ns>:<name>}...{/if}` in any text shows its part while `f` says so; asked on the
-    /// client every frame such a text is on screen.
-    pub fn text_condition(&mut self, condition: &TextCondition, f: impl Fn(&ClientView) -> bool + Send + Sync + 'static) {
-        let cb = callback(move |a: &mut abi::TextConditionArgs| a.result = f(&ClientView::from_raw(a.client)) as u32);
-        unsafe { (host().reg_text_condition)(self.raw, Str::new(condition.name()), cb) }
+    /// A condition music (`.when`), text (`{if:<ns>:<name>}`), loot (`Cond::Condition`) and
+    /// spawning (`.when`) can ask. `f` is answered on whichever side asks: on the server
+    /// (`c.world()`) for loot and spawning, on the client (`c.client()`) for music and text, every
+    /// frame such a text is on screen. Every game mode is a condition too, by its name.
+    pub fn condition(&mut self, condition: &'static crate::Condition, f: impl Fn(&ConditionCtx) -> bool + Send + Sync + 'static) {
+        let cb = callback(move |a: &mut abi::ConditionArgs| a.result = f(&ConditionCtx(*a)) as u32);
+        unsafe { (host().reg_condition)(self.raw, Str::new(condition.name()), condition.id_cell(), cb) }
+    }
+}
+
+/// What a condition is asked about.
+pub struct ConditionCtx(abi::ConditionArgs);
+
+impl ConditionCtx {
+    /// The server's world, when the server asks (loot, spawning).
+    pub fn world(&self) -> Option<World> {
+        (!self.0.world.is_null()).then(|| World::from_raw(self.0.world))
+    }
+    /// The client, when it asks (music, text): its own player.
+    pub fn client(&self) -> Option<ClientView> {
+        (!self.0.client.is_null()).then(|| ClientView::from_raw(self.0.client))
+    }
+    /// The spot, the block, the player.
+    pub fn pos(&self) -> Vec3 {
+        self.0.pos
+    }
+    /// Who it is about (the killer or breaker for loot), 0 for nobody.
+    pub fn entity(&self) -> u64 {
+        self.0.entity
     }
 }
 
@@ -325,30 +453,43 @@ enum Target {
 pub struct Burst {
     target: Target,
     burst: abi::ParticleBurst,
+    area: Option<crate::Shape>,
 }
 
 impl Burst {
+    /// The particles start anywhere inside `shape` (a ring, a shell, a magic circle) instead
+    /// of a box around the position; `outward` sends them away from the position.
+    pub fn area(mut self, shape: &crate::Shape) -> Self {
+        self.area = Some(shape.clone());
+        self
+    }
     pub fn count(mut self, n: u32) -> Self {
         self.burst.count = n;
         self
     }
     /// Each particle starts up to this far from the position on every axis.
     pub fn spread(mut self, s: f32) -> Self {
-        self.burst.spread = [s; 3];
+        self.burst.spread = Vec3::new(s as f64, s as f64, s as f64);
         self
     }
-    pub fn spread_xyz(mut self, s: [f32; 3]) -> Self {
-        self.burst.spread = s;
+    /// `spread` of its own on each axis: a flat sheet, a column.
+    pub fn spread_box(mut self, s: impl Into<Vec3>) -> Self {
+        self.burst.spread = s.into();
         self
     }
     /// Starting velocity, blocks per second.
-    pub fn velocity(mut self, v: [f32; 3]) -> Self {
-        self.burst.velocity = v;
+    pub fn velocity(mut self, v: impl Into<Vec3>) -> Self {
+        self.burst.velocity = v.into();
         self
     }
     /// Random extra velocity up to this, in any direction.
     pub fn speed(mut self, s: f32) -> Self {
         self.burst.speed = s;
+        self
+    }
+    /// 0xRRGGBB the kind's color is multiplied by: one white kind in any color.
+    pub fn color(mut self, rgb: u32) -> Self {
+        self.burst.color = rgb;
         self
     }
     /// Each flies away from the middle of the burst, more or less, like the pieces of a broken block.
@@ -368,34 +509,63 @@ impl Drop for Burst {
         if std::thread::panicking() || self.burst.kind == u32::MAX {
             return;
         }
-        match &self.target {
-            Target::World(w) => unsafe { (host().particles)(w.raw(), &self.burst) },
-            Target::Client(c) => unsafe { (host().client_particles)(c.raw(), &self.burst) },
+        let send = |b: &abi::ParticleBurst| match &self.target {
+            Target::World(w) => unsafe { (host().particle_burst)(w.raw(), b) },
+            Target::Client(c) => unsafe { (host().client_particle_burst)(c.raw(), b) },
+        };
+        let Some(area) = &self.area else { return send(&self.burst) };
+        // One particle per point inside, found by trying points in the box around the shape.
+        let (lo, hi) = area.bounds();
+        let mut seed = self.burst.pos.x.to_bits() ^ self.burst.pos.y.to_bits().rotate_left(21) ^ self.burst.pos.z.to_bits().rotate_left(42);
+        let mut next = || {
+            seed = abi::fnv(&seed.to_le_bytes());
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let c = self.burst.pos;
+        let v = self.burst.velocity;
+        let speed = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt().max(1.0);
+        let mut placed = 0;
+        for _ in 0..self.burst.count.saturating_mul(20).min(20_000) {
+            if placed >= self.burst.count {
+                break;
+            }
+            let p = Vec3::new(lo.x + (hi.x - lo.x) * next(), lo.y + (hi.y - lo.y) * next(), lo.z + (hi.z - lo.z) * next());
+            if !area.contains(p) {
+                continue;
+            }
+            let mut one = abi::ParticleBurst { pos: p, count: 1, spread: Vec3::ZERO, outward: 0, ..self.burst };
+            if self.burst.outward != 0 {
+                let d = p - c;
+                let len = (d.x * d.x + d.y * d.y + d.z * d.z).sqrt().max(1e-6);
+                one.velocity = Vec3::new(d.x / len * speed, d.y / len * speed, d.z / len * speed);
+            }
+            send(&one);
+            placed += 1;
         }
     }
 }
 
-fn burst(target: Target, kind: &Particle, pos: [f64; 3]) -> Burst {
-    Burst { target, burst: abi::ParticleBurst { kind: kind.id(), pos, ..abi::ParticleBurst::DEFAULT } }
+fn burst(target: Target, kind: &Particle, pos: Vec3) -> Burst {
+    Burst { target, burst: abi::ParticleBurst { kind: kind.id(), pos, ..abi::ParticleBurst::DEFAULT }, area: None }
 }
 
 impl World {
     /// Particles every player near `pos` sees (one by default).
-    pub fn spawn_particles(&self, kind: &Particle, pos: [f64; 3]) -> Burst {
-        burst(Target::World(*self), kind, pos)
+    pub fn spawn_particles(&self, kind: &Particle, pos: impl Into<Vec3>) -> Burst {
+        burst(Target::World(*self), kind, pos.into())
     }
 }
 
 impl Client {
     /// Particles only this client shows.
-    pub fn spawn_particles(&self, kind: &Particle, pos: [f64; 3]) -> Burst {
-        burst(Target::Client(*self), kind, pos)
+    pub fn spawn_particles(&self, kind: &Particle, pos: impl Into<Vec3>) -> Burst {
+        burst(Target::Client(*self), kind, pos.into())
     }
 
     /// Turns screen effect `name` (`shaders/post/<name>.wgsl`) on at `strength` (0 turns it off).
     pub fn post_effect(&self, name: &str, strength: f32) -> bool {
         let name = qualify(crate::mod_id(), name);
-        unsafe { (host().client_command)(self.raw(), abi::client_op::POST_EFFECT, Str::new(&name), strength as f64) != 0 }
+        unsafe { (host().client_op)(self.raw(), abi::client_op::POST_EFFECT, Str::new(&name), strength as f64) != 0 }
     }
 }
 
@@ -435,6 +605,27 @@ impl SoundBuilder<'_> {
         self.desc.range = blocks;
         self
     }
+    /// Full volume within `full_within` blocks, then fading to nothing at `range` along `curve`
+    /// (by default within 1 block, evenly).
+    pub fn falloff(mut self, full_within: f32, curve: Falloff) -> Self {
+        self.desc.full_within = full_within;
+        self.desc.falloff = match curve {
+            Falloff::Even => 0,
+            Falloff::Late(n) => n.clamp(1, 8) as i32,
+            Falloff::Early(n) => -(n.clamp(1, 8) as i32),
+        };
+        self
+    }
+}
+
+/// How a sound fades with distance (`SoundBuilder::falloff`).
+#[derive(Clone, Copy, Debug)]
+pub enum Falloff {
+    Even,
+    /// Stays loud longer, then drops near the edge; the number is how sharply (1..8).
+    Late(u8),
+    /// Drops soon after `full_within`, then trails off.
+    Early(u8),
 }
 
 impl Drop for SoundBuilder<'_> {
@@ -445,7 +636,7 @@ impl Drop for SoundBuilder<'_> {
         let files: Vec<Str> = self.files.iter().map(|f| Str::new(f)).collect();
         let desc = abi::SoundDesc {
             name: Str::new(&self.name),
-            cell: self.handle.map_or(std::ptr::null(), |h| h.cell()),
+            cell: self.handle.map_or(std::ptr::null(), |h| h.id_cell()),
             files: Slice::new(&files),
             category_name: Str::new(&self.category_name),
             ..self.desc
@@ -459,7 +650,7 @@ pub struct MusicBuilder<'a> {
     name: String,
     tracks: Vec<String>,
     dimension: String,
-    when: u32,
+    when: String,
     _p: PhantomData<&'a mut Registry>,
 }
 
@@ -473,9 +664,10 @@ impl MusicBuilder<'_> {
         self.dimension = dimension.name().to_string();
         self
     }
-    /// `abi::music_when` flags.
-    pub fn when(mut self, flags: u32) -> Self {
-        self.when = flags;
+    /// Plays only while this condition holds (`conditions::NIGHT`, a mod's own); call again
+    /// for more, all of which have to hold.
+    pub fn when(mut self, condition: &crate::Condition) -> Self {
+        self.when = format!("{} {}", self.when, condition.name());
         self
     }
 }
@@ -490,7 +682,7 @@ impl Drop for MusicBuilder<'_> {
             name: Str::new(&self.name),
             tracks: Slice::new(&tracks),
             dimension: Str::new(&self.dimension),
-            when: self.when,
+            when: Str::new(&self.when),
             ..abi::MusicDesc::DEFAULT
         };
         unsafe { (host().reg_music)(self.raw, &desc) }
@@ -524,26 +716,63 @@ impl Registry {
             name: music.name().to_string(),
             tracks: Vec::new(),
             dimension: String::new(),
-            when: 0,
+            when: String::new(),
             _p: PhantomData,
         }
     }
 }
 
 impl World {
-    /// Sound event `sound` at `pos` for the players in its range.
-    pub fn play_sound(&self, sound: &crate::Sound, pos: [f64; 3], volume: f32) {
-        unsafe { (host().play_sound)(self.raw(), sound.id(), &pos, volume, 0.0) }
+    /// Sound event `sound` at `pos` for the players in its range, sent at the end of the
+    /// statement; `.pitch(p)` sets the playback speed.
+    pub fn play_sound(&self, sound: &crate::Sound, pos: impl Into<Vec3>, volume: f32) -> PlaySound {
+        let pos = pos.into();
+        PlaySound { to: Hearer::World(*self), sound: sound.id(), pos: Some(pos), volume, pitch: 0.0 }
     }
 }
 
 impl Client {
     /// Only this client hears it; `None` = not positioned (UI sounds).
-    pub fn play_sound(&self, sound: &crate::Sound, pos: Option<[f64; 3]>, volume: f32) {
-        let p = pos
+    pub fn play_sound(&self, sound: &crate::Sound, pos: Option<Vec3>, volume: f32) -> PlaySound {
+        PlaySound { to: Hearer::Client(*self), sound: sound.id(), pos, volume, pitch: 0.0 }
+    }
+}
+
+enum Hearer {
+    World(World),
+    Client(Client),
+}
+
+/// A sound about to play (`World::play_sound`, `Client::play_sound`).
+pub struct PlaySound {
+    to: Hearer,
+    sound: u32,
+    pos: Option<Vec3>,
+    volume: f32,
+    pitch: f32,
+}
+
+impl PlaySound {
+    /// Playback speed (1 = as recorded, 2 an octave up) instead of one picked from the sound's
+    /// range: a note block's `2f32.powf((key - 12) as f32 / 12.0)`.
+    pub fn pitch(mut self, pitch: f32) -> Self {
+        self.pitch = pitch.max(0.01);
+        self
+    }
+}
+
+impl Drop for PlaySound {
+    fn drop(&mut self) {
+        let p = self
+            .pos
             .as_ref()
-            .map_or(std::ptr::null(), |p| p as *const [f64; 3]);
-        unsafe { (host().client_play_sound)(self.raw(), sound.id(), p, volume, 0.0) }
+            .map_or(std::ptr::null(), |p| p as *const Vec3);
+        unsafe {
+            match self.to {
+                Hearer::World(w) => (host().play_sound)(w.raw(), self.sound, p, self.volume, self.pitch),
+                Hearer::Client(c) => (host().client_play_sound)(c.raw(), self.sound, p, self.volume, self.pitch),
+            }
+        }
     }
 }
 

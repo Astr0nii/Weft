@@ -169,11 +169,10 @@ impl Shown {
         Shown::new(weft_abi::show_place::CHAT, msg)
     }
 
-    /// What its place is (`hud::PLACES`).
+    /// What its place is (`hud::places`).
     pub fn look(&self) -> &'static crate::hud::Place {
-        crate::hud::PLACES
-            .get(self.place as usize)
-            .unwrap_or(&crate::hud::PLACES[0])
+        let all = crate::hud::places();
+        all.get(self.place as usize).unwrap_or(&all[0])
     }
 
     /// With what was left open as its place has it.
@@ -240,8 +239,9 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// A debug shape for a gizmo group (`client::gizmo`): `kind` 0 is a line from `a` to `b`, 1 a box
-    /// between corners `a` and `b`, 2 `text` at `a`. Shown for `ticks` server ticks.
+    /// A debug shape for a gizmo group (`client::gizmo`): `kind` a `gizmo_kind` from `a` to `b`, or
+    /// `GizmoShape::TEXT`, `text` at `a` `size` times as big as menu text. Shown for `ticks`
+    /// server ticks.
     #[derive(Clone, Debug, PartialEq)]
     pub struct GizmoShape {
         pub group: String,
@@ -250,7 +250,21 @@ wire_struct! {
         pub b: DVec3,
         pub color: u32,
         pub ticks: u32,
+        pub size: f32,
         pub text: crate::ui::text::Msg,
+    }
+}
+
+impl GizmoShape {
+    /// Not a `gizmo_kind`: a label.
+    pub const TEXT: u8 = u8::MAX;
+
+    pub fn shape(group: &str, kind: u8, a: DVec3, b: DVec3, color: u32, ticks: u32) -> GizmoShape {
+        GizmoShape { group: group.into(), kind, a, b, color, ticks, size: 0.0, text: crate::ui::text::Msg::default() }
+    }
+
+    pub fn text(group: &str, at: DVec3, size: f32, color: u32, ticks: u32, text: crate::ui::text::Msg) -> GizmoShape {
+        GizmoShape { group: group.into(), kind: GizmoShape::TEXT, a: at, b: at, color, ticks, size, text }
     }
 }
 
@@ -259,7 +273,8 @@ pub type Crack = (u64, IVec3, u32, f32);
 
 /// An entity's move: id, position, yaw, pitch, crouching, and its frame: the solid body it
 /// stands on (0: the world), which clients draw it relative to.
-pub type Move = (u64, DVec3, f32, f32, crate::world::Pose, u64);
+/// An entity, where it is, its look, pose, whether it sprints, and the body it stands on.
+pub type Move = (u64, DVec3, f32, f32, crate::world::Pose, bool, u64);
 
 /// The longest message a connection takes.
 pub const MAX_MESSAGE: usize = 64 << 20;
@@ -314,19 +329,28 @@ messages! {
         Knock { away: [f32; 3] },
         /// Velocity change in blocks per tick (a mod's push, a sprinting hit).
         Velocity { add: [f32; 3] },
+        /// A mod set the player's velocity, in blocks per tick.
+        SetVelocity([f32; 3]),
+        /// A mod turned the player: yaw and pitch in radians.
+        Look([f32; 2]),
+        /// A mod made the player fly or stop.
+        Flying(bool),
+        /// A mod put this hotbar slot in the player's hand.
+        Selected(u32),
         /// Ticks a second the server runs at.
         TickRate(u32),
         /// The player's walking speed and jump multipliers.
         /// The player's attributes that changed, by id.
         Attributes(Vec<(u32, f32)>),
-        /// Mining that block is not allowed (`question::BREAK_BLOCK`).
+        /// Mining that block is not allowed (`action::BREAK_BLOCK`).
         BreakRefused { frame: u64, pos: IVec3 },
         /// Holding the use button started on an item that takes this many ticks, or it ended.
         /// Ticks it takes, and whether in the other hand.
         Using(Option<(u32, bool)>),
-        Weather { raining: bool, thunder: bool },
-        /// A white flash on an entity.
-        Flash(u64),
+        /// The dimension's weather now (`registry::WeatherDef` by id).
+        Weather(u32),
+
+
         /// Someone else's arm swings: a hit, a use, mining.
         /// Who, and whether with the other hand.
         EntitySwing { id: u64, off: bool },
