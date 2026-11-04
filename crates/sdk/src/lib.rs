@@ -166,6 +166,19 @@ const TEXTURE_FOLDERS: [&str; 5] = ["block", "item", "entity", "gui", "particle"
 /// `other`, and subfolders are fine (`"armor/iron_1"`). Leaving the folder (`"block/x"` for an
 /// item, `..`, an absolute path) is a load error. Gives `ns:folder/path` (or `ns:path` for an
 /// empty folder).
+/// Whether texture `name` (`beauty_of_nature:block/log_oak_inner`, or without a namespace this
+/// mod's) is in its mod's files: to make something of every mod's logs only where they have the
+/// picture for it. Resource packs don't count; they are each player's.
+pub fn texture_exists(name: &str) -> bool {
+    asset_exists(name, "textures", "png")
+}
+
+/// `texture_exists` for any asset: `asset_exists("othermod:hollow_log", "models", "json")`.
+pub fn asset_exists(name: &str, kind: &str, ext: &str) -> bool {
+    let full = if name.contains(':') { name.to_string() } else { format!("{}:{name}", mod_id()) };
+    unsafe { (host().asset_exists)(abi::Str::new(&full), abi::Str::new(kind), abi::Str::new(ext)) != 0 }
+}
+
 pub(crate) fn asset(folder: &str, name: &str) -> String {
     let (ns, path) = name.split_once(':').unwrap_or((mod_id(), name));
     if let Err(why) = asset_check(folder, ns, path) {

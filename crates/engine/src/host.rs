@@ -278,6 +278,7 @@ pub static HOST: Host = Host {
     camera_id,
     ease,
     force_load,
+    asset_exists,
     player_camera,
 };
 
@@ -1244,6 +1245,10 @@ unsafe extern "C" fn force_load(
         });
         1
     }
+}
+
+unsafe extern "C" fn asset_exists(name: Str, kind: Str, ext: Str) -> u32 {
+    unsafe { crate::modloader::asset_exists(name.as_str(), kind.as_str(), ext.as_str()) as u32 }
 }
 
 unsafe extern "C" fn ease(kind: u32, t: f32) -> f32 {

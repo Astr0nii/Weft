@@ -3420,6 +3420,9 @@ pub struct Host {
     /// (NaN: as the mode says).
     /// `t` (0..1) eased by `kind` (`easing::*`).
     pub ease: unsafe extern "C" fn(kind: u32, t: f32) -> f32,
+    /// 1 if mod `name`'s (`ns:path`) asset `<kind>/<path>.<ext>` is a file of that mod (not of
+    /// a resource pack): `textures`, `png` for a texture.
+    pub asset_exists: unsafe extern "C" fn(name: Str, kind: Str, ext: Str) -> u32,
     /// Keeps the cubes from block `from` to `to` loaded for `ticks` more, as `mode`
     /// (`force_load::*`, `OFF` lets them go), under ticket `key`: the same key again moves or
     /// renews it. 0 when `action::FORCE_LOAD` was denied.

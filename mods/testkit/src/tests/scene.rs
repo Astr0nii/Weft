@@ -464,5 +464,9 @@ async fn facing_states(t: &T) -> R {
     t.check_eq(state_prop(lit, "facing"), Some("east"), "facing of a lit furnace");
     t.check_eq(state_with(lit, "lit", "false").and_then(|s| state_prop(s, "facing")), Some("east"), "putting it out keeps its facing");
     t.check_eq(block_name(lit).to_string(), "base:furnace[facing=east,lit=true]".to_string(), "the state's name");
+    // Asking a mod's files whether it has a picture (for making something of every mod's logs).
+    t.check(texture_exists("base:block/leaves_oak"), "base has an oak leaves picture");
+    t.check(!texture_exists("base:block/log_oak_inner"), "and no inner one");
+    t.check(texture_exists("testmod:block/tin_ore"), "testmod's own");
     Ok(())
 }
