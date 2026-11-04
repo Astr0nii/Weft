@@ -392,6 +392,8 @@ pub struct Game {
     pub synced_comps: Vec<bool>,
     /// Config id of `core:mob_spawning`.
     pub mob_spawning: u32,
+    /// Config id of `core:keep_inventory`.
+    pub keep_inventory: u32,
     /// Config id of `core:simulation_distance`.
     pub simulation_distance: u32,
     /// (owner, component, system) in mod order.
@@ -1793,6 +1795,7 @@ pub fn freeze(
         g.configs.push(d);
     }
     g.mob_spawning = g.config_names["core:mob_spawning"];
+    g.keep_inventory = g.config_names["core:keep_inventory"];
     g.simulation_distance = g.config_names["core:simulation_distance"];
     for d in &categories {
         if categories.iter().filter(|o| o.name == d.name).count() > 1 && !errors.iter().any(|e| e.contains(&d.name)) {
