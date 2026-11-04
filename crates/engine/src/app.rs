@@ -1614,7 +1614,15 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
         r.packs_pending = false;
         r.apply_settings();
     }
-    if r.input.pressed("core:reload") || std::mem::take(&mut r.reload_requested) {
+    if r.input.pressed("core:reload") {
+        r.reload_requested = true;
+    }
+    // Not while a world is opening and the server has not let the player in yet: a reload in
+    // those frames left the GPU on work it never finished (NVIDIA: Xid 109; Apple: a hang the
+    // whole machine went down with). It waits for the join.
+    let joining = r.game.as_ref().is_some_and(|g| !g.client.joined);
+    if r.reload_requested && !joining {
+        r.reload_requested = false;
         reload_assets(r, opts);
     }
     window_keys(r);
