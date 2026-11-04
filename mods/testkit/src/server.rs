@@ -767,6 +767,14 @@ const OPS: &[(&str, &str, Run)] = &[
         let rider = cmd.int("rider").map_or(player, |r| r as u64);
         Ok((w.mount(rider, int(cmd, "onto")?) as u32).to_string())
     }),
+    // Entity `id` to dimension `dim` (`here` for the same one) at x y z.
+    ("send", "<id:int> <dim:word> <x:float> <y:float> <z:float>", |w, cmd, _, _| {
+        let p = ["x", "y", "z"].map(|a| cmd.float(a).unwrap_or(0.0));
+        let name = word(cmd, "dim")?;
+        let dim = (name != "here").then(|| Dimension::generated(name.to_string()));
+        w.teleport(int(cmd, "id")?, dim, p);
+        Ok(String::new())
+    }),
     // What `id` (the player by default) rides and its seat, "0 0" for nothing.
     ("vehicle", "[id:int]", |w, cmd, player, _| {
         let id = cmd.int("id").map_or(player, |r| r as u64);

@@ -16,7 +16,6 @@ pub fn register(r: &mut Registry) {
         .steering(steer::walk_look(1.6).and(steer::charged_jump(12.0, 10)))
         .rider_rules(RiderRules::new().builds(|_, _, _| false))
         .riders_fall()
-        .rideable();
-    // The idol's model, a little bigger than a pig.
-    r.set_model(&STEED, "testmod:idol");
+        .rideable()
+        .model(quadruped([10.0, 8.0, 18.0], 8.0, [6.0, 6.0, 7.0]));
 }

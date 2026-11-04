@@ -106,8 +106,28 @@ impl Dim {
         true
     }
 
-    /// Off its seat, without asking or moving it (its mount went, it died, it got on another).
-    fn leave(&mut self, c: &Content, rider: u64) {
+    /// Everything riding `mount`, the riders of its riders too, nearest first.
+    pub fn riders_of(&self, mount: u64) -> Vec<u64> {
+        let mut out = vec![mount];
+        let mut i = 0;
+        while i < out.len() && out.len() <= MOST_RIDING {
+            let m = out[i];
+            out.extend(
+                self.entities
+                    .list
+                    .iter()
+                    .filter(|e| !e.removed && e.vehicle.is_some_and(|v| v.0 == m))
+                    .map(|e| e.id),
+            );
+            i += 1;
+        }
+        out.remove(0);
+        out
+    }
+
+    /// Off its seat, without asking or moving it (its mount went, it died, it got on another,
+    /// it was teleported away).
+    pub fn leave(&mut self, c: &Content, rider: u64) {
         let Some((mount, _)) = self.entities.get_mut(rider).and_then(|e| e.vehicle.take()) else { return };
         // What it is saved and moved between regions with says so too, at once.
         self.entities.comps.remove(&(rider, c.game.field_comps[11]));
