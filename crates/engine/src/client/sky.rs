@@ -127,8 +127,6 @@ pub struct Overlay {
     /// Linear rgb and how much shows.
     pub color: [f32; 4],
     pub tiles: f32,
-    /// Slides with the look, in tiles.
-    pub slide: [f32; 2],
     /// Only the lower part of the screen.
     pub lower: bool,
     /// Which frame of an animated picture.
@@ -264,7 +262,7 @@ impl Sky {
             let frame_h = w as f32 / h as f32;
             self.list.push(GpuSky {
                 axes: [[0.0; 4]; 3],
-                uv: [o.slide[0], o.slide[1], 1.0, frame_h],
+                uv: [0.0, 0.0, 1.0, frame_h],
                 color: o.color,
                 ids: [index, kind::OVERLAY, 0, 0],
                 extra: [o.tiles, o.lower as u32 as f32, (o.frame as f32 * frame_h).fract(), 0.0],

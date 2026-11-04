@@ -43,7 +43,7 @@ pub struct Entity {
     /// Using what it holds: the ticks that takes, and whether in the other hand. Others see it.
     pub using: (u32, bool),
     pub anchor: Option<IVec3>,
-    pub sent: Option<(DVec3, f32, f32, crate::world::Pose)>,
+    pub sent: Option<(DVec3, f32, f32, crate::world::Pose, bool)>,
     /// Worn items as last sent to clients.
     pub worn: Vec<u32>,
     /// The solid body it rides (stands on, or flies above within its carry height).
@@ -564,6 +564,12 @@ impl Entities {
             .map(|e| e.id)
             .collect()
     }
+}
+
+/// Whether a move into a liquid makes a splash: from out of it, falling faster than a tenth of a
+/// block a tick.
+pub fn splashes(was_in_liquid: bool, in_liquid: bool, falling: f64) -> bool {
+    !was_in_liquid && in_liquid && falling > 0.1
 }
 
 /// What a fall from that high does to a kind, the same for players and mobs.

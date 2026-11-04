@@ -258,7 +258,8 @@ pub type Crack = (u64, IVec3, u32, f32);
 
 /// An entity's move: id, position, yaw, pitch, crouching, and its frame: the solid body it
 /// stands on (0: the world), which clients draw it relative to.
-pub type Move = (u64, DVec3, f32, f32, crate::world::Pose, u64);
+/// An entity, where it is, its look, pose, whether it sprints, and the body it stands on.
+pub type Move = (u64, DVec3, f32, f32, crate::world::Pose, bool, u64);
 
 /// The longest message a connection takes.
 pub const MAX_MESSAGE: usize = 64 << 20;

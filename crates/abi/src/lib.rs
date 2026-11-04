@@ -388,6 +388,11 @@ pub mod comp {
     /// Liquid block: a particle kind (`str`) that drips from the ceiling of a cave under it,
     /// near the player only (vanilla's water through a ceiling).
     pub const DRIP: &str = "drip";
+    /// Liquid block: the particle kind (`str`) thrown up when something falls into it.
+    pub const SPLASH: &str = "splash";
+    /// Liquid block: the particle kind (`str`) that rises from what is under it and from a
+    /// falling in.
+    pub const BUBBLE: &str = "bubble";
 }
 
 /// Harvest levels (`tool_level` of a tool, `harvest_level` of a block) of the vanilla tiers.

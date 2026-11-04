@@ -131,6 +131,7 @@ pub struct ClientEntity {
     pub action: Option<(String, f32, bool)>,
     /// How a player holds itself: its box and how the model stands.
     pub pose: Pose,
+    pub sprinting: bool,
     /// Where the body faces: follows the head with a lag, and where it walks.
     pub body_yaw: f32,
     /// Arm swing progress 0..1 while swinging.
@@ -220,6 +221,7 @@ impl ClientEntity {
             next_step: 0.0,
             action: None,
             pose: Pose::STAND,
+            sprinting: false,
             track: Default::default(),
             pulled: None,
             size: None,
@@ -431,12 +433,6 @@ pub struct Client {
     refused_break: Option<(u64, IVec3)>,
     /// Where the hand's view is, easing after the camera: pitch, yaw.
     hand_view: (f32, f32),
-    was_on_ground: bool,
-    was_wet: bool,
-    /// Blocks per tick it was falling at.
-    was_falling: f32,
-    /// The highest it has been since it last stood.
-    fall_top: f64,
     /// Vanilla's bobbing state: distance walked (x0.6) and the smoothed amplitude.
     walk_dist: f32,
     bob: f32,
@@ -760,10 +756,6 @@ impl Client {
                 .collect(),
             refused_break: None,
             hand_view: (0.0, 0.0),
-            was_on_ground: true,
-            was_wet: false,
-            was_falling: 0.0,
-            fall_top: f64::NEG_INFINITY,
             walk_dist: 0.0,
             bob: 0.0,
             last_smooth: DVec3::ZERO,
@@ -1588,103 +1580,70 @@ impl Client {
 
     /// What the player's own moving kicks up: a landing's dust, a sprint's, a splash going into
     /// water and bubbles while under it.
+    /// Bubbles from the eyes under a liquid that has them; a fall's dust and splash come from
+    /// the server, a sprint's from `sprint_dust`, for everyone near.
     fn body_particles(&mut self, dt: f32) {
         let c = content();
         let pos = self.player.pos;
-        let name = |n: &str| c.game.particle_names.get(n).copied();
+        if self.me.sprinting {
+            self.sprint_dust(pos, self.player.vel, self.player.size[0] / 2.0, dt);
+        }
+        let bubble = self.eye_liquid().and_then(|l| {
+            let state = c.liquids[l as usize].first_state;
+            let id = c.components.id(weft_abi::comp::BUBBLE)?;
+            c.game
+                .particle_names
+                .get(c.components.text(crate::components::BLOCK, state, id)?)
+                .copied()
+        });
+        if let Some(kind) = bubble.filter(|_| self.chance() < dt * 1.5) {
+            let at = pos + DVec3::Y * self.player.eye;
+            self.particles.spawn(
+                &weft_abi::ParticleBurst {
+                    kind,
+                    pos: at.to_array(),
+                    count: 2,
+                    spread: [0.2, 0.1, 0.2],
+                    speed: 0.5,
+                    ..weft_abi::ParticleBurst::DEFAULT
+                },
+                &self.world,
+            );
+        }
+    }
+
+    /// Vanilla's `spawnSprintParticle`: now and then a bit of the ground under a sprinter, thrown
+    /// back and up. `vel` in blocks per tick.
+    fn sprint_dust(&mut self, pos: DVec3, vel: DVec3, half_width: f32, dt: f32) {
+        let c = content();
         let under = self
             .world
             .block_or_air((pos - DVec3::Y * 0.2).floor().as_ivec3())
             .unwrap_or(0);
-        let (w, on_ground) = (self.player.size[0] as f32 / 2.0, self.player.on_ground);
-        let fell = self.was_falling;
-        let drop = (self.fall_top - pos.y) as f32;
-        if on_ground && !self.was_on_ground && drop > crate::server::entity::SAFE_FALL && under != 0 {
-            if let Some(kind) = name(weft_abi::particle::BLOCK) {
-                // Vanilla's `checkFallDamage`, and what its particles make of no speed of their own.
-                let count = (150.0 * (0.2 + (drop - crate::server::entity::SAFE_FALL).ceil() / 15.0).min(2.5)) as u32;
-                self.particles.spawn(
-                    &weft_abi::ParticleBurst {
-                        kind,
-                        block: under,
-                        pos: pos.to_array(),
-                        count,
-                        velocity: [0.0, 2.0, 0.0],
-                        speed: 3.6,
-                        outward: 1,
-                        ..weft_abi::ParticleBurst::DEFAULT
-                    },
-                    &self.world,
-                );
-            }
+        let Some(&kind) = c.game.particle_names.get(weft_abi::particle::BLOCK) else { return };
+        if under == 0 || c.states[under as usize].liquid.is_some() || self.chance() >= dt * crate::world::TPS as f32 {
+            return;
         }
-        if on_ground && self.player.sprinting && under != 0 && self.chance() < dt * crate::world::TPS as f32 {
-            if let Some(kind) = name(weft_abi::particle::BLOCK) {
-                // Vanilla's `spawnSprintParticle`: back and up, in a particle's own speeds.
-                let mut noise = || self.rng.float() * 0.8 - 0.4;
-                let aim =
-                    glam::Vec3::new(-4.0 * self.player.vel.x as f32 + noise(), 1.5 + noise(), -4.0 * self.player.vel.z as f32 + noise());
-                let speed = (self.chance() + self.chance() + 1.0) / 3.0 * 3.6;
-                let velocity = (aim.normalize_or_zero() * speed + glam::Vec3::Y * 2.0).to_array();
-                let at = pos + DVec3::Y * 0.1;
-                self.particles.spawn(
-                    &weft_abi::ParticleBurst {
-                        kind,
-                        block: under,
-                        pos: at.to_array(),
-                        count: 1,
-                        spread: [w, 0.0, w],
-                        velocity,
-                        ..weft_abi::ParticleBurst::DEFAULT
-                    },
-                    &self.world,
-                );
-            }
-        }
-        if self.player.in_liquid && !self.was_wet && fell > 0.1 {
-            for (n, count) in [(weft_abi::particle::SPLASH, 24), (weft_abi::particle::BUBBLE, 12)] {
-                if let Some(kind) = name(n) {
-                    self.particles.spawn(
-                        &weft_abi::ParticleBurst {
-                            kind,
-                            pos: pos.to_array(),
-                            count,
-                            spread: [w * 2.0, 0.2, w * 2.0],
-                            speed: 3.0,
-                            velocity: [0.0, 3.0, 0.0],
-                            ..weft_abi::ParticleBurst::DEFAULT
-                        },
-                        &self.world,
-                    );
-                }
-            }
-        }
-        if self.eye_liquid().is_some() && self.chance() < dt * 1.5 {
-            if let Some(kind) = name(weft_abi::particle::BUBBLE) {
-                let at = pos + DVec3::Y * self.player.eye;
-                self.particles.spawn(
-                    &weft_abi::ParticleBurst {
-                        kind,
-                        pos: at.to_array(),
-                        count: 2,
-                        spread: [0.2, 0.1, 0.2],
-                        speed: 0.5,
-                        ..weft_abi::ParticleBurst::DEFAULT
-                    },
-                    &self.world,
-                );
-            }
-        }
-        self.was_on_ground = on_ground;
-        self.was_wet = self.player.in_liquid;
-        self.was_falling = (-self.player.vel.y as f32).max(0.0);
-        // The same that ends a fall on the server.
-        let safe = on_ground || self.player.in_liquid || self.player.climbing || self.player.flying;
-        self.fall_top = if safe { pos.y } else { self.fall_top.max(pos.y) };
+        let mut noise = || self.rng.float() * 0.8 - 0.4;
+        let aim = glam::Vec3::new(-4.0 * vel.x as f32 + noise(), 1.5 + noise(), -4.0 * vel.z as f32 + noise());
+        let speed = (self.chance() + self.chance() + 1.0) / 3.0 * 3.6;
+        let velocity = (aim.normalize_or_zero() * speed + glam::Vec3::Y * 2.0).to_array();
+        self.particles.spawn(
+            &weft_abi::ParticleBurst {
+                kind,
+                block: under,
+                pos: (pos + DVec3::Y * 0.1).to_array(),
+                count: 1,
+                spread: [half_width, 0.0, half_width],
+                velocity,
+                ..weft_abi::ParticleBurst::DEFAULT
+            },
+            &self.world,
+        );
     }
 
     /// What goes over the screen: the inside of a liquid, of a block, a fire.
-    fn overlays(&self, cam: &Camera, textures: &GameTextures) -> Vec<sky::Overlay> {
+    fn overlays(&self, textures: &GameTextures) -> Vec<sky::Overlay> {
         let c = content();
         let mut out = Vec::new();
         if self.view != 0 || self.hide_gui {
@@ -1708,8 +1667,7 @@ impl Client {
                     .powf(2.2)
                     .extend(l.overlay_opacity)
                     .to_array(),
-                tiles: 4.0,
-                slide: [-cam.yaw.to_degrees() / 64.0, cam.pitch.to_degrees() / 64.0],
+                tiles: 1.0,
                 lower: false,
                 frame: 0,
             });
@@ -1728,7 +1686,6 @@ impl Client {
                         picture: picture.to_string(),
                         color: [0.01, 0.01, 0.01, 1.0],
                         tiles: 1.0,
-                        slide: [0.0, 0.0],
                         lower: false,
                         frame: 0,
                     });
@@ -1741,14 +1698,7 @@ impl Client {
                 // Loaded by being asked for its picture, for mobs too.
                 textures.texture(c.fire_texture);
                 let frame = textures.strip_frame(c.fire_texture, ticks);
-                out.push(sky::Overlay {
-                    picture: picture.clone(),
-                    color: [1.0, 1.0, 1.0, 0.9],
-                    tiles: 2.0,
-                    slide: [0.0, 0.0],
-                    lower: true,
-                    frame,
-                });
+                out.push(sky::Overlay { picture: picture.clone(), color: [1.0, 1.0, 1.0, 0.9], tiles: 2.0, lower: true, frame });
             }
         }
         out
@@ -1867,6 +1817,13 @@ impl Client {
                     .push(Play { sound, pos: Some(pos), volume: 0.2, pitch: 0.0 });
             }
         }
+        if e.sprinting {
+            // Vanilla's sprint, about 0.28 blocks a tick, the way the body faces.
+            let (sin, cos) = (e.body_yaw as f64).sin_cos();
+            let (vel, hw) = (DVec3::new(-sin, 0.0, -cos) * 0.28, e.dims().0 as f32);
+            self.sprint_dust(pos, vel, hw, a.dt);
+        }
+        let Some(e) = self.entities.get(&a.entity) else { return };
         let eye = e.dims().2;
         if k.sounds[entity_sound::AMBIENT] != u32::MAX && self.chance() < a.dt / 12.0 {
             self.sounds
@@ -2199,6 +2156,7 @@ impl Client {
         (me.pos, me.target, me.yaw, me.target_yaw, me.pitch) = (pos, pos, self.player.yaw, self.player.yaw, self.player.pitch);
         (me.worn, me.held, me.off_held, me.using) = (worn, held, off_held, using);
         (me.arm_swing, me.swing_off, me.pose, me.walked) = (self.hand_swing, self.hand_swing_off, self.player.pose, me.walk);
+        me.sprinting = self.player.sprinting && self.player.on_ground;
         me.age = self.start.elapsed().as_secs_f32();
     }
 
@@ -2376,7 +2334,7 @@ impl Client {
         let mut late = std::mem::take(&mut self.late);
         late.clear();
         // The sky fills what the opaque world left, and translucent things are seen against it.
-        let overlays = self.overlays(&cam, textures);
+        let overlays = self.overlays(textures);
         self.sky.draw(
             gpu,
             &mut late,

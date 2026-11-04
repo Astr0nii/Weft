@@ -280,8 +280,9 @@ impl Server {
                 let Some(e) = r.entities.get_mut(entity) else { return };
                 e.pose = pose;
                 let here = crate::physics::around(c, &*r.space, pos, e.height(c));
-                let land = entity::track_fall(&mut e.fall, walked.y, on_ground, here.in_liquid || here.climbing)
-                    .and_then(|f| entity::fall_damage(&c.game.entities[e.kind as usize], f));
+                let splash = entity::splashes(e.in_liquid, here.in_liquid, -walked.y);
+                let fell = entity::track_fall(&mut e.fall, walked.y, on_ground, here.in_liquid || here.climbing);
+                let land = fell.and_then(|f| entity::fall_damage(&c.game.entities[e.kind as usize], f));
                 e.sprinting = sprint;
                 e.flying = flying;
                 e.jumped |= jumped;
@@ -292,6 +293,7 @@ impl Server {
                 e.pitch = pitch;
                 e.on_ground = on_ground;
                 e.in_liquid = here.in_liquid;
+                r.fall_effects(c, entity, fell, splash);
                 if let Some(amount) = land {
                     r.damage(c, entity, amount, 0, abi::damage_cause::FALL);
                 }

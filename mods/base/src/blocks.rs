@@ -308,6 +308,8 @@ pub fn register(r: &mut Registry) {
         .renewable(2)
         .fog(0x050533, 96.0)
         .set_text(&DRIP, abi::particle::DRIP)
+        .set_text(&SPLASH, abi::particle::SPLASH)
+        .set_text(&BUBBLE, abi::particle::BUBBLE)
         .tag("water")
         .bucket(Item::generated("water_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
     r.liquid(&LAVA)

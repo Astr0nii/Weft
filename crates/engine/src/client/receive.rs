@@ -303,9 +303,9 @@ impl Client {
         let solid = |k: u32| content().game.entities[k as usize].is(weft_abi::entity_flags::SOLID);
         // Physics looks a step of its own back, many ticks at a high `/tick rate`.
         let keep = ((self.tick_rate * STEP).ceil() as usize * 2 + 4).max(8);
-        for &(id, pos, yaw, pitch, pose, frame) in &list {
+        for &(id, pos, yaw, pitch, pose, sprinting, frame) in &list {
             if let Some(e) = self.entities.get_mut(&id) {
-                e.pose = pose;
+                (e.pose, e.sprinting) = (pose, sprinting);
                 let was = e.target;
                 e.target = pos;
                 e.target_yaw = yaw;

@@ -3426,7 +3426,7 @@ fn link_particles(game: &mut crate::registry::Game, textures: &mut TextureList) 
 }
 
 fn check_ambient_particles(game: &crate::registry::Game, components: &Components, state_count: u32, errors: &mut Vec<String>) {
-    for comp in [abi::comp::AMBIENT_PARTICLE, abi::comp::DRIP] {
+    for comp in [abi::comp::AMBIENT_PARTICLE, abi::comp::DRIP, abi::comp::SPLASH, abi::comp::BUBBLE] {
         let Some(id) = components.id(comp) else { continue };
         let mut named: Vec<&str> = (0..state_count)
             .filter_map(|s| components.text(comps::BLOCK, s, id))

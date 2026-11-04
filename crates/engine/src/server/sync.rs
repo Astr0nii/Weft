@@ -84,7 +84,7 @@ impl Server {
                     .iter_mut()
                     .filter(|e| !e.removed && e.anchor.is_none())
                 {
-                    let now = (e.pos, e.yaw, e.pitch, e.pose);
+                    let now = (e.pos, e.yaw, e.pitch, e.pose, e.sprinting);
                     // Solid bodies every tick: clients show them between server positions, and a
                     // body that stops must say so (two equal positions).
                     let solid = c.game.entities[e.kind as usize].is(abi::entity_flags::SOLID);
@@ -94,10 +94,11 @@ impl Server {
                                 || (s.1 - now.1).abs() > 0.01
                                 || (s.2 - now.2).abs() > 0.01
                                 || s.3 != now.3
+                                || s.4 != now.4
                         })
                     {
                         if e.sent.is_some() {
-                            m.push((e.id, e.pos, e.yaw, e.pitch, e.pose, e.frame.unwrap_or(0)));
+                            m.push((e.id, e.pos, e.yaw, e.pitch, e.pose, e.sprinting, e.frame.unwrap_or(0)));
                         }
                         e.sent = Some(now);
                     }

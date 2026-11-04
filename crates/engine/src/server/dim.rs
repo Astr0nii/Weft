@@ -619,6 +619,9 @@ pub fn mining_rate(c: &Content, state: u32, tool: u32, head_wet: bool, on_ground
 struct TickHit {
     id: u64,
     land: Option<f32>,
+    /// How far it fell before landing, and whether it fell into a liquid: for `fall_effects`.
+    fell: Option<f32>,
+    splash: bool,
     burn: bool,
     hot: bool,
     crushed: bool,
@@ -1504,6 +1507,64 @@ impl Dim {
         )
     }
 
+    /// What everyone near sees of a fall: dust where entity `id` landed from `fell` blocks up
+    /// (vanilla's, from a fall that would hurt), and a splash where it fell into a liquid with
+    /// one (`comp::SPLASH`, `comp::BUBBLE`).
+    pub fn fall_effects(&mut self, c: &'static Content, id: u64, fell: Option<f32>, splash: bool) {
+        let Some(e) = self.entities.get(id) else { return };
+        let (pos, w) = (e.pos, e.dims(c).0 as f32);
+        let mut bursts = Vec::new();
+        let safe = super::entity::SAFE_FALL;
+        let under = self
+            .get((pos - DVec3::Y * 0.2).floor().as_ivec3())
+            .unwrap_or(AIR);
+        if let (Some(drop), Some(&kind)) = (fell.filter(|&d| d > safe && under != AIR), c.game.particle_names.get(abi::particle::BLOCK)) {
+            // Vanilla's `checkFallDamage`, and what its particles make of no speed of their own.
+            let count = (150.0 * (0.2 + (drop - safe).ceil() / 15.0).min(2.5)) as u32;
+            bursts.push(abi::ParticleBurst {
+                kind,
+                block: under,
+                pos: pos.to_array(),
+                count,
+                velocity: [0.0, 2.0, 0.0],
+                speed: 3.6,
+                outward: 1,
+                ..abi::ParticleBurst::DEFAULT
+            });
+        }
+        let liquid = splash
+            .then(|| crate::physics::liquid_at(c, &*self.space, pos))
+            .flatten()
+            .map(|l| c.liquids[l as usize].first_state);
+        if let Some(state) = liquid {
+            for (comp, count) in [(abi::comp::SPLASH, 24), (abi::comp::BUBBLE, 12)] {
+                let Some(&kind) = c
+                    .components
+                    .id(comp)
+                    .and_then(|id| c.components.text(comps::BLOCK, state, id))
+                    .and_then(|n| c.game.particle_names.get(n))
+                else {
+                    continue;
+                };
+                bursts.push(abi::ParticleBurst {
+                    kind,
+                    pos: pos.to_array(),
+                    count,
+                    spread: [w * 2.0, 0.2, w * 2.0],
+                    speed: 3.0,
+                    velocity: [0.0, 3.0, 0.0],
+                    ..abi::ParticleBurst::DEFAULT
+                });
+            }
+        }
+        let dim = self.id;
+        self.events.extend(
+            bursts
+                .into_iter()
+                .map(|burst| DimEvent::Particles { dim, burst }),
+        );
+    }
+
     /// Damage to an entity, or with a negative `amount` healing: one entry for every change of
     /// health that mods may watch or change.
     pub fn damage(&mut self, c: &'static Content, id: u64, amount: f32, source: u64, cause: u32) -> bool {
@@ -2201,12 +2262,14 @@ impl Dim {
                 if k.is(ef::NOT_IN_WORLD) {
                     return None;
                 }
-                let mut land = None;
+                let (mut land, mut fell, mut splash) = (None, None, false);
                 let mut crushed = false;
                 // Players move on their client, bodies moved above; the rest here.
                 if !e.player && !k.is(ef::SOLID) {
+                    let (wet, falling) = (e.in_liquid, -e.vel.y * crate::world::TICK);
                     let s = step(c, e, gravity, &block, bodies);
                     crushed = s.crushed;
+                    (fell, splash) = (s.land, super::entity::splashes(wet, e.in_liquid, falling));
                     land = s.land.and_then(|fall| super::entity::fall_damage(k, fall));
                 }
                 // The liquids where the entity is now, and whether they burn.
@@ -2251,13 +2314,22 @@ impl Dim {
                         e.removed = true;
                     }
                 }
-                (land.is_some() || burn || hot || crushed).then_some(TickHit { id: e.id, land, burn, hot, crushed })
+                (land.is_some() || fell.is_some() || splash || burn || hot || crushed).then_some(TickHit {
+                    id: e.id,
+                    land,
+                    fell,
+                    splash,
+                    burn,
+                    hot,
+                    crushed,
+                })
             })
             .collect();
         for (i, push) in super::entity::soft_push(c, &self.entities.list) {
             self.entities.list[i].vel += push;
         }
-        for &TickHit { id, land, burn, hot, crushed } in &hits {
+        for &TickHit { id, land, fell, splash, burn, hot, crushed } in &hits {
+            self.fall_effects(c, id, fell, splash);
             if let Some(amount) = land {
                 self.damage(c, id, amount, 0, damage::FALL);
             }
