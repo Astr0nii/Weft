@@ -4,6 +4,8 @@
 //! static SPARK: Particle = Particle::named("spark");
 //! r.particle(&SPARK).textures(&["glint_0", "glint_1"]).life(0.3, 0.6).fullbright();
 //! w.spawn_particles(&SPARK, pos).count(12).speed(2.0);          // server: everyone nearby sees them
+//! // Rain that rings on water and is gone anywhere else:
+//! r.particle(&DROP).on_enter_liquid(When::tag("water"), Then::turn_into_still(&RIPPLE)).on_land(When::any(), Then::die());
 //! r.condition(&CHARGED, |c| c.client().is_some_and(|v| v.component(&CHARGE).is_some_and(|c| c > 0)));
 //! c.post_effect("mymod:underwater", 1.0);                  // client: until turned off
 //! ```
@@ -23,10 +25,98 @@ pub struct ParticleBuilder<'a> {
     shader: String,
     handle: Option<&'static Particle>,
     desc: abi::ParticleDesc,
+    rules: Vec<(u32, When, Then)>,
     _p: PhantomData<&'a mut Registry>,
 }
 
+/// Where a particle's rule holds: the block it hit, or the one it is in.
+pub struct When {
+    kind: u32,
+    tag: String,
+}
+
+impl When {
+    pub fn any() -> When {
+        When { kind: abi::particle_when::ANY, tag: String::new() }
+    }
+    pub fn liquid() -> When {
+        When { kind: abi::particle_when::LIQUID, tag: String::new() }
+    }
+    /// A block with `tag` (`water`, `lava`, a mod's own). At most 5 different tags over all
+    /// particle kinds of the game: the GPU keeps them with each block.
+    pub fn tag(tag: &str) -> When {
+        When { kind: abi::particle_when::TAG, tag: tag.trim_start_matches('#').to_string() }
+    }
+}
+
+/// What a particle's rule does.
+pub struct Then {
+    kind: u32,
+    amount: f32,
+    into: String,
+}
+
+impl Then {
+    fn of(kind: u32) -> Then {
+        Then { kind, amount: 0.0, into: String::new() }
+    }
+    pub fn die() -> Then {
+        Then::of(abi::particle_then::DIE)
+    }
+    /// Stays where it is for the rest of its life.
+    pub fn stop() -> Then {
+        Then::of(abi::particle_then::STOP)
+    }
+    /// Keeps going along what it hit.
+    pub fn slide() -> Then {
+        Then::of(abi::particle_then::SLIDE)
+    }
+    /// Comes back off what it hit with `share` of its speed.
+    pub fn bounce(share: f32) -> Then {
+        Then { amount: share, ..Then::of(abi::particle_then::BOUNCE) }
+    }
+    /// Becomes a particle of `kind` where it is, its speed kept and its life starting anew;
+    /// `kind` must be drawn the same way (`translucent` or not).
+    pub fn turn_into(kind: &Particle) -> Then {
+        Then { into: kind.name().to_string(), ..Then::of(abi::particle_then::BECOME) }
+    }
+    /// `turn_into`, standing still: a ripple where a drop fell.
+    pub fn turn_into_still(kind: &Particle) -> Then {
+        Then { into: kind.name().to_string(), ..Then::of(abi::particle_then::BECOME_STILL) }
+    }
+}
+
 impl ParticleBuilder<'_> {
+    fn rule(mut self, event: u32, when: When, then: Then) -> Self {
+        self.rules.push((event, when, then));
+        self
+    }
+    /// What landing on a block does where `when` holds; rules are tried in order, and without
+    /// one that holds it lies there. Any landing or hitting rule makes it stop on blocks.
+    pub fn on_land(self, when: When, then: Then) -> Self {
+        self.rule(abi::particle_event::LAND, when, then)
+    }
+    /// Running into a block's side; without a rule it slides along.
+    pub fn on_wall(self, when: When, then: Then) -> Self {
+        self.rule(abi::particle_event::WALL, when, then)
+    }
+    /// Running into a block's underside; without a rule it stops.
+    pub fn on_ceiling(self, when: When, then: Then) -> Self {
+        self.rule(abi::particle_event::CEILING, when, then)
+    }
+    /// Going into a liquid (`when` asks about that liquid).
+    pub fn on_enter_liquid(self, when: When, then: Then) -> Self {
+        self.rule(abi::particle_event::ENTER_LIQUID, when, then)
+    }
+    /// Coming out of one: a bubble pops.
+    pub fn on_leave_liquid(self, when: When, then: Then) -> Self {
+        self.rule(abi::particle_event::LEAVE_LIQUID, when, then)
+    }
+    /// The end of its life: by default the end of it, `Then::turn_into` goes on as another kind
+    /// (a spark dying into smoke).
+    pub fn on_expire(self, when: When, then: Then) -> Self {
+        self.rule(abi::particle_event::EXPIRE, when, then)
+    }
     /// Frames over its life; relative names are under `particle/`. None: block dust (pieces of
     /// the burst's block).
     pub fn textures(mut self, names: &[&str]) -> Self {
@@ -35,12 +125,12 @@ impl ParticleBuilder<'_> {
     }
     /// Seconds, picked between the two.
     pub fn life(mut self, min: f32, max: f32) -> Self {
-        self.desc.life = [min, max];
+        (self.desc.life_min, self.desc.life_max) = (min, max);
         self
     }
     /// Edge length in blocks, picked between the two.
     pub fn size(mut self, min: f32, max: f32) -> Self {
-        self.desc.scale = [min, max];
+        (self.desc.size_min, self.desc.size_max) = (min, max);
         self
     }
     /// Blocks per second squared, pulling down (negative rises).
@@ -58,6 +148,7 @@ impl ParticleBuilder<'_> {
         (self.desc.color, self.desc.color_end) = (start, end);
         self
     }
+    /// Stops on blocks: lies where it lands, slides along walls.
     pub fn colliding(mut self) -> Self {
         self.desc.flags |= pf::COLLIDE;
         self
@@ -87,11 +178,24 @@ impl Drop for ParticleBuilder<'_> {
             return;
         }
         let textures: Vec<Str> = self.textures.iter().map(|t| Str::new(t)).collect();
+        let rules: Vec<abi::ParticleRule> = self
+            .rules
+            .iter()
+            .map(|(event, when, then)| abi::ParticleRule {
+                event: *event,
+                when: when.kind,
+                tag: Str::new(&when.tag),
+                then: then.kind,
+                amount: then.amount,
+                into: Str::new(&then.into),
+            })
+            .collect();
         let desc = abi::ParticleDesc {
             name: Str::new(&self.name),
             cell: self.handle.map_or(std::ptr::null(), |h| h.id_cell()),
             textures: Slice::new(&textures),
             shader: Str::new(&self.shader),
+            rules: Slice::new(&rules),
             ..self.desc
         };
         unsafe { (host().reg_particle)(self.raw, &desc) }
@@ -303,6 +407,7 @@ impl Registry {
             shader: String::new(),
             handle: Some(particle),
             desc: abi::ParticleDesc::DEFAULT,
+            rules: Vec::new(),
             _p: PhantomData,
         }
     }
@@ -364,21 +469,27 @@ impl Burst {
     }
     /// Each particle starts up to this far from the position on every axis.
     pub fn spread(mut self, s: f32) -> Self {
-        self.burst.spread = [s; 3];
+        self.burst.spread = Vec3::new(s as f64, s as f64, s as f64);
         self
     }
-    pub fn spread_xyz(mut self, s: [f32; 3]) -> Self {
-        self.burst.spread = s;
+    /// `spread` of its own on each axis: a flat sheet, a column.
+    pub fn spread_box(mut self, s: impl Into<Vec3>) -> Self {
+        self.burst.spread = s.into();
         self
     }
     /// Starting velocity, blocks per second.
-    pub fn velocity(mut self, v: [f32; 3]) -> Self {
-        self.burst.velocity = v;
+    pub fn velocity(mut self, v: impl Into<Vec3>) -> Self {
+        self.burst.velocity = v.into();
         self
     }
     /// Random extra velocity up to this, in any direction.
-    pub fn random_speed(mut self, s: f32) -> Self {
+    pub fn speed(mut self, s: f32) -> Self {
         self.burst.speed = s;
+        self
+    }
+    /// 0xRRGGBB the kind's color is multiplied by: one white kind in any color.
+    pub fn color(mut self, rgb: u32) -> Self {
+        self.burst.color = rgb;
         self
     }
     /// Each flies away from the middle of the burst, more or less, like the pieces of a broken block.
@@ -411,9 +522,8 @@ impl Drop for Burst {
             (seed >> 11) as f64 / (1u64 << 53) as f64
         };
         let c = self.burst.pos;
-        let speed = (self.burst.velocity.iter().map(|v| v * v).sum::<f32>())
-            .sqrt()
-            .max(1.0);
+        let v = self.burst.velocity;
+        let speed = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt().max(1.0);
         let mut placed = 0;
         for _ in 0..self.burst.count.saturating_mul(20).min(20_000) {
             if placed >= self.burst.count {
@@ -423,11 +533,11 @@ impl Drop for Burst {
             if !area.contains(p) {
                 continue;
             }
-            let mut one = abi::ParticleBurst { pos: p, count: 1, spread: [0.0; 3], outward: 0, ..self.burst };
+            let mut one = abi::ParticleBurst { pos: p, count: 1, spread: Vec3::ZERO, outward: 0, ..self.burst };
             if self.burst.outward != 0 {
-                let d = (p - c).to_array().map(|v| v as f32);
-                let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
-                one.velocity = d.map(|x| x / len * speed);
+                let d = p - c;
+                let len = (d.x * d.x + d.y * d.y + d.z * d.z).sqrt().max(1e-6);
+                one.velocity = Vec3::new(d.x / len * speed, d.y / len * speed, d.z / len * speed);
             }
             send(&one);
             placed += 1;

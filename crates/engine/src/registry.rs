@@ -406,6 +406,8 @@ pub struct Game {
     pub particle_names: FxHashMap<String, u32>,
     /// Particle texture names while freezing; the content moves them into its one list.
     pub particle_textures: Vec<String>,
+    /// Block tags particle rules ask about, in the order of their bits.
+    pub particle_tags: Vec<String>,
     /// Items shown with a recipe type in the recipe viewer (the machines making them).
     pub recipe_stations: FxHashMap<String, Vec<u32>>,
     /// Sound events by id (sorted by name).
@@ -462,15 +464,36 @@ pub struct ParticleDef {
     pub name: String,
     /// Frames over its life (ids into `Content::textures`); empty for block dust.
     pub frames: Vec<u32>,
-    pub life: [f32; 2],
-    pub scale: [f32; 2],
+    pub life_min: f32,
+    pub life_max: f32,
+    pub size_min: f32,
+    pub size_max: f32,
     pub gravity: f32,
     pub drag: f32,
     pub color: u32,
     pub color_end: u32,
     pub flags: u32,
     pub shader: String,
+    pub rules: Vec<ParticleRule>,
+    /// Seconds one may live at most, the kinds it turns into included.
+    pub longest: f32,
 }
+
+/// `abi::ParticleRule` with what it names as numbers.
+#[derive(Clone, Copy, Debug)]
+pub struct ParticleRule {
+    pub event: u32,
+    pub when: u32,
+    /// `particle_when::TAG`: its index in `Game::particle_tags`.
+    pub tag: u32,
+    pub then: u32,
+    pub amount: f32,
+    /// `BECOME`: the kind.
+    pub into: u32,
+}
+
+/// Tags particle rules ask about at most: the GPU keeps them in the bits a block's word has left.
+pub const PARTICLE_TAGS: usize = 5;
 
 /// A thing in a dimension's sky, every registration of it merged (`abi::SkyDesc`).
 pub struct SkyDef {
@@ -638,9 +661,20 @@ pub struct RawParticle {
     pub name: String,
     pub cell: usize,
     pub textures: Vec<String>,
-    /// Numbers only: its `Str`s and `cell` are copied out (they point into the mod).
+    /// Numbers only: its `Str`s, `rules` and `cell` are copied out (they point into the mod).
     pub desc: abi::ParticleDesc,
     pub shader: String,
+    pub rules: Vec<RawParticleRule>,
+}
+
+/// `abi::ParticleRule` with its names owned.
+pub struct RawParticleRule {
+    pub event: u32,
+    pub when: u32,
+    pub tag: String,
+    pub then: u32,
+    pub amount: f32,
+    pub into: String,
 }
 
 // The descriptor's pointers are cleared when it is copied.
@@ -2528,140 +2562,143 @@ fn engine_sounds() -> Vec<(usize, SoundDef)> {
 
 /// Kinds the engine spawns itself; mods may replace their look by registering the same name.
 fn engine_particles() -> Vec<RawParticle> {
-    use abi::particle_flags as pf;
-    let block = abi::ParticleDesc {
-        life: [0.2, 1.0],
-        scale: [0.05, 0.1],
-        gravity: 16.0,
-        color: 0x999999FF,
-        color_end: 0x999999FF,
-        flags: pf::COLLIDE,
-        ..abi::ParticleDesc::DEFAULT
+    use abi::{particle_event as pe, particle_flags as pf, particle_then as pt, particle_when as pw};
+    let kind = |name: &str, textures: Vec<String>, desc: abi::ParticleDesc, rules: Vec<RawParticleRule>| RawParticle {
+        name: name.into(),
+        cell: 0,
+        textures,
+        desc,
+        shader: String::new(),
+        rules,
     };
-    let poof = abi::ParticleDesc {
-        life: [0.4, 1.1],
-        scale: [0.15, 0.3],
-        gravity: -2.0,
-        drag: 0.9,
-        color: 0xD0D0D0FF,
-        color_end: 0x909090FF,
-        ..abi::ParticleDesc::DEFAULT
-    };
-    let frames: Vec<String> = (0..8)
+    let rule = |event, then, into: &str| RawParticleRule { event, when: pw::ANY, tag: String::new(), then, amount: 0.0, into: into.into() };
+    let generic: Vec<String> = (0..8)
         .map(|i| format!("core:particle/generic_{}", 7 - i))
         .collect();
-    let crit = abi::ParticleDesc {
-        life: [0.3, 0.7],
-        scale: [0.1, 0.2],
-        gravity: 8.0,
-        drag: 0.8,
-        color: 0xFFE9A0FF,
-        color_end: 0xC08030FF,
-        flags: abi::particle_flags::FULLBRIGHT,
-        ..abi::ParticleDesc::DEFAULT
-    };
-    let (crit_frames, smoke_frames) = (frames.clone(), frames.clone());
+    let one = |t: &str| vec![format!("core:particle/{t}")];
     vec![
-        RawParticle { name: abi::particle::BLOCK.into(), cell: 0, textures: Vec::new(), desc: block, shader: String::new() },
-        RawParticle { name: abi::particle::POOF.into(), cell: 0, textures: frames, desc: poof, shader: String::new() },
-        RawParticle { name: abi::particle::CRIT.into(), cell: 0, textures: crit_frames, desc: crit, shader: String::new() },
-        RawParticle {
-            name: abi::particle::FLAME.into(),
-            cell: 0,
-            textures: vec!["core:particle/flame".into()],
-            desc: abi::ParticleDesc {
-                life: [0.3, 0.8],
-                scale: [0.08, 0.14],
+        kind(
+            abi::particle::BLOCK,
+            Vec::new(),
+            abi::ParticleDesc {
+                life_min: 0.2,
+                life_max: 1.0,
+                size_min: 0.05,
+                size_max: 0.1,
+                gravity: 16.0,
+                color: 0x999999FF,
+                color_end: 0x999999FF,
+                flags: pf::COLLIDE,
+                ..abi::ParticleDesc::DEFAULT
+            },
+            Vec::new(),
+        ),
+        kind(
+            abi::particle::POOF,
+            generic.clone(),
+            abi::ParticleDesc {
+                life_min: 0.4,
+                life_max: 1.1,
+                size_min: 0.15,
+                size_max: 0.3,
+                gravity: -2.0,
+                drag: 0.9,
+                color: 0xD0D0D0FF,
+                color_end: 0x909090FF,
+                ..abi::ParticleDesc::DEFAULT
+            },
+            Vec::new(),
+        ),
+        kind(
+            abi::particle::CRIT,
+            generic.clone(),
+            abi::ParticleDesc {
+                life_min: 0.3,
+                life_max: 0.7,
+                size_min: 0.1,
+                size_max: 0.2,
+                gravity: 8.0,
+                drag: 0.8,
+                color: 0xFFE9A0FF,
+                color_end: 0xC08030FF,
+                flags: pf::FULLBRIGHT,
+                ..abi::ParticleDesc::DEFAULT
+            },
+            Vec::new(),
+        ),
+        kind(
+            abi::particle::FLAME,
+            one("flame"),
+            abi::ParticleDesc {
+                life_min: 0.3,
+                life_max: 0.8,
+                size_min: 0.08,
+                size_max: 0.14,
                 gravity: 0.0,
                 drag: 0.96,
                 flags: pf::FULLBRIGHT | pf::SHRINK,
                 ..abi::ParticleDesc::DEFAULT
             },
-            shader: String::new(),
-        },
-        RawParticle {
-            name: abi::particle::SMOKE.into(),
-            cell: 0,
-            textures: smoke_frames,
-            desc: abi::ParticleDesc {
-                life: [0.6, 1.4],
-                scale: [0.08, 0.16],
+            Vec::new(),
+        ),
+        kind(
+            abi::particle::SMOKE,
+            generic,
+            abi::ParticleDesc {
+                life_min: 0.6,
+                life_max: 1.4,
+                size_min: 0.08,
+                size_max: 0.16,
                 gravity: -1.5,
                 drag: 0.96,
                 color: 0x505050FF,
                 color_end: 0x303030FF,
                 ..abi::ParticleDesc::DEFAULT
             },
-            shader: String::new(),
-        },
-        RawParticle {
-            name: abi::particle::BUBBLE.into(),
-            cell: 0,
-            textures: vec!["core:particle/bubble".into()],
-            desc: abi::ParticleDesc { life: [0.5, 1.5], scale: [0.05, 0.1], gravity: -4.0, drag: 0.85, ..abi::ParticleDesc::DEFAULT },
-            shader: String::new(),
-        },
-        RawParticle {
-            name: abi::particle::SPLASH.into(),
-            cell: 0,
-            textures: vec!["core:particle/splash".into()],
-            desc: abi::ParticleDesc {
-                life: [0.2, 0.5],
-                scale: [0.08, 0.14],
+            Vec::new(),
+        ),
+        // Pops at the surface, as vanilla's does.
+        kind(
+            abi::particle::BUBBLE,
+            one("bubble"),
+            abi::ParticleDesc {
+                life_min: 0.5,
+                life_max: 1.5,
+                size_min: 0.05,
+                size_max: 0.1,
+                gravity: -4.0,
+                drag: 0.85,
+                ..abi::ParticleDesc::DEFAULT
+            },
+            vec![rule(pe::LEAVE_LIQUID, pt::DIE, "")],
+        ),
+        kind(
+            abi::particle::SPLASH,
+            one("splash"),
+            abi::ParticleDesc {
+                life_min: 0.2,
+                life_max: 0.5,
+                size_min: 0.08,
+                size_max: 0.14,
                 gravity: 16.0,
                 flags: pf::COLLIDE,
                 ..abi::ParticleDesc::DEFAULT
             },
-            shader: String::new(),
-        },
-        RawParticle {
-            name: abi::particle::RAIN.into(),
-            cell: 0,
-            textures: vec!["core:particle/rain".into()],
-            desc: abi::ParticleDesc {
-                life: [1.0, 1.4],
-                scale: [0.35, 0.5],
-                gravity: 0.0,
-                drag: 1.0,
-                color: 0xFFFFFFB0,
-                color_end: 0xFFFFFFB0,
-                flags: pf::COLLIDE | pf::DIES_ON_LAND | pf::TRANSLUCENT,
-                ..abi::ParticleDesc::DEFAULT
-            },
-            shader: String::new(),
-        },
-        RawParticle {
-            name: abi::particle::SNOW.into(),
-            cell: 0,
-            textures: vec!["core:particle/snow".into()],
-            desc: abi::ParticleDesc {
-                life: [4.0, 6.0],
-                scale: [0.08, 0.16],
-                gravity: 0.0,
-                drag: 1.0,
-                flags: pf::COLLIDE | pf::DIES_ON_LAND,
-                ..abi::ParticleDesc::DEFAULT
-            },
-            shader: String::new(),
-        },
-        RawParticle {
-            name: abi::particle::DRIP.into(),
-            cell: 0,
-            textures: vec!["core:particle/drip".into()],
-            desc: abi::ParticleDesc {
-                life: [0.8, 1.2],
-                scale: [0.04, 0.06],
-                gravity: 16.0,
-                flags: pf::COLLIDE,
-                ..abi::ParticleDesc::DEFAULT
-            },
-            shader: String::new(),
-        },
+            Vec::new(),
+        ),
+        // Splashes where it lands, as vanilla's falling drip turns into a landing one.
+        kind(
+            abi::particle::DRIP,
+            one("drip"),
+            abi::ParticleDesc { life_min: 0.8, life_max: 1.2, size_min: 0.04, size_max: 0.06, gravity: 16.0, ..abi::ParticleDesc::DEFAULT },
+            vec![rule(pe::LAND, pt::BECOME_STILL, abi::particle::SPLASH)],
+        ),
     ]
 }
 
 /// Ids by sorted name; a later registration of a name (a mod after the engine) replaces it.
 fn freeze_particles(g: &mut Game, raws: Vec<RawParticle>, errors: &mut Vec<String>) {
+    use abi::{particle_event as pe, particle_then as pt, particle_when as pw};
     let mut by_name: std::collections::BTreeMap<String, RawParticle> = Default::default();
     for p in raws {
         if p.name.is_empty() {
@@ -2670,6 +2707,11 @@ fn freeze_particles(g: &mut Game, raws: Vec<RawParticle>, errors: &mut Vec<Strin
         }
         by_name.insert(p.name.clone(), p);
     }
+    let ids: FxHashMap<String, u32> = by_name
+        .keys()
+        .enumerate()
+        .map(|(i, n)| (n.clone(), i as u32))
+        .collect();
     let mut tex_ids: FxHashMap<String, u32> = FxHashMap::default();
     for (i, (name, p)) in by_name.into_iter().enumerate() {
         let frames = p
@@ -2682,22 +2724,96 @@ fn freeze_particles(g: &mut Game, raws: Vec<RawParticle>, errors: &mut Vec<Strin
                 })
             })
             .collect();
+        let mut rules = Vec::new();
+        for r in &p.rules {
+            let into = match r.then {
+                pt::BECOME | pt::BECOME_STILL => match ids.get(&r.into) {
+                    Some(&id) => id,
+                    None => {
+                        errors.push(format!("particle {name} turns into {}, which no one registers", r.into));
+                        continue;
+                    }
+                },
+                _ => 0,
+            };
+            let tag = if r.when == pw::TAG {
+                match g.particle_tags.iter().position(|t| *t == r.tag) {
+                    Some(i) => i as u32,
+                    None if g.particle_tags.len() < PARTICLE_TAGS => {
+                        g.particle_tags.push(r.tag.clone());
+                        g.particle_tags.len() as u32 - 1
+                    }
+                    None => {
+                        errors.push(format!(
+                            "particle {name} asks about tag {}: particle rules ask about {} tags at most ({})",
+                            r.tag,
+                            PARTICLE_TAGS,
+                            g.particle_tags.join(", ")
+                        ));
+                        continue;
+                    }
+                }
+            } else {
+                0
+            };
+            if r.event > pe::EXPIRE || r.when > pw::TAG || r.then > pt::BECOME_STILL {
+                errors.push(format!("particle {name}: a rule with an event, place or action that doesn't exist"));
+                continue;
+            }
+            rules.push(ParticleRule { event: r.event, when: r.when, tag, then: r.then, amount: r.amount, into });
+        }
         let d = p.desc;
         write_cell(p.cell, i as u32);
-        let order = |r: [f32; 2]| [r[0].min(r[1]), r[0].max(r[1])];
+        let hits = rules
+            .iter()
+            .any(|r| matches!(r.event, pe::LAND | pe::WALL | pe::CEILING));
+        let flags = if hits { d.flags | abi::particle_flags::COLLIDE } else { d.flags };
         g.particle_names.insert(name.clone(), i as u32);
         g.particles.push(ParticleDef {
             name,
             frames,
-            life: order(d.life).map(|v| v.max(0.01)),
-            scale: order(d.scale),
+            life_min: d.life_min.min(d.life_max).max(0.01),
+            life_max: d.life_max.max(d.life_min).max(0.01),
+            size_min: d.size_min.min(d.size_max),
+            size_max: d.size_max.max(d.size_min),
             gravity: d.gravity,
             drag: d.drag.clamp(0.0, 1.0),
             color: d.color,
             color_end: d.color_end,
-            flags: d.flags,
+            flags,
             shader: p.shader,
+            rules,
+            longest: 0.0,
         });
+    }
+    let translucent = |k: &ParticleDef| k.flags & abi::particle_flags::TRANSLUCENT != 0;
+    for k in &g.particles {
+        for r in k
+            .rules
+            .iter()
+            .filter(|r| matches!(r.then, pt::BECOME | pt::BECOME_STILL))
+        {
+            let into = &g.particles[r.into as usize];
+            if translucent(k) != translucent(into) {
+                errors.push(format!("particle {} turns into {}, which is drawn the other way (translucent or not)", k.name, into.name));
+            }
+        }
+    }
+    // Turning into each other in a loop lives on; a chain is counted this many kinds deep.
+    fn longest(all: &[ParticleDef], k: usize, depth: u32) -> f32 {
+        let next = all[k]
+            .rules
+            .iter()
+            .filter(|r| depth > 0 && matches!(r.then, pt::BECOME | pt::BECOME_STILL))
+            .map(|r| longest(all, r.into as usize, depth - 1))
+            .fold(0.0, f32::max);
+        all[k].life_max + next
+    }
+    let lives: Vec<f32> = (0..g.particles.len())
+        .map(|k| longest(&g.particles, k, 8))
+        .collect();
+    for (k, l) in g.particles.iter_mut().zip(lives) {
+        k.longest = l;
     }
 }
 

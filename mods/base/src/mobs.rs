@@ -367,7 +367,7 @@ fn blast(w: &World, id: u64, at: Vec3, radius: f64) {
     w.spawn_particles(&Particle::named("core:poof"), at)
         .count(40)
         .spread(radius as f32 * 0.5)
-        .random_speed(2.0);
+        .speed(2.0);
     w.despawn(id);
 }
 

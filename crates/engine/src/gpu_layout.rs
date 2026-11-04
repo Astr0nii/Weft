@@ -615,8 +615,19 @@ gpu_struct! {
         pub motion: [f32; 4],
         /// x color, y color at the end, z `abi::particle_flags`, w shader slot.
         pub data: [u32; 4],
-        /// x first in `frames`, y how many, none for block dust.
+        /// x first in `frames`, y how many, none for block dust; z first in `rules`, w how many.
         pub frames: [u32; 4],
+        /// What one turning into it starts with: life and size, each from and to.
+        pub start: [f32; 4],
+    }
+}
+
+gpu_struct! {
+    /// A kind's `registry::ParticleRule`.
+    pub struct GpuParticleRule as "ParticleRule" {
+        /// x event | place << 4 | tag << 8 | action << 16, y the share a bounce keeps (f32
+        /// bits), z the kind it turns into.
+        pub data: [u32; 4],
     }
 }
 
@@ -849,6 +860,7 @@ bindings! {
         SIM "sim": "array<SimParticle>",
         DST "dst": "array<Particle>",
         KINDS "kinds": "array<ParticleKind>",
+        RULES "rules": "array<ParticleRule>",
         FRAMES "frames": "array<u32>",
         CELLS "cells": "array<u32>",
     }
@@ -906,6 +918,7 @@ fn structs() -> String {
         GpuParticle::wgsl(),
         GpuSimParticle::wgsl(),
         GpuParticleKind::wgsl(),
+        GpuParticleRule::wgsl(),
         GpuWireQuad::wgsl(),
         GpuWeather::wgsl(),
         GpuSky::wgsl(),
@@ -954,11 +967,31 @@ pub fn particle_sim_prelude(window_reach: i32) -> String {
         let access = if matches!(*name, "sim" | "dst") { "read_write" } else { "read" };
         s.push_str(&format!("@group(1) @binding({i}) var<storage, {access}> {name}: {ty};\n"));
     }
-    use weft_abi::particle_flags as pf;
+    use weft_abi::{particle_event as pe, particle_flags as pf, particle_then as pt, particle_when as pw};
     s.push_str(&format!(
-        "struct SimArgs {{\n    first: u32,\n    count: u32,\n    dt: f32,\n    pad: f32,\n    shift: vec4<f32>,\n    rel: vec4<f32>,\n    origin: vec4<i32>,\n    center: vec4<i32>,\n}}\nvar<immediate> args: SimArgs;\nconst WINDOW_REACH: i32 = {window_reach};\nconst PARTICLE_FLAG_COLLIDE: u32 = {}u;\nconst PARTICLE_FLAG_FULLBRIGHT: u32 = {}u;\nconst PARTICLE_FLAG_SHRINK: u32 = {}u;\nconst PARTICLE_FLAG_DIES_ON_LAND: u32 = {}u;\n",
-        pf::COLLIDE, pf::FULLBRIGHT, pf::SHRINK, pf::DIES_ON_LAND
+        "struct SimArgs {{\n    first: u32,\n    count: u32,\n    dt: f32,\n    pad: f32,\n    shift: vec4<f32>,\n    rel: vec4<f32>,\n    origin: vec4<i32>,\n    center: vec4<i32>,\n}}\nvar<immediate> args: SimArgs;\nconst WINDOW_REACH: i32 = {window_reach};\nconst PARTICLE_FLAG_COLLIDE: u32 = {}u;\nconst PARTICLE_FLAG_FULLBRIGHT: u32 = {}u;\nconst PARTICLE_FLAG_SHRINK: u32 = {}u;\n",
+        pf::COLLIDE, pf::FULLBRIGHT, pf::SHRINK
     ));
+    let consts = [
+        ("EVENT_LAND", pe::LAND),
+        ("EVENT_WALL", pe::WALL),
+        ("EVENT_CEILING", pe::CEILING),
+        ("EVENT_ENTER_LIQUID", pe::ENTER_LIQUID),
+        ("EVENT_LEAVE_LIQUID", pe::LEAVE_LIQUID),
+        ("EVENT_EXPIRE", pe::EXPIRE),
+        ("WHEN_ANY", pw::ANY),
+        ("WHEN_LIQUID", pw::LIQUID),
+        ("WHEN_TAG", pw::TAG),
+        ("THEN_DIE", pt::DIE),
+        ("THEN_STOP", pt::STOP),
+        ("THEN_SLIDE", pt::SLIDE),
+        ("THEN_BOUNCE", pt::BOUNCE),
+        ("THEN_BECOME", pt::BECOME),
+        ("THEN_BECOME_STILL", pt::BECOME_STILL),
+    ];
+    for (name, v) in consts {
+        s.push_str(&format!("const {name}: u32 = {v}u;\n"));
+    }
     s
 }
 

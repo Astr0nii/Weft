@@ -1451,7 +1451,7 @@ impl Dim {
                             .unwrap_or(0),
                         pos: pos.to_array().into(),
                         count: 16,
-                        spread: [0.3, 0.5, 0.3],
+                        spread: [0.3, 0.5, 0.3].into(),
                         speed: 3.0,
                         ..abi::ParticleBurst::DEFAULT
                     },
@@ -1527,7 +1527,7 @@ impl Dim {
                 block: under,
                 pos: pos.to_array().into(),
                 count,
-                velocity: [0.0, 2.0, 0.0],
+                velocity: [0.0, 2.0, 0.0].into(),
                 speed: 3.6,
                 outward: 1,
                 ..abi::ParticleBurst::DEFAULT
@@ -1551,9 +1551,9 @@ impl Dim {
                     kind,
                     pos: pos.to_array().into(),
                     count,
-                    spread: [w * 2.0, 0.2, w * 2.0],
+                    spread: [w * 2.0, 0.2, w * 2.0].into(),
                     speed: 3.0,
-                    velocity: [0.0, 3.0, 0.0],
+                    velocity: [0.0, 3.0, 0.0].into(),
                     ..abi::ParticleBurst::DEFAULT
                 });
             }
@@ -3305,8 +3305,8 @@ impl Dim {
             let burst = abi::ParticleBurst {
                 kind,
                 pos: pos.into(),
-                spread,
-                velocity: [0.0, 2.0, 0.0],
+                spread: spread.into(),
+                velocity: [0.0, 2.0, 0.0].into(),
                 speed: 3.6,
                 outward: 1,
                 count: cells[0] * cells[1] * cells[2],

@@ -271,11 +271,25 @@ impl Wire for Msg {
 
 impl Wire for ParticleBurst {
     fn put(&self, w: &mut W) {
-        (self.kind, crate::world::dvec(self.pos), self.spread, self.velocity, self.speed, (self.count, self.block, self.outward)).put(w);
+        // Spread and speeds go as floats: they need no more.
+        let small = |v: weft_abi::Vec3| [v.x as f32, v.y as f32, v.z as f32];
+        let tail = (self.count, self.block, self.outward, self.color);
+        (self.kind, crate::world::dvec(self.pos), small(self.spread), small(self.velocity), self.speed, tail).put(w);
     }
     fn get(r: &mut R) -> Option<Self> {
-        let (kind, pos, spread, velocity, speed, (count, block, outward)): (u32, DVec3, _, _, _, _) = Wire::get(r)?;
-        Some(ParticleBurst { kind, pos: pos.to_array().into(), spread, velocity, speed, count, block, outward })
+        let (kind, pos, spread, velocity, speed, (count, block, outward, color)): (u32, DVec3, [f32; 3], [f32; 3], _, _) = Wire::get(r)?;
+        let wide = |v: [f32; 3]| weft_abi::Vec3::new(v[0] as f64, v[1] as f64, v[2] as f64);
+        Some(ParticleBurst {
+            kind,
+            pos: pos.to_array().into(),
+            spread: wide(spread),
+            velocity: wide(velocity),
+            speed,
+            count,
+            block,
+            outward,
+            color,
+        })
     }
 }
 

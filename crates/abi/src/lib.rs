@@ -132,6 +132,13 @@ impl From<[f64; 3]> for Vec3 {
     }
 }
 
+/// Directions and speeds made in single precision (a spread, a velocity).
+impl From<[f32; 3]> for Vec3 {
+    fn from([x, y, z]: [f32; 3]) -> Vec3 {
+        Vec3 { x: x as f64, y: y as f64, z: z as f64 }
+    }
+}
+
 impl From<Vec3> for [f64; 3] {
     fn from(v: Vec3) -> [f64; 3] {
         v.to_array()
@@ -3294,7 +3301,8 @@ pub mod condition {
 }
 
 pub mod particle_flags {
-    /// Stops on blocks, like vanilla's particles.
+    /// Stops on blocks, like vanilla's particles: lies where it lands, slides along walls. Its
+    /// `ParticleRule`s for landing and hitting things say otherwise; any of them turns this on.
     pub const COLLIDE: u32 = 1;
     /// Ignores light (flames, sparks).
     pub const FULLBRIGHT: u32 = 2;
@@ -3302,8 +3310,63 @@ pub mod particle_flags {
     pub const TRANSLUCENT: u32 = 4;
     /// Shrinks to nothing over its life.
     pub const SHRINK: u32 = 8;
-    /// Gone on landing (rain).
-    pub const DIES_ON_LAND: u32 = 16;
+}
+
+/// What happens to a particle that a `ParticleRule` answers.
+pub mod particle_event {
+    /// Came down on top of a block.
+    pub const LAND: u32 = 0;
+    /// Ran into the side of one.
+    pub const WALL: u32 = 1;
+    /// Ran into the underside of one.
+    pub const CEILING: u32 = 2;
+    pub const ENTER_LIQUID: u32 = 3;
+    pub const LEAVE_LIQUID: u32 = 4;
+    /// Its life is over.
+    pub const EXPIRE: u32 = 5;
+}
+
+/// Where a `ParticleRule` holds: the block it hit, or for the others the one it is in.
+pub mod particle_when {
+    pub const ANY: u32 = 0;
+    pub const LIQUID: u32 = 1;
+    /// A block with the rule's tag.
+    pub const TAG: u32 = 2;
+}
+
+/// What a `ParticleRule` does.
+pub mod particle_then {
+    pub const DIE: u32 = 0;
+    /// Stays where it is for the rest of its life.
+    pub const STOP: u32 = 1;
+    /// Loses its speed across what it hit and keeps going along it.
+    pub const SLIDE: u32 = 2;
+    /// Comes back off what it hit with `amount` of its speed.
+    pub const BOUNCE: u32 = 3;
+    /// Becomes a particle of kind `into` where it is, keeping its speed, its life starting anew.
+    pub const BECOME: u32 = 4;
+    /// `BECOME`, standing still.
+    pub const BECOME_STILL: u32 = 5;
+}
+
+/// One way a particle kind answers an event: the first of its rules for that event whose `when`
+/// holds is what happens. Without one, a landing stops it, a wall makes it slide, the end of
+/// its life is the end of it, and going in or out of a liquid does nothing.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ParticleRule {
+    /// `particle_event`.
+    pub event: u32,
+    /// `particle_when`.
+    pub when: u32,
+    /// `particle_when::TAG`: the tag. At most 5 different ones over all kinds.
+    pub tag: Str,
+    /// `particle_then`.
+    pub then: u32,
+    /// `BOUNCE`: share of the speed kept.
+    pub amount: f32,
+    /// `BECOME`: the kind, by name; it must blend the same way (`TRANSLUCENT` or not).
+    pub into: Str,
 }
 
 /// A particle kind. Particles live only on clients; the server and mods send bursts.
@@ -3316,9 +3379,11 @@ pub struct ParticleDesc {
     /// (block dust).
     pub textures: Slice<Str>,
     /// Seconds, picked between the two.
-    pub life: [f32; 2],
+    pub life_min: f32,
+    pub life_max: f32,
     /// Edge length in blocks, picked between the two.
-    pub scale: [f32; 2],
+    pub size_min: f32,
+    pub size_max: f32,
     /// Blocks per second squared, pulling down.
     pub gravity: f32,
     /// Fraction of its speed kept per tick (20 per second); vanilla's particles 0.98.
@@ -3329,19 +3394,23 @@ pub struct ParticleDesc {
     pub flags: u32,
     /// Fragment shader `shaders/particle/<name>.wgsl`, empty for the plain texture.
     pub shader: Str,
+    pub rules: Slice<ParticleRule>,
 }
 defaults!(ParticleDesc {
     name: Str::EMPTY,
     cell: core::ptr::null(),
     textures: Slice::EMPTY,
-    life: [0.5, 1.0],
-    scale: [0.1, 0.2],
+    life_min: 0.5,
+    life_max: 1.0,
+    size_min: 0.1,
+    size_max: 0.2,
     gravity: 0.0,
     drag: 0.98,
     color: 0xFFFFFFFF,
     color_end: 0xFFFFFFFF,
     flags: 0,
     shader: Str::EMPTY,
+    rules: Slice::EMPTY,
 });
 
 /// How much a player may do, for commands and anything else that asks: modern's levels. A player
@@ -3453,9 +3522,9 @@ pub struct ParticleBurst {
     pub kind: u32,
     pub pos: Vec3,
     /// Each particle starts up to this far from `pos` on each axis.
-    pub spread: [f32; 3],
+    pub spread: Vec3,
     /// Starting velocity in blocks per second.
-    pub velocity: [f32; 3],
+    pub velocity: Vec3,
     /// Random extra velocity up to this, in any direction.
     pub speed: f32,
     /// Non-zero: each flies away from the middle of the burst, more or less, like the pieces of a
@@ -3464,8 +3533,20 @@ pub struct ParticleBurst {
     pub count: u32,
     /// Block state the textureless kinds take their texture from.
     pub block: u32,
+    /// 0xRRGGBB the kind's color is multiplied by (redstone dust, a potion's color).
+    pub color: u32,
 }
-defaults!(ParticleBurst { kind: 0, pos: Vec3::ZERO, spread: [0.0; 3], velocity: [0.0; 3], speed: 0.0, outward: 0, count: 1, block: 0 });
+defaults!(ParticleBurst {
+    kind: 0,
+    pos: Vec3::ZERO,
+    spread: Vec3::ZERO,
+    velocity: Vec3::ZERO,
+    speed: 0.0,
+    outward: 0,
+    count: 1,
+    block: 0,
+    color: 0xFFFFFF
+});
 
 /// Particle kinds the engine itself uses.
 pub mod particle {
@@ -3485,8 +3566,6 @@ pub mod particle {
     pub const SPLASH: &str = "core:splash";
     /// Falling from a ceiling with water above it.
     pub const DRIP: &str = "core:drip";
-    pub const RAIN: &str = "core:rain";
-    pub const SNOW: &str = "core:snow";
 }
 
 /// Values are copied out before the call and written back after it (changes of synced

@@ -591,7 +591,7 @@ fn dynamite(r: &mut Registry) {
                 w.spawn_particles(&looks::SPARK, [center.x, center.y + 0.6, center.z])
                     .count(6)
                     .spread(0.2)
-                    .random_speed(0.5);
+                    .speed(0.5);
                 w.schedule_tick(pos, 10);
             } else {
                 w.play_sound(&BOOM, center, 4.0);

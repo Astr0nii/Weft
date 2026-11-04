@@ -1485,8 +1485,8 @@ impl Client {
                         &weft_abi::ParticleBurst {
                             kind,
                             pos: at.to_array().into(),
-                            spread,
-                            velocity,
+                            spread: spread.into(),
+                            velocity: velocity.into(),
                             speed: 0.72,
                             count: 1,
                             block: hit.state,
@@ -1603,7 +1603,7 @@ impl Client {
                     kind,
                     pos: at.to_array().into(),
                     count: 2,
-                    spread: [0.2, 0.1, 0.2],
+                    spread: [0.2, 0.1, 0.2].into(),
                     speed: 0.5,
                     ..weft_abi::ParticleBurst::DEFAULT
                 },
@@ -1634,8 +1634,8 @@ impl Client {
                 block: under,
                 pos: (pos + DVec3::Y * 0.1).to_array().into(),
                 count: 1,
-                spread: [half_width, 0.0, half_width],
-                velocity,
+                spread: [half_width, 0.0, half_width].into(),
+                velocity: velocity.into(),
                 ..weft_abi::ParticleBurst::DEFAULT
             },
             &self.world,
@@ -1743,7 +1743,7 @@ impl Client {
                 bursts.push(weft_abi::ParticleBurst {
                     kind,
                     pos: pos.into(),
-                    spread: [0.1, 0.1, 0.1],
+                    spread: [0.1, 0.1, 0.1].into(),
                     speed: 0.1,
                     count: 1,
                     ..weft_abi::ParticleBurst::DEFAULT
@@ -1757,7 +1757,7 @@ impl Client {
                     bursts.push(weft_abi::ParticleBurst {
                         kind,
                         pos: pos.into(),
-                        spread: [0.4, 0.0, 0.4],
+                        spread: [0.4, 0.0, 0.4].into(),
                         count: 1,
                         ..weft_abi::ParticleBurst::DEFAULT
                     });
@@ -1788,8 +1788,8 @@ impl Client {
                     &weft_abi::ParticleBurst {
                         kind,
                         pos: at.into(),
-                        spread: [w, h, w],
-                        velocity: [0.0, 0.4, 0.0],
+                        spread: [w, h, w].into(),
+                        velocity: [0.0, 0.4, 0.0].into(),
                         speed: 0.8,
                         count: 20,
                         ..weft_abi::ParticleBurst::DEFAULT

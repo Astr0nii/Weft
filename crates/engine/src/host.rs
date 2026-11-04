@@ -2690,12 +2690,33 @@ unsafe extern "C" fn reg_particle(r: *mut abi::Registrar, d: *const abi::Particl
             .iter()
             .map(|t| t.as_str().to_string())
             .collect();
+        let rules = d
+            .rules
+            .as_slice()
+            .iter()
+            .map(|r| registry::RawParticleRule {
+                event: r.event,
+                when: r.when,
+                tag: r.tag.as_str().to_string(),
+                then: r.then,
+                amount: r.amount,
+                into: r.into.as_str().to_string(),
+            })
+            .collect();
         let p = registry::RawParticle {
             name: d.name.as_str().to_string(),
             cell: d.cell as usize,
             textures,
             shader: d.shader.as_str().to_string(),
-            desc: abi::ParticleDesc { name: Str::EMPTY, cell: std::ptr::null(), textures: abi::Slice::EMPTY, shader: Str::EMPTY, ..d },
+            rules,
+            desc: abi::ParticleDesc {
+                name: Str::EMPTY,
+                cell: std::ptr::null(),
+                textures: abi::Slice::EMPTY,
+                shader: Str::EMPTY,
+                rules: abi::Slice::EMPTY,
+                ..d
+            },
         };
         reg(r).game.particles.push(p);
     }

@@ -20,7 +20,7 @@ pub async fn particle_crowd(t: T) -> R {
                 .spawn_particles(&SPARK, pos)
                 .count(10_000)
                 .spread(4.0)
-                .random_speed(1.0),
+                .speed(1.0),
         );
     }
     t.frames(2).await?;
@@ -28,6 +28,43 @@ pub async fn particle_crowd(t: T) -> R {
     let b = t.bench(0.6, "100k particles").await?;
     t.note(format!("{n} particles: {:.0} fps, frame {:.2} ms, gpu {:.2} ms", b[0], b[1], b[3]));
     t.check(n >= 99_000 && b[1] < 33.0, format!("{n} particles in {:.1} ms frames", b[1]));
+    Ok(())
+}
+
+static DROP: Particle = Particle::named("testmod:drop");
+
+/// A kind's rules run on the GPU: testmod's drops turn into red rings falling into water and are
+/// gone falling on the ground.
+pub async fn particle_rules(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    t.fill(add(f, [-3, -1, -7]), add(f, [3, -1, -3]), "water")
+        .await?;
+    t.c().set_look(0.0, -30.0);
+    t.settled().await?;
+    let rain = |at: [i32; 3]| {
+        let pos = [at[0] as f64 + 0.5, at[1] as f64 + 3.0, at[2] as f64 + 0.5];
+        drop(
+            t.c()
+                .spawn_particles(&DROP, pos)
+                .count(300)
+                .spread_box([2.5, 0.5, 1.5]),
+        );
+    };
+    let middle = |s: &crate::runner::Shot| s.share(0.2, 0.3, 0.8, 0.9, probe::red);
+    rain(add(f, [0, 0, -5]));
+    t.secs(1.0).await?;
+    let rings = middle(&t.shot("rings").await?);
+    t.probe("drops falling into water turn into rings", rings, rings > 0.01);
+    t.secs(3.0).await?;
+    t.fill(add(f, [-3, -1, -7]), add(f, [3, -1, -3]), "stone")
+        .await?;
+    t.settled().await?;
+    rain(add(f, [0, 0, -5]));
+    t.secs(1.0).await?;
+    let ground = t.shot("ground").await?;
+    let red = middle(&ground);
+    t.probe("drops on the ground leave nothing", red, red < 0.001);
     Ok(())
 }
 

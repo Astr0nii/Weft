@@ -14,6 +14,8 @@
 use weft_sdk::*;
 
 pub static SPARK: Particle = Particle::named("spark");
+pub static DROP: Particle = Particle::named("drop");
+pub static RIPPLE: Particle = Particle::named("ripple");
 static WISP: EntityKind = EntityKind::named("wisp");
 static IDOL: EntityKind = EntityKind::named("idol");
 static ORB: EntityKind = EntityKind::named("orb");
@@ -57,6 +59,22 @@ pub fn register(r: &mut Registry) {
         .fullbright()
         .translucent()
         .shader("twinkle");
+    // A drop that rings where it falls into water and is gone where it hits the ground.
+    r.particle(&DROP)
+        .textures(&["core:generic_0"])
+        .life(3.0, 3.0)
+        .size(0.25, 0.25)
+        .gravity(12.0)
+        .drag(1.0)
+        .on_enter_liquid(When::tag("water"), Then::turn_into_still(&RIPPLE))
+        .on_land(When::any(), Then::die());
+    r.particle(&RIPPLE)
+        .textures(&["core:generic_0"])
+        .life(3.0, 3.0)
+        .size(0.4, 0.4)
+        .drag(0.0)
+        .color(0xFF2020FF, 0xFF2020FF)
+        .fullbright();
 
     // A glowing obelisk here and there in the deserts of another mod's world.
     static OBELISK: Template = Template::named("obelisk");
@@ -221,7 +239,7 @@ pub fn register(r: &mut Registry) {
             w.spawn_particles(&SPARK, [st.pos.x, st.pos.y + 1.2, st.pos.z])
                 .count(40)
                 .spread(0.2)
-                .random_speed(4.0);
+                .speed(4.0);
         }
         true
     });
@@ -271,7 +289,7 @@ fn wisps(t: &EntityTick) {
             w.spawn_particles(&SPARK, [st.pos.x, st.pos.y + 0.2, st.pos.z])
                 .count(WISP_SPARKS.get().max(0) as u32)
                 .spread(0.15)
-                .random_speed(0.3);
+                .speed(0.3);
         }
     }
 }
