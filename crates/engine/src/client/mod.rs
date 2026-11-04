@@ -811,7 +811,7 @@ impl Client {
     pub fn swing_strength(&self) -> f32 {
         crate::content::swing_charge(
             content(),
-            self.swing_held.item,
+            &self.swing_held,
             self.swing_since * self.tick_rate as f32,
             self.attribute(crate::server::extend::ATTACK_SPEED),
         )
@@ -1279,7 +1279,7 @@ impl Client {
                 let rate = crate::server::mining_rate(
                     c,
                     hit.state,
-                    self.held().item,
+                    &self.held(),
                     self.eye_liquid().is_some(),
                     self.player.on_ground,
                     self.attribute(crate::server::extend::MINING_SPEED),

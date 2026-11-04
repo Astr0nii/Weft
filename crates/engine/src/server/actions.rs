@@ -120,7 +120,7 @@ impl Server {
             return false;
         }
         // An item that takes time starts here, and comes back through this when it is done.
-        let ticks = crate::content::use_ticks(c, held.item);
+        let ticks = crate::content::use_ticks(c, &held);
         if ticks > 0 && !finishing {
             if let Some(e) = r.entities.get_mut(entity) {
                 e.using = (ticks, off_hand);

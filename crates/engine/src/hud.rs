@@ -1074,7 +1074,7 @@ pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: weft_abi::I
         let key = text::lang_key("tagged", &c.components.names[comp as usize]);
         group(&key, Some(comp), &mut out);
     }
-    let max = c.items.get(stack.item as usize).map_or(0, |d| d.durability);
+    let max = c.durability(&stack);
     if max > 0 {
         let damage = crate::stack::damage(&stack);
         line(lang.get("tooltip.durability"), &[text::Arg::Int((max - damage.min(max)) as i64), text::Arg::Int(max as i64)], None, &mut out);

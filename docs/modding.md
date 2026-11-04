@@ -249,6 +249,10 @@ A block comes in stairs, slabs and vertical slabs by one tag, `.tag("has_shapes"
 
 A cell can hold any number of blocks. A block goes in with what is there when their hitboxes don't overlap, two slabs of different blocks say, with nothing to declare; `.shares_cell_with("#plantable")` lets it in though they do (snow over a plant). `.holds_liquid()` keeps the liquid source it is placed in and lets a bucket fill it: that is waterlogging, on slabs and stairs out of the box. From code: `w.parts(pos)` is all that is in a cell, `w.part_add(pos, state)` adds one whatever its shape, `w.part_remove(pos, state)` and `w.part_replace(pos, old, new)` act on one. `w.block` gives the one the cell stands for, and `w.set_block` replaces all of it, unless it is the same block, a property changing. `w.prop` and `w.prop_set` find the part that has the property. Inside a block's own callback `w.block(pos)` and `w.set_block(pos, ..)` mean that block, so it works the same in a cell with others. Only one block in a cell can have a block entity, a circuit, light of its own or growth, and that is the one the cell stands for; each part gets neighbor updates, scheduled ticks, its own support and its own loot, and the player breaks and uses the one aimed at.
 
+Several blocks, any mod's, can share one model file: `.model_file("othermod:hollow_log")`, with `.model_texture("inside", "stripped_oak_log")` putting this block's own picture where the file says `#inside`. `.hitbox(..)` is what stops a walker and is outlined; `.outline(..)` outlines something else (a hollow log outlined whole). Both take several boxes, one a call.
+
+Everything a builder set is readable from code, any mod's block or item: `block_info(state)` (its block, mod, `solid()`, `opaque()`, light, hardness, friction, model, textures, liquid, item), `item_info(item)` (mod, stack size, durability, attack, what it places, where it is worn), `components_of(entry_kind::BLOCK, state)` for every component and tag by name, values then through their handles, and `entries_with(entry_kind::BLOCK, "logs")` for every state with a tag. That's a WAILA, or hollow logs made for every mod's logs.
+
 In code a state is read and changed by name, `w.prop(pos, "lit")` and `w.prop_set(pos, "lit", "true")`, the other properties stay as they are.
 Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in structures, `r.set(..)`, `{block:..}` and commands (`/setblock ~ ~ ~ base:furnace[facing=east]`).
 
@@ -289,6 +293,10 @@ QUALITY.on_stack_own(&stack); // only its own
 stack.wear();
 let plain = stack.without(&QUALITY);
 ```
+A stack's own value wins over its item's for everything the engine reads too: give one stack its own `DURABILITY`, `MINING_SPEED`, `TOOL_LEVEL`, `ATTACK_DAMAGE`, `ATTACK_SPEED`, `USE_TICKS` or a `tools/<class>` tag and it digs, wears and hits by those. Anything about a stack can be changed from outside: its item, count and any value, with `inventory.set(slot, ..)` and `.with(..)`.
+
+A tool made of parts keeps them in a storage (`r.storage(&PARTS, 3)`, see [machines](machines.md)): `stack.stacks(&PARTS)` and `stack.with_stacks(&PARTS, &[handle, head, binding])` read and write them right on the stack, no slot needed, and each part is a stack with its own values and parts, as deep as you go. Add the parts' values up when you make it and write the result onto the stack. `stack.with_layers(&[("rod", None), ("pick_head", Some(0xB0B0B0))])` makes it show its parts' pictures one over the other, tinted, in slots, in the hand and on the ground.
+
 Stacks with different data don't merge. `r.stack_component` says a component exists for stacks, its flags are `abi::stack_flags`: `SERVER_ONLY` (clients get the stack without it), `NO_SAVE`, or 0 for neither. `.with` on a component nobody declared does nothing and says so in the log. Ids in a value shift when a mod comes or goes, the same as in a `SAVE` component (see [components](#components-and-tags-as-inter-mod-communication)).
 
 ### Entities

@@ -165,6 +165,7 @@ pub fn bench() -> Vec<TestDef> {
         world::item_farm,
         world::mob_crowd,
         looks::particle_crowd,
+        looks::layered_icon,
         looks::particle_rules,
         world::crater
     ]

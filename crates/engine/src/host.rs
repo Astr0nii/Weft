@@ -47,6 +47,10 @@ pub static HOST: Host = Host {
     component_table,
     stack_get,
     stack_with,
+    storage_slots,
+    component_info,
+    block_info,
+    item_info,
     block_get,
     world_dimension,
     block_set,
@@ -1223,6 +1227,87 @@ unsafe extern "C" fn stack_with(data: u32, comp: u32, value: abi::Slice<u8>, rem
     }
     let bytes = unsafe { value.as_slice() };
     crate::stack::with(data, comp, (remove == 0).then_some(bytes))
+}
+
+unsafe extern "C" fn storage_slots(comp: u32) -> u32 {
+    try_content()
+        .and_then(|c| crate::server::holder::storage_slots(c, comp))
+        .unwrap_or(0)
+}
+
+unsafe extern "C" fn component_info(comp: u32, name: *mut Str, schema: *mut Str) -> u32 {
+    let Some(c) = try_content() else { return 0 };
+    let Some(n) = c.components.names.get(comp as usize) else { return 0 };
+    let s = c
+        .components
+        .schemas
+        .get(comp as usize)
+        .map_or("", String::as_str);
+    unsafe {
+        *name = Str::new(n);
+        *schema = Str::new(s);
+    }
+    1
+}
+
+unsafe extern "C" fn block_info(state: u32, out: *mut abi::BlockInfo) -> u32 {
+    let Some(c) = try_content() else { return 0 };
+    let Some(s) = c.states.get(state as usize) else { return 0 };
+    let b = &c.blocks[s.block as usize];
+    let tex = |i: u32| {
+        c.textures
+            .get(i as usize)
+            .map_or(Str::EMPTY, |t| Str::new(t))
+    };
+    let item = c
+        .items
+        .iter()
+        .position(|i| i.block == Some(b.first_state))
+        .map_or(u32::MAX, |i| i as u32);
+    unsafe {
+        *out = abi::BlockInfo {
+            block: s.block,
+            first_state: b.first_state,
+            states: b.states,
+            name: Str::new(&b.name),
+            owner: Str::new(c.mod_name(b.owner)),
+            flags: s.flags,
+            opacity: s.opacity as u32,
+            light: s.light,
+            absorb: s.absorb,
+            layer: s.layer,
+            model: s.model,
+            hardness: s.hardness,
+            friction: s.friction,
+            drag: s.drag,
+            textures: s.textures.map(tex),
+            liquid: s.liquid.map_or(u32::MAX, |l| l as u32),
+            item,
+        };
+    }
+    1
+}
+
+unsafe extern "C" fn item_info(item: u32, out: *mut abi::ItemInfo) -> u32 {
+    let Some(c) = try_content() else { return 0 };
+    let Some(d) = c.items.get(item as usize) else { return 0 };
+    let worn = d
+        .equip
+        .and_then(|e| c.game.player_layout.equipment.get(e as usize))
+        .map_or(Str::EMPTY, |e| Str::new(&e.name));
+    unsafe {
+        *out = abi::ItemInfo {
+            name: Str::new(&d.name),
+            owner: Str::new(c.mod_name(d.owner)),
+            max_stack: d.max_stack,
+            durability: d.durability,
+            attack: d.attack,
+            block: d.block.unwrap_or(u32::MAX),
+            worn,
+            handheld: d.handheld as u32,
+        };
+    }
+    1
 }
 
 unsafe extern "C" fn energy_move(w: *mut abi::WorldCtx, h: *const abi::Holder, amount: i64, simulate: u32) -> i64 {

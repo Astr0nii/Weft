@@ -756,6 +756,12 @@ const OPS: &[(&str, &str, Run)] = &[
         }
         Ok(inv.len().to_string())
     }),
+    // A stick with a diamond over it, tinted red: a stack's own layered picture.
+    ("layered", "<index:int>", |w, cmd, player, _| {
+        let s = ItemStack::new(item("base:stick")?, 1).with_layers(&[("base:stick", None), ("base:diamond", Some(0xFF2020))]);
+        w.inventory(player).set(int(cmd, "index")?, s);
+        Ok(String::new())
+    }),
     ("stashed", "<index:int>", |w, cmd, player, _| Ok(stack_text(w.inventory(STASH.of(player)).get(int(cmd, "index")?)))),
     ("remove", "<id:int>", |w, cmd, _, _| {
         w.despawn(int(cmd, "id")?);

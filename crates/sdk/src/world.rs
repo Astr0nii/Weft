@@ -314,6 +314,103 @@ impl Drop for OnBody<'_> {
     }
 }
 
+/// What a block state is besides its components (those: `components_of`): its block, the mod
+/// it is from, its flags, light, look and feel. `None` for a state that doesn't exist.
+#[derive(Clone, Copy, Debug)]
+pub struct BlockInfo {
+    pub block: u32,
+    pub first_state: u32,
+    pub states: u32,
+    pub name: &'static str,
+    pub owner: &'static str,
+    /// `block_flags`: solid, opaque, replaceable ...
+    pub flags: u32,
+    pub opacity: u32,
+    pub light: [u8; 3],
+    pub absorb: [u8; 3],
+    pub layer: abi::RenderLayer,
+    pub model: abi::BlockModel,
+    pub hardness: f32,
+    pub friction: f32,
+    pub drag: f32,
+    /// Texture names per face, -X, +X, -Y, +Y, -Z, +Z.
+    pub textures: [&'static str; 6],
+    pub liquid: Option<u32>,
+    /// The item that places it.
+    pub item: Option<u32>,
+}
+
+impl BlockInfo {
+    pub fn solid(&self) -> bool {
+        self.flags & abi::block_flags::SOLID != 0
+    }
+    pub fn opaque(&self) -> bool {
+        self.flags & abi::block_flags::OPAQUE != 0
+    }
+}
+
+pub fn block_info(state: u32) -> Option<BlockInfo> {
+    let mut d = std::mem::MaybeUninit::<abi::BlockInfo>::uninit();
+    if unsafe { (host().block_info)(state, d.as_mut_ptr()) } == 0 {
+        return None;
+    }
+    let d = unsafe { d.assume_init() };
+    let some = |v: u32| (v != u32::MAX).then_some(v);
+    Some(BlockInfo {
+        block: d.block,
+        first_state: d.first_state,
+        states: d.states,
+        name: unsafe { d.name.as_str() },
+        owner: unsafe { d.owner.as_str() },
+        flags: d.flags,
+        opacity: d.opacity,
+        light: d.light,
+        absorb: d.absorb,
+        layer: d.layer,
+        model: d.model,
+        hardness: d.hardness,
+        friction: d.friction,
+        drag: d.drag,
+        textures: d.textures.map(|t| unsafe { t.as_str() }),
+        liquid: some(d.liquid),
+        item: some(d.item),
+    })
+}
+
+/// What an item is besides its components (`components_of`): the mod it is from, its stack
+/// size, durability and attack (a stack may carry its own: `Component::on_stack`), what it
+/// places and where it is worn.
+#[derive(Clone, Copy, Debug)]
+pub struct ItemInfo {
+    pub name: &'static str,
+    pub owner: &'static str,
+    pub max_stack: u32,
+    pub durability: u32,
+    pub attack: f32,
+    pub block: Option<u32>,
+    /// Its equipment slot's name, empty for none.
+    pub worn: &'static str,
+    pub handheld: bool,
+}
+
+pub fn item_info(item: u32) -> Option<ItemInfo> {
+    let mut d = std::mem::MaybeUninit::<abi::ItemInfo>::uninit();
+    if unsafe { (host().item_info)(item, d.as_mut_ptr()) } == 0 {
+        return None;
+    }
+    let d = unsafe { d.assume_init() };
+    Some(ItemInfo {
+        name: unsafe { d.name.as_str() },
+        owner: unsafe { d.owner.as_str() },
+        max_stack: d.max_stack,
+        durability: d.durability,
+        attack: d.attack,
+        block: (d.block != u32::MAX).then_some(d.block),
+        worn: unsafe { d.worn.as_str() },
+        handheld: d.handheld != 0,
+    })
+}
+
 pub fn block_name(state: u32) -> &'static str {
     name_of(abi::entry_kind::BLOCK, state)
 }

@@ -613,7 +613,7 @@ pub fn see_through(c: &Content, cube: &Cube) -> u16 {
 /// goes: vanilla's five times as slow with the head in a liquid, and again off the ground, and its
 /// slower rate without a tool that harvests it. All at once in creative or at 1 and up, nothing for
 /// what can't be broken.
-pub fn mining_rate(c: &Content, state: u32, tool: u32, head_wet: bool, on_ground: bool, speed: f32, creative: bool) -> f32 {
+pub fn mining_rate(c: &Content, state: u32, tool: &ItemStack, head_wet: bool, on_ground: bool, speed: f32, creative: bool) -> f32 {
     let s = &c.states[state as usize];
     if s.hardness < 0.0 {
         return 0.0;
@@ -621,7 +621,12 @@ pub fn mining_rate(c: &Content, state: u32, tool: u32, head_wet: bool, on_ground
     if creative || s.hardness == 0.0 {
         return 1.0;
     }
-    let tool_speed = if c.tool_fits(state, tool) { c.item_value::<f32>(tool, c.ids.mining_speed).unwrap_or(1.0) } else { 1.0 };
+    let tool_speed = if c.tool_fits(state, tool) {
+        c.stack_value::<f32>(tool, c.ids.mining_speed)
+            .unwrap_or(1.0)
+    } else {
+        1.0
+    };
     let secs = s.hardness * if c.harvests(state, tool) { 1.5 } else { 5.0 } / tool_speed;
     let secs = secs * if head_wet { 5.0 } else { 1.0 } * if on_ground { 1.0 } else { 5.0 } / speed;
     crate::world::TICK as f32 / secs
@@ -1408,7 +1413,8 @@ impl Dim {
             return false;
         }
         let base = if held.item != 0 {
-            c.items.get(held.item as usize).map_or(1.0, |i| i.attack)
+            c.stack_value::<f32>(&held, c.ids.attack_damage)
+                .unwrap_or(1.0)
         } else if player {
             1.0
         } else {
@@ -1513,12 +1519,7 @@ impl Dim {
     /// How charged a player's next swing is, 0..1.
     pub fn swing_strength(&self, c: &Content, player: u64, held: ItemStack) -> f32 {
         let Some(e) = self.entities.get(player) else { return 1.0 };
-        crate::content::swing_charge(
-            c,
-            held.item,
-            e.swing_ticks as f32,
-            self.attribute(c, player, super::extend::ATTACK_SPEED, false) as f32,
-        )
+        crate::content::swing_charge(c, &held, e.swing_ticks as f32, self.attribute(c, player, super::extend::ATTACK_SPEED, false) as f32)
     }
 
     /// What everyone near sees of a fall: dust where entity `id` landed from `fell` blocks up
@@ -2741,12 +2742,12 @@ impl Dim {
     pub fn mining_rate_of(&mut self, c: &Content, player: u64, frame: u64, pos: IVec3, part: u32) -> f32 {
         let Some(e) = self.entities.get(player) else { return 0.0 };
         let (wet, on_ground, creative) = (self.head_in_liquid(c, e), e.on_ground, e.mode.has(weft_abi::game_mode_flags::INSTANT_BREAK));
-        let tool = self.entities.held(player).item;
+        let tool = self.entities.held(player);
         let speed = self.attribute(c, player, super::extend::MINING_SPEED, false) as f32;
         let state = self
             .in_frame(frame, |d| d.aimed_part(c, pos, part))
             .unwrap_or(AIR);
-        mining_rate(c, state, tool, wet, on_ground, speed, creative)
+        mining_rate(c, state, &tool, wet, on_ground, speed, creative)
     }
 
     /// Pushes an entity, by blocks per second. Its client moves a player, so the push goes there.
@@ -2767,14 +2768,7 @@ impl Dim {
         let hit = self.attack(c, attacker, target, held);
         // Bare hands wear nothing, whatever sits in the slot doing nothing.
         if hit && player && !held.is_empty() {
-            super::actions::wear(
-                c,
-                self,
-                attacker,
-                slot,
-                c.item_value::<u32>(held.item, c.ids.wear_per_hit)
-                    .unwrap_or(2),
-            );
+            super::actions::wear(c, self, attacker, slot, c.stack_value::<u32>(&held, c.ids.wear_per_hit).unwrap_or(2));
         }
         hit
     }

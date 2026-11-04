@@ -267,17 +267,17 @@ pub fn harvested(item: u32, count: u32) -> Table {
 fn passes(c: &crate::content::Content, conds: &[Cond], ctx: &Ctx, rng: &mut dyn FnMut() -> f32) -> bool {
     conds.iter().all(|cd| match cd.kind {
         lc::CHANCE => rng() < cd.value,
-        lc::TOOL_TAG => !ctx.tool.is_empty() && c.components.has(comps::ITEM, ctx.tool.item, cd.tag),
-        lc::NOT_TOOL_TAG => ctx.tool.is_empty() || !c.components.has(comps::ITEM, ctx.tool.item, cd.tag),
+        lc::TOOL_TAG => !ctx.tool.is_empty() && c.stack_has(&ctx.tool, Some(cd.tag)),
+        lc::NOT_TOOL_TAG => ctx.tool.is_empty() || !c.stack_has(&ctx.tool, Some(cd.tag)),
         lc::TOOL_LEVEL => {
             !ctx.tool.is_empty()
-                && c.item_value::<u32>(ctx.tool.item, c.ids.tool_level)
+                && c.stack_value::<u32>(&ctx.tool, c.ids.tool_level)
                     .unwrap_or(0) as f32
                     >= cd.value
         }
         lc::KILLED_BY_PLAYER => ctx.by_player,
         lc::ON_FIRE => ctx.on_fire,
-        lc::HARVESTED => ctx.mined == 0 || c.harvests(ctx.mined, ctx.tool.item),
+        lc::HARVESTED => ctx.mined == 0 || c.harvests(ctx.mined, &ctx.tool),
         lc::CONDITION => ctx.holds.iter().any(|h| *h == cd.prop),
         // Not per tick or per entity: only when a table is rolled for a block.
         lc::BLOCK_STATE => {

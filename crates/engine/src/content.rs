@@ -260,9 +260,9 @@ pub struct ItemDef {
 
 /// A creative inventory tab: translated as `tab.<ns>.<name>`, or the mod's name for the tab a mod
 /// gets automatically for items it put in no tab.
-/// Ticks of holding the use button an item asks for, 0 for at once.
-pub fn use_ticks(c: &Content, item: u32) -> u32 {
-    c.item_value::<u32>(item, c.ids.use_ticks).unwrap_or(0)
+/// Ticks of holding the use button a stack asks for, 0 for at once.
+pub fn use_ticks(c: &Content, stack: &weft_abi::ItemStack) -> u32 {
+    c.stack_value::<u32>(stack, c.ids.use_ticks).unwrap_or(0)
 }
 
 /// Needs both hands.
@@ -312,13 +312,13 @@ pub fn in_main_hand(c: &Content, inventory: &[weft_abi::ItemStack], selected: u3
 pub fn hands_in_order(c: &Content, inventory: &[weft_abi::ItemStack], selected: u32) -> Vec<u32> {
     let main = in_main_hand(c, inventory, selected);
     let off = in_off_hand(c, inventory);
-    let prio = |item: u32| c.item_value::<i32>(item, c.ids.use_priority).unwrap_or(0);
+    let prio = |s: &weft_abi::ItemStack| c.stack_value::<i32>(s, c.ids.use_priority).unwrap_or(0);
     let mut out = Vec::with_capacity(2);
     if !main.is_empty() {
         out.push(selected);
     }
     if let (Some(o), false) = (c.game.player_layout.off, off.is_empty()) {
-        if !main.is_empty() && prio(off.item) > prio(main.item) {
+        if !main.is_empty() && prio(&off) > prio(&main) {
             out.insert(0, o);
         } else {
             out.push(o);
@@ -327,15 +327,16 @@ pub fn hands_in_order(c: &Content, inventory: &[weft_abi::ItemStack], selected: 
     out
 }
 
-/// Full swings per second with an item in hand.
-pub fn swings_per_second(c: &Content, item: u32) -> f32 {
-    c.item_value::<f32>(item, c.ids.attack_speed).unwrap_or(4.0)
+/// Full swings per second with a stack in hand.
+pub fn swings_per_second(c: &Content, held: &weft_abi::ItemStack) -> f32 {
+    c.stack_value::<f32>(held, c.ids.attack_speed)
+        .unwrap_or(4.0)
 }
 
 /// How charged a swing is after that many ticks, 0..1. Client and server have to agree, with
 /// `speed` the `core:attack_speed` attribute.
-pub fn swing_charge(c: &Content, item: u32, ticks: f32, speed: f32) -> f32 {
-    ((ticks + 0.5) * swings_per_second(c, item) * speed / crate::world::TPS as f32).clamp(0.0, 1.0)
+pub fn swing_charge(c: &Content, held: &weft_abi::ItemStack, ticks: f32, speed: f32) -> f32 {
+    ((ticks + 0.5) * swings_per_second(c, held) * speed / crate::world::TPS as f32).clamp(0.0, 1.0)
 }
 
 /// What a block's tint goes on, on one face of it, wherever that is drawn.
@@ -694,6 +695,7 @@ pub struct Ids {
     pub no_creative_break: Option<u32>,
     pub inventory: Option<u32>,
     pub contents: Option<u32>,
+    pub layers: Option<u32>,
     pub energy: Option<u32>,
 }
 
@@ -1007,24 +1009,45 @@ impl Content {
     }
 
     /// The tool is of a class the block is mineable with (`mineable/pickaxe` on the block,
-    /// `tools/pickaxe` on the item).
-    pub fn tool_fits(&self, state: u32, tool: u32) -> bool {
-        tool != 0
+    /// `tools/pickaxe` on the stack or its item).
+    pub fn tool_fits(&self, state: u32, tool: &abi::ItemStack) -> bool {
+        !tool.is_empty()
             && self
                 .tool_classes
                 .iter()
-                .any(|&(mineable, tools)| self.components.has(comps::BLOCK, state, mineable) && self.item_has(tool, tools))
+                .any(|&(mineable, tools)| self.components.has(comps::BLOCK, state, mineable) && self.stack_has(tool, tools))
     }
 
-    /// Mining the block with `tool` (0 = hand) harvests it: it needs no tool, or this one fits
-    /// and is of a high enough level.
-    pub fn harvests(&self, state: u32, tool: u32) -> bool {
+    /// Mining the block with `tool` (empty: the hand) harvests it: it needs no tool, or this
+    /// one fits and is of a high enough level.
+    pub fn harvests(&self, state: u32, tool: &abi::ItemStack) -> bool {
         !self.needs_tool(state)
             || (self.tool_fits(state, tool)
                 && self
-                    .item_value::<u32>(tool, self.ids.tool_level)
+                    .stack_value::<u32>(tool, self.ids.tool_level)
                     .unwrap_or(0)
                     >= self.harvest_level(state))
+    }
+
+    /// What a stack carries of `comp`: its own value, else its item's. A tool made of parts has
+    /// its own durability, speed and level this way, and everything reading them goes by it.
+    pub fn stack_value<T: Copy>(&self, stack: &abi::ItemStack, comp: Option<u32>) -> Option<T> {
+        let comp = comp?;
+        crate::stack::value(stack.data, comp)
+            .filter(|b| b.len() >= size_of::<T>())
+            .map(|b| unsafe { std::ptr::read_unaligned(b.as_ptr() as *const T) })
+            .or_else(|| self.item_value(stack.item, Some(comp)))
+    }
+
+    /// The stack or its item has the tag or component.
+    pub fn stack_has(&self, stack: &abi::ItemStack, comp: Option<u32>) -> bool {
+        comp.is_some_and(|id| crate::stack::value(stack.data, id).is_some()) || self.item_has(stack.item, comp)
+    }
+
+    /// Uses the stack takes before it breaks, 0: it doesn't wear.
+    pub fn durability(&self, stack: &abi::ItemStack) -> u32 {
+        self.stack_value::<u32>(stack, self.ids.durability)
+            .unwrap_or(0)
     }
 
     pub fn max_stack(&self, item: u32) -> u32 {
@@ -1115,6 +1138,8 @@ pub struct RawState {
     /// (min, max, textures, uv, turn, tilt) per box, see `abi::ModelBox`.
     pub boxes: Vec<([f32; 3], [f32; 3], [String; 6], [[f32; 4]; 6], [u8; 6], weft_abi::BoxTilt)>,
     pub hitbox: Vec<[f32; 6]>,
+    /// What is outlined instead of `hitbox`; empty: `hitbox`.
+    pub outline: Vec<[f32; 6]>,
     pub signal: RawSignal,
     pub components: Vec<RawValue>,
 }
@@ -1138,6 +1163,10 @@ pub struct RawBlock {
     pub derive: Option<(String, String)>,
     /// What may share a cell with it though their shapes overlap.
     pub shares_cell: Vec<String>,
+    /// Model file to use instead of its own name's, empty for that.
+    pub model_file: String,
+    /// The block's textures for the model file's `#names`.
+    pub model_textures: Vec<(String, String)>,
 }
 
 pub struct RawItem {
@@ -1360,6 +1389,8 @@ fn expand_templates(
                     extra_cells: Vec::new(),
                     derive: None,
                     shares_cell: template.shares_cell.clone(),
+                    model_file: template.model_file.clone(),
+                    model_textures: template.model_textures.clone(),
                 },
             ));
         }
@@ -1429,6 +1460,12 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                     .iter()
                     .map(|b| b.map(|v| v / 16.0))
                     .collect(),
+                outline: s
+                    .outline
+                    .as_slice()
+                    .iter()
+                    .map(|b| b.map(|v| v / 16.0))
+                    .collect(),
                 signal: RawSignal {
                     kind: s.signal.kind,
                     attach: s.signal.attach as u8,
@@ -1490,6 +1527,13 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 .collect(),
             opens: d.opens.as_str().to_string(),
             extra_cells: Vec::new(),
+            model_file: d.model_file.as_str().to_string(),
+            model_textures: d
+                .model_textures
+                .as_slice()
+                .chunks_exact(2)
+                .map(|p| (p[0].as_str().to_string(), p[1].as_str().to_string()))
+                .collect(),
         }
     }
 }
@@ -2164,8 +2208,9 @@ fn apply_replacements(mods: &[ModMeta], mut blocks: Vec<(ModId, RawBlock)>, item
 fn apply_block_models(mods: &[ModMeta], blocks: &mut [(ModId, RawBlock)], errors: &mut Vec<String>) {
     let read_model = |name: &str| model_file(mods, name);
     for (_, b) in blocks.iter_mut() {
-        let Some((ns, path)) = b.name.split_once(':') else { continue };
-        match crate::block_model::load(&format!("{ns}:block/{path}"), &read_model) {
+        let file = if b.model_file.is_empty() { &b.name } else { &b.model_file };
+        let Some((ns, path)) = file.split_once(':') else { continue };
+        match crate::block_model::load_with(&format!("{ns}:block/{path}"), &read_model, &b.model_textures) {
             Ok(Some(m)) => apply_model(b, &m),
             Ok(None) => {}
             Err(e) => errors.push(e),
@@ -2339,7 +2384,9 @@ fn number_blocks(mods: &[ModMeta], blocks: Vec<(ModId, RawBlock)>, textures: &mu
             } else {
                 vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
             };
-            let selection: Vec<[f32; 6]> = if !s.hitbox.is_empty() {
+            let selection: Vec<[f32; 6]> = if !s.outline.is_empty() {
+                s.outline.clone()
+            } else if !s.hitbox.is_empty() {
                 s.hitbox.clone()
             } else if s.model == BlockModel::Cube {
                 vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
@@ -2661,6 +2708,7 @@ fn declare_components(
     cb.declare(crate::registry::TIMERS, "bytes", None, &|| "the engine".into(), errors);
     cb.declare(abi::comp::NAME, "bytes", None, &|| "the engine".into(), errors);
     cb.declare(abi::comp::CONTENTS, "bytes", None, &|| "the engine".into(), errors);
+    cb.declare(abi::comp::LAYERS, "bytes", None, &|| "the engine".into(), errors);
     cb.declare(abi::comp::ENERGY, <abi::Energy as abi::Schema>::SCHEMA, None, &|| "the engine".into(), errors);
     for (name, schema) in [
         (crate::registry::HEALTH, "[f32;2]"),
@@ -2903,6 +2951,7 @@ fn component_ids(components: &Components) -> Ids {
         no_creative_break: id(abi::comp::NO_CREATIVE_BREAK),
         inventory: id(abi::comp::INVENTORY),
         contents: id(abi::comp::CONTENTS),
+        layers: id(abi::comp::LAYERS),
         energy: id(abi::comp::ENERGY),
     }
 }

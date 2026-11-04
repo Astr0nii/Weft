@@ -87,6 +87,24 @@ pub fn damage(stack: &ItemStack) -> u32 {
     u32_of(stack, crate::content::try_content().and_then(|c| c.ids.damage))
 }
 
+/// The pictures a stack shows as, if it has its own (`abi::comp::LAYERS`): a tool made of parts.
+pub fn layers(stack: &ItemStack) -> Option<&'static str> {
+    let c = crate::content::try_content()?;
+    value(stack.data, c.ids.layers?)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// `layers` text as (texture name, tint 0xRRGGBB) pairs, white where none is given.
+pub fn parse_layers(spec: &str) -> Vec<(&str, u32)> {
+    spec.split_whitespace()
+        .map(|l| match l.rsplit_once('#') {
+            Some((name, hex)) => (name, u32::from_str_radix(hex, 16).unwrap_or(0xFF_FFFF)),
+            None => (l, 0xFF_FFFF),
+        })
+        .collect()
+}
+
 /// The stack's own name, if a player gave it one.
 pub fn name(stack: &ItemStack) -> Option<String> {
     let c = crate::content::try_content()?;
@@ -200,15 +218,12 @@ pub fn contents_from_names(c: &crate::content::Content, b: &[u8]) -> Vec<u8> {
 
 /// `amount` more damage, nothing left when that uses it up; what has no durability stays.
 pub fn worn(c: &crate::content::Content, stack: ItemStack, amount: u32) -> ItemStack {
-    let Some(def) = c
-        .items
-        .get(stack.item as usize)
-        .filter(|d| d.durability != 0 && !stack.is_empty())
-    else {
+    let most = c.durability(&stack);
+    if most == 0 || stack.is_empty() {
         return stack;
-    };
+    }
     let total = damage(&stack) + amount;
-    if total >= def.durability { ItemStack::EMPTY } else { with_damage(stack, total) }
+    if total >= most { ItemStack::EMPTY } else { with_damage(stack, total) }
 }
 
 /// Stack data by component name, for what outlasts the handles of one process: saves and the

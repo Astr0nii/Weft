@@ -402,6 +402,52 @@ pub struct ComponentTable {
 unsafe impl Sync for ComponentTable {}
 unsafe impl Send for ComponentTable {}
 
+/// What a block state is, everything its builder set that isn't a component (those are read
+/// from the component table). `Host::block_info`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct BlockInfo {
+    /// Its block, the block's first state and how many it has.
+    pub block: u32,
+    pub first_state: u32,
+    pub states: u32,
+    /// The block's name and the mod that registered it.
+    pub name: Str,
+    pub owner: Str,
+    /// `block_flags`.
+    pub flags: u32,
+    pub opacity: u32,
+    pub light: [u8; 3],
+    pub absorb: [u8; 3],
+    pub layer: RenderLayer,
+    pub model: BlockModel,
+    pub hardness: f32,
+    pub friction: f32,
+    pub drag: f32,
+    /// Texture names per face (-X, +X, -Y, +Y, -Z, +Z).
+    pub textures: [Str; 6],
+    /// Its liquid's id, `u32::MAX` for none.
+    pub liquid: u32,
+    /// The item that places it, `u32::MAX` for none.
+    pub item: u32,
+}
+
+/// What an item is, everything its builder set that isn't a component. `Host::item_info`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ItemInfo {
+    pub name: Str,
+    pub owner: Str,
+    pub max_stack: u32,
+    pub durability: u32,
+    pub attack: f32,
+    /// The block state it places, `u32::MAX` for none.
+    pub block: u32,
+    /// The equipment slot it is worn in, empty for none.
+    pub worn: Str,
+    pub handheld: u32,
+}
+
 /// Component names the engine itself reads. Items: `max_stack: u32` (default 64), `durability: u32`,
 /// `attack_damage: f32` (default 1), `tool_level: u32` with a `tools/<class>` tag and
 /// `mining_speed: f32` (default 1). Blocks: `mineable/<class>` tags; `needs_tool_level` means nothing
@@ -475,6 +521,10 @@ pub mod comp {
     pub const INVENTORY: &str = "inventory";
     /// Stack component the engine keeps: what an item with `inventory` holds.
     pub const CONTENTS: &str = "contents";
+    /// Stack component: the pictures a stack shows as, one over the other, instead of its
+    /// item's icon (a tool made of parts: handle, head, binding). Text: texture names, space
+    /// separated, each with `#RRGGBB` to tint it if wanted.
+    pub const LAYERS: &str = "layers";
     /// Item shown on the wearer's model: `Worn`, plus `worn_texture: str` in the wearer's skin layout.
     pub const WORN: &str = "worn";
     pub const WORN_TEXTURE: &str = "worn_texture";
@@ -791,6 +841,9 @@ pub struct StateDesc {
     /// crosshair picks, outlines and cracks. Empty: the model's boxes, else a plant's cross, else
     /// the whole block.
     pub hitbox: Slice<[f32; 6]>,
+    /// What the crosshair outlines and cracks, in fractions of a block, when it isn't `hitbox`
+    /// (a hollow log stopping walkers by its walls, outlined whole). Empty: as `hitbox` says.
+    pub outline: Slice<[f32; 6]>,
     /// Components of this state only, on top of the block's (hardness, light, support and tint
     /// are components too, `comp::HARDNESS` ...).
     pub components: Slice<CompValue>,
@@ -806,6 +859,7 @@ defaults!(StateDesc {
     turns: [0; 6],
     boxes: Slice::EMPTY,
     hitbox: Slice::EMPTY,
+    outline: Slice::EMPTY,
     components: Slice::EMPTY,
     signal: SignalDesc::DEFAULT,
 });
@@ -859,6 +913,12 @@ pub struct BlockDesc {
     pub merge: Callback,
     /// What may share a cell with it though their shapes overlap (`#tags`, names).
     pub shares_cell: Slice<Str>,
+    /// The model file (`models/block/<path>.json` of the named mod) instead of the one named
+    /// like the block: several blocks, any mod's, on one model. Empty: its own name.
+    pub model_file: Str,
+    /// Pairs of a model file's texture name (its `#name`) and the texture this block puts there:
+    /// one model, each block's own pictures.
+    pub model_textures: Slice<Str>,
     /// Non-empty: no block of its own but a template, one for each full cube among these names
     /// and `#tags`, named as that one plus `shapes_suffix`, see `Registry::shapes_of`.
     pub shapes_of: Str,
@@ -888,6 +948,8 @@ defaults!(BlockDesc {
     shapes_of: Str::EMPTY,
     shapes_suffix: Str::EMPTY,
     shares_cell: Slice::EMPTY,
+    model_file: Str::EMPTY,
+    model_textures: Slice::EMPTY,
 });
 
 #[repr(C)]
@@ -2510,6 +2572,14 @@ pub struct Host {
     pub stack_get: unsafe extern "C" fn(data: u32, comp: u32, len: *mut usize) -> *const u8,
     /// Stack data with `comp` set to `value` (or removed when `remove` is non-zero).
     pub stack_with: unsafe extern "C" fn(data: u32, comp: u32, value: Slice<u8>, remove: u32) -> u32,
+    /// Slots of storage `comp` (`reg_storage`), 0 for what isn't one.
+    pub storage_slots: unsafe extern "C" fn(comp: u32) -> u32,
+    /// Name and value schema of component `comp` (empty schema: a tag); 0 if there is none.
+    pub component_info: unsafe extern "C" fn(comp: u32, name: *mut Str, schema: *mut Str) -> u32,
+    /// What block state `state` is; 0 if there is none.
+    pub block_info: unsafe extern "C" fn(state: u32, out: *mut BlockInfo) -> u32,
+    /// What item `item` is; 0 if there is none.
+    pub item_info: unsafe extern "C" fn(item: u32, out: *mut ItemInfo) -> u32,
 
     /// The block where the running callback is: the world, or the body a block of it is on or
     /// `world_enter_body` entered. `u32::MAX` for what isn't loaded.

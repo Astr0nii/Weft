@@ -79,7 +79,7 @@ const ICON_CELLS: u32 = 16;
 #[derive(Clone, Copy)]
 enum Carrying {
     /// In a hand: a model, or a sprite or block when it is none.
-    Held { item: u32, model: Option<u32>, off: bool },
+    Held { stack: ItemStack, model: Option<u32>, off: bool },
     /// A model on one of its bones.
     On { model: u32, bone: usize },
 }
@@ -171,12 +171,13 @@ pub struct EntityRenderer {
     /// texture generation they were made with.
     item_pipe: PipelineId,
     hand_item_pipe: PipelineId,
-    item_models: FxHashMap<u32, (u32, u32)>,
+    /// Boxes of each item's model, (first, count), by item and its stack's `layers` if any.
+    item_models: FxHashMap<(u32, Option<&'static str>), (u32, u32)>,
     item_boxes: Vec<GpuBox>,
     item_buf: Option<(BufferId, u32, usize)>,
     item_generation: u64,
     /// This frame's item instances: (item, instance).
-    instances: Vec<(u32, GpuBox)>,
+    instances: Vec<(u64, GpuBox)>,
 }
 
 fn shader(assets: &Assets) -> Result<Shader, ShaderError> {
@@ -565,7 +566,7 @@ impl EntityRenderer {
             }
         }
         for s in held {
-            self.load_sprite(assets, s.item);
+            self.load_sprite(assets, &s);
             self.models.model_for(assets, s);
         }
         self.own_stacks = held;
@@ -599,7 +600,9 @@ impl EntityRenderer {
         for e in entities.values() {
             if !e.item.is_empty() && seen_items.get(e.item.item as usize).is_some_and(|s| !s) {
                 seen_items[e.item.item as usize] = true;
-                self.load_sprite(assets, e.item.item);
+            }
+            if !e.item.is_empty() {
+                self.load_sprite(assets, &e.item);
             }
             if !e.item.is_empty() && !c.game.item_model_for_stack.is_empty() {
                 self.models.model_for(assets, e.item);
@@ -615,7 +618,7 @@ impl EntityRenderer {
             for i in [e.held, e.off_held] {
                 if i != 0 && seen_items.get(i as usize).is_some_and(|s| !s) {
                     seen_items[i as usize] = true;
-                    self.load_sprite(assets, i);
+                    self.load_sprite(assets, &ItemStack { item: i, count: 1, data: 0 });
                 }
             }
         }
@@ -649,15 +652,29 @@ impl EntityRenderer {
         })
     }
 
-    /// The opaque pixels of an item's sprite, read the first time it is held or dropped.
-    fn load_sprite(&mut self, assets: &Assets, item: u32) {
-        let Some(name) = sprite_name(item) else { return };
+    /// The opaque pixels of a stack's sprite, read the first time it is held or dropped.
+    fn load_sprite(&mut self, assets: &Assets, stack: &ItemStack) {
+        let Some(name) = sprite_name(stack) else { return };
         if self.sprites.contains_key(&name) {
             return;
         }
-        let img = assets
-            .read(&name, "textures", "png")
-            .and_then(|b| decode_png(&b));
+        // Its own pictures one over the other, as its icon shows them.
+        let img = match crate::stack::layers(stack) {
+            Some(spec) => {
+                let parts: Vec<(String, u32)> = crate::stack::parse_layers(spec)
+                    .into_iter()
+                    .map(|(n, t)| (n.to_string(), t))
+                    .collect();
+                let t = super::textures::layered(assets, &parts);
+                t.frames
+                    .first()
+                    .and_then(|f| f.first())
+                    .map(|rgba| crate::assets::Image { width: t.size, height: t.size, rgba: rgba.clone() })
+            }
+            None => assets
+                .read(&name, "textures", "png")
+                .and_then(|b| decode_png(&b)),
+        };
         let sprite = img.map(|img| {
             let size = img.width;
             // Animated strips: the first frame.
@@ -690,8 +707,9 @@ impl EntityRenderer {
 
     /// An item's model as boxes in the unit cube, made once: a block item's shape, else its
     /// sprite one texel thick (flat when the sprite could not be read). (first box, count).
-    fn item_model(&mut self, textures: &GameTextures, item: u32) -> Option<(u32, u32)> {
-        if let Some(&m) = self.item_models.get(&item) {
+    fn item_model(&mut self, textures: &GameTextures, stack: &ItemStack) -> Option<(u32, u32)> {
+        let (item, layers) = (stack.item, crate::stack::layers(stack));
+        if let Some(&m) = self.item_models.get(&(item, layers)) {
             return Some(m);
         }
         let c = content();
@@ -704,7 +722,7 @@ impl EntityRenderer {
                 boxes_shape(&mut self.item_boxes, textures, Mat4::IDENTITY, model, &c.states[0], white);
                 None
             }
-            ItemDraw::Icon(t) => Some(t),
+            ItemDraw::Icon(t) => Some(layers.map_or(t, |l| textures.layered(l))),
             ItemDraw::Block(state) => {
                 let s = &c.states[state as usize];
                 let sprite = looks.block_sprite(state, s);
@@ -723,7 +741,7 @@ impl EntityRenderer {
         };
         if let Some(t) = sprite {
             let l = textures.texture(t);
-            match sprite_name(item)
+            match sprite_name(stack)
                 .and_then(|n| self.sprites.get(&n))
                 .and_then(|s| s.as_ref())
             {
@@ -756,7 +774,7 @@ impl EntityRenderer {
             }
         }
         let m = (first as u32, (self.item_boxes.len() - first) as u32);
-        self.item_models.insert(item, m);
+        self.item_models.insert((item, layers), m);
         Some(m)
     }
 
@@ -1290,7 +1308,7 @@ impl EntityRenderer {
                         // Its stack is known of the local player only.
                         let shown = if id == self.local { self.own_stacks[off as usize] } else { ItemStack { item, count: 1, data: 0 } };
                         let model = self.models.model_seen(shown);
-                        carried.push(carry(Carrying::Held { item, model, off }));
+                        carried.push(carry(Carrying::Held { stack: shown, model, off }));
                     }
                 }
             }
@@ -1399,7 +1417,7 @@ impl EntityRenderer {
         hurt: f32,
         textures: &GameTextures,
         posed: &mut Vec<Posed>,
-        instances: &mut Vec<(u32, GpuBox)>,
+        instances: &mut Vec<(u64, GpuBox)>,
     ) {
         // Made of bones: posed like anything else that is, its feet off the ground.
         let bones = self
@@ -1431,19 +1449,19 @@ impl EntityRenderer {
                 layers,
                 layer_count: 1,
             });
-        } else if let Some(m) = self.item_model(textures, e.item.item) {
-            instances.push((e.item.item, item_instance(ground_transform(base, e.age, e.item.item), m.0, hurt, lit)));
+        } else if let Some(m) = self.item_model(textures, &e.item) {
+            instances.push((run_key(m), item_instance(ground_transform(base, e.age, e.item.item), m.0, hurt, lit)));
         }
     }
 
-    /// One instanced draw per run of the same item in `instances` (sorted), their boxes from
-    /// `first` on.
-    fn draw_item_runs(&self, list: &mut CommandList, instances: &[(u32, GpuBox)], first: usize) {
+    /// One instanced draw per run of the same model in `instances` (sorted by `run_key`), their
+    /// boxes from `first` on.
+    fn draw_item_runs(&self, list: &mut CommandList, instances: &[(u64, GpuBox)], first: usize) {
         let mut i = 0;
         while i < instances.len() {
-            let item = instances[i].0;
-            let run = instances[i..].iter().take_while(|x| x.0 == item).count();
-            let boxes_per = self.item_models.get(&item).map_or(0, |m| m.1);
+            let key = instances[i].0;
+            let run = instances[i..].iter().take_while(|x| x.0 == key).count();
+            let boxes_per = key as u32;
             list.push(Cmd::Draw { vertices: boxes_per * 36, instances: run as u32, first_vertex: 0, first_instance: (first + i) as u32 });
             i += run;
         }
@@ -1727,7 +1745,7 @@ impl EntityRenderer {
         carried: Vec<Carry>,
         own_holder: Option<usize>,
         textures: &GameTextures,
-        instances: &mut Vec<(u32, GpuBox)>,
+        instances: &mut Vec<(u64, GpuBox)>,
         dt: f32,
         moved: Vec3,
     ) -> (Vec<(GpuBox, u32)>, Vec<(u32, u32, Instance)>) {
@@ -1744,7 +1762,8 @@ impl EntityRenderer {
             let own = own_holder == Some(holder);
             let (model, root, off, slot) = match what {
                 Carrying::On { model, bone } => (Some(model), self.models.bone(at + bone), false, model + 2),
-                Carrying::Held { item, model, off } => {
+                Carrying::Held { stack, model, off } => {
+                    let item = stack.item;
                     let side = if off { role::ARM_LEFT } else { role::ARM_RIGHT };
                     let holder_model = self.models.kinds.get(posed[holder].kind as usize);
                     // Its bone for it, as a shoulder that far up the arm from there; else the arm.
@@ -1761,13 +1780,13 @@ impl EntityRenderer {
                         }
                     };
                     if model.is_none() {
-                        if let Some(m) = self.item_model(textures, item) {
+                        if let Some(m) = self.item_model(textures, &stack) {
                             let display = self.models.displays.get(&item).copied();
                             let inst = item_instance(held_transform(arm, item, off, display), m.0, 0.0, lit);
                             if own {
                                 hand_items.push((inst, m.1));
                             } else {
-                                instances.push((item, inst));
+                                instances.push((run_key(m), inst));
                             }
                         }
                         continue;
@@ -1908,11 +1927,20 @@ fn fire_boxes(out: &mut Vec<GpuBox>, textures: &GameTextures, base: Vec3, width:
     }
 }
 
-/// Texture a held item is drawn from as a solid sprite: its icon, or the texture of a plant block.
-fn sprite_name(item: u32) -> Option<String> {
+/// Which model an item instance draws: its boxes, first and count.
+fn run_key(m: (u32, u32)) -> u64 {
+    (m.0 as u64) << 32 | m.1 as u64
+}
+
+/// Texture a held item is drawn from as a solid sprite: its own `layers`, its icon, or the
+/// texture of a plant block.
+fn sprite_name(stack: &ItemStack) -> Option<String> {
+    if let Some(spec) = crate::stack::layers(stack) {
+        return Some(format!("layers:{spec}"));
+    }
     let c = content();
     let looks = super::looks::current();
-    let t = match looks.item_draw(c, item) {
+    let t = match looks.item_draw(c, stack.item) {
         ItemDraw::Icon(t) => t,
         ItemDraw::Block(state) => looks.block_sprite(state, &c.states[state as usize])?,
         _ => return None,

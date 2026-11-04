@@ -219,6 +219,41 @@ fn table_has(kind: u32, entry: u32, comp: u32) -> bool {
     unsafe { *k.bits.add((entry * k.words + comp / 64) as usize) >> (comp % 64) & 1 != 0 }
 }
 
+/// How many entries of `kind` (`abi::entry_kind`) there are, blocks counted by state; 0 before
+/// the registries are frozen.
+pub fn entry_count(kind: u32) -> u32 {
+    component_table()
+        .and_then(|t| t.kinds.get(kind as usize))
+        .map_or(0, |k| k.entries)
+}
+
+/// Name and schema (empty: a tag) of component `id`.
+pub fn component_info(id: u32) -> Option<(&'static str, &'static str)> {
+    let (mut name, mut schema) = (Str::EMPTY, Str::EMPTY);
+    (unsafe { (host().component_info)(id, &mut name, &mut schema) } != 0).then(|| unsafe { (name.as_str(), schema.as_str()) })
+}
+
+/// Every component and tag entry `id` of `kind` has, by name and schema: what a thing is, for a
+/// mod showing it (WAILA) or building on any mod's things. Values are read with the components'
+/// handles, `Component::on_block` and the like.
+pub fn components_of(kind: u32, id: u32) -> Vec<(&'static str, &'static str)> {
+    let Some(t) = component_table() else { return Vec::new() };
+    (0..t.components)
+        .filter(|&c| table_has(kind, id, c))
+        .filter_map(component_info)
+        .collect()
+}
+
+/// Every entry of `kind` with component or tag `name`: all logs (`entries_with(BLOCK, "logs")`,
+/// one per state), every ore.
+pub fn entries_with(kind: u32, name: &str) -> Vec<u32> {
+    let Some(t) = component_table() else { return Vec::new() };
+    let Some(comp) = (0..t.components).find(|&c| component_info(c).is_some_and(|(n, _)| n == name)) else { return Vec::new() };
+    (0..entry_count(kind))
+        .filter(|&e| table_has(kind, e, comp))
+        .collect()
+}
+
 const UNRESOLVED: u32 = u32::MAX - 1;
 const MISSING: u32 = u32::MAX;
 const KINDS: usize = ek::COUNT;
@@ -419,6 +454,10 @@ impl Storage {
     pub fn id(&self) -> u32 {
         self.lookup.id(self.name, &storage_schema)
     }
+    /// Its slots, 0 before the registries are frozen.
+    pub fn slots(&self) -> u32 {
+        unsafe { (host().storage_slots)(self.id()) }
+    }
     /// This storage of `h` (an entity, a block, a held stack), for inventory calls and menus.
     pub fn of(&self, h: impl Into<crate::Holder>) -> crate::Holder {
         crate::Holder { storage: self.id(), ..h.into() }
@@ -502,6 +541,7 @@ pub fn stack_with_name(stack: ItemStack, name: Option<&str>) -> ItemStack {
 }
 
 static NAME: Tag = Tag::named(abi::comp::NAME);
+static LAYERS: Tag = Tag::named(abi::comp::LAYERS);
 
 pub trait StackData: Sized {
     /// This stack with its own value of `c` set.
@@ -519,7 +559,20 @@ pub trait StackData: Sized {
     fn room_for(&self, out: ItemStack) -> u32;
     /// This output slot with `n` results of `out` more.
     fn merged(self, out: ItemStack, n: u32) -> Self;
+    /// What the stack keeps in `storage` (`r.storage`), one per slot: a tool's parts, each a
+    /// stack with data and storages of its own, as deep as a mod goes.
+    fn stacks(&self, storage: &Storage) -> Vec<ItemStack>;
+    /// The stack keeping `list` in `storage`, as many as it has slots; the rest are emptied.
+    fn with_stacks(self, storage: &Storage, list: &[ItemStack]) -> Self;
+    /// The stack showing these pictures one over the other, the first at the bottom, instead
+    /// of its item's icon: a tool made of parts (handle, head, binding). Texture names
+    /// (relative ones under `item/`), each tinted `0xRRGGBB` or not. Empty: its item's icon
+    /// again. In slots, in the hand and on the ground alike.
+    fn with_layers(self, layers: &[(&str, Option<u32>)]) -> Self;
 }
+
+/// Bytes a stack takes in a storage's value: item, count, data.
+const STACK_BYTES: usize = 12;
 
 impl StackData for ItemStack {
     fn with<T: Value>(self, c: &Component<T>, v: T) -> Self {
@@ -542,7 +595,7 @@ impl StackData for ItemStack {
         if d == 0 { self.without(&DAMAGE) } else { self.with(&DAMAGE, d) }
     }
     fn add_wear(self, amount: u32) -> Self {
-        let durability = DURABILITY.on_item(self.item).unwrap_or(0);
+        let durability = DURABILITY.on_stack(&self).unwrap_or(0);
         if durability == 0 {
             return self;
         }
@@ -561,6 +614,58 @@ impl StackData for ItemStack {
     }
     fn merged(self, out: ItemStack, n: u32) -> Self {
         if self.is_empty() { ItemStack { count: out.count * n, ..out } } else { self.grow(out.count * n) }
+    }
+    fn stacks(&self, storage: &Storage) -> Vec<ItemStack> {
+        let slots = storage.slots();
+        let mut len = 0usize;
+        let p = if self.data == 0 { std::ptr::null() } else { unsafe { (host().stack_get)(self.data, storage.id(), &mut len) } };
+        let bytes = if p.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(p, len) } };
+        let word = |i: usize| {
+            bytes
+                .get(i..i + 4)
+                .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        (0..slots as usize)
+            .map(|i| {
+                let at = i * STACK_BYTES;
+                let s = ItemStack { item: word(at), count: word(at + 4), data: word(at + 8) };
+                if s.is_empty() { ItemStack::EMPTY } else { s }
+            })
+            .collect()
+    }
+    fn with_layers(self, layers: &[(&str, Option<u32>)]) -> Self {
+        let text = layers
+            .iter()
+            .map(|(t, tint)| {
+                let name = crate::asset("item", t);
+                tint.map_or(name.clone(), |c| format!("{name}#{:06X}", c & 0xFF_FFFF))
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let data = if text.is_empty() {
+            unsafe { (host().stack_with)(self.data, LAYERS.id(), abi::Slice::EMPTY, 1) }
+        } else {
+            unsafe { (host().stack_with)(self.data, LAYERS.id(), abi::Slice::new(text.as_bytes()), 0) }
+        };
+        ItemStack { data, ..self }
+    }
+    fn with_stacks(self, storage: &Storage, list: &[ItemStack]) -> Self {
+        let slots = storage.slots() as usize;
+        if list.iter().take(slots).all(ItemStack::is_empty) {
+            return ItemStack { data: unsafe { (host().stack_with)(self.data, storage.id(), abi::Slice::EMPTY, 1) }, ..self };
+        }
+        let b: Vec<u8> = (0..slots)
+            .flat_map(|i| {
+                let s = list
+                    .get(i)
+                    .copied()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(ItemStack::EMPTY);
+                [s.item, s.count, s.data]
+            })
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        ItemStack { data: unsafe { (host().stack_with)(self.data, storage.id(), abi::Slice::new(&b), 0) }, ..self }
     }
 }
 

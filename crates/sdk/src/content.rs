@@ -931,6 +931,8 @@ impl Registry {
             shares_cell: Vec::new(),
             signal: None,
             inventory: 0,
+            model_file: String::new(),
+            model_textures: Vec::new(),
             neighbor_fns: Vec::new(),
         }
     }
@@ -1242,6 +1244,8 @@ struct StateDef {
     boxes: Vec<ModelBox>,
     /// Corners, in sixteenths of a block.
     hitbox: Vec<([f32; 3], [f32; 3])>,
+    /// What is outlined instead, the same way.
+    outline: Vec<([f32; 3], [f32; 3])>,
     /// What boxes from here on are turned by.
     orientation: Option<crate::signal::Orientation>,
     components: Vec<Pending>,
@@ -1306,6 +1310,7 @@ impl StateDef {
             turns: [0; 6],
             boxes: Vec::new(),
             hitbox: Vec::new(),
+            outline: Vec::new(),
             orientation: None,
             components: Vec::new(),
             signal: abi::SignalDesc::DEFAULT,
@@ -1560,6 +1565,15 @@ macro_rules! state_setters {
             });
             self
         }
+        /// What the crosshair outlines and cracks, one box a call, when it shouldn't be the
+        /// hitbox's: a hollow log stopped by its walls and outlined whole. Turned by `oriented`.
+        pub fn outline(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
+            self.each(|s| {
+                s.outline
+                    .push(s.orientation.map_or((min, max), |f| f.corners(min, max)))
+            });
+            self
+        }
         /// Air-like: invisible, no collision, not targetable.
         pub fn air(mut self) -> Self {
             self.each(|s| {
@@ -1615,6 +1629,8 @@ pub struct BlockBuilder<'a> {
     made_of: Option<(String, String)>,
     shares_cell: Vec<String>,
     inventory: u32,
+    model_file: String,
+    model_textures: Vec<(String, String)>,
     /// What its `on_neighbor` does, `joins` and `derived` included, run in order.
     neighbor_fns: Vec<NeighborFn>,
 }
@@ -2240,6 +2256,21 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
+    /// Its shape from model file `name` (`models/block/<path>.json` of that mod) instead of the one
+    /// named like the block: several blocks, any mod's, on one model (#88).
+    pub fn model_file(mut self, name: &str) -> Self {
+        self.model_file = crate::full_name(name);
+        self
+    }
+
+    /// The texture this block puts where the model file says `#name`: one model, each block
+    /// its own pictures (a hollow log's inside, stripped). Relative names are under `block/`.
+    pub fn model_texture(mut self, name: &str, texture: &str) -> Self {
+        self.model_textures
+            .push((name.trim_start_matches('#').to_string(), crate::asset("block", texture)));
+        self
+    }
+
     /// Not a block but a template: see `Registry::shapes_of`.
     pub(crate) fn shapes_of(mut self, sources: &str, suffix: &str) -> Self {
         self.made_of = Some((sources.to_string(), suffix.to_string()));
@@ -2326,6 +2357,11 @@ impl Drop for BlockBuilder<'_> {
             });
         }
         let shares_cell: Vec<Str> = self.shares_cell.iter().map(|x| Str::new(x)).collect();
+        let model_textures: Vec<Str> = self
+            .model_textures
+            .iter()
+            .flat_map(|(a, b)| [Str::new(a), Str::new(b)])
+            .collect();
         let prop_values: Vec<Vec<Str>> = self
             .props
             .iter()
@@ -2355,17 +2391,14 @@ impl Drop for BlockBuilder<'_> {
             })
             .collect();
         let mut scratch: Vec<Vec<Vec<u8>>> = vec![Vec::new(); self.states.len()];
-        // The engine takes hitboxes as min and max in one array.
-        let hitboxes: Vec<Vec<[f32; 6]>> = self
-            .states
-            .iter()
-            .map(|s| {
-                s.hitbox
-                    .iter()
-                    .map(|(a, b)| [a[0], a[1], a[2], b[0], b[1], b[2]])
-                    .collect()
-            })
-            .collect();
+        // The engine takes boxes as min and max in one array.
+        let flat = |list: &[([f32; 3], [f32; 3])]| -> Vec<[f32; 6]> {
+            list.iter()
+                .map(|(a, b)| [a[0], a[1], a[2], b[0], b[1], b[2]])
+                .collect()
+        };
+        let hitboxes: Vec<Vec<[f32; 6]>> = self.states.iter().map(|s| flat(&s.hitbox)).collect();
+        let outlines: Vec<Vec<[f32; 6]>> = self.states.iter().map(|s| flat(&s.outline)).collect();
         let state_values: Vec<Vec<abi::CompValue>> = self
             .states
             .iter()
@@ -2378,7 +2411,8 @@ impl Drop for BlockBuilder<'_> {
             .zip(&boxes)
             .zip(&state_values)
             .zip(&hitboxes)
-            .map(|(((s, b), v), h)| abi::StateDesc {
+            .zip(&outlines)
+            .map(|((((s, b), v), h), o)| abi::StateDesc {
                 flags: s.flags,
                 filter: s.filter,
                 opacity: s
@@ -2390,6 +2424,7 @@ impl Drop for BlockBuilder<'_> {
                 turns: s.turns,
                 boxes: Slice::new(b),
                 hitbox: Slice::new(h),
+                outline: Slice::new(o),
                 components: Slice::new(v),
                 signal: s.signal,
                 ..abi::StateDesc::DEFAULT
@@ -2426,6 +2461,8 @@ impl Drop for BlockBuilder<'_> {
             shapes_of: self.made_of.as_ref().map_or(Str::EMPTY, |m| Str::new(&m.0)),
             shapes_suffix: self.made_of.as_ref().map_or(Str::EMPTY, |m| Str::new(&m.1)),
             shares_cell: Slice::new(&shares_cell),
+            model_file: Str::new(&self.model_file),
+            model_textures: Slice::new(&model_textures),
             placement: cb.placement,
             replacing: self.replace as u32,
             on_grow: cb.on_grow,

@@ -68,6 +68,21 @@ pub async fn particle_rules(t: T) -> R {
     Ok(())
 }
 
+/// A stack's own `layers` show over one another, tinted, in the hotbar: the sprite of a tool
+/// made of parts.
+pub async fn layered_icon(t: T) -> R {
+    t.flat().await?;
+    t.c().select_slot(4);
+    // The first hotbar slot, under the hearts.
+    let hotbar = |s: &crate::runner::Shot| s.share(0.385, 0.95, 0.415, 0.995, probe::red);
+    let before = hotbar(&t.shot("plain").await?);
+    t.op("layered 0").await?;
+    t.frames(6).await?;
+    let after = hotbar(&t.shot("layered").await?);
+    t.probe("red of the tinted layer in the hotbar", after - before, after - before > 0.04);
+    Ok(())
+}
+
 /// A 16x16 texture of one color.
 fn write_png(path: &str, rgb: [u8; 3]) -> Result<(), String> {
     let dir = std::path::Path::new(path).parent().ok_or("no folder")?;
