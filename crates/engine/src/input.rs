@@ -47,6 +47,8 @@ pub const ENGINE_KEYS: &[(&str, &str)] = &[
     ("core:freecam", "KeyP"),
     ("core:fullscreen", "F11"),
     ("core:player_list", "Tab"),
+    // In a screen with a search field (the creative inventory, the recipe viewer).
+    ("core:focus_search", "Tab"),
     ("core:hide_hud", "F1"),
     ("core:swap_hands", "KeyG"),
     // Also F3+T, like vanilla.
@@ -66,6 +68,10 @@ pub const ENGINE_KEYS: &[(&str, &str)] = &[
     ("core:hotbar8", "Digit8"),
     ("core:hotbar9", "Digit9"),
 ];
+
+/// Actions that may share a key without it being a conflict: they never act at the same moment
+/// (one in the world, the other in a screen), or are meant as one key (sneak gets off a mount).
+pub const SHARE_KEYS: &[(&str, &str)] = &[("core:player_list", "core:focus_search"), ("core:sneak", "core:dismount")];
 
 /// What a detached camera takes for itself (`Input::mute_moves`).
 pub const MOVE_KEYS: &[&str] = &[
@@ -279,7 +285,10 @@ impl Input {
         let mut out = Vec::new();
         for (i, a) in self.binds.iter().enumerate() {
             for b in &self.binds[i + 1..] {
-                if a.keys.iter().flatten().any(|k| b.keys.contains(&Some(*k))) {
+                let apart = SHARE_KEYS
+                    .iter()
+                    .any(|&(x, y)| (x == a.action && y == b.action) || (y == a.action && x == b.action));
+                if !apart && a.keys.iter().flatten().any(|k| b.keys.contains(&Some(*k))) {
                     out.push((a.action.clone(), b.action.clone()));
                 }
             }

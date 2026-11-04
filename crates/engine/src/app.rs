@@ -2023,6 +2023,24 @@ fn world_keys(r: &mut Running) {
         }
         r.close_screens(|s| s.shows_menu());
     }
+    // Into the screen's search field: the first text field whose id says it is one
+    // (`creative_search`, `tag_search`, a mod's own).
+    if r.input.pressed("core:focus_search") && !typing {
+        if let Some((_, ui)) = r.screens.last_mut() {
+            let field = (0..ui.nodes.len()).find(|&i| {
+                matches!(ui.nodes[i].kind, Kind::Input { .. })
+                    && ui.nodes[i]
+                        .id
+                        .as_deref()
+                        .is_some_and(|id| id.contains("search"))
+            });
+            if let Some(f) = field {
+                ui.focused = Some(f);
+                ui.dirty = true;
+                r.quads_dirty = true;
+            }
+        }
+    }
 }
 
 fn handle_disconnect(r: &mut Running) {

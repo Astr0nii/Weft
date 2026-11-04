@@ -68,6 +68,7 @@ key.core.left = Strafe left
 key.core.right = Strafe right
 key.core.jump = Jump
 key.core.sneak = Sneak / fly down
+key.core.focus_search = Search in inventory
 key.core.freecam = Free camera
 key.core.dismount = Get off
 key.core.sprint = Sprint

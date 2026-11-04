@@ -68,6 +68,7 @@ key.core.left = Allez à gauche
 key.core.right = Allez à droite
 key.core.jump = Sauter
 key.core.sneak = S'accroupir / descendre en volant
+key.core.focus_search = Rechercher dans l'inventaire
 key.core.freecam = Caméra libre
 key.core.dismount = Descendre
 key.core.sprint = Courir
