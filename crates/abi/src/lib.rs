@@ -1470,8 +1470,6 @@ pub struct EntityDesc {
     /// A category by name (`core:misc`, `core:hostile`, `core:passive`, or one from
     /// `Host::reg_entity_category`); empty = `core:misc`.
     pub category_name: Str,
-    /// Slots of the inventory each entity of this kind carries, 0 = none.
-    pub slots: u32,
     /// Where riders sit on it (`Host::entity_mount`), in its own frame turned by its yaw.
     pub seats: Slice<SeatDesc>,
     /// `SteerArgs`, on the client of the player in a seat that `steers`: what the mount does
@@ -1736,7 +1734,6 @@ defaults!(EntityDesc {
     carry_height: 0.0,
     template: Str::EMPTY,
     category_name: Str::EMPTY,
-    slots: 0,
     seats: Slice::EMPTY,
     steer: Callback::NONE,
     dismount: Callback::NONE,
@@ -2826,9 +2823,9 @@ pub struct Host {
     pub reg_menu: unsafe extern "C" fn(reg: *mut Registrar, desc: *const MenuDesc),
     /// Menu opened by the inventory key.
     pub set_player_menu: unsafe extern "C" fn(reg: *mut Registrar, menu: Str),
-    /// Block entity kind created (with an inventory of `slots`) when the block is placed, removed
+    /// Block entity kind created (with the inventory its `inventory` component says) when the block is placed, removed
     /// (dropping its items) when broken.
-    pub set_block_entity: unsafe extern "C" fn(reg: *mut Registrar, block: Str, entity: Str, slots: u32),
+    pub set_block_entity: unsafe extern "C" fn(reg: *mut Registrar, block: Str, entity: Str),
     /// HUD element `name` placed at `anchor` (see `hud_anchor`), `order` 0 nearest the anchor's
     /// edge. Players can move any element to another anchor in `config/hud.txt`.
     pub reg_hud_element: unsafe extern "C" fn(reg: *mut Registrar, name: Str, anchor: Str, order: i32, cb: Callback),

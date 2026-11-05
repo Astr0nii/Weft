@@ -176,7 +176,8 @@ fn init(r: &mut Registry) {
         .light_rgb(3, 9, 35)
         .hardness(0.0);
 
-    // Machines: block, entity with the machine and energy components, menu, all in one builder.
+    // Machines: a block whose block entity has the state and energy components and the slots,
+    // opening a menu.
     // The components sync to open menus; screens bind to them.
     // Each kind ticks as a system over its own state: every machine of a region in one call.
     r.entity_component(&BURNER, Burner::default(), component_flags::SAVE | component_flags::SYNC_MENU);
@@ -196,8 +197,8 @@ fn init(r: &mut Registry) {
         .entity(|e| {
             e.attach(&BURNER)
                 .attach_with(&ENERGY, Energy { stored: 0, capacity: 20_000, max_in: 0, max_out: 200 })
+                .inventory(1)
         })
-        .inventory(1)
         .opens(&GENERATOR_MENU);
     r.menu(&GENERATOR_MENU)
         // Only fuel goes in (the base game's `fuel` component), and stays in until burnt.
@@ -225,7 +226,7 @@ fn init(r: &mut Registry) {
     r.block(&TANK)
         .textures("machine_top", "machine_top", "machine_top")
         .hardness(3.0)
-        .inventory(1)
+        .entity(|e| e.inventory(1))
         .opens(&TANK_MENU);
     r.menu(&TANK_MENU)
         .group("liquid", Slots::single().liquid(8000).holder())
@@ -238,8 +239,8 @@ fn init(r: &mut Registry) {
         .entity(|e| {
             e.attach(&WORK)
                 .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 })
+                .inventory(2)
         })
-        .inventory(2)
         .opens(&FURNACE_MENU);
     r.menu(&FURNACE_MENU)
         // At most 16 to smelt at a time.

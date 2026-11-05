@@ -860,7 +860,6 @@ pub struct EntityBuilder<'a> {
     carry_height: f32,
     category_name: String,
     template: String,
-    slots: u32,
     /// Components (full name, starting value) every entity of this kind gets.
     attached: Vec<(&'static str, Vec<u8>)>,
     seats: Vec<crate::riding::Seat>,
@@ -987,11 +986,6 @@ impl EntityBuilder<'_> {
     /// Raw `entity_flags` on top of what the presets set.
     pub fn with(mut self, f: u32) -> Self {
         self.flags |= f;
-        self
-    }
-    /// Every entity of this kind carries an inventory of `slots` (`w.inventory(id)`).
-    pub fn inventory(mut self, slots: u32) -> Self {
-        self.slots = slots;
         self
     }
     /// A category registered with `Registry::entity_category` (any mod's), for spawn caps and
@@ -1229,7 +1223,6 @@ impl Drop for EntityBuilder<'_> {
             carry_height: self.carry_height,
             category_name: Str::new(&self.category_name),
             template: Str::new(&self.template),
-            slots: self.slots,
             seats: Slice::new(&seats),
             steer,
             dismount,
@@ -1606,7 +1599,6 @@ impl Registry {
             carry_height: 0.0,
             category_name: String::new(),
             template: String::new(),
-            slots: d.slots,
             attached: Vec::new(),
             seats: Vec::new(),
             steering: None,
@@ -1687,15 +1679,14 @@ impl Registry {
         unsafe { (host().set_player_menu)(self.raw, Str::new(menu.name())) }
     }
 
-    /// Gives `block` a block entity of a kind of its own, named like the block, with an
-    /// inventory of `slots` (`BlockBuilder::entity` and `inventory`).
-    pub(crate) fn block_entity(&mut self, block: &Block, slots: u32, f: impl for<'r> FnOnce(EntityBuilder<'r>) -> EntityBuilder<'r>) {
+    /// Gives `block` a block entity of a kind of its own, named like the block (`BlockBuilder::entity`).
+    pub(crate) fn block_entity(&mut self, block: &Block, f: impl for<'r> FnOnce(EntityBuilder<'r>) -> EntityBuilder<'r>) {
         let kind = EntityKind::generated(block.name().to_string());
         drop(f(self
             .entity(kind)
             .no_egg()
             .with(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE)));
-        unsafe { (host().set_block_entity)(self.raw, Str::new(block.name()), Str::new(kind.name()), slots) }
+        unsafe { (host().set_block_entity)(self.raw, Str::new(block.name()), Str::new(kind.name())) }
     }
 
     /// Every entity of `kind` (any mod's, `&PLAYER`) carries `component`, starting at its

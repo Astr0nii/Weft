@@ -30,8 +30,7 @@ pub fn register(r: &mut Registry) {
         .hardness(3.5)
         .mined_by("pickaxe", 0)
         .tab(&crate::tabs::FUNCTIONAL)
-        .entity(|e| e.attach(&SMELTING))
-        .inventory(3)
+        .entity(|e| e.attach(&SMELTING).inventory(3))
         .opens(&FURNACE_MENU);
     r.menu(&FURNACE_MENU)
         .group("input", Slots::single().holder())
@@ -73,7 +72,7 @@ pub fn register(r: &mut Registry) {
         .hardness(2.5)
         .mined_by("axe", tool_tier::HAND)
         .tab(&crate::tabs::FUNCTIONAL)
-        .inventory(27)
+        .entity(|e| e.inventory(27))
         .opens(&CHEST_MENU);
     r.menu(&CHEST_MENU)
         .group("chest", Slots::chest(3).holder())

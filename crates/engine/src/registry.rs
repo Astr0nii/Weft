@@ -106,7 +106,7 @@ pub struct EntityKind {
     /// Starting values of attached components for this kind, where they differ from the
     /// component's default.
     pub values: Vec<(u32, Box<[u8]>)>,
-    /// Size of the inventory created with it (block entities), 0 = none.
+    /// Size of the inventory created with it (its `inventory` component), 0 = none.
     pub slots: u32,
     /// Its equipment slots in that inventory (`entity_flags::WEARS`, the player's): never filled
     /// by pickups, worn on the model. Laid out at freeze.
@@ -779,7 +779,7 @@ pub struct RawGame {
     pub screen_parts: Vec<ScreenPart>,
     /// (set, words) for `word(#set)` command parameters.
     pub words: Vec<(String, Vec<String>)>,
-    pub block_entities: Vec<(String, String, u32)>,
+    pub block_entities: Vec<(String, String)>,
     /// (kind, component, its starting value on that kind).
     pub attach: Vec<(String, String, Option<Vec<u8>>)>,
     pub ores: Vec<RawOre>,
@@ -1420,7 +1420,7 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
                 on_interact: one(d.on_interact),
                 components: Vec::new(),
                 values: Vec::new(),
-                slots: d.slots.min(1 << 16),
+                slots: 0,
                 worn: 0..0,
                 sounds: [u32::MAX; 4],
                 carry_height: d.carry_height,
@@ -2342,8 +2342,14 @@ pub fn freeze(
             ..PlayerLayout::new(&[("hotbar".into(), 9, 1, weft_abi::slot_flags::HOTBAR), ("main".into(), 9, 3, 0)], equipment)
         },
     };
-    // Kinds that wear get the equipment slots after their own, the player where its layout says.
-    for k in &mut g.entities {
+    // Their `inventory` component is the slots each one carries; kinds that wear get the
+    // equipment slots after those, the player where its layout says.
+    let inventory = c.id(weft_abi::comp::INVENTORY);
+    for (i, k) in g.entities.iter_mut().enumerate() {
+        k.slots = inventory
+            .and_then(|id| c.get::<u32>(comps::ENTITY, i as u32, id))
+            .unwrap_or(0)
+            .min(1 << 16);
         if k.name == PLAYER {
             k.worn = g.player_layout.worn.clone();
         } else if k.flags & weft_abi::entity_flags::WEARS != 0 {
@@ -2393,13 +2399,12 @@ pub fn freeze(
         m
     });
 
-    for (block, entity, slots) in block_entities {
+    for (block, entity) in block_entities {
         match (block_names.get(&block), g.entity_names.get(&entity)) {
             (Some(&b), Some(&e)) => {
                 if g.block_entities.insert(b, e).is_some_and(|old| old != e) {
                     errors.push(format!("block {block} has two block entities"));
                 }
-                g.entities[e as usize].slots = slots;
             }
             _ => errors.push(format!("block entity {block} -> {entity}: unknown block or entity")),
         }

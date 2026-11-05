@@ -834,6 +834,19 @@ macro_rules! with_components {
 
 with_components!(BlockBuilder, ItemBuilder, BiomeBuilder, DimensionBuilder, LiquidBuilder);
 
+/// What carries items: entity kinds (block entities among them) and item stacks.
+pub trait Holds: WithComponents {
+    /// Each one carries an inventory of `slots` (`w.inventory(holder)`): an entity's, a block
+    /// entity's (`w.inventory(pos)`, a menu's `Slots::holder()` groups), a stack's (a backpack,
+    /// `w.inventory(Holder::held(player, slot))`, saved in the stack; stacks holding something
+    /// only stack with stacks holding the same).
+    fn inventory(self, slots: u32) -> Self {
+        self.set(&crate::component::INVENTORY_SLOTS, slots)
+    }
+}
+impl Holds for ItemBuilder<'_> {}
+impl Holds for crate::EntityBuilder<'_> {}
+
 /// On one state only, on top of the block's.
 impl WithComponents for State<'_> {
     fn pending(&mut self) -> &mut Vec<Pending> {
@@ -992,7 +1005,6 @@ impl Registry {
             made_of: None,
             shares_cell: Vec::new(),
             signal: None,
-            inventory: 0,
             entity: None,
             model_file: String::new(),
             model_textures: Vec::new(),
@@ -1707,7 +1719,6 @@ pub struct BlockBuilder<'a> {
     merge: Option<Box<dyn Fn(&Place, &mut Props) + Send + Sync>>,
     made_of: Option<(String, String)>,
     shares_cell: Vec<String>,
-    inventory: u32,
     /// Its block entity's kind, `entity`.
     entity: Option<EntityLook>,
     model_file: String,
@@ -2163,17 +2174,10 @@ impl<'a> BlockBuilder<'a> {
             })
     }
 
-    /// Each placed block holds `slots` items (`w.inventory(pos)`, a menu's `Slots::holder()`
-    /// groups), kept by its block entity. Its contents drop when it breaks.
-    pub fn inventory(mut self, slots: u32) -> Self {
-        self.inventory = slots;
-        self
-    }
-
     /// Each placed block gets a block entity, an invisible entity of a kind named like the block
     /// that comes and goes with it: data of its own (`e.attach(..)`, ticked by a system), a
-    /// model, an inventory (`inventory`). Doesn't make it usable: that is `opens` or `on_use`.
-    /// `.entity(|e| e.attach(&SPEED))`.
+    /// model, items (`e.inventory(27)`). Doesn't make it usable: that is `opens` or `on_use`.
+    /// `.entity(|e| e.attach(&SPEED))`. Its items drop when it breaks.
     pub fn entity(mut self, f: impl for<'r> FnOnce(crate::EntityBuilder<'r>) -> crate::EntityBuilder<'r> + 'static) -> Self {
         self.entity = Some(Box::new(f));
         self
@@ -2556,10 +2560,9 @@ impl Drop for BlockBuilder<'_> {
             h.set_count(self.states.len() as u32);
         }
         unsafe { (host().reg_block)(self.reg.raw, &desc) };
-        if self.inventory > 0 || self.entity.is_some() {
-            let f = self.entity.take().unwrap_or_else(|| Box::new(|e| e));
+        if let Some(f) = self.entity.take() {
             self.reg
-                .block_entity(Block::generated(self.name.clone()), self.inventory, f);
+                .block_entity(Block::generated(self.name.clone()), f);
         }
 
         if self.item {
@@ -2709,13 +2712,6 @@ impl ItemBuilder<'_> {
         self.tag(&format!("worn/{}", slot.name()))
             .set(&c::WORN, abi::Worn { inflate })
             .set_text(&c::WORN_TEXTURE, &tex)
-    }
-
-    /// Each stack carries an inventory of `slots` (`w.inventory(Holder::held(player, slot))`,
-    /// `w.open_menu(player, &MENU, Holder::held(player, slot))`), saved in the stack. Stacks
-    /// holding something only stack with stacks holding the same.
-    pub fn inventory(self, slots: u32) -> Self {
-        self.set(&crate::component::INVENTORY_SLOTS, slots)
     }
 
     /// Used on a block, puts `entity` on that side of it. One is used up, outside creative. Entities

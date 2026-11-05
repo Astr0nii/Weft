@@ -2900,12 +2900,12 @@ unsafe extern "C" fn reg_key(r: *mut abi::Registrar, name: Str, key: Str) {
     }
 }
 
-unsafe extern "C" fn set_block_entity(r: *mut abi::Registrar, block: Str, entity: Str, slots: u32) {
+unsafe extern "C" fn set_block_entity(r: *mut abi::Registrar, block: Str, entity: Str) {
     unsafe {
         reg(r)
             .game
             .block_entities
-            .push((block.as_str().to_string(), entity.as_str().to_string(), slots))
+            .push((block.as_str().to_string(), entity.as_str().to_string()))
     }
 }
 
