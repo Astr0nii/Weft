@@ -84,7 +84,7 @@ fn shade(p: SkyPixel) -> vec4<f32> {
 }
 ```
 ```rust
-r.sky_dome(&OVERWORLD, &AURORA).shader("aurora");
+r.sky_dome(&OVERWORLD, &AURORA).shader(&AURORA_SHADER);
 ```
 `SkyPixel` contains `dir`, which is the direction of the pixel in the world, `local`, which is the same direction in the object's own frame that turns with its orbit, with x pointing at a body, and also `uv`, `albedo` (the texture, or white if there is none), `color`, `daylight` and `time`. The snippet returns the color and how much it covers, and `opacity` is applied on top of that. You can read more about snippets in the [shaders guide](shaders.md#snippets).
 

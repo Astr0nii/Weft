@@ -302,8 +302,7 @@ pub fn register(r: &mut Registry) {
     // Players swim in water; what they wear may add more (`SWIMS_IN` on an item).
     r.set_text_on(Target::Entity("core:player"), &SWIMS_IN, "#water");
     r.liquid(&WATER)
-        .tint(&tints::WATER)
-        .translucent()
+        .block(|b| b.tint(&tints::WATER).translucent())
         .renewable(2)
         .fog(0x050533, 96.0)
         .set_text(&DRIP, abi::particle::DRIP)
@@ -312,8 +311,7 @@ pub fn register(r: &mut Registry) {
         .tag("water")
         .bucket(Item::generated("water_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
     r.liquid(&LAVA)
-        .light(15)
-        .drag(0.4)
+        .block(|b| b.light(15).drag(0.4))
         .flow_delay(30)
         .drop_off(2)
         .slope_find(2)

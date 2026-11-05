@@ -366,7 +366,7 @@ fn watch_sleepers(w: &World) {
 
 static SLEEP_SCREEN: Menu = Menu::named("sleeping");
 /// Darkens the picture while lying in bed (`shaders/post/sleep.wgsl`).
-const SLEEP_EFFECT: &str = "sleep";
+static SLEEP_EFFECT: Shader = Shader::named("sleep");
 
 /// The client's side: since when it lies in bed.
 static LYING_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -377,7 +377,7 @@ fn client(r: &mut Registry) {
             *LYING_SINCE.lock().unwrap() = Some(Instant::now());
             c.screen_open(&SLEEP_SCREEN);
         } else if LYING_SINCE.lock().unwrap().take().is_some() {
-            c.post_effect(SLEEP_EFFECT, 0.0);
+            c.post_effect(&SLEEP_EFFECT, 0.0);
             if c.screen() == SLEEP_SCREEN.name() {
                 c.screen_close();
             }
@@ -389,10 +389,10 @@ fn client(r: &mut Registry) {
         if let Some(since) = *lying {
             if c.screen() != SLEEP_SCREEN.name() {
                 *lying = None;
-                c.post_effect(SLEEP_EFFECT, 0.0);
+                c.post_effect(&SLEEP_EFFECT, 0.0);
                 c.send(&GET_UP, &());
             } else {
-                c.post_effect(SLEEP_EFFECT, (since.elapsed().as_secs_f32() / 2.5).clamp(0.01, 1.0));
+                c.post_effect(&SLEEP_EFFECT, (since.elapsed().as_secs_f32() / 2.5).clamp(0.01, 1.0));
             }
         }
     });

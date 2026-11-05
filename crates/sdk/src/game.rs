@@ -1075,11 +1075,10 @@ impl EntityBuilder<'_> {
         self.template = template.name().to_string();
         self
     }
-    /// Shades the model with `shaders/entity/<name>.wgsl` (namespace optional).
-    pub fn shader(mut self, name: &str) -> Self {
-        let name = crate::asset("", name);
+    /// Shades the model with `shaders/entity/<name>.wgsl`.
+    pub fn shader(mut self, shader: &crate::Shader) -> Self {
         self.components
-            .push(Pending::text(abi::comp::SHADER, &name));
+            .push(Pending::text(abi::comp::SHADER, shader.name()));
         self
     }
     /// Called once per tick with every entity of this kind.

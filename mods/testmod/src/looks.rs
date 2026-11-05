@@ -31,6 +31,8 @@ static GLOW: TintKind = TintKind::named("glow");
 static SPIRITS: EntityCategory = EntityCategory::named("spirits");
 static HURT: Condition = Condition::named("hurt");
 static DREAM_KEY: Key = Key::named("dream");
+static DREAM_EFFECT: Shader = Shader::named("dream");
+static DREAM_COLD: Shader = Shader::named("dream_cold");
 static RUNE: Item = Item::named("rune");
 /// Drawn from `models/item/totem.json`: a stone base and a crystal, no icon of its own.
 static TOTEM: Item = Item::named("totem");
@@ -58,7 +60,7 @@ pub fn register(r: &mut Registry) {
         .color(0xFFFFFFFF, 0xFFFFFF60)
         .fullbright()
         .translucent()
-        .shader("twinkle");
+        .shader(&Shader::named("twinkle"));
     // A drop that rings where it falls into water and is gone where it hits the ground.
     r.particle(&DROP)
         .textures(&["core:generic_0"])
@@ -154,7 +156,7 @@ pub fn register(r: &mut Registry) {
             Model::from(vec![ModelPart::new("wisp", [0.0, 3.0, 0.0]).cuboid([-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0, 0.0])])
                 .uv_size(32, 16),
         )
-        .shader("ghost")
+        .shader(&Shader::named("ghost"))
         .on_tick(wisps);
 
     r.entity(&IDOL)
@@ -258,9 +260,9 @@ pub fn register(r: &mut Registry) {
 
     r.key(&DREAM_KEY, "N").on_client(|c| {
         let on = DREAM.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
-        let effect = if DREAM_STYLE.get() == 1 { "dream_cold" } else { "dream" };
-        c.post_effect("dream", 0.0);
-        c.post_effect("dream_cold", 0.0);
+        let effect = if DREAM_STYLE.get() == 1 { &DREAM_COLD } else { &DREAM_EFFECT };
+        c.post_effect(&DREAM_EFFECT, 0.0);
+        c.post_effect(&DREAM_COLD, 0.0);
         if !on {
             c.post_effect(effect, DREAM_STRENGTH.get());
         }

@@ -325,16 +325,15 @@ Look at testmod's generator for an example.
 
 ### Liquids
 `r.liquid(&LIQUID)` and then:
-- `translucent()` to see through it (water); without it it's drawn solid (lava)
+- `block(|b| ..)`: its block like any other, on top of what makes it a liquid: `b.translucent()` to see through it (water, otherwise drawn solid like lava), `tint`, `light`, `light_opacity`, `drag` (how fast things move inside: water 1, lava 0.4), `texture` (`<name>_still` by default)
 - `flow_delay`, `drop_off`, `slope_find`, `flows_up()`
 - `renewable(n)`: a new source where n sources meet (water 2)
-- `temperature`
+- `heat` (roughly Kelvin, 1000 and more burns)
 - what can swim in it isn't the liquid's say: an entity kind's `SWIMS_IN` (names and `#tags`, base gives players `#water`) and the same on anything it wears, so a suit with `.set_text(&SWIMS_IN, "#lava")` swims in lava. It changes nothing else: a burning liquid keeps burning unless `actions::HURT` says no
 - `fog(rgb, blocks)` and `overlay(texture, opacity)` or `no_overlay()`: what you see from inside. By default both come from its texture; set them when the inside should look different from the surface: `r.liquid(&TAR).fog(0x1A1408, 6.0).overlay("tar_inside", 0.4)`
-- `drag(d)`: how fast things move inside (water 1, lava 0.4), `light`, `opacity` (light it absorbs per block), `texture`, `tint`
 - `bucket(..)`
 
-Another mod's liquid: `r.liquid_edit(&WATER).fog(0x204020, 12.0)`, also `overlay`, `no_overlay`, `swimmable(bool)`. What you don't set stays.
+Another mod's liquid: `r.liquid_edit(&WATER).fog(0x204020, 12.0)`, also `overlay`, `no_overlay` and `block(|b| ..)`. What you don't set stays, how it flows is the owner's.
 
 Reactions: `r.liquid_reaction("#hot", "#water").source_turns_into("obsidian")`.\
 Every liquid is also an item of its name and tags, its count in millibuckets: what liquid slots (`Slots::liquid(capacity)`) hold and recipes count, see the [machines guide](machines.md).

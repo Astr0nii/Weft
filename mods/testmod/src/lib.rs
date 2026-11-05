@@ -346,7 +346,7 @@ fn init(r: &mut Registry) {
         .tab(&BASE_BUILDING);
     r.block(&REINFORCED_STONE)
         .tag("has_shapes")
-        .shader("stripes")
+        .shader(&Shader::named("stripes"))
         .hardness(4.0)
         .mined_by("pickaxe", 250)
         .tab(&BASE_BUILDING);
@@ -444,8 +444,7 @@ fn init(r: &mut Registry) {
 
     // A liquid of its own, flowing by the engine's rules; its bucket fills from the base game's.
     r.liquid(&OIL)
-        .light_opacity(4)
-        .drag(0.4)
+        .block(|b| b.light_opacity(4).drag(0.4))
         .flow_delay(15)
         .drop_off(2)
         .slope_find(3)

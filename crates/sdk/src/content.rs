@@ -63,6 +63,7 @@ pub mod kind {
         CameraMode,
         HudElement,
         GizmoGroup,
+        Shader,
         TintKind,
         EntityCategory,
         SoundCategory,
@@ -236,6 +237,9 @@ pub type CameraMode = Handle<kind::CameraMode>;
 
 pub type HudElement = Handle<kind::HudElement>;
 pub type GizmoGroup = Handle<kind::GizmoGroup>;
+/// A shader file of a mod, by its name: `shaders/<block|entity|particle|sky|post>/<name>.wgsl`,
+/// the folder by what uses it. Nothing to register, the file is it.
+pub type Shader = Handle<kind::Shader>;
 pub type TintKind = Handle<kind::TintKind>;
 pub type Scatter = Handle<kind::Scatter>;
 /// A fixed shape of blocks (`Registry::template`), for world structures, moving bodies and
@@ -1677,6 +1681,7 @@ impl<'a> State<'a> {
     }
 }
 
+type BlockLook = Box<dyn for<'r> FnOnce(BlockBuilder<'r>) -> BlockBuilder<'r>>;
 type EntityLook = Box<dyn for<'r> FnOnce(crate::EntityBuilder<'r>) -> crate::EntityBuilder<'r>>;
 
 pub struct BlockBuilder<'a> {
@@ -1878,12 +1883,11 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// Shades its textures with `shaders/block/<name>.wgsl` (namespace optional): the shader goes
+    /// Shades its textures with `shaders/block/<name>.wgsl`: the shader goes
     /// with the textures, so blocks sharing one share it.
-    pub fn shader(mut self, name: &str) -> Self {
-        let name = crate::asset("", name);
+    pub fn shader(mut self, shader: &crate::Shader) -> Self {
         self.components
-            .push(Pending::text(abi::comp::SHADER, &name));
+            .push(Pending::text(abi::comp::SHADER, shader.name()));
         self
     }
 
@@ -3633,19 +3637,16 @@ impl ItemUse {
 /// A liquid: its block (16 states) and flow rules, optionally a filled bucket item.
 ///
 /// ```ignore
-/// r.liquid(&OIL).texture("oil_still").flow_delay(15).drop_off(2).bucket(&OIL_BUCKET, &BUCKET, &TOOLS);
+/// r.liquid(&OIL).block(|b| b.light_opacity(4)).flow_delay(15).drop_off(2).bucket(&OIL_BUCKET, &BUCKET, &TOOLS);
 /// r.liquid_reaction("#hot", "#water").source_turns_into("obsidian").flowing_turns_into("cobblestone").below_turns_into("stone");
 /// ```
 pub struct LiquidBuilder<'a> {
     reg: &'a mut Registry,
     name: String,
     handle: &'static Block,
-    texture: String,
-    tint: Option<&'static TintKind>,
-    light: [u8; 3],
-    opacity: u8,
-    drag: f32,
-    translucent: bool,
+    look: Option<BlockLook>,
+    /// `Registry::liquid_edit`: only its look, fog and overlay change.
+    edit: bool,
     components: Vec<Pending>,
     desc: abi::LiquidDesc,
     overlay: String,
@@ -3653,33 +3654,10 @@ pub struct LiquidBuilder<'a> {
 }
 
 impl LiquidBuilder<'_> {
-    /// Still texture, relative names are under `block/`.
-    pub fn texture(mut self, t: &str) -> Self {
-        self.texture = t.to_string();
-        self
-    }
-    /// Colored by the biome it stands in (`tints::WATER`).
-    pub fn tint(mut self, kind: &'static TintKind) -> Self {
-        self.tint = Some(kind);
-        self
-    }
-    pub fn light(mut self, level: u8) -> Self {
-        self.light = [level; 3];
-        self
-    }
-    /// How much light it absorbs per block.
-    pub fn light_opacity(mut self, o: u8) -> Self {
-        self.opacity = o;
-        self
-    }
-    /// How fast things move inside: water 1, lava 0.4.
-    pub fn drag(mut self, d: f32) -> Self {
-        self.drag = d;
-        self
-    }
-    /// Seen through (water); otherwise drawn solid like lava.
-    pub fn translucent(mut self) -> Self {
-        self.translucent = true;
+    /// Its block, on top of what makes it a liquid (texture `<name>_still`, drawn solid like
+    /// lava): `.block(|b| b.tint(&tints::WATER).translucent().drag(0.4).light(15))`.
+    pub fn block(mut self, f: impl for<'r> FnOnce(BlockBuilder<'r>) -> BlockBuilder<'r> + 'static) -> Self {
+        self.look = Some(Box::new(f));
         self
     }
     /// Ticks between flow steps (water 5, lava 30).
@@ -3747,42 +3725,50 @@ impl Drop for LiquidBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
-        let short = self.handle.path().to_string();
-        let tex = if self.texture.is_empty() { format!("{short}_still") } else { self.texture.clone() };
-        let (tint, light, opacity, drag) = (self.tint, self.light, self.opacity, self.drag);
+        if self.edit {
+            let d = &self.desc;
+            let e = abi::LiquidEdit {
+                name: Str::new(&self.name),
+                overlay: Str::new(&self.overlay),
+                fog_color: d.fog_color,
+                fog_distance: d.fog_distance,
+                overlay_opacity: d.overlay_opacity,
+            };
+            unsafe { (host().reg_liquid_edit)(self.reg.raw, &e) };
+            if let Some(look) = self.look.take() {
+                drop(look(self.reg.edit(self.handle)));
+            }
+            return;
+        }
+        let look = self.look.take().unwrap_or_else(|| Box::new(|b| b));
+        let tex = format!("{}_still", self.handle.path());
         // The engine makes its 16 states liquid (flags, look, level) from `reg_liquid`.
-        let mut b = self
-            .reg
-            .block(self.handle)
-            .texture(&tex)
-            .prop("level", 0..=15)
-            .unbreakable()
-            .light_rgb(light[0], light[1], light[2])
-            .light_opacity(opacity)
-            .drag(drag)
-            .no_item()
-            .drops_nothing();
-        if let Some(kind) = tint {
-            b = b.tint(kind);
-        }
-        if self.translucent {
-            b = b.translucent();
-        }
+        let mut b = look(
+            self.reg
+                .block(self.handle)
+                .texture(&tex)
+                .prop("level", 0..=15)
+                .unbreakable()
+                .light_opacity(2)
+                .no_item()
+                .drops_nothing(),
+        );
+        let tex = b.states[0].textures[0].clone();
         // The same tags on its item: `#water` in a recipe is the liquid too.
-        let tags: Vec<String> = self
+        b.components.append(&mut self.components);
+        let tags: Vec<String> = b
             .components
             .iter()
             .filter(|p| p.is_tag())
             .map(|p| p.name.clone())
             .collect();
-        b.components = std::mem::take(&mut self.components);
         drop(b);
         let mut it = self
             .reg
             .item(&Item::generated(self.name.clone()))
             .set_text(&c::FLUID, &self.name)
             .max_stack(u32::MAX);
-        it.texture = crate::asset("block", &tex);
+        it.texture = tex;
         for t in &tags {
             it = it.tag(t);
         }
@@ -3844,50 +3830,15 @@ impl Drop for ReactionBuilder<'_> {
     }
 }
 
-/// Changes how any mod's liquid looks from inside and whether it can be swum in; what you don't
-/// set stays, and its flow is the mod's own. See `Registry::liquid_edit`.
-pub struct LiquidEditBuilder<'a> {
-    reg: &'a mut Registry,
-    name: String,
-    overlay: String,
-    desc: abi::LiquidEdit,
-}
-
-impl LiquidEditBuilder<'_> {
-    /// The fog seen from inside: its color (0xRRGGBB) and how many blocks away it hides everything.
-    pub fn fog(mut self, rgb: u32, blocks: f32) -> Self {
-        self.desc.fog_color = rgb;
-        self.desc.fog_distance = blocks;
-        self
-    }
-    /// The picture over the screen from inside, relative names are under `block/`, and how much
-    /// of it shows.
-    pub fn overlay(mut self, texture: &str, opacity: f32) -> Self {
-        self.overlay = crate::asset("block", texture);
-        self.desc.overlay_opacity = opacity;
-        self
-    }
-    /// Nothing over the screen from inside.
-    pub fn no_overlay(mut self) -> Self {
-        self.desc.overlay_opacity = 0.0;
-        self
-    }
-}
-
-impl Drop for LiquidEditBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let desc = abi::LiquidEdit { name: Str::new(&self.name), overlay: Str::new(&self.overlay), ..self.desc };
-        unsafe { (host().reg_liquid_edit)(self.reg.raw, &desc) };
-    }
-}
-
 impl Registry {
-    /// Changes another mod's liquid: `r.liquid_edit(&WATER).fog(0x204020, 12.0)`.
-    pub fn liquid_edit<'a>(&'a mut self, liquid: &Block) -> LiquidEditBuilder<'a> {
-        LiquidEditBuilder { name: liquid.name().to_string(), reg: self, overlay: String::new(), desc: abi::LiquidEdit::DEFAULT }
+    /// Changes another mod's liquid: its `block`, `fog` and `overlay`, what isn't set stays
+    /// (`r.liquid_edit(&WATER).fog(0x204020, 12.0)`); how it flows is the owner's.
+    pub fn liquid_edit<'a>(&'a mut self, liquid: &'static Block) -> LiquidBuilder<'a> {
+        let mut b = self.liquid(liquid);
+        b.edit = true;
+        let d = abi::LiquidEdit::DEFAULT;
+        (b.desc.fog_color, b.desc.fog_distance, b.desc.overlay_opacity) = (d.fog_color, d.fog_distance, d.overlay_opacity);
+        b
     }
 
     /// A liquid the engine flows; see `LiquidBuilder`. Defaults are vanilla water's numbers, an
@@ -3897,12 +3848,8 @@ impl Registry {
             name: liquid.name().to_string(),
             reg: self,
             handle: liquid,
-            texture: String::new(),
-            tint: None,
-            light: [0; 3],
-            opacity: 2,
-            drag: 1.0,
-            translucent: false,
+            look: None,
+            edit: false,
             components: Vec::new(),
             desc: abi::LiquidDesc::DEFAULT,
             overlay: String::new(),

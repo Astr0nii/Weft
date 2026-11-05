@@ -16,7 +16,7 @@ use crate::abi::Vec3;
 use std::marker::PhantomData;
 
 use crate::abi::{self, Slice, Str, particle_flags as pf};
-use crate::{Client, ClientView, Dimension, Music, Particle, Registry, SkyObject, SoundCategory, World, callback, host, qualify};
+use crate::{Client, ClientView, Dimension, Music, Particle, Registry, SkyObject, SoundCategory, World, callback, host};
 
 pub struct ParticleBuilder<'a> {
     raw: *mut abi::Registrar,
@@ -166,8 +166,8 @@ impl ParticleBuilder<'_> {
         self
     }
     /// Colors it with `shaders/particle/<name>.wgsl` (`fn shade(p: ParticleFrag) -> vec4<f32>`).
-    pub fn shader(mut self, name: &str) -> Self {
-        self.shader = crate::asset("", name);
+    pub fn shader(mut self, shader: &crate::Shader) -> Self {
+        self.shader = shader.name().to_string();
         self
     }
 }
@@ -221,8 +221,8 @@ impl SkyBuilder<'_> {
         self
     }
     /// Colors it with `shaders/sky/<name>.wgsl` instead of the plain picture.
-    pub fn shader(mut self, name: &str) -> Self {
-        self.shader = crate::asset("", name);
+    pub fn shader(mut self, shader: &crate::Shader) -> Self {
+        self.shader = shader.name().to_string();
         self
     }
     /// Ticks per turn around the sky, negative the other way. Without it, it follows the
@@ -562,10 +562,9 @@ impl Client {
         burst(Target::Client(*self), kind, pos.into())
     }
 
-    /// Turns screen effect `name` (`shaders/post/<name>.wgsl`) on at `strength` (0 turns it off).
-    pub fn post_effect(&self, name: &str, strength: f32) -> bool {
-        let name = qualify(crate::mod_id(), name);
-        unsafe { (host().client_op)(self.raw(), abi::client_op::POST_EFFECT, Str::new(&name), strength as f64) != 0 }
+    /// Turns a screen effect (`shaders/post/<name>.wgsl`) on at `strength` (0 turns it off).
+    pub fn post_effect(&self, effect: &crate::Shader, strength: f32) -> bool {
+        unsafe { (host().client_op)(self.raw(), abi::client_op::POST_EFFECT, Str::new(effect.name()), strength as f64) != 0 }
     }
 }
 

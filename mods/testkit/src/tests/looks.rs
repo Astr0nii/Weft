@@ -256,14 +256,18 @@ pub async fn shaders_and_glow(t: T) -> R {
     };
     t.probe("the block shader's magenta bands", bands, bands > 0.2 && bands < 0.9);
     let before = t.grab().await?;
-    t.check(t.c().post_effect("testmod:dream", 1.0), "the daydream effect exists");
-    t.check(!t.c().post_effect("testmod:nonexistent", 1.0), "an unknown effect is refused");
+    t.check(t.c().post_effect(&Shader::named("testmod:dream"), 1.0), "the daydream effect exists");
+    t.check(
+        !t.c()
+            .post_effect(&Shader::named("testmod:nonexistent"), 1.0),
+        "an unknown effect is refused",
+    );
     t.frames(3).await?;
     t.shot("dream").await?;
     let after = t.grab().await?;
     let d = T::differ(&before, &after) as f32;
     t.probe("the daydream effect changes the picture", d, d > 0.03);
-    t.c().post_effect("testmod:dream", 0.0);
+    t.c().post_effect(&Shader::named("testmod:dream"), 0.0);
     Ok(())
 }
 
