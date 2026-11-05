@@ -3251,6 +3251,9 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
                 if !o.at.biome.is_empty() {
                     m.at.biome = o.at.biome;
                 }
+                if o.at.y != weft_abi::Where::DEFAULT.y {
+                    m.at.y = o.at.y;
+                }
                 take_set(
                     o.set,
                     &mut [

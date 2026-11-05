@@ -1160,8 +1160,8 @@ impl Registry {
         }
     }
 
-    /// A template placed now and then on the surface of `dimension` (the structure is called
-    /// like the template, for `World::structure_near`).
+    /// A template placed now and then on the surface, in every dimension but bare ones unless
+    /// `.dimension(..)` says (the structure is called like the template, for `World::structure_near`).
     pub fn structure<'a>(&'a mut self, template: &Template) -> StructureBuilder<'a> {
         StructureBuilder {
             raw: self.raw,
@@ -3083,15 +3083,6 @@ impl Drop for DimensionBuilder<'_> {
     }
 }
 
-/// A structure placed while generating (see `abi::StructureDesc`), drawn in layers from the
-/// bottom up, rows along z, characters along x; `' '` leaves what is there, other characters
-/// are keys:
-///
-/// ```ignore
-/// r.structure("overworld", "well")
-///     .layer(&["ccc", "cwc", "ccc"]).layer(&["c c", "   ", "c c"])
-///     .key('c', "cobblestone").key('w', "water").spacing(64).chance(0.3).biome("#animals").buried(1);
-/// ```
 /// Where something may go, `abi::Where`, kept by the builder until it registers.
 #[derive(Default)]
 pub struct At {
@@ -3156,6 +3147,12 @@ placed!(
     crate::game::SpawnBuilder<'_>
 );
 
+/// A template placed now and then while generating (see `abi::StructureDesc`):
+///
+/// ```ignore
+/// r.template(&WELL).layer(&["ccc", "cwc", "ccc"]).key('c', "cobblestone").key('w', "water");
+/// r.structure(&WELL).dimension(&OVERWORLD).spacing(64).chance(0.3).biome("#animals").buried(1);
+/// ```
 pub struct StructureBuilder<'a> {
     raw: *mut abi::Registrar,
     template: String,
@@ -3834,8 +3831,15 @@ impl Drop for LiquidBuilder<'_> {
         if self.desc.edit != 0 {
             let desc = abi::LiquidDesc { name: Str::new(&self.name), overlay: Str::new(&self.overlay), ..self.desc };
             unsafe { (host().reg_liquid)(self.reg.raw, &desc) };
-            if let Some(look) = self.look.take() {
-                drop(look(self.reg.edit(self.handle)));
+            // Its block's and its item's say: the look, tags and components set.
+            if self.look.is_some() || !self.components.is_empty() {
+                let look = self.look.take().unwrap_or_else(|| Box::new(|b| b));
+                let mut b = look(self.reg.edit(self.handle));
+                b.components.extend(self.components.iter().cloned());
+                drop(b);
+                let mut it = self.reg.edit(Item::generated(self.name.clone()));
+                it.components = std::mem::take(&mut self.components);
+                drop(it);
             }
             self.register_bucket();
             return;

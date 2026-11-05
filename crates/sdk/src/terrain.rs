@@ -742,7 +742,7 @@ impl Registry {
     /// static TREES: Scatter = Scatter::named("trees");
     /// r.scatter(&TREES).cell(5).reach(2).density(&TREE_DENSITY).shape(|s| {
     ///     let [x, y, z] = s.pos();
-    ///     for dy in 0..5 { s.force([x, y + dy, z], LOG.id()); }
+    ///     for dy in 0..5 { s.put_force([x, y + dy, z], LOG.id()); }
     /// });
     /// ```
     pub fn scatter<'a>(&'a mut self, scatter: &Scatter) -> ScatterBuilder<'a> {
