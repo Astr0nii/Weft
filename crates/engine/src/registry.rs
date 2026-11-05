@@ -163,8 +163,6 @@ pub struct MenuDef {
     /// Slots of the menu's own inventory (its `slot_owner::MENU` groups).
     pub temp_slots: u32,
     pub groups: Vec<GroupDef>,
-    /// The machine entity kind whose inventory `slot_owner::BLOCK` groups show.
-    pub entity: String,
     /// Recipe kinds its `arrow` bars open.
     pub recipes: Vec<String>,
     pub on_change: Option<Callback>,
@@ -1336,7 +1334,7 @@ pub struct RawStructure {
     pub sink: i32,
 }
 
-fn opt(c: Callback) -> Option<Callback> {
+pub(crate) fn opt(c: Callback) -> Option<Callback> {
     c.is_some().then_some(c)
 }
 
@@ -1466,7 +1464,6 @@ pub(crate) unsafe fn copy_menu(owner: ModId, d: &abi::MenuDesc) -> (usize, MenuD
                     .max()
                     .unwrap_or(0),
                 groups,
-                entity: d.entity.as_str().to_string(),
                 recipes: d
                     .recipes
                     .as_str()

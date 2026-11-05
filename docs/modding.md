@@ -320,7 +320,7 @@ Moving platforms: `solid()`, `kinematic()`, `carry_height(..)`, and
 `blocks(&DECK)` with a template (`r.template(&DECK).fill("base:oak_planks", from, to)`) makes a flying structure players can build on; its box is what the blocks fill, no `size` needed. `EntityState.size` is an entity's box and eye height as they are now (crouching and `w.set_size` included), so `st.pos.y + st.size.eye` is where its eyes are (or just `st.eye()`).
 
 ### Machines
-`r.machine(&BLOCK, &MENU)` is block + block entity + inventory + menu + screen in one go.\
+A block with `.entity(|e| e.attach(..))` (data, a tick), `.inventory(n)` (slots) and `.opens(&MENU)` (a window on use), each on its own; see the [machines guide](machines.md).\
 Look at testmod's generator for an example.
 
 ### Liquids
@@ -472,7 +472,7 @@ Inside any callback you get a `World` (`w`):
 
 ## Client side
 
-- UI is built in code: `r.screen(&ABOUT, |ui| ui.panel(..)).pauses()`, the engine's screens are in `screens::*` and its pause, death and settings screens use the same parts (inputs, sliders, items, `S::mono()`, `.scroll()`...)
+- UI is built in code: `r.menu(&ABOUT).screen(|ui| ui.panel(..)).pauses()`, the engine's screens are in `screens::*` and its pause, death and settings screens use the same parts (inputs, sliders, items, `S::mono()`, `.scroll()`...)
 - HUD elements are built with `r.hud_element(&MANA_BAR, hud_anchor::HOTBAR_LEFT, 0, |ui| ..)`
 - a bar of icons is `ui.icons("mana", 10, |c| value)` (`gui/mana_full`, `_half`, `_empty`; a negative value hides it, so it shows when you say), and it moves however you tell it, each by its own value read every frame: `.shaking_by(|c| ..)` (0 still, 2 hard), `.shaking_below(4.0)`, `.flash_on_gain(0.5)` / `.flash_on_loss(1.0)` (what changed blinks, `mana_flash` lights the bar), `.preview(1.6, |c| ..)` (what it would be, fading in and out), `.overlay(|c| ..)` (a second row in `mana_overlay_*` icons on top), `.wave_while(2.0, |c| ..)`. Base's hearts and food are made of these: food shakes with no saturation, shows the saturation outlined in gold and what the food in hand would fill
 - F3 panels are at `hud_anchor::DEBUG_LEFT`

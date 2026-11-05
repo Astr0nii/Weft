@@ -2399,8 +2399,8 @@ pub const OFF_HAND_SLOT: &str = "core:off_hand";
 pub mod slot_owner {
     /// The menu's own slots, emptied back to the player on close (crafting grids).
     pub const MENU: u32 = 0;
-    /// The entity the menu opened on (a machine).
-    pub const MACHINE: u32 = 1;
+    /// What the menu opened on: a block entity, an entity, a storage.
+    pub const HOLDER: u32 = 1;
     /// The player's inventory from `start`.
     pub const PLAYER: u32 = 2;
     /// The player's main inventory, laid out like `Registry::player_inventory` says.
@@ -2461,8 +2461,6 @@ pub struct MenuDesc {
     pub cell: *const AtomicU32,
     /// Its slots, in this order.
     pub groups: Slice<SlotGroupDesc>,
-    /// The entity kind of the machine it belongs to (`slot_owner::MACHINE` groups are its inventory).
-    pub entity: Str,
     /// Recipe kinds it makes, space separated: its `arrow` bars open them in the recipe viewer.
     pub recipes: Str,
     /// `MenuArgs`, server: a slot changed (recompute crafting output).
@@ -2473,17 +2471,23 @@ pub struct MenuDesc {
     pub on_tick: Callback,
     /// `UiArgs`, client: build the screen. Slot widgets refer to the groups by name.
     pub screen: Callback,
+    /// `screen_flags`: how its screen behaves, the same properties the engine's screens have.
+    pub flags: u32,
+    /// `ScreenKeyArgs` for every key pressed while its screen is on top, before Escape and the
+    /// other global keys.
+    pub on_key: Callback,
 }
 defaults!(MenuDesc {
     name: Str::EMPTY,
     cell: core::ptr::null(),
     groups: Slice::EMPTY,
-    entity: Str::EMPTY,
     recipes: Str::EMPTY,
     on_change: Callback::NONE,
     on_take: Callback::NONE,
     on_tick: Callback::NONE,
     screen: Callback::NONE,
+    flags: 0,
+    on_key: Callback::NONE,
 });
 
 #[repr(C)]
@@ -2729,21 +2733,6 @@ pub mod ui_flags {
     /// A button shown as chosen (the open tab).
     pub const SELECTED: u32 = 16;
 }
-
-/// A screen (`Host::reg_screen`): how it is built and how it behaves, the same properties the
-/// engine's screens have, so a mod's `core:pause` still pauses.
-#[repr(C)]
-pub struct ScreenDesc {
-    pub name: Str,
-    /// `UiArgs`.
-    pub build: Callback,
-    /// `screen_flags`.
-    pub flags: u32,
-    /// `ScreenKeyArgs` for every key pressed while it is on top, before Escape and the other
-    /// global keys.
-    pub on_key: Callback,
-}
-defaults!(ScreenDesc { name: Str::EMPTY, build: Callback::NONE, flags: 0, on_key: Callback::NONE });
 
 pub mod screen_flags {
     /// Single player stops while it is open.
@@ -3370,9 +3359,6 @@ pub struct Host {
     /// bones named in `bones` (space separated); a name with a role (`head`, `leftArm`, `leg0`)
     /// covers every bone of that role, whatever it is called in a model.
     pub reg_equipment_slot: unsafe extern "C" fn(reg: *mut Registrar, name: Str, bones: Str, background: Str),
-    /// A screen, opened by name (`client_op::OPEN_SCREEN`, `--screen`); one named like an engine
-    /// screen (`core:pause`) replaces it.
-    pub reg_screen: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ScreenDesc),
     /// Adds comma separated words to a word set: command parameters `word(#set)` complete from
     /// it (`core:rules`, `core:gizmos`, or any mod's).
     pub reg_words: unsafe extern "C" fn(reg: *mut Registrar, set: Str, words: Str),

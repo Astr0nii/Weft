@@ -355,53 +355,54 @@ pub fn register(r: &mut Registry) {
         .mined_by("pickaxe", tool_tier::HAND)
         .tab(&crate::tabs::REDSTONE);
 
-    r.machine(&DISPENSER, &DISPENSER_MENU)
-        .block(|b| {
-            b.sound_group("stone")
-                .facing(Facings::ALL, Toward::Player)
-                .signal_sink()
-                .states(|p, s| {
-                    // Vanilla's: a furnace's sides, or all its top with the front up or down.
-                    let d = p.facing();
-                    let side = "furnace_top";
-                    let front = "dispenser_front";
-                    s.front_faces(d, side, "furnace_top", front)
-                })
-                // With each new pulse, out of the front.
-                .on_signal(|e| {
-                    if !e.rising() {
-                        return;
-                    }
-                    let (w, p) = (e.world(), e.pos());
-                    let dir = w
-                        .prop(p, "facing")
-                        .and_then(Dir::from_name)
-                        .unwrap_or(Dir::Up)
-                        .offset();
-                    let items = w.inventory(p);
-                    for i in 0..items.len() {
-                        let stack = items.get(i);
-                        if !stack.is_empty() {
-                            items.set(i, ItemStack { count: stack.count - 1, ..stack });
-                            let center = block_center(p);
-                            let dir = Vec3::new(dir.x as f64, dir.y as f64, dir.z as f64);
-                            let at = center + dir * 0.8;
-                            // Shot out about as fast as vanilla's, a little to either side.
-                            let r = |_| (w.random_below(1000) as f64 / 1000.0 - 0.5) * 0.6;
-                            let v = dir * 5.0 + Vec3::new(r(0), r(1), r(2));
-                            let how = Spawn::new()
-                                .stack(ItemStack { count: 1, ..stack })
-                                .velocity(v);
-                            w.spawn_with(&ITEM, at, &how);
-                            break;
-                        }
-                    }
-                })
-                .hardness(3.5)
-                .mined_by("pickaxe", tool_tier::HAND)
-                .tab(&crate::tabs::REDSTONE)
+    r.block(&DISPENSER)
+        .sound_group("stone")
+        .facing(Facings::ALL, Toward::Player)
+        .signal_sink()
+        .states(|p, s| {
+            // Vanilla's: a furnace's sides, or all its top with the front up or down.
+            let d = p.facing();
+            let side = "furnace_top";
+            let front = "dispenser_front";
+            s.front_faces(d, side, "furnace_top", front)
         })
-        .group("dispenser", Slots::chest(1))
+        // With each new pulse, out of the front.
+        .on_signal(|e| {
+            if !e.rising() {
+                return;
+            }
+            let (w, p) = (e.world(), e.pos());
+            let dir = w
+                .prop(p, "facing")
+                .and_then(Dir::from_name)
+                .unwrap_or(Dir::Up)
+                .offset();
+            let items = w.inventory(p);
+            for i in 0..items.len() {
+                let stack = items.get(i);
+                if !stack.is_empty() {
+                    items.set(i, ItemStack { count: stack.count - 1, ..stack });
+                    let center = block_center(p);
+                    let dir = Vec3::new(dir.x as f64, dir.y as f64, dir.z as f64);
+                    let at = center + dir * 0.8;
+                    // Shot out about as fast as vanilla's, a little to either side.
+                    let r = |_| (w.random_below(1000) as f64 / 1000.0 - 0.5) * 0.6;
+                    let v = dir * 5.0 + Vec3::new(r(0), r(1), r(2));
+                    let how = Spawn::new()
+                        .stack(ItemStack { count: 1, ..stack })
+                        .velocity(v);
+                    w.spawn_with(&ITEM, at, &how);
+                    break;
+                }
+            }
+        })
+        .hardness(3.5)
+        .mined_by("pickaxe", tool_tier::HAND)
+        .tab(&crate::tabs::REDSTONE)
+        .inventory(9)
+        .opens(&DISPENSER_MENU);
+    r.menu(&DISPENSER_MENU)
+        .group("dispenser", Slots::chest(1).holder())
         .default_screen();
 
     const C: &RecipeKind = &base_api::CRAFTING;

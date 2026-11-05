@@ -61,7 +61,6 @@ pub mod kind {
         SkyObject,
         Key,
         CameraMode,
-        Screen,
         HudElement,
         GizmoGroup,
         TintKind,
@@ -235,7 +234,6 @@ pub type Menu = Handle<kind::Menu>;
 pub type Key = Handle<kind::Key>;
 pub type CameraMode = Handle<kind::CameraMode>;
 
-pub type Screen = Handle<kind::Screen>;
 pub type HudElement = Handle<kind::HudElement>;
 pub type GizmoGroup = Handle<kind::GizmoGroup>;
 pub type TintKind = Handle<kind::TintKind>;
@@ -989,7 +987,7 @@ impl Registry {
             shares_cell: Vec::new(),
             signal: None,
             inventory: 0,
-            entity: false,
+            entity: None,
             model_file: String::new(),
             model_textures: Vec::new(),
             neighbor_fns: Vec::new(),
@@ -1698,6 +1696,8 @@ impl<'a> State<'a> {
     }
 }
 
+type EntityLook = Box<dyn for<'r> FnOnce(crate::EntityBuilder<'r>) -> crate::EntityBuilder<'r>>;
+
 pub struct BlockBuilder<'a> {
     reg: &'a mut Registry,
     name: String,
@@ -1722,8 +1722,8 @@ pub struct BlockBuilder<'a> {
     made_of: Option<(String, String)>,
     shares_cell: Vec<String>,
     inventory: u32,
-    /// A block entity even with no slots (`block_entity`).
-    entity: bool,
+    /// Its block entity's kind, `entity`.
+    entity: Option<EntityLook>,
     model_file: String,
     model_textures: Vec<(String, String)>,
     /// What its `on_neighbor` does, `joins` and `derived` included, run in order.
@@ -2177,24 +2177,25 @@ impl<'a> BlockBuilder<'a> {
             })
     }
 
-    /// Each placed block holds `slots` items (`w.inventory(pos)`), kept by a block entity the
-    /// engine adds. Its contents drop when it breaks.
+    /// Each placed block holds `slots` items (`w.inventory(pos)`, a menu's `Slots::holder()`
+    /// groups), kept by its block entity. Its contents drop when it breaks.
     pub fn inventory(mut self, slots: u32) -> Self {
         self.inventory = slots;
         self
     }
 
-    /// Each placed block gets a block entity, `EntityKind::named` like the block, with no slots
-    /// and no screen: for state of its own (`r.attach(..)` on that kind, ticked by a system), an
-    /// engine that has energy and nothing to hold.
-    pub fn block_entity(mut self) -> Self {
-        self.entity = true;
+    /// Each placed block gets a block entity, an invisible entity of a kind named like the block
+    /// that comes and goes with it: data of its own (`e.attach(..)`, ticked by a system), a
+    /// model, an inventory (`inventory`). Doesn't make it usable: that is `opens` or `on_use`.
+    /// `.entity(|e| e.attach(&SPEED))`.
+    pub fn entity(mut self, f: impl for<'r> FnOnce(crate::EntityBuilder<'r>) -> crate::EntityBuilder<'r> + 'static) -> Self {
+        self.entity = Some(Box::new(f));
         self
     }
 
-    /// Using it opens `menu`, on the block's block entity if it has one (machines), else a menu
-    /// of its own (a crafting table). A menu with `.recipes(..)` makes the block a station of
-    /// those recipes in the recipe viewer.
+    /// Using it opens `menu`, on its block entity if it has one (a furnace), else on nothing (a
+    /// crafting table). A menu with `.recipes(..)` makes the block a station of those recipes in
+    /// the recipe viewer.
     pub fn opens(mut self, menu: &crate::Menu) -> Self {
         self.opens = menu.name().to_string();
         self
@@ -2569,9 +2570,10 @@ impl Drop for BlockBuilder<'_> {
             h.set_count(self.states.len() as u32);
         }
         unsafe { (host().reg_block)(self.reg.raw, &desc) };
-        if self.inventory > 0 || self.entity {
+        if self.inventory > 0 || self.entity.is_some() {
+            let f = self.entity.take().unwrap_or_else(|| Box::new(|e| e));
             self.reg
-                .block_entity(Block::generated(self.name.clone()), self.inventory);
+                .block_entity(Block::generated(self.name.clone()), self.inventory, f);
         }
 
         if self.item {

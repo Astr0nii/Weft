@@ -152,7 +152,7 @@ pub fn slots(c: &Content, kind: u32, on: Option<Inv>, player: u64) -> Vec<SlotRe
         };
         let o = match g.owner {
             so::MENU => Owner::Temp,
-            so::MACHINE => Owner::On(on.unwrap_or(Inv::own(At::Entity(0)))),
+            so::HOLDER => Owner::On(on.unwrap_or(Inv::own(At::Entity(0)))),
             _ => Owner::Player,
         };
         for i in 0..n {

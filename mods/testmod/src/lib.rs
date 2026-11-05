@@ -189,22 +189,27 @@ fn init(r: &mut Registry) {
         .files(&["test/thump"])
         .category(&MACHINES)
         .pitch(0.45, 0.5);
-    r.machine(&GENERATOR, &GENERATOR_MENU)
-        .block(|b| {
-            b.textures("machine_top", "generator", "machine_top")
-                .hardness(3.0)
-                .mined_by("pickaxe", 0)
+    r.block(&GENERATOR)
+        .textures("machine_top", "generator", "machine_top")
+        .hardness(3.0)
+        .mined_by("pickaxe", 0)
+        .entity(|e| {
+            e.attach(&BURNER)
+                .attach_with(&ENERGY, Energy { stored: 0, capacity: 20_000, max_in: 0, max_out: 200 })
         })
+        .inventory(1)
+        .opens(&GENERATOR_MENU);
+    r.menu(&GENERATOR_MENU)
         // Only fuel goes in (the base game's `fuel` component), and stays in until burnt.
         .group(
             "fuel",
             Slots::single()
                 .accepts("fuel")
                 .input()
-                .tooltip("testmod.fuel_slot"),
+                .tooltip("testmod.fuel_slot")
+                .holder(),
         )
-        .attach(&BURNER)
-        .attach_with(&ENERGY, Energy { stored: 0, capacity: 20_000, max_in: 0, max_out: 200 })
+        .player_inventory()
         .screen(|ui| {
             machine_screen(ui, |ui| {
                 ui.column(S::column().gap(2.0).center(), |ui| {
@@ -217,25 +222,31 @@ fn init(r: &mut Registry) {
             })
         });
     // Eight buckets of one liquid, in and out by bucket.
-    r.machine(&TANK, &TANK_MENU)
-        .block(|b| {
-            b.textures("machine_top", "machine_top", "machine_top")
-                .hardness(3.0)
-        })
-        .group("liquid", Slots::single().liquid(8000))
+    r.block(&TANK)
+        .textures("machine_top", "machine_top", "machine_top")
+        .hardness(3.0)
+        .inventory(1)
+        .opens(&TANK_MENU);
+    r.menu(&TANK_MENU)
+        .group("liquid", Slots::single().liquid(8000).holder())
+        .player_inventory()
         .screen(|ui| machine_screen(ui, |ui| ui.group("liquid")));
-    r.machine(&ELECTRIC_FURNACE, &FURNACE_MENU)
-        .block(|b| {
-            b.textures("machine_top", "electric_furnace", "machine_top")
-                .hardness(3.0)
-                .mined_by("pickaxe", 0)
+    r.block(&ELECTRIC_FURNACE)
+        .textures("machine_top", "electric_furnace", "machine_top")
+        .hardness(3.0)
+        .mined_by("pickaxe", 0)
+        .entity(|e| {
+            e.attach(&WORK)
+                .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 })
         })
+        .inventory(2)
+        .opens(&FURNACE_MENU);
+    r.menu(&FURNACE_MENU)
         // At most 16 to smelt at a time.
-        .group("input", Slots::single().limit(16))
-        .group("output", Slots::single().output())
+        .group("input", Slots::single().limit(16).holder())
+        .group("output", Slots::single().output().holder())
         .recipes(&SMELTING_RECIPES)
-        .attach(&WORK)
-        .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 })
+        .player_inventory()
         .screen(|ui| {
             machine_screen(ui, |ui| {
                 ui.group("input");
@@ -249,13 +260,14 @@ fn init(r: &mut Registry) {
 
     // No tick of its own: only the grid fills and drains it, so its bar shows that components
     // reach open menus whoever changed them.
-    r.machine(&BATTERY, &BATTERY_MENU)
-        .block(|b| {
-            b.textures("machine_top", "battery", "machine_top")
-                .hardness(3.0)
-                .mined_by("pickaxe", 0)
-        })
-        .attach_with(&ENERGY, Energy { stored: 0, capacity: 100_000, max_in: 400, max_out: 400 })
+    r.block(&BATTERY)
+        .textures("machine_top", "battery", "machine_top")
+        .hardness(3.0)
+        .mined_by("pickaxe", 0)
+        .entity(|e| e.attach_with(&ENERGY, Energy { stored: 0, capacity: 100_000, max_in: 400, max_out: 400 }))
+        .opens(&BATTERY_MENU);
+    r.menu(&BATTERY_MENU)
+        .player_inventory()
         .screen(|ui| machine_screen(ui, |_| {}));
 
     // The base game's kinds, by name: no code dependency on it.
@@ -306,7 +318,7 @@ fn init(r: &mut Registry) {
             true
         });
     r.menu(&POUCH_MENU)
-        .group("items", Slots::row(9).machine())
+        .group("items", Slots::row(9).holder())
         .player_inventory()
         .screen(|ui| {
             ui.panel("panel", S::column().pad(7.0).gap(4.0), |ui| {
@@ -495,7 +507,7 @@ fn morph(r: &mut Registry) {
     });
 }
 
-static ABOUT: Screen = Screen::named("about");
+static ABOUT: Menu = Menu::named("about");
 static DEBUG_PANEL: HudElement = HudElement::named("debug");
 
 /// A screen of the mod's own (`/about` here, `--screen testmod:about`).
@@ -504,35 +516,36 @@ fn about_screen(r: &mut Registry) {
     // a tooltip with arguments, and pausing like the engine's pause menu.
     static NAME: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
     static VOLUME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    r.screen(&ABOUT, |ui| {
-        ui.panel("testmod_panel", S::column().pad(8.0).gap(4.0).min_w(220.0), |ui| {
-            ui.text_styled(S::column().class("title").scale(2.0).no_wrap(), "testmod.about.title", &[]);
-            ui.text("testmod.about.text");
-            ui.panel(
-                "well",
-                S::column()
-                    .pad(4.0)
-                    .tooltip_args("testmod.about.tip", &[Arg::Int(3)]),
-                |ui| ui.text("testmod.about.hover"),
-            );
-            ui.input("", 16, S::column().class("about_name").w(200.0), |_, text| *NAME.lock().unwrap() = text.to_string());
-            ui.text_bind(|_, out| out.set("testmod.about.name", &[Arg::Text(&NAME.lock().unwrap())]));
-            ui.slider(
-                S::column().w(200.0).h(20.0),
-                |_| VOLUME.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0,
-                |_, v| VOLUME.store((v * 100.0).round() as u32, std::sync::atomic::Ordering::Relaxed),
-            );
-            ui.text_bind(|_, out| out.set("testmod.about.fov", &[Arg::Float(weft_sdk::settings::FOV.get() as f64, 0)]));
-            ui.text_bind_styled(S::column().mono(), |_, out| {
-                out.set("testmod.about.volume", &[Arg::Int(VOLUME.load(std::sync::atomic::Ordering::Relaxed) as i64)])
+    r.menu(&ABOUT)
+        .screen(|ui| {
+            ui.panel("testmod_panel", S::column().pad(8.0).gap(4.0).min_w(220.0), |ui| {
+                ui.text_styled(S::column().class("title").scale(2.0).no_wrap(), "testmod.about.title", &[]);
+                ui.text("testmod.about.text");
+                ui.panel(
+                    "well",
+                    S::column()
+                        .pad(4.0)
+                        .tooltip_args("testmod.about.tip", &[Arg::Int(3)]),
+                    |ui| ui.text("testmod.about.hover"),
+                );
+                ui.input("", 16, S::column().class("about_name").w(200.0), |_, text| *NAME.lock().unwrap() = text.to_string());
+                ui.text_bind(|_, out| out.set("testmod.about.name", &[Arg::Text(&NAME.lock().unwrap())]));
+                ui.slider(
+                    S::column().w(200.0).h(20.0),
+                    |_| VOLUME.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0,
+                    |_, v| VOLUME.store((v * 100.0).round() as u32, std::sync::atomic::Ordering::Relaxed),
+                );
+                ui.text_bind(|_, out| out.set("testmod.about.fov", &[Arg::Float(weft_sdk::settings::FOV.get() as f64, 0)]));
+                ui.text_bind_styled(S::column().mono(), |_, out| {
+                    out.set("testmod.about.volume", &[Arg::Int(VOLUME.load(std::sync::atomic::Ordering::Relaxed) as i64)])
+                });
+                ui.row(S::row().gap(4.0), |ui| {
+                    ui.item(Item::lookup("base:coal").unwrap_or(0), 3, S::default());
+                    ui.button("testmod.about.closed", S::column().disabled(true), |_| {});
+                });
             });
-            ui.row(S::row().gap(4.0), |ui| {
-                ui.item(Item::lookup("base:coal").unwrap_or(0), 3, S::default());
-                ui.button("testmod.about.closed", S::column().disabled(true), |_| {});
-            });
-        });
-    })
-    .pauses();
+        })
+        .pauses();
     // A button of its own in the main menu, next to the engine's and other mods'.
     r.screen_part(&screens::TITLE, "buttons", 0, |ui| {
         ui.button("testmod.about.button", S::default(), |c| {

@@ -257,7 +257,6 @@ pub static HOST: Host = Host {
     reg_player_inventory,
     reg_equipment_slot,
     player_inventory_group,
-    reg_screen,
     reg_words,
     set_entity_size,
     set_entity_appearance,
@@ -1525,14 +1524,15 @@ unsafe extern "C" fn inventory_group(w: *mut abi::WorldCtx, h: *const abi::Holde
                 None => 0,
             };
         }
-        let kind_name = &c.game.entities[e.kind as usize].name;
+        // A block entity's are those of the menu its block opens.
         let found = c
             .game
-            .menus
+            .block_entities
             .iter()
-            .filter(|d| &d.entity == kind_name)
-            .find_map(|d| d.group(layout, name.as_str()))
-            .filter(|g| g.0.owner == abi::slot_owner::MACHINE);
+            .find(|&(_, &k)| k == e.kind)
+            .and_then(|(&b, _)| c.blocks[b as usize].opens)
+            .and_then(|m| c.game.menus[m as usize].group(layout, name.as_str()))
+            .filter(|g| g.0.owner == abi::slot_owner::HOLDER);
         match found {
             Some((g, _, n)) => {
                 *out = abi::SlotGroup { start: g.start, len: n, cols: g.cols };
@@ -1580,19 +1580,6 @@ unsafe extern "C" fn reg_equipment_slot(r: *mut abi::Registrar, name: Str, bones
             roles: crate::model::roles_of(&bones),
             bones,
             background: background.as_str().to_string(),
-        });
-    }
-}
-
-unsafe extern "C" fn reg_screen(r: *mut abi::Registrar, d: *const abi::ScreenDesc) {
-    unsafe {
-        let (r, d) = (reg(r), &*d);
-        r.game.screens.push(registry::ScreenDef {
-            name: d.name.as_str().to_string(),
-            owner: r.owner,
-            cb: d.build,
-            flags: d.flags,
-            on_key: d.on_key,
         });
     }
 }
@@ -1973,8 +1960,15 @@ unsafe extern "C" fn reg_recipe(r: *mut abi::Registrar, d: *const abi::RecipeDes
 unsafe extern "C" fn reg_menu(r: *mut abi::Registrar, d: *const abi::MenuDesc) {
     unsafe {
         let r = reg(r);
-        let owner = r.owner;
-        r.game.menus.push(registry::copy_menu(owner, &*d));
+        let (owner, d) = (r.owner, &*d);
+        // Its screen opens on the client alone too (`client_op::OPEN_SCREEN`), with nothing to sync.
+        if crate::registry::opt(d.screen).is_some() {
+            let name = d.name.as_str().to_string();
+            r.game
+                .screens
+                .push(registry::ScreenDef { name, owner, cb: d.screen, flags: d.flags, on_key: d.on_key });
+        }
+        r.game.menus.push(registry::copy_menu(owner, d));
     }
 }
 

@@ -2,7 +2,7 @@ use crate::abi::{self, Holder, ItemStack, Slice, Str};
 use crate::abi::{BlockPos, Vec3};
 use crate::component::{Component, Storage, Value};
 use crate::content::{
-    Biome, Block, EntityCategory, EntityKind, EquipmentSlot, GizmoGroup, HudElement, Menu, Pending, RecipeKind, Screen, TintKind,
+    Biome, Block, EntityCategory, EntityKind, EquipmentSlot, GizmoGroup, HudElement, Menu, Pending, RecipeKind, TintKind,
 };
 use crate::ui::{Ui, ui_cb};
 use crate::{Id, Registry, World, callback, host, qualify};
@@ -517,7 +517,7 @@ impl Inventory {
     pub fn insert(&self, stack: ItemStack) -> ItemStack {
         unsafe { (host().inventory_insert)(self.world.raw(), &self.holder, stack) }
     }
-    /// A machine's slot group (`MachineBuilder::group`) in this inventory; a name it doesn't
+    /// A slot group of this inventory (a block's: the `holder` groups of the menu it opens); a name it doesn't
     /// have is logged as a mistake and gives no slots.
     pub fn group(&self, name: &str) -> SlotGroup<'static> {
         self.find_group(name).unwrap_or_else(|| {
@@ -1274,8 +1274,8 @@ pub const EQUIPMENT_GROUP: &str = "core:equipment";
 /// `ui.group(name)`, read and written with `MenuCtx::group(name)`.
 ///
 /// ```ignore
-/// r.machine(&ALLOY_SMELTER, &MENU)
-///     .group("input", Slots::row(2))
+/// r.menu(&MENU)
+///     .group("input", Slots::row(2).holder())
 ///     .group("fuel", Slots::single().accepts("fuel").background("flame_slot"))
 ///     .group("output", Slots::single().output().large());
 /// ```
@@ -1329,9 +1329,10 @@ impl Slots {
         self.owner = Some(abi::slot_owner::MENU);
         self
     }
-    /// The inventory of the entity the menu opened on. The default for `MachineBuilder::group`.
-    pub fn machine(mut self) -> Self {
-        self.owner = Some(abi::slot_owner::MACHINE);
+    /// The inventory of what the menu opened on: a block's (`BlockBuilder::inventory`), an
+    /// entity's, a storage's.
+    pub fn holder(mut self) -> Self {
+        self.owner = Some(abi::slot_owner::HOLDER);
         self
     }
     /// The player's hotbar, in `Registry::player_inventory`.
@@ -1459,8 +1460,8 @@ pub struct MenuBuilder<'a> {
     handle: Option<&'static Menu>,
     desc: abi::MenuDesc,
     groups: GroupList,
-    entity: String,
     recipes: Vec<String>,
+    plain_screen: bool,
 }
 
 impl MenuBuilder<'_> {
@@ -1508,6 +1509,39 @@ impl MenuBuilder<'_> {
         self.desc.screen = ui_cb(f);
         self
     }
+    /// Single player stops while it is open (the pause and settings screens).
+    pub fn pauses(mut self) -> Self {
+        self.desc.flags |= abi::screen_flags::PAUSES;
+        self
+    }
+    /// Escape doesn't close it (the death screen).
+    pub fn keep_on_escape(mut self) -> Self {
+        self.desc.flags |= abi::screen_flags::KEEP_ON_ESCAPE;
+        self
+    }
+    /// It closes when the player respawns.
+    pub fn closes_on_respawn(mut self) -> Self {
+        self.desc.flags |= abi::screen_flags::CLOSES_ON_RESPAWN;
+        self
+    }
+    /// Like the chat screen: the HUD leaves the messages to it and Enter sends the text of its
+    /// input of class `chat`.
+    pub fn shows_chat(mut self) -> Self {
+        self.desc.flags |= abi::screen_flags::SHOWS_CHAT;
+        self
+    }
+    /// Keys pressed while it is on top, by their settings name (`Enter`, `KeyE`, `mouse3`), before
+    /// Escape and the other global keys.
+    pub fn on_key(mut self, f: impl Fn(&crate::ClientView, &str) + Send + Sync + 'static) -> Self {
+        self.desc.on_key =
+            crate::callback(move |a: &mut abi::ScreenKeyArgs| f(&crate::ClientView::from_raw(a.client), unsafe { a.key.as_str() }));
+        self
+    }
+    /// The usual screen: its title, its own groups in order, the player's inventory.
+    pub fn default_screen(mut self) -> Self {
+        self.plain_screen = true;
+        self.player_inventory()
+    }
 }
 
 impl Drop for MenuBuilder<'_> {
@@ -1519,7 +1553,21 @@ impl Drop for MenuBuilder<'_> {
         self.desc.cell = self.handle.map_or(std::ptr::null(), |h| h.id_cell());
         let groups = self.groups.descs();
         self.desc.groups = Slice::new(&groups);
-        self.desc.entity = Str::new(&self.entity);
+        if self.plain_screen {
+            let names: Vec<String> = (self.groups.names.iter().zip(&self.groups.groups))
+                .filter(|(_, g)| g.owner.is_some_and(|o| o < abi::slot_owner::PLAYER))
+                .map(|(n, _)| n.clone())
+                .collect();
+            self.desc.screen = ui_cb(move |ui| {
+                ui.panel("panel", crate::ui::S::column().pad(7.0).gap(4.0), |ui| {
+                    ui.title();
+                    for name in &names {
+                        ui.group(name);
+                    }
+                    ui.player_inventory(true);
+                });
+            });
+        }
         let recipes = self.recipes.join(" ");
         self.desc.recipes = Str::new(&recipes);
         unsafe { (host().reg_menu)(self.reg.raw, &self.desc) }
@@ -1599,7 +1647,7 @@ impl Registry {
             handle: Some(menu),
             desc: abi::MenuDesc::DEFAULT,
             groups: GroupList::new(),
-            entity: String::new(),
+            plain_screen: false,
             recipes: Vec::new(),
         }
     }
@@ -1630,16 +1678,14 @@ impl Registry {
     }
 
     /// Gives `block` a block entity of a kind of its own, named like the block, with an
-    /// inventory of `slots` (what `BlockBuilder::inventory` and `machine` do).
-    pub(crate) fn block_entity(&mut self, block: &Block, slots: u32) -> &'static EntityKind {
+    /// inventory of `slots` (`BlockBuilder::entity` and `inventory`).
+    pub(crate) fn block_entity(&mut self, block: &Block, slots: u32, f: impl for<'r> FnOnce(EntityBuilder<'r>) -> EntityBuilder<'r>) {
         let kind = EntityKind::generated(block.name().to_string());
-        drop(
-            self.entity(kind)
-                .no_egg()
-                .flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE),
-        );
+        drop(f(self
+            .entity(kind)
+            .no_egg()
+            .flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE)));
         unsafe { (host().set_block_entity)(self.raw, Str::new(block.name()), Str::new(kind.name()), slots) }
-        kind
     }
 
     /// Every entity of `kind` (any mod's, `&PLAYER`) carries `component`, starting at its
@@ -1718,21 +1764,9 @@ impl Registry {
     /// Adds to place `area` of `screen` without replacing the screen: a button in the main menu is
     /// `r.screen_part(&screens::TITLE, "buttons", 0, |ui| ..)`. Lower `order` comes first. The
     /// engine's places: `TITLE` `buttons` and `side`, `PAUSE` `buttons`, `SETTINGS` `buttons`.
-    pub fn screen_part(&mut self, screen: &Screen, area: &str, order: i32, f: impl Fn(&mut Ui) + Send + Sync + 'static) {
+    pub fn screen_part(&mut self, screen: &Menu, area: &str, order: i32, f: impl Fn(&mut Ui) + Send + Sync + 'static) {
         let cb = crate::ui::ui_cb(f);
         unsafe { (host().reg_screen_part)(self.raw, Str::new(screen.name()), Str::new(area), order, cb) }
-    }
-
-    /// A screen opened with `Client::screen_open` (or `--screen <name>`); registering an engine
-    /// screen's handle (`screens::PAUSE`) replaces that one. How it behaves is declared on it,
-    /// the same properties the engine's screens have: `r.screen(&screens::PAUSE, build).pauses()`.
-    pub fn screen<'a>(&'a mut self, screen: &Screen, f: impl Fn(&mut Ui) + Send + Sync + 'static) -> ScreenBuilder<'a> {
-        ScreenBuilder {
-            raw: self.raw,
-            name: screen.name().to_string(),
-            desc: abi::ScreenDesc { build: ui_cb(f), ..abi::ScreenDesc::DEFAULT },
-            _p: std::marker::PhantomData,
-        }
     }
 
     /// HUD element at `anchor` (`hud_anchor::*`); `order` 0 sits nearest the anchor's edge.
@@ -2165,211 +2199,12 @@ impl Drop for SpawnBuilder<'_> {
     }
 }
 
-type BlockLook = Box<dyn for<'r> FnOnce(crate::BlockBuilder<'r>) -> crate::BlockBuilder<'r>>;
-
-/// A machine in one go: the block (its look and mining from `block`), an entity of the same
-/// name holding its inventory and state (ticking with `on_tick`), components on that entity,
-/// and the menu showing its slot groups above the player's inventory, opened by using the block.
-///
-/// ```ignore
-/// r.machine(&FURNACE, &FURNACE_MENU)
-///     .block(|b| b.textures(..).hardness(3.5))
-///     .group("input", Slots::single())
-///     .group("fuel", Slots::single().accepts("fuel"))
-///     .group("output", Slots::single().output().large())
-///     .attach(&SMELTING)
-///     .screen(|ui| ..);
-/// r.system(&SMELTING, tick_furnaces);   // the work: every furnace's state at once
-/// ```
-pub struct MachineBuilder<'a> {
-    reg: &'a mut Registry,
-    block_handle: &'static Block,
-    menu: Option<&'static Menu>,
-    block: Option<BlockLook>,
-    groups: Vec<(String, Slots)>,
-    recipes: Vec<String>,
-    with: Vec<Box<dyn FnOnce(&mut Registry, &EntityKind)>>,
-    screen: Option<Box<dyn Fn(&mut Ui) + Send + Sync>>,
-    plain_screen: bool,
-}
-
-impl Registry {
-    /// The machine's entity kind is named like its block: `EntityKind::named("furnace")`.
-    pub fn machine<'a>(&'a mut self, block: &'static Block, menu: &'static Menu) -> MachineBuilder<'a> {
-        let mut m = self.machine_without_menu(block);
-        m.menu = Some(menu);
-        m
-    }
-
-    /// A machine with no screen: using it opens nothing (a spring engine with its state and
-    /// energy). Its groups are still its inventory, for pipes and hoppers.
-    pub fn machine_without_menu<'a>(&'a mut self, block: &'static Block) -> MachineBuilder<'a> {
-        MachineBuilder {
-            block_handle: block,
-            reg: self,
-            menu: None,
-            block: None,
-            groups: Vec::new(),
-            recipes: Vec::new(),
-            with: Vec::new(),
-            plain_screen: false,
-            screen: None,
-        }
-    }
-}
-
-impl MachineBuilder<'_> {
-    pub fn block(mut self, f: impl for<'r> FnOnce(crate::BlockBuilder<'r>) -> crate::BlockBuilder<'r> + 'static) -> Self {
-        self.block = Some(Box::new(f));
-        self
-    }
-    /// Recipes of this kind are made here: clicking an `arrow` bar of its screen shows them, and
-    /// the recipe viewer shows the machine next to them.
-    pub fn recipes(mut self, kind: &RecipeKind) -> Self {
-        self.recipes.push(kind.name().to_string());
-        self
-    }
-    /// A group of the machine's slots (its inventory holds them all, in this order). The
-    /// machine's tick finds them with `w.inventory(id).group(name)`.
-    pub fn group(mut self, name: &str, slots: Slots) -> Self {
-        self.groups.push((name.to_string(), slots));
-        self
-    }
-    /// Every machine of this kind carries `component` (declared with `r.entity_component`),
-    /// starting at its declared value.
-    pub fn attach<T: Value>(mut self, component: &'static Component<T>) -> Self {
-        self.with
-            .push(Box::new(move |r, kind| r.attach(kind, component)));
-        self
-    }
-    /// `attach` with the value this machine starts with.
-    pub fn attach_with<T: Value>(mut self, component: &'static Component<T>, value: T) -> Self {
-        self.with
-            .push(Box::new(move |r, kind| r.attach_with(kind, component, value)));
-        self
-    }
-    /// The menu screen: the machine's groups by name (`ui.group`), the player's inventory with
-    /// `ui.player_inventory(..)`.
-    pub fn screen(mut self, f: impl Fn(&mut Ui) + Send + Sync + 'static) -> Self {
-        self.screen = Some(Box::new(f));
-        self
-    }
-    /// The usual menu screen: its title, its groups in order, the player's inventory.
-    pub fn default_screen(mut self) -> Self {
-        self.plain_screen = true;
-        self
-    }
-}
-
-impl Drop for MachineBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let (block, menu, reg) = (self.block_handle, self.menu, &mut *self.reg);
-        let full = block.name().to_string();
-        let look = self.block.take().unwrap_or_else(|| Box::new(|b| b));
-        let b = look(reg.block(block));
-        drop(match menu {
-            Some(menu) => b.opens(menu),
-            None => b,
-        });
-        // The inventory holds every group of the machine's own, wherever they start.
-        let mut size = 0;
-        let mut next = 0;
-        for (_, s) in &self.groups {
-            if s.owner.is_none_or(|o| o == abi::slot_owner::MACHINE) {
-                let start = if s.start == u32::MAX { next } else { s.start };
-                next = start + s.cols * s.rows;
-                size = size.max(next);
-            }
-        }
-        let kind = reg.block_entity(block, size);
-        for f in self.with.drain(..) {
-            f(reg, kind);
-        }
-        let Some(menu) = menu else { return };
-        if self.plain_screen {
-            let names: Vec<String> = self.groups.iter().map(|g| g.0.clone()).collect();
-            self.screen = Some(Box::new(move |ui| {
-                ui.panel("panel", crate::ui::S::column().pad(7.0).gap(4.0), |ui| {
-                    ui.title();
-                    for name in &names {
-                        ui.group(name);
-                    }
-                    ui.player_inventory(true);
-                });
-            }));
-        }
-        let mut m = reg.menu(menu);
-        for (g, s) in self.groups.drain(..) {
-            let ns = m.reg.ns;
-            m.groups.push(ns, &g, s, abi::slot_owner::MACHINE);
-        }
-        m.entity = full.clone();
-        m.recipes = std::mem::take(&mut self.recipes);
-        let m = m.player_inventory();
-        match self.screen.take() {
-            Some(s) => drop(m.screen(s)),
-            None => drop(m),
-        }
-    }
-}
-
 /// The engine's entity categories (`.hostile()` and `.passive()` pick the first two).
 pub mod entity_categories {
     use crate::EntityCategory;
     pub static HOSTILE: EntityCategory = EntityCategory::named("core:hostile");
     pub static PASSIVE: EntityCategory = EntityCategory::named("core:passive");
     pub static MISC: EntityCategory = EntityCategory::named("core:misc");
-}
-
-pub struct ScreenBuilder<'a> {
-    raw: *mut abi::Registrar,
-    name: String,
-    desc: abi::ScreenDesc,
-    _p: std::marker::PhantomData<&'a mut Registry>,
-}
-
-impl ScreenBuilder<'_> {
-    /// Single player stops while it is open (the pause and settings screens).
-    pub fn pauses(mut self) -> Self {
-        self.desc.flags |= abi::screen_flags::PAUSES;
-        self
-    }
-    /// Escape doesn't close it (the death screen).
-    pub fn keep_on_escape(mut self) -> Self {
-        self.desc.flags |= abi::screen_flags::KEEP_ON_ESCAPE;
-        self
-    }
-    /// It closes when the player respawns.
-    pub fn closes_on_respawn(mut self) -> Self {
-        self.desc.flags |= abi::screen_flags::CLOSES_ON_RESPAWN;
-        self
-    }
-    /// Like the chat screen: the HUD leaves the messages to it and Enter sends the text of its
-    /// input of class `chat`.
-    pub fn shows_chat(mut self) -> Self {
-        self.desc.flags |= abi::screen_flags::SHOWS_CHAT;
-        self
-    }
-    /// Keys pressed while it is on top, by their settings name (`Enter`, `KeyE`, `mouse3`), before
-    /// Escape and the other global keys.
-    pub fn on_key(mut self, f: impl Fn(&crate::ClientView, &str) + Send + Sync + 'static) -> Self {
-        self.desc.on_key =
-            crate::callback(move |a: &mut abi::ScreenKeyArgs| f(&crate::ClientView::from_raw(a.client), unsafe { a.key.as_str() }));
-        self
-    }
-}
-
-impl Drop for ScreenBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let desc = abi::ScreenDesc { name: Str::new(&self.name), ..self.desc };
-        unsafe { (host().reg_screen)(self.raw, &desc) }
-    }
 }
 
 /// What an entity looks at (`World::target_block`): a block of the world (`body` 0) or of a

@@ -364,7 +364,7 @@ fn watch_sleepers(w: &World) {
     w.set_day_time((w.day_time() / 24000 + 1) * 24000);
 }
 
-static SLEEP_SCREEN: Screen = Screen::named("sleeping");
+static SLEEP_SCREEN: Menu = Menu::named("sleeping");
 /// Darkens the picture while lying in bed (`shaders/post/sleep.wgsl`).
 const SLEEP_EFFECT: &str = "sleep";
 
@@ -395,21 +395,22 @@ fn client(r: &mut Registry) {
             c.post_effect(SLEEP_EFFECT, (since.elapsed().as_secs_f32() / 2.5).clamp(0.01, 1.0));
         }
     });
-    r.screen(&SLEEP_SCREEN, |ui| {
-        ui.column(S::column().gap(12.0).center(), |ui| {
-            ui.text_styled(
-                S::column()
-                    .class("title")
-                    .scale(2.0)
-                    .no_wrap()
-                    .self_align(abi::ui_align::CENTER),
-                "bed.base.sleeping",
-                &[],
-            );
-            ui.button("bed.base.leave", S::column().min_w(200.0).self_align(abi::ui_align::CENTER), |c| {
-                c.client().screen_close();
+    r.menu(&SLEEP_SCREEN)
+        .screen(|ui| {
+            ui.column(S::column().gap(12.0).center(), |ui| {
+                ui.text_styled(
+                    S::column()
+                        .class("title")
+                        .scale(2.0)
+                        .no_wrap()
+                        .self_align(abi::ui_align::CENTER),
+                    "bed.base.sleeping",
+                    &[],
+                );
+                ui.button("bed.base.leave", S::column().min_w(200.0).self_align(abi::ui_align::CENTER), |c| {
+                    c.client().screen_close();
+                });
             });
-        });
-    })
-    .closes_on_respawn();
+        })
+        .closes_on_respawn();
 }

@@ -12,7 +12,7 @@ Examples to copy from:
 [how a machine works](#how-a-machine-works) | [creating a machine](#creating-a-machine) | [the tick](#the-tick) | [the screen](#the-screen) | [recipes](#recipes) | [energy](#energy) | [many machines](#many-machines)
 
 ## How a machine works
-`r.machine` creates three things that belong together: the **block** players see and place, a **block entity**, and a **menu** with its screen. The block entity is an invisible entity of the same name that sits on the block. It holds the inventory and the machine's data (what is burning, how far along it is) and it is what gets ticked, once per tick for all machines of the kind. It appears and disappears with the block, and data saved with `SAVE` stays in the world.
+A machine is three things you put together: the **block** players see and place, its **block entity** (`.entity(..)`, `.inventory(n)`), and a **menu** with its screen that using the block opens (`.opens(&MENU)`). Each is optional: a water wheel is a block entity with no menu, a sign a block entity whose menu is only text, a chest an inventory with a menu. The block entity is an invisible entity of the same name that sits on the block. It holds the inventory and the machine's data (what is burning, how far along it is) and it is what gets ticked, once per tick for all machines of the kind. It appears and disappears with the block, and data saved with `SAVE` stays in the world.
 
 ## Creating a machine
 ```rust
@@ -21,16 +21,21 @@ static FURNACE_MENU: Menu = Menu::named("furnace");
 static SMELTING: Component<Smelting> = Component::named("base:smelting");
 
 r.entity_component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU);
-r.machine(&FURNACE, &FURNACE_MENU)
-    .block(|b| b.hardness(3.5).mined_by("pickaxe", 0).tab(&FUNCTIONAL))
-    .group("input", Slots::single())
-    .group("fuel", Slots::single().accepts("fuel"))
-    .group("output", Slots::single().output())
-    .attach(&SMELTING)
+r.block(&FURNACE)
+    .hardness(3.5)
+    .mined_by("pickaxe", 0)
+    .entity(|e| e.attach(&SMELTING))
+    .inventory(3)
+    .opens(&FURNACE_MENU);
+r.menu(&FURNACE_MENU)
+    .group("input", Slots::single().holder())
+    .group("fuel", Slots::single().accepts("fuel").holder())
+    .group("output", Slots::single().output().holder())
+    .player_inventory()
     .screen(|ui| { /* see below */ });
 r.system(&SMELTING, tick_furnaces);
 ```
-`block` is the same builder as `r.block`, so everything from the blocks part of the [cheat sheet](modding.md) applies to it. A machine that should keep its state when broken (a charged battery, a half-done job) declares that state with `r.instance_component(&C, default, flags | component_flags::CARRIED)`: the broken block's item takes the value along, and placing the item puts it back on the new block entity, the way a renamed chest keeps its name. `w.component(h, &C)` and `w.set_component(h, &C, v)` read and write such a value on any holder, the stack in a player's slot included. The block entity is named like the block, so `EntityKind::named("furnace")` finds it if your code needs to.
+`.entity(|e| ..)` gives the block entity's kind (an `EntityBuilder`), `.inventory(n)` its slots, which the menu's `.holder()` groups show. A machine that should keep its state when broken (a charged battery, a half-done job) declares that state with `r.instance_component(&C, default, flags | component_flags::CARRIED)`: the broken block's item takes the value along, and placing the item puts it back on the new block entity, the way a renamed chest keeps its name. `w.component(h, &C)` and `w.set_component(h, &C, v)` read and write such a value on any holder, the stack in a player's slot included. The block entity is named like the block, so `EntityKind::named("furnace")` finds it if your code needs to.
 
 Slots come in named groups. The machine's inventory holds all of its groups, the engine works out how big it is and which slot is which, and the tick and the screen ask for a group by its name. A group starts from a shape and adds rules:
 
@@ -57,7 +62,7 @@ value! {
 ```
 The flags say who gets it. `SAVE` writes it with the world, `SYNC_MENU` sends it to players who have this machine's menu open (progress bars need that), `SYNC_OWNER` sends it to the player who owns the entity (HUD values) and `SYNC_WATCHERS` to everyone who can see it. Since components are named, another mod that declares `base:smelting` with the same layout can read the furnace's state, see "Components and tags" in the [cheat sheet](modding.md#components-and-tags-as-inter-mod-communication).
 
-A machine with nothing to show (a spring engine: state and energy, no items) is `r.machine_without_menu(&BLOCK)`: the same builder, using it opens nothing. And a block that only needs state of its own, no machine at all, gets `.block_entity()` on its block builder: an entity named like the block, no slots, no screen, for `r.attach(..)` and a system to tick.
+A machine with nothing to show (a spring engine: state and energy, no items) has no `.opens`: using it opens nothing. A block that only needs state of its own gets just `.entity(|e| e.attach(..))`.
 
 ## The tick
 A machine works through its state component: `r.system(&BURNER, f)` hands `f` every loaded machine with that component, their values side by side in one slice, changed in place (and saved and synced like any change). Measured on a thousand machines, that costs a few hundredths of what asking for each machine's component costs, so it is the one way machines tick:
@@ -118,8 +123,8 @@ Anything where inputs turn into outputs over time is a recipe kind, and a machin
 ```rust
 static SMELTING_RECIPES: RecipeKind = RecipeKind::named("base:smelting");
 
-r.machine(&ELECTRIC_FURNACE, &FURNACE_MENU)
-    .recipes(&SMELTING_RECIPES)          // its arrow opens them, the recipe viewer shows it next to them
+r.menu(&FURNACE_MENU)
+    .recipes(&SMELTING_RECIPES)          // its arrow opens them, the recipe viewer shows the blocks opening it
     ..;
 // in the tick:
 if let Some((output, time)) = recipe_process(&SMELTING_RECIPES, input.item) { .. }
@@ -148,11 +153,10 @@ r.recipe_kind(&ALLOYING)
 Generators, cables and machines from different mods work together through one contract in the engine. An entity with the `core:energy` component takes part, and a block tagged `conductor` is a cable. The block entities next to a cable, or a chain of them, form a network, and once per tick the engine shares what the generators offer among the machines that want it.
 
 ```rust
-r.machine(&ELECTRIC_FURNACE, &FURNACE_MENU)
-    .group("input", Slots::single())
-    .group("output", Slots::single().output())
-    .attach(&WORK)
-    .attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 });
+r.block(&ELECTRIC_FURNACE)
+    .entity(|e| e.attach(&WORK).attach_with(&ENERGY, Energy { stored: 0, capacity: 40_000, max_in: 400, max_out: 0 }))
+    .inventory(2)
+    .opens(&FURNACE_MENU);
 r.system(&WORK, tick_furnaces);
 r.block(&CABLE).model_box([5.0, 5.0, 5.0], [11.0, 11.0, 11.0]).tag("conductor");
 ```
@@ -179,4 +183,4 @@ Machines have no built-in way to pass items to each other, so a pipe or a hopper
 
 A block that only stores things needs no machine: `r.block(&CRATE).inventory(27)` gives each placed crate a block entity with 27 slots, `w.inventory(pos)` reaches them and `w.open_menu(player, &CRATE_MENU, pos)` shows them. Entities take `.inventory(n)` the same way, and an item with `.inventory(n)` is a backpack: each stack keeps its own items, saved with it, and `w.open_menu(player, &BAG_MENU, Holder::held(player, slot))` opens it. While that menu is open its stack can't be moved, and the menu closes if the stack goes away.
 
-More inventories than its own go on a holder as storages: `static ENDER: Storage = Storage::named("ender");`, `r.storage(&ENDER, 27)` and `r.attach_storage(&PLAYER, &ENDER)` give every player 27 more slots, saved with them and kept on death. `w.inventory(ENDER.of(player))` reaches them, and an ender chest is a block whose use does `w.open_menu(player, &ENDER_MENU, ENDER.of(player))`, the menu's `.machine()` groups being the storage. Kinds of your own carry one with `.attach_storage(&S)`; any stack can carry one, `S.of(Holder::held(player, slot))`.
+More inventories than its own go on a holder as storages: `static ENDER: Storage = Storage::named("ender");`, `r.storage(&ENDER, 27)` and `r.attach_storage(&PLAYER, &ENDER)` give every player 27 more slots, saved with them and kept on death. `w.inventory(ENDER.of(player))` reaches them, and an ender chest is a block whose use does `w.open_menu(player, &ENDER_MENU, ENDER.of(player))`, the menu's `.holder()` groups being the storage. Kinds of your own carry one with `.attach_storage(&S)`; any stack can carry one, `S.of(Holder::held(player, slot))`.

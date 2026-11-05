@@ -541,7 +541,7 @@ impl Ui {
         self.leaf(node(k::EQUIPMENT, S::default()))
     }
 
-    /// The arrow of a menu that makes recipes (`.recipes(..)` on the menu or machine): clicking
+    /// The arrow of a menu that makes recipes (`.recipes(..)` on the menu): clicking
     /// it opens them in the recipe viewer. Empty, for a crafting grid.
     pub fn recipe_arrow(&mut self) {
         self.leaf(node(k::RECIPE_ARROW, S::default()))

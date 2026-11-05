@@ -11,7 +11,7 @@
 
 use crate::abi::{self, ItemStack, Slice, Str, gizmo_kind as gk};
 use crate::abi::{BlockPos, Vec3};
-use crate::{ClientView, Key, Registry, Screen, Value, World, callback, host};
+use crate::{ClientView, Key, Menu, Registry, Value, World, callback, host};
 
 pub use abi::{ClientState, client_flags};
 
@@ -234,7 +234,7 @@ impl Client {
     }
 
     /// A mod's screen or one of the engine's (`screens::*`).
-    pub fn screen_open(&self, screen: &Screen) -> bool {
+    pub fn screen_open(&self, screen: &Menu) -> bool {
         self.op(abi::client_op::OPEN_SCREEN, screen.name(), 0.0) != 0
     }
 
@@ -700,26 +700,26 @@ pub mod keys {
 /// The engine's screens: open them, add parts to them, or register one of these handles to
 /// replace it.
 pub mod screens {
-    use crate::Screen;
-    pub static TITLE: Screen = Screen::named("core:title");
-    pub static PAUSE: Screen = Screen::named("core:pause");
-    pub static SETTINGS: Screen = Screen::named("core:settings");
-    pub static LANGUAGE: Screen = Screen::named("core:language");
-    pub static CONTROLS: Screen = Screen::named("core:controls");
-    pub static WORLDS: Screen = Screen::named("core:worlds");
-    pub static CREATE_WORLD: Screen = Screen::named("core:create_world");
-    pub static CHAT: Screen = Screen::named("core:chat");
-    pub static INVENTORY: Screen = Screen::named("core:inventory");
-    pub static MOD_SETTINGS: Screen = Screen::named("core:mod_settings");
-    pub static DEATH: Screen = Screen::named("core:death");
-    pub static MODS: Screen = Screen::named("core:mods");
-    pub static PROFILE: Screen = Screen::named("core:profile");
-    pub static MULTIPLAYER: Screen = Screen::named("core:multiplayer");
-    pub static RESOURCE_PACKS: Screen = Screen::named("core:resource_packs");
-    pub static SHADER_PACKS: Screen = Screen::named("core:shader_packs");
-    pub static SOUND: Screen = Screen::named("core:sound");
-    pub static HUD_EDITOR: Screen = Screen::named("core:hud_editor");
-    pub static DEBUG_OPTIONS: Screen = Screen::named("core:debug_options");
+    use crate::Menu;
+    pub static TITLE: Menu = Menu::named("core:title");
+    pub static PAUSE: Menu = Menu::named("core:pause");
+    pub static SETTINGS: Menu = Menu::named("core:settings");
+    pub static LANGUAGE: Menu = Menu::named("core:language");
+    pub static CONTROLS: Menu = Menu::named("core:controls");
+    pub static WORLDS: Menu = Menu::named("core:worlds");
+    pub static CREATE_WORLD: Menu = Menu::named("core:create_world");
+    pub static CHAT: Menu = Menu::named("core:chat");
+    pub static INVENTORY: Menu = Menu::named("core:inventory");
+    pub static MOD_SETTINGS: Menu = Menu::named("core:mod_settings");
+    pub static DEATH: Menu = Menu::named("core:death");
+    pub static MODS: Menu = Menu::named("core:mods");
+    pub static PROFILE: Menu = Menu::named("core:profile");
+    pub static MULTIPLAYER: Menu = Menu::named("core:multiplayer");
+    pub static RESOURCE_PACKS: Menu = Menu::named("core:resource_packs");
+    pub static SHADER_PACKS: Menu = Menu::named("core:shader_packs");
+    pub static SOUND: Menu = Menu::named("core:sound");
+    pub static HUD_EDITOR: Menu = Menu::named("core:hud_editor");
+    pub static DEBUG_OPTIONS: Menu = Menu::named("core:debug_options");
 }
 
 /// One entity in `Registry::client_entity_frame`.

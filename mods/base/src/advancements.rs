@@ -86,7 +86,7 @@ static ALL: [Advancement; 19] = [
 /// Server to the player who made it: the index into `ALL`.
 static MADE: Channel<u32> = Channel::named("advancement_made");
 static CHIME: Sound = Sound::named("ui.advancement");
-static SCREEN: Screen = Screen::named("advancements");
+static SCREEN: Menu = Menu::named("advancements");
 static OPEN: Key = Key::named("advancements");
 
 const TOAST_SECS: f32 = 5.0;
@@ -245,7 +245,7 @@ fn client(r: &mut Registry) {
 
     // Every group a chain of tiles, gold framed once made, with the details in their tooltips.
     // Built when the screen opens, from what the player has made by then.
-    r.screen(&SCREEN, |ui| {
+    r.menu(&SCREEN).screen(|ui| {
         let done = ui.view().component(&ADVANCEMENTS).map_or(0, |a| a.done);
         ui.panel("panel", S::column().pad(8.0).gap(6.0), |ui| {
             ui.row(S::row().gap(8.0), |ui| {
