@@ -86,6 +86,8 @@ pub struct Entry {
     /// Handle cells to fill with its id, every mod's.
     pub cells: Vec<usize>,
     pub values: Vec<RawValue>,
+    /// Who set each callback value: it runs as that mod.
+    pub callers: Vec<(String, ModId)>,
     /// Blocks: operations on some states, by key, in the order they came.
     pub parts: Vec<(String, Vec<RawOp>)>,
 }
@@ -114,12 +116,31 @@ impl Entry {
         self.get(name).unwrap_or(default)
     }
 
-    pub fn callback(&self, name: &str) -> Option<abi::Callback> {
-        self.get::<abi::Callback>(name).filter(|c| c.is_some())
+    /// A callback value and the mod it runs as.
+    pub fn callback(&self, name: &str) -> Option<(ModId, abi::Callback)> {
+        let cb = self.get::<abi::Callback>(name).filter(|c| c.is_some())?;
+        let by = self
+            .callers
+            .iter()
+            .find(|c| c.0 == name)
+            .map_or(self.owner, |c| c.1);
+        Some((by, cb))
     }
 
-    /// Applies one operation; `errors` gets what made no sense.
-    pub fn apply(&mut self, op: &RawOp, errors: &mut Vec<String>) {
+    /// The `flags` whose tag it has.
+    pub fn flags(&self, flags: &[(&str, u32)]) -> u32 {
+        flags
+            .iter()
+            .filter(|(tag, _)| self.has(tag))
+            .fold(0, |f, (_, bit)| f | bit)
+    }
+
+    /// Applies one operation, made by mod `by`; `errors` gets what made no sense.
+    pub fn apply(&mut self, op: &RawOp, by: ModId, errors: &mut Vec<String>) {
+        if op.value.schema == "callback" {
+            self.callers.retain(|c| c.0 != op.value.name);
+            self.callers.push((op.value.name.clone(), by));
+        }
         apply(&mut self.values, op, &self.name, errors);
     }
 }
@@ -192,6 +213,31 @@ pub fn apply(values: &mut Vec<RawValue>, op: &RawOp, what: &str, errors: &mut Ve
     }
 }
 
+/// A kind's entries folded after the engine's own (`builtins`), patterns applied, ids written into
+/// the handles, each baked: the defs in id order and their names.
+pub fn bake<D>(
+    raw: Vec<RawEntry>,
+    kind: u32,
+    mod_name: &dyn Fn(ModId) -> String,
+    errors: &mut Vec<String>,
+    mut make: impl FnMut(&Entry, &mut Vec<String>) -> D,
+) -> (Vec<D>, FxHashMap<String, u32>) {
+    let what = abi::entry_kind::NAMES
+        .get(kind as usize)
+        .copied()
+        .unwrap_or("entry");
+    let mut f = fold(what, raw, mod_name, errors);
+    f.apply_patterns(errors);
+    f.write_cells();
+    let names = f
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.name.clone(), i as u32))
+        .collect();
+    (f.entries.iter().map(|e| make(e, errors)).collect(), names)
+}
+
 /// Whether an EDIT's name is a pattern, not one entry.
 pub fn is_pattern(name: &str) -> bool {
     name.starts_with('#') || name.contains('*') || name.contains('[')
@@ -217,9 +263,10 @@ pub fn fold(kind: &str, raw: Vec<RawEntry>, mod_name: &dyn Fn(ModId) -> String, 
                     .remove(&e.name)
                     .map_or((seq, Vec::new()), |(at, o)| (at, o.cells));
                 cells.push(e.cell);
-                let mut entry = Entry { name: e.name.clone(), owner: e.owner, cells, values: Vec::new(), parts: e.parts };
+                let mut entry =
+                    Entry { name: e.name.clone(), owner: e.owner, cells, values: Vec::new(), callers: Vec::new(), parts: e.parts };
                 for op in &e.ops {
-                    entry.apply(op, errors);
+                    entry.apply(op, e.owner, errors);
                 }
                 by.insert(e.name, (at, entry));
             }
@@ -251,7 +298,7 @@ pub fn fold(kind: &str, raw: Vec<RawEntry>, mod_name: &dyn Fn(ModId) -> String, 
 fn edit(entry: &mut Entry, e: RawEntry, errors: &mut Vec<String>) {
     entry.cells.push(e.cell);
     for op in &e.ops {
-        entry.apply(op, errors);
+        entry.apply(op, e.owner, errors);
     }
     entry.parts.extend(e.parts);
 }
@@ -280,7 +327,7 @@ impl Folded {
                 };
                 if hit {
                     for op in &p.ops {
-                        e.apply(op, errors);
+                        e.apply(op, p.owner, errors);
                     }
                 }
             }
@@ -300,6 +347,12 @@ impl Folded {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl Entry {
+        fn apply_test(&mut self, op: &RawOp, errors: &mut Vec<String>) {
+            self.apply(op, ModId(0), errors)
+        }
+    }
 
     fn set(name: &str, v: u32) -> RawOp {
         RawOp {
@@ -345,11 +398,11 @@ mod tests {
         let op = |op: u32, v: RawValue, anchor: &str| RawOp { op, value: v, anchor: anchor.into() };
         let mut e = Entry::default();
         let mut errors = Vec::new();
-        e.apply(&op(vo::PUSH, item("a", 1), ""), &mut errors);
-        e.apply(&op(vo::PUSH, item("c", 3), ""), &mut errors);
-        e.apply(&op(vo::INSERT_BEFORE, item("b", 2), "c"), &mut errors);
-        e.apply(&op(vo::REMOVE_ITEM, item("", 0), "a"), &mut errors);
-        e.apply(&op(vo::REPLACE_ITEM, item("c", 30), "#1"), &mut errors);
+        e.apply_test(&op(vo::PUSH, item("a", 1), ""), &mut errors);
+        e.apply_test(&op(vo::PUSH, item("c", 3), ""), &mut errors);
+        e.apply_test(&op(vo::INSERT_BEFORE, item("b", 2), "c"), &mut errors);
+        e.apply_test(&op(vo::REMOVE_ITEM, item("", 0), "a"), &mut errors);
+        e.apply_test(&op(vo::REPLACE_ITEM, item("c", 30), "#1"), &mut errors);
         assert!(errors.is_empty(), "{errors:?}");
         let v = e.value("rules").unwrap();
         let names: Vec<_> = data::items(&v.schema, &v.bytes)

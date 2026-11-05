@@ -202,20 +202,14 @@ pub static HOST: Host = Host {
     reg_system,
     set_weather,
     weather_now,
-    reg_precipitation,
     weather_flags,
     entity_effect,
-    reg_entity_effect,
-    reg_text_place,
-    reg_game_mode,
-    reg_pose,
     entity_set_pose,
     game_mode_flags,
     reg_command_permission,
     player_permission,
     set_player_permission,
     reg_command_branch,
-    reg_condition,
     reg_particle,
     reg_sky,
     particle_burst,
@@ -246,7 +240,6 @@ pub static HOST: Host = Host {
     reg_attach,
     reg_recipe_kind,
     reg_entity_category,
-    reg_damage_cause,
     damage_cause_flags,
     reg_sound_category,
     reg_tint_kind,
@@ -2226,19 +2219,6 @@ unsafe extern "C" fn reg_sound_category(r: *mut abi::Registrar, name: Str, world
     }
 }
 
-unsafe extern "C" fn reg_damage_cause(r: *mut abi::Registrar, d: *const abi::DamageCauseDesc) {
-    unsafe {
-        let d = *d;
-        let def = registry::DamageCauseDef {
-            name: d.name.as_str().to_string(),
-            flags: d.flags,
-            death_message: d.death_message.as_str().to_string(),
-            death_message_by: d.death_message_by.as_str().to_string(),
-        };
-        reg(r).game.damage_causes.push((d.cell as usize, def));
-    }
-}
-
 unsafe extern "C" fn damage_cause_flags(cause: u32) -> u32 {
     try_content()
         .and_then(|c| c.game.damage_causes.get(cause as usize))
@@ -2574,19 +2554,6 @@ unsafe extern "C" fn weather_now(w: *mut abi::WorldCtx) -> u32 {
     unsafe { dim(w).weather as u32 }
 }
 
-unsafe extern "C" fn reg_precipitation(r: *mut abi::Registrar, d: *const abi::PrecipitationDesc) {
-    unsafe {
-        let d = &*d;
-        let def = registry::PrecipitationDef {
-            name: d.name.as_str().to_string(),
-            texture: d.texture.as_str().to_string(),
-            speed: d.speed.max(0.0),
-            density: d.density.clamp(0.0, 1.0),
-        };
-        reg(r).game.precipitations.push((d.cell as usize, def));
-    }
-}
-
 extern "C" fn weather_flags(weather: u32) -> u32 {
     content()
         .game
@@ -2623,28 +2590,6 @@ unsafe extern "C" fn entity_effect(w: *mut abi::WorldCtx, id: u64, effect: u32, 
     }
 }
 
-unsafe extern "C" fn reg_pose(r: *mut abi::Registrar, d: *const abi::PoseDesc) {
-    unsafe {
-        let d = &*d;
-        let share = |v: f32| if v.is_finite() && v > 0.0 { v as f64 } else { 1.0 };
-        let def = registry::PoseDef {
-            name: d.name.as_str().to_string(),
-            height: share(d.height),
-            eye: share(d.eye),
-            speed: d.speed.max(0.0),
-            tilt: d.tilt.min(abi::pose_tilt::ON_BACK),
-            action: d.action.as_str().to_string(),
-            bob: d.bob != 0,
-            priority: d.priority,
-            key: d.key.as_str().to_string(),
-            when: d.when,
-            fallback_names: d.fallback.as_str().to_string(),
-            fallback: Vec::new(),
-        };
-        reg(r).game.poses.push((d.cell as usize, def));
-    }
-}
-
 unsafe extern "C" fn entity_set_pose(w: *mut abi::WorldCtx, id: u64, pose: u32, yaw: f32) {
     unsafe {
         let d = dim(w);
@@ -2668,48 +2613,10 @@ unsafe extern "C" fn entity_set_pose(w: *mut abi::WorldCtx, id: u64, pose: u32, 
     }
 }
 
-unsafe extern "C" fn reg_game_mode(r: *mut abi::Registrar, d: *const abi::GameModeDesc) {
-    unsafe {
-        let d = &*d;
-        let def = registry::GameModeDef {
-            name: d.name.as_str().to_string(),
-            flags: d.flags,
-            modifiers: d
-                .modifiers
-                .as_slice()
-                .iter()
-                .map(|m| (m.attribute.as_str().to_string(), m.op, m.amount))
-                .collect(),
-        };
-        reg(r).game.game_modes.push((d.cell as usize, def));
-    }
-}
-
 unsafe extern "C" fn game_mode_flags(mode: u32) -> u32 {
     try_content()
         .and_then(|c| c.game.game_modes.get(mode as usize))
         .map_or(0, |m| m.flags)
-}
-
-unsafe extern "C" fn reg_text_place(r: *mut abi::Registrar, d: *const abi::TextPlaceDesc) {
-    unsafe {
-        let d = &*d;
-        reg(r)
-            .game
-            .text_places
-            .push((d.cell as usize, crate::hud::Place::from_abi(d)));
-    }
-}
-
-unsafe extern "C" fn reg_entity_effect(r: *mut abi::Registrar, name: Str, cell: *const AtomicU32, shader: Str) {
-    unsafe {
-        let name = name.as_str().to_string();
-        let shader = if shader.as_str().is_empty() { name.clone() } else { shader.as_str().to_string() };
-        reg(r)
-            .game
-            .entity_effects
-            .push((cell as usize, registry::EntityEffectDef { name, shader }));
-    }
 }
 
 unsafe extern "C" fn reg_command_permission(r: *mut abi::Registrar, command: Str, level: u32) {
@@ -2868,16 +2775,6 @@ unsafe extern "C" fn set_block_entity(r: *mut abi::Registrar, block: Str, entity
             .game
             .block_entities
             .push((block.as_str().to_string(), entity.as_str().to_string()))
-    }
-}
-
-unsafe extern "C" fn reg_condition(r: *mut abi::Registrar, name: Str, cell: *const AtomicU32, cb: Callback) {
-    unsafe {
-        let r = reg(r);
-        let owner = r.owner;
-        r.game
-            .conditions
-            .push((cell as usize, registry::ConditionDef { name: name.as_str().to_string(), answer: registry::Answer::Mod(owner, cb) }));
     }
 }
 

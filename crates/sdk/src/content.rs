@@ -321,11 +321,55 @@ pub mod entity_effects {
     pub static GLOW: EntityEffect = EntityEffect::named("core:glow");
 }
 
+/// An entity effect being registered: drawn by `shaders/entity_effect/<its name>.wgsl` unless
+/// `shader` says another.
+pub struct EntityEffectBuilder<'a> {
+    reg: &'a mut crate::Registry,
+    e: crate::entry::Entry,
+}
+
+crate::entry::entry_builder!(EntityEffect => EntityEffectBuilder, entity_effect;);
+
 impl crate::Registry {
-    /// Registers `effect`, drawn by the mod's `shaders/entity_effect/<its name>.wgsl`.
-    pub fn entity_effect(&mut self, effect: &'static EntityEffect) {
-        let shader = effect.name().to_string();
-        unsafe { (host().reg_entity_effect)(self.raw, Str::new(effect.name()), effect.id_cell(), Str::new(&shader)) }
+    pub fn entity_effect<'a>(&'a mut self, effect: &'static EntityEffect) -> EntityEffectBuilder<'a> {
+        EntityEffectBuilder { reg: self, e: crate::entry::Entry::of(effect) }
+    }
+
+    /// Something to fall from the sky (`.texture`, `.speed`, `.density`); a biome lets it fall
+    /// with `.precipitation(..)`.
+    pub fn precipitation<'a>(&'a mut self, p: &'static Precipitation) -> PrecipitationBuilder<'a> {
+        PrecipitationBuilder { reg: self, e: crate::entry::Entry::of(p) }
+    }
+}
+
+impl EntityEffectBuilder<'_> {
+    pub fn shader(self, shader: &crate::Shader) -> Self {
+        let name = shader.name().to_string();
+        self.set_text(&crate::comps::entity_effect::SHADER, &name)
+    }
+}
+
+/// What falls from the sky, rain's numbers unless set.
+pub struct PrecipitationBuilder<'a> {
+    reg: &'a mut crate::Registry,
+    e: crate::entry::Entry,
+}
+
+crate::entry::entry_builder!(Precipitation => PrecipitationBuilder, precipitation;);
+
+impl PrecipitationBuilder<'_> {
+    /// `textures/<texture>.png`, a strip of drops like vanilla's rain.
+    pub fn texture(self, texture: &str) -> Self {
+        let tex = crate::asset("", texture);
+        self.set_text(&crate::comps::precipitation::TEXTURE, &tex)
+    }
+    /// As a share of rain's (snow drifts at 0.1).
+    pub fn speed(self, share: f32) -> Self {
+        self.set(&crate::comps::precipitation::SPEED, share)
+    }
+    /// The share of the picture shown (rain 0.1).
+    pub fn density(self, share: f32) -> Self {
+        self.set(&crate::comps::precipitation::DENSITY, share)
     }
 }
 
@@ -368,34 +412,9 @@ pub struct WeatherBuilder<'a> {
 
 crate::entry::entry_builder!(Weather => WeatherBuilder, weather;);
 
-/// What a weather is made of: rain's look and flags where nothing is set.
-pub mod weather {
-    use crate::abi::comp::weather as w;
-    use crate::kind::Weather;
-    use crate::{Component, Text};
-    pub static FALLS: Component<f32, Weather> = Component::named(w::FALLS);
-    pub static SKY_GRAY: Component<f32, Weather> = Component::named(w::SKY_GRAY);
-    pub static SKY_COVER: Component<f32, Weather> = Component::named(w::SKY_COVER);
-    pub static FOG_GRAY: Component<f32, Weather> = Component::named(w::FOG_GRAY);
-    pub static CLOUD_GRAY: Component<f32, Weather> = Component::named(w::CLOUD_GRAY);
-    pub static CLOUD_DARK: Component<f32, Weather> = Component::named(w::CLOUD_DARK);
-    pub static DARKNESS: Component<f32, Weather> = Component::named(w::DARKNESS);
-    pub static SOUND: Component<Text, Weather> = Component::named(w::SOUND);
-    pub static DURATION: Component<[u32; 2], Weather> = Component::named(w::DURATION);
-    pub static WEIGHT: Component<u32, Weather> = Component::named(w::WEIGHT);
-}
-
 impl crate::Registry {
     pub fn weather<'a>(&'a mut self, weather: &'static Weather) -> WeatherBuilder<'a> {
         WeatherBuilder { reg: self, e: crate::entry::Entry::of(weather) }
-    }
-
-    /// Something to fall from the sky: `textures/<texture>.png` as a strip of drops, `speed`
-    /// as a share of rain's (snow drifts at 0.1), `density` the share of the picture shown.
-    pub fn precipitation(&mut self, p: &'static Precipitation, texture: &str, speed: f32, density: f32) {
-        let tex = crate::asset("", texture);
-        let d = abi::PrecipitationDesc { name: Str::new(p.name()), cell: p.id_cell(), texture: Str::new(&tex), speed, density };
-        unsafe { (host().reg_precipitation)(self.raw, &d) }
     }
 }
 
@@ -413,27 +432,27 @@ impl WeatherBuilder<'_> {
     }
     /// Share of daylight it takes away (rain 0.3125).
     pub fn darkness(self, share: f32) -> Self {
-        self.set(&weather::DARKNESS, share)
+        self.set(&crate::comps::weather::DARKNESS, share)
     }
     /// How far the sky (rain 0.75), the fog (0.5) and the clouds (0.95) go gray.
     pub fn gray(self, sky: f32, fog: f32, clouds: f32) -> Self {
-        self.set(&weather::SKY_GRAY, sky)
-            .set(&weather::FOG_GRAY, fog)
-            .set(&weather::CLOUD_GRAY, clouds)
+        self.set(&crate::comps::weather::SKY_GRAY, sky)
+            .set(&crate::comps::weather::FOG_GRAY, fog)
+            .set(&crate::comps::weather::CLOUD_GRAY, clouds)
     }
     /// A sound event played now and then around players under the open sky while it falls.
     pub fn sound(self, sound: &str) -> Self {
         let name = crate::full_name(sound);
-        self.set_text(&weather::SOUND, &name)
+        self.set_text(&crate::comps::weather::SOUND, &name)
     }
     /// Ticks it lasts, at least and at most.
     pub fn duration(self, min: u32, max: u32) -> Self {
-        self.set(&weather::DURATION, [min, max])
+        self.set(&crate::comps::weather::DURATION, [min, max])
     }
     /// How likely it comes after clear weather next to the others (rain 3, thunder 1); 0 only
     /// by command or code.
     pub fn weight(self, w: u32) -> Self {
-        self.set(&weather::WEIGHT, w)
+        self.set(&crate::comps::weather::WEIGHT, w)
     }
 }
 
@@ -462,95 +481,63 @@ pub mod poses {
 /// ```
 pub struct PoseBuilder<'a> {
     reg: &'a mut crate::Registry,
-    handle: &'static Pose,
-    action: String,
-    key: String,
-    fallback: String,
-    desc: abi::PoseDesc,
+    e: crate::entry::Entry,
 }
+
+crate::entry::entry_builder!(Pose => PoseBuilder, pose;);
 
 impl crate::Registry {
     pub fn pose<'a>(&'a mut self, pose: &'static Pose) -> PoseBuilder<'a> {
-        PoseBuilder {
-            reg: self,
-            handle: pose,
-            action: String::new(),
-            key: String::new(),
-            fallback: String::new(),
-            desc: abi::PoseDesc::DEFAULT,
-        }
+        PoseBuilder { reg: self, e: crate::entry::Entry::of(pose) }
     }
 }
 
 impl PoseBuilder<'_> {
     /// Box height as a share of standing (crouching is 1.5 / 1.8).
-    pub fn height(mut self, share: f32) -> Self {
-        self.desc.height = share;
-        self
+    pub fn height(self, share: f32) -> Self {
+        self.set(&crate::comps::pose::HEIGHT, share)
     }
     /// Eye height as a share of standing.
-    pub fn eye(mut self, share: f32) -> Self {
-        self.desc.eye = share;
-        self
+    pub fn eye(self, share: f32) -> Self {
+        self.set(&crate::comps::pose::EYE, share)
     }
     /// Walking speed as a share of normal, 0 to stay put.
-    pub fn speed(mut self, share: f32) -> Self {
-        self.desc.speed = share;
-        self
+    pub fn speed(self, share: f32) -> Self {
+        self.set(&crate::comps::pose::SPEED, share)
     }
     /// How the model lies (`abi::pose_tilt`): along the look like swimming, face down, on its back.
-    pub fn tilt(mut self, tilt: u32) -> Self {
-        self.desc.tilt = tilt;
-        self
+    pub fn tilt(self, tilt: u32) -> Self {
+        self.set(&crate::comps::pose::TILT, tilt)
     }
     /// The model's clip for it, by action name.
-    pub fn action(mut self, name: &str) -> Self {
-        self.action = name.to_string();
-        self
+    pub fn action(self, name: &str) -> Self {
+        self.set_text(&crate::comps::pose::ACTION, name)
     }
     /// The camera doesn't bob walking in it.
-    pub fn no_bob(mut self) -> Self {
-        self.desc.bob = 0;
-        self
+    pub fn no_bob(self) -> Self {
+        self.tag(abi::comp::pose::NO_BOB)
     }
     /// Of the poses a player may take, the highest is taken (the engine's: stand 0, crouch 10,
     /// crawl 20, swim 30). Without `key` or `when` a pose is only ever held by a mod.
-    pub fn priority(mut self, p: i32) -> Self {
-        self.desc.priority = p;
-        self
+    pub fn priority(self, p: i32) -> Self {
+        self.set(&crate::comps::pose::PRIORITY, p)
     }
     /// Taken while the player holds this action.
-    pub fn key(mut self, key: &crate::Key) -> Self {
-        self.key = key.name().to_string();
-        self
+    pub fn key(self, key: &crate::Key) -> Self {
+        let name = key.name().to_string();
+        self.set_text(&crate::comps::pose::KEY, &name)
     }
     /// And only where these hold (`abi::pose_when`).
-    pub fn when(mut self, flags: u32) -> Self {
-        self.desc.when = flags;
-        self
+    pub fn when(self, flags: u32) -> Self {
+        abi::comp::pose::WHEN
+            .iter()
+            .filter(|w| flags & w.1 != 0)
+            .fold(self, |b, w| b.tag(w.0))
     }
     /// Where it has no room, the first of these that has and whose `when` holds; the last
     /// even without room.
-    pub fn fallback(mut self, poses: &[&Pose]) -> Self {
-        self.fallback = poses.iter().map(|p| p.name()).collect::<Vec<_>>().join(" ");
-        self
-    }
-}
-
-impl Drop for PoseBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let d = abi::PoseDesc {
-            name: Str::new(self.handle.name()),
-            cell: self.handle.id_cell(),
-            action: Str::new(&self.action),
-            key: Str::new(&self.key),
-            fallback: Str::new(&self.fallback),
-            ..self.desc
-        };
-        unsafe { (host().reg_pose)(self.reg.raw, &d) }
+    pub fn fallback(self, poses: &[&Pose]) -> Self {
+        self.set(&crate::comps::pose::FALLBACK, poses.iter().map(|p| p.name().to_string()).collect())
     }
 }
 
@@ -582,10 +569,10 @@ impl GameMode {
 /// `/gamemode mymod:adventure` sets it, `{if:mymod:adventure}` in text asks for it.
 pub struct GameModeBuilder<'a> {
     reg: &'a mut crate::Registry,
-    handle: &'static GameMode,
-    flags: u32,
-    modifiers: Vec<(String, u32, f64)>,
+    e: crate::entry::Entry,
 }
+
+crate::entry::entry_builder!(GameMode => GameModeBuilder, game_mode;);
 
 /// How a game mode breaks blocks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -606,15 +593,17 @@ pub enum Flight {
 
 impl crate::Registry {
     pub fn game_mode<'a>(&'a mut self, mode: &'static GameMode) -> GameModeBuilder<'a> {
-        GameModeBuilder { reg: self, handle: mode, flags: 0, modifiers: Vec::new() }
+        GameModeBuilder { reg: self, e: crate::entry::Entry::of(mode) }
     }
 }
 
 impl GameModeBuilder<'_> {
     /// Raw `abi::game_mode_flags`, what the presets below set.
-    pub fn with(mut self, flags: u32) -> Self {
-        self.flags |= flags;
-        self
+    pub fn with(self, flags: u32) -> Self {
+        abi::comp::game_mode::FLAGS
+            .iter()
+            .filter(|f| flags & f.1 != 0)
+            .fold(self, |b, f| b.tag(f.0))
     }
     pub fn breaks(self, how: Breaking) -> Self {
         use abi::game_mode_flags as f;
@@ -664,30 +653,9 @@ impl GameModeBuilder<'_> {
         self.with(abi::game_mode_flags::CREATIVE_INVENTORY)
     }
     /// An attribute modifier its players have while in it (longer reach, `visibility` 0).
-    pub fn modifier(mut self, attribute: &crate::Attribute, op: u32, amount: f64) -> Self {
-        self.modifiers
-            .push((attribute.name().to_string(), op, amount));
-        self
-    }
-}
-
-impl Drop for GameModeBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let mods: Vec<abi::ModeModifier> = self
-            .modifiers
-            .iter()
-            .map(|(a, op, amount)| abi::ModeModifier { attribute: Str::new(a), op: *op, amount: *amount })
-            .collect();
-        let d = abi::GameModeDesc {
-            name: Str::new(self.handle.name()),
-            cell: self.handle.id_cell(),
-            flags: self.flags,
-            modifiers: Slice::new(&mods),
-        };
-        unsafe { (host().reg_game_mode)(self.reg.raw, &d) }
+    pub fn modifier(self, attribute: &crate::Attribute, op: u32, amount: f64) -> Self {
+        let m = abi::ModeModifier { attribute: attribute.name().to_string(), op, amount };
+        self.push(&crate::comps::game_mode::MODIFIERS, m)
     }
 }
 
@@ -719,73 +687,48 @@ impl DamageCause {
 /// `r.damage_cause(&RADIATION).bypasses_armor().death_message("death.mymod.radiation")`.
 pub struct DamageCauseBuilder<'a> {
     reg: &'a mut crate::Registry,
-    handle: &'static DamageCause,
-    flags: u32,
-    death_message: String,
-    death_message_by: String,
+    e: crate::entry::Entry,
 }
+
+crate::entry::entry_builder!(DamageCause => DamageCauseBuilder, damage_cause;);
 
 impl crate::Registry {
     pub fn damage_cause<'a>(&'a mut self, cause: &'static DamageCause) -> DamageCauseBuilder<'a> {
-        DamageCauseBuilder { reg: self, handle: cause, flags: 0, death_message: String::new(), death_message_by: String::new() }
+        DamageCauseBuilder { reg: self, e: crate::entry::Entry::of(cause) }
     }
 }
 
 impl DamageCauseBuilder<'_> {
     /// Armor doesn't soften it.
-    pub fn bypasses_armor(mut self) -> Self {
-        self.flags |= abi::damage_flags::BYPASSES_ARMOR;
-        self
+    pub fn bypasses_armor(self) -> Self {
+        self.tag(abi::comp::damage_cause::BYPASSES_ARMOR)
     }
     /// Hurts invulnerable entities and players outside survival too.
-    pub fn pierces_invulnerable(mut self) -> Self {
-        self.flags |= abi::damage_flags::PIERCES_INVULNERABLE;
-        self
+    pub fn pierces_invulnerable(self) -> Self {
+        self.tag(abi::comp::damage_cause::PIERCES_INVULNERABLE)
     }
     /// Lands in full even right after another hit.
-    pub fn ignores_cooldown(mut self) -> Self {
-        self.flags |= abi::damage_flags::IGNORES_COOLDOWN;
-        self
+    pub fn ignores_cooldown(self) -> Self {
+        self.tag(abi::comp::damage_cause::IGNORES_COOLDOWN)
     }
     /// What dies of it drops cooked food.
-    pub fn burning(mut self) -> Self {
-        self.flags |= abi::damage_flags::BURNING;
-        self
+    pub fn burning(self) -> Self {
+        self.tag(abi::comp::damage_cause::BURNING)
     }
-    pub fn no_knockback(mut self) -> Self {
-        self.flags |= abi::damage_flags::NO_KNOCKBACK;
-        self
+    pub fn no_knockback(self) -> Self {
+        self.tag(abi::comp::damage_cause::NO_KNOCKBACK)
     }
     /// No hurt sound.
-    pub fn silent(mut self) -> Self {
-        self.flags |= abi::damage_flags::SILENT;
-        self
+    pub fn silent(self) -> Self {
+        self.tag(abi::comp::damage_cause::SILENT)
     }
     /// Translation key said when a player dies of it, `{0}` their name.
-    pub fn death_message(mut self, key: &str) -> Self {
-        self.death_message = key.to_string();
-        self
+    pub fn death_message(self, key: &str) -> Self {
+        self.set_text(&crate::comps::damage_cause::DEATH_MESSAGE, key)
     }
     /// The key when something did it, `{1}` that thing's name.
-    pub fn death_message_by(mut self, key: &str) -> Self {
-        self.death_message_by = key.to_string();
-        self
-    }
-}
-
-impl Drop for DamageCauseBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let desc = abi::DamageCauseDesc {
-            name: Str::new(self.handle.name()),
-            cell: self.handle.id_cell(),
-            flags: self.flags,
-            death_message: Str::new(&self.death_message),
-            death_message_by: Str::new(&self.death_message_by),
-        };
-        unsafe { (host().reg_damage_cause)(self.reg.raw, &desc) }
+    pub fn death_message_by(self, key: &str) -> Self {
+        self.set_text(&crate::comps::damage_cause::DEATH_MESSAGE_BY, key)
     }
 }
 pub type SoundCategory = Handle<kind::SoundCategory>;
@@ -1095,10 +1038,6 @@ builds!(
     Menu => crate::game::MenuBuilder<'a>, menu;
     Particle => crate::effects::ParticleBuilder<'a>, particle;
     Sound => crate::effects::SoundBuilder<'a>, sound;
-    DamageCause => DamageCauseBuilder<'a>, damage_cause;
-    TextPlace => crate::show::TextPlaceBuilder<'a>, text_place;
-    GameMode => GameModeBuilder<'a>, game_mode;
-    Pose => PoseBuilder<'a>, pose;
 );
 
 impl Registry {

@@ -418,7 +418,10 @@ impl Registry {
     /// frame such a text is on screen. Every game mode is a condition too, by its name.
     pub fn condition(&mut self, condition: &'static crate::Condition, f: impl Fn(&ConditionCtx) -> bool + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::ConditionArgs| a.result = f(&ConditionCtx(*a)) as u32);
-        unsafe { (host().reg_condition)(self.raw, Str::new(condition.name()), condition.id_cell(), cb) }
+        let mut e = crate::entry::Entry::of(condition);
+        e.ops
+            .push(crate::content::Pending::value(abi::comp::CONDITION_CALL, "callback".into(), abi::data::bytes_of(&cb)));
+        e.send(self);
     }
 }
 

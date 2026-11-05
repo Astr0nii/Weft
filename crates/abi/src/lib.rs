@@ -519,6 +519,100 @@ pub struct ItemInfo {
 /// `mining_speed: f32` (default 1). Blocks: `mineable/<class>` tags, and with `harvest_level: u32`
 /// nothing drops without a tool of a matching class and at least that level (SDK `mined_by`). Stacks: `damage: u32`.
 pub mod comp {
+    /// A damage cause's: tags `BYPASSES_ARMOR`, `PIERCES_INVULNERABLE` (outside survival too),
+    /// `IGNORES_COOLDOWN`, `BURNING` (cooked drops), `NO_KNOCKBACK`, `SILENT`; `DEATH_MESSAGE` and
+    /// `DEATH_MESSAGE_BY` (`str` translation keys, `{0}` the one who died, `{1}` who did it).
+    pub mod damage_cause {
+        pub const BYPASSES_ARMOR: &str = "damage.bypasses_armor";
+        pub const PIERCES_INVULNERABLE: &str = "damage.pierces_invulnerable";
+        pub const IGNORES_COOLDOWN: &str = "damage.ignores_cooldown";
+        pub const BURNING: &str = "damage.burning";
+        pub const NO_KNOCKBACK: &str = "damage.no_knockback";
+        pub const SILENT: &str = "damage.silent";
+        pub const DEATH_MESSAGE: &str = "damage.death_message";
+        pub const DEATH_MESSAGE_BY: &str = "damage.death_message_by";
+        /// The tags as `damage_flags`.
+        pub const FLAGS: [(&str, u32); 6] = [
+            (BYPASSES_ARMOR, crate::damage_flags::BYPASSES_ARMOR),
+            (PIERCES_INVULNERABLE, crate::damage_flags::PIERCES_INVULNERABLE),
+            (IGNORES_COOLDOWN, crate::damage_flags::IGNORES_COOLDOWN),
+            (BURNING, crate::damage_flags::BURNING),
+            (NO_KNOCKBACK, crate::damage_flags::NO_KNOCKBACK),
+            (SILENT, crate::damage_flags::SILENT),
+        ];
+    }
+
+    /// A game mode's: one tag per `game_mode_flags` (`FLAGS`), and `MODIFIERS`
+    /// (`[ModeModifier]`) its players have while in it.
+    pub mod game_mode {
+        use crate::game_mode_flags as f;
+        pub const MODIFIERS: &str = "game_mode.modifiers";
+        pub const FLAGS: [(&str, u32); 12] = [
+            ("game_mode.instant_break", f::INSTANT_BREAK),
+            ("game_mode.no_break", f::NO_BREAK),
+            ("game_mode.no_place", f::NO_PLACE),
+            ("game_mode.no_costs", f::NO_COSTS),
+            ("game_mode.invulnerable", f::INVULNERABLE),
+            ("game_mode.can_fly", f::CAN_FLY),
+            ("game_mode.always_fly", f::ALWAYS_FLY),
+            ("game_mode.noclip", f::NOCLIP),
+            ("game_mode.no_interact", f::NO_INTERACT),
+            ("game_mode.hidden", f::HIDDEN),
+            ("game_mode.no_hud", f::NO_HUD),
+            ("game_mode.creative_inventory", f::CREATIVE_INVENTORY),
+        ];
+    }
+
+    /// A pose's, as shares of standing (1 unless set): `HEIGHT`, `EYE`, `SPEED`; `TILT` (`u32`,
+    /// `pose_tilt`), `ACTION` (`str`, the clip), tag `NO_BOB`, `PRIORITY` (`i32`), `KEY` (`str`,
+    /// an action), tags in `WHEN` (as `pose_when`), `FALLBACK` (`[str]` poses where it has no room).
+    pub mod pose {
+        use crate::pose_when as w;
+        pub const HEIGHT: &str = "pose.height";
+        pub const EYE: &str = "pose.eye";
+        pub const SPEED: &str = "pose.speed";
+        pub const TILT: &str = "pose.tilt";
+        pub const ACTION: &str = "pose.action";
+        pub const NO_BOB: &str = "pose.no_bob";
+        pub const PRIORITY: &str = "pose.priority";
+        pub const KEY: &str = "pose.key";
+        pub const FALLBACK: &str = "pose.fallback";
+        pub const WHEN: [(&str, u32); 3] =
+            [("pose.in_liquid", w::SWIM_LIQUID), ("pose.not_flying", w::NOT_FLYING), ("pose.sprinting", w::SPRINTING)];
+    }
+
+    /// A precipitation's: `TEXTURE` (`str`, a strip of drops), `SPEED` (`f32`, share of rain's),
+    /// `DENSITY` (`f32`, share of the picture shown).
+    pub mod precipitation {
+        pub const TEXTURE: &str = "precipitation.texture";
+        pub const SPEED: &str = "precipitation.speed";
+        pub const DENSITY: &str = "precipitation.density";
+    }
+
+    /// A text place's: `ANCHOR` (`str` `hud_anchor`) and `ORDER` (`i32`), or `AT` (`[f32;4]`, its
+    /// point at that point of the window, moved by GUI pixels); `SCALE` (`f32`), `TIMES`
+    /// (`[f32;3]` fade in, stay, fade out), tag `STACKS`, `CLASS` and `SAMPLE` (`str`).
+    pub mod text_place {
+        pub const ANCHOR: &str = "text_place.anchor";
+        pub const ORDER: &str = "text_place.order";
+        pub const AT: &str = "text_place.at";
+        pub const SCALE: &str = "text_place.scale";
+        pub const TIMES: &str = "text_place.times";
+        pub const STACKS: &str = "text_place.stacks";
+        pub const CLASS: &str = "text_place.class";
+        pub const SAMPLE: &str = "text_place.sample";
+        /// The engine's own: `OWN_AT` (`[f32;2]`) where text stands if no one says, tag `WRAP`,
+        /// tag `NO_ELEMENT` (no HUD element of its own: free text, the chat).
+        pub const OWN_AT: &str = "text_place.own_at";
+        pub const WRAP: &str = "text_place.wrap";
+        pub const NO_ELEMENT: &str = "text_place.no_element";
+    }
+
+    /// An entity effect's `SHADER` (`str`, `shaders/entity_effect/<name>.wgsl`, its own name by
+    /// default); a condition's `CALL` (`callback`, `ConditionArgs`).
+    pub const ENTITY_EFFECT_SHADER: &str = "entity_effect.shader";
+    pub const CONDITION_CALL: &str = "condition.call";
+
     /// A weather's (`entry_kind::WEATHER`). How it looks, each `f32` 0..1 (rain's unless set):
     /// `FALLS` how much of the precipitation falls, `SKY_GRAY`, `SKY_COVER` (sun, moon, stars),
     /// `FOG_GRAY`, `CLOUD_GRAY`, `CLOUD_DARK` (thunder 0.95), `DARKNESS` the share of daylight
@@ -1959,20 +2053,6 @@ pub mod damage_flags {
     pub const SILENT: u32 = 32;
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct DamageCauseDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    /// `damage_flags`.
-    pub flags: u32,
-    /// Translation key of the death message (`{0}` the victim); empty: `death.generic`.
-    pub death_message: Str,
-    /// The key used when something did it (`{1}` its kind's name); empty: `death_message`.
-    pub death_message_by: Str,
-}
-defaults!(DamageCauseDesc { name: Str::EMPTY, cell: core::ptr::null(), flags: 0, death_message: Str::EMPTY, death_message_by: Str::EMPTY });
-
 /// What `Host::entities_near` looks for.
 /// What `Host::entities_in` looks for.
 pub mod entity_filter {
@@ -2026,24 +2106,9 @@ pub mod game_mode_flags {
     pub const CREATIVE_INVENTORY: u32 = 2048;
 }
 
-/// A game mode (`Host::reg_game_mode`).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct GameModeDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    /// `game_mode_flags`.
-    pub flags: u32,
-    /// Attribute modifiers its players get: (attribute name, `attr_op`, amount).
-    pub modifiers: Slice<ModeModifier>,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ModeModifier {
-    pub attribute: Str,
-    pub op: u32,
-    pub amount: f64,
+crate::data! {
+    /// An attribute modifier a game mode gives its players.
+    pub struct ModeModifier { pub attribute: alloc::string::String, pub op: u32, pub amount: f64 }
 }
 
 /// The engine's weathers, registered first in this order. Clear comes
@@ -2080,21 +2145,6 @@ pub struct WeatherLook {
     pub darkness: f32,
 }
 
-/// What falls from the sky in a biome when a weather `falls` (`BiomeBuilder::precipitation`).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct PrecipitationDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    /// `textures/<texture>.png`, a strip of drops like vanilla's rain.
-    pub texture: Str,
-    /// How fast it falls, rain being 1; 0.1 drifts like snow.
-    pub speed: f32,
-    /// Share of the picture that shows, 0..1 (rain 0.1, snow 0.5).
-    pub density: f32,
-}
-defaults!(PrecipitationDesc { name: Str::EMPTY, cell: core::ptr::null(), texture: Str::EMPTY, speed: 1.0, density: 0.1 });
-
 /// The engine's poses (`Host::reg_pose`), registered first in this order; `EntityState::pose`
 /// holds one of them or a mod's.
 pub mod pose {
@@ -2125,49 +2175,6 @@ pub mod pose_when {
     /// Sprinting: the sprint action held while moving forward, with the food for it.
     pub const SPRINTING: u32 = 4;
 }
-
-/// A pose (`Host::reg_pose`). Of the poses whose conditions hold the one with the highest
-/// `priority` is taken where it has room; where it has none, the first of its `fallback` that
-/// does and whose `when` holds, input aside (`key`, `pose_when::SPRINTING`).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct PoseDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    /// Box height and eye height as shares of standing (crouching: 1.5 / 1.8 and 1.27 / 1.62).
-    pub height: f32,
-    pub eye: f32,
-    /// Walking speed as a share of normal.
-    pub speed: f32,
-    /// `pose_tilt`.
-    pub tilt: u32,
-    /// Clip it plays (the model's action of that name).
-    pub action: Str,
-    /// The camera bobs while walking in it; 0: still.
-    pub bob: u32,
-    pub priority: i32,
-    /// An action (`core:sneak`) held for it, empty for none.
-    pub key: Str,
-    /// `pose_when`.
-    pub when: u32,
-    /// Poses tried in this order where it has no room (full names apart by spaces); the last
-    /// is taken even without room.
-    pub fallback: Str,
-}
-defaults!(PoseDesc {
-    name: Str::EMPTY,
-    cell: core::ptr::null(),
-    height: 1.0,
-    eye: 1.0,
-    speed: 1.0,
-    tilt: pose_tilt::UPRIGHT,
-    action: Str::EMPTY,
-    bob: 1,
-    priority: 0,
-    key: Str::EMPTY,
-    when: 0,
-    fallback: Str::EMPTY
-});
 
 /// An entity's box in blocks: as wide as `width` both ways, `height` tall, its eyes `eye` up.
 #[repr(C)]
@@ -3319,18 +3326,9 @@ pub struct Host {
     pub client_weather: unsafe extern "C" fn(client: *mut ClientCtx) -> u32,
     /// `weather_flags` of a weather, 0 for one that doesn't exist.
     pub weather_flags: unsafe extern "C" fn(weather: u32) -> u32,
-    /// What falls from the sky in biomes that name it (`PrecipitationDesc`).
-    pub reg_precipitation: unsafe extern "C" fn(reg: *mut Registrar, d: *const PrecipitationDesc),
     /// Shader effect `effect` on an entity for everyone who sees it (players coming along later
     /// too) at `strength` for `ticks`; 0 ticks ends it. One at a time: a new one replaces it.
     pub entity_effect: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, effect: u32, strength: f32, ticks: u32),
-    /// An effect on entities (`entity_effect`), drawn by `shaders/entity_effect/<shader>.wgsl`
-    /// (`fn effect(p: EntityPixel, c: vec4<f32>, strength: f32) -> vec4<f32>`, `c` the shaded
-    /// color).
-    pub reg_entity_effect: unsafe extern "C" fn(reg: *mut Registrar, name: Str, cell: *const AtomicU32, shader: Str),
-    pub reg_text_place: unsafe extern "C" fn(reg: *mut Registrar, d: *const TextPlaceDesc),
-    pub reg_game_mode: unsafe extern "C" fn(reg: *mut Registrar, d: *const GameModeDesc),
-    pub reg_pose: unsafe extern "C" fn(reg: *mut Registrar, d: *const PoseDesc),
     /// Holds an entity in `pose` (players too: their client follows), or with `u32::MAX` lets
     /// it go back to what its movement makes. `yaw` (radians) keeps it facing that way and still
     /// while it holds, `NaN` leaves it free (a bed, against a pet that sits).
@@ -3344,10 +3342,6 @@ pub struct Host {
     pub reg_command_branch: unsafe extern "C" fn(reg: *mut Registrar, command: Str, usage: Str, client: u32, cb: Callback),
 
     // ------------------------------------------------ text, shaders, particles
-    /// A condition (`ConditionArgs`) music, `{if:<name>}` in text, loot tables and natural
-    /// spawning can ask. Answered on whichever side asks: the server for loot and spawning,
-    /// the client for music and text.
-    pub reg_condition: unsafe extern "C" fn(reg: *mut Registrar, name: Str, cell: *const AtomicU32, cb: Callback),
     /// A particle kind, see `ParticleDesc`.
     pub reg_particle: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ParticleDesc),
     /// A thing in a dimension's sky, see `SkyDesc`.
@@ -3418,9 +3412,6 @@ pub struct Host {
     /// with `despawn` > 0 they vanish when no player is that close.
     /// `cap_radius`: how far from a player the cap counts them (64 for the engine's).
     pub reg_entity_category: unsafe extern "C" fn(reg: *mut Registrar, name: Str, cap: u32, despawn: f32, cap_radius: f32),
-    /// A damage cause for `entity_damage`: its armor, invulnerability and death message rules.
-    /// Kinds tagged `immune/<cause>` (`immune/fall`, `immune/mymod:radiation`) take none of it.
-    pub reg_damage_cause: unsafe extern "C" fn(reg: *mut Registrar, d: *const DamageCauseDesc),
     /// `damage_flags` of a cause, 0 for one that doesn't exist.
     pub damage_cause_flags: unsafe extern "C" fn(cause: u32) -> u32,
     /// A sound category with its own volume setting (`<ns>:volume_<name>`); `world` != 0: heard
@@ -5178,41 +5169,6 @@ pub mod show_place {
     pub const SUBTITLE: u32 = 4;
     pub const NAMES: [&str; 5] = ["core:free", "core:chat", "core:hint", "core:title", "core:subtitle"];
 }
-
-/// A place on the screen for text (`Host::reg_text_place`): an element of the HUD a player can
-/// move and hide, with what text there looks like unless `show` says otherwise.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct TextPlaceDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    /// `hud_anchor` it joins and its order there; empty: a free spot at `at` (the element's point
-    /// `[0..1, 0..1]` at the same point of the window, moved by `[2..4]` GUI pixels).
-    pub anchor: Str,
-    pub order: i32,
-    pub at: [f32; 4],
-    pub scale: f32,
-    /// Seconds of fading in, staying, fading out.
-    pub times: [f32; 3],
-    /// More than one text at once (a list, like the chat); 0: new text replaces what is there.
-    pub stacks: u32,
-    /// Theme class of the text.
-    pub class: Str,
-    /// Translation the HUD editor shows while nothing is there.
-    pub sample: Str,
-}
-defaults!(TextPlaceDesc {
-    name: Str::EMPTY,
-    cell: core::ptr::null(),
-    anchor: Str::EMPTY,
-    order: 0,
-    at: [0.5, 0.5, 0.0, 0.0],
-    scale: 1.0,
-    times: [0.0, 2.5, 0.5],
-    stacks: 0,
-    class: Str::EMPTY,
-    sample: Str::EMPTY
-});
 
 /// Who sees text: one player (an entity id works as it is), or a group.
 #[repr(C, u32)]

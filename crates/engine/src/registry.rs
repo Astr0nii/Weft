@@ -7,7 +7,7 @@ use rustc_hash::FxHashMap;
 use weft_abi::{self as abi, Callback, ModId, entity_flags as ef};
 
 use crate::components::{self as comps, Components, RawSet, RawValue};
-use crate::entries::RawEntry;
+use crate::entries::{Entry, RawEntry};
 
 pub const ENGINE: ModId = ModId(u32::MAX);
 pub const PLAYER: &str = "core:player";
@@ -758,12 +758,6 @@ pub struct RawGame {
     pub recipes: Vec<RawRecipe>,
     pub recipe_kinds: Vec<RawRecipeKind>,
     pub categories: Vec<CategoryDef>,
-    pub damage_causes: Vec<(usize, DamageCauseDef)>,
-    pub entity_effects: Vec<(usize, EntityEffectDef)>,
-    pub text_places: Vec<(usize, crate::hud::Place)>,
-    pub game_modes: Vec<(usize, GameModeDef)>,
-    pub poses: Vec<(usize, PoseDef)>,
-    pub precipitations: Vec<(usize, PrecipitationDef)>,
     pub sound_categories: Vec<SoundCategory>,
     pub menus: Vec<(usize, MenuDef)>,
     pub huds: Vec<HudElement>,
@@ -826,7 +820,6 @@ pub struct RawGame {
     pub stack_components: Vec<(String, String, u32)>,
     /// (owner, component, schema, system).
     pub systems: Vec<(ModId, String, String, Callback)>,
-    pub conditions: Vec<(usize, ConditionDef)>,
     pub particles: Vec<RawParticle>,
     pub sky: Vec<RawSky>,
     /// (handle cell, setting).
@@ -1015,38 +1008,52 @@ pub struct DamageCauseDef {
     pub death_message_by: String,
 }
 
-impl DamageCauseDef {
-    pub fn has(&self, flag: u32) -> bool {
-        self.flags & flag != 0
-    }
-}
-
-fn engine_damage_causes() -> Vec<(usize, DamageCauseDef)> {
-    use abi::damage_flags as f;
-    let flags = [
-        0,
-        f::BYPASSES_ARMOR,
-        0,
-        f::BURNING,
-        f::BYPASSES_ARMOR,
-        f::BYPASSES_ARMOR,
-        f::BYPASSES_ARMOR | f::PIERCES_INVULNERABLE | f::IGNORES_COOLDOWN,
-        f::BURNING,
-        0,
-        f::BYPASSES_ARMOR,
-        0,
-        0,
+fn engine_damage_causes() -> Vec<RawEntry> {
+    use abi::comp::damage_cause as d;
+    let tags: [&[&str]; 12] = [
+        &[],
+        &[d::BYPASSES_ARMOR],
+        &[],
+        &[d::BURNING],
+        &[d::BYPASSES_ARMOR],
+        &[d::BYPASSES_ARMOR],
+        &[d::BYPASSES_ARMOR, d::PIERCES_INVULNERABLE, d::IGNORES_COOLDOWN],
+        &[d::BURNING],
+        &[],
+        &[d::BYPASSES_ARMOR],
+        &[],
+        &[],
     ];
     let messages = ["generic", "fall", "generic", "fire", "starve", "drown", "void", "lava", "crush", "suffocate", "explosion", "generic"];
     abi::damage_cause::NAMES
         .iter()
-        .zip(flags)
+        .zip(tags)
         .zip(messages)
-        .map(|((name, flags), m)| {
-            let by = if *name == "core:attack" { "death.attack".to_string() } else { String::new() };
-            (0, DamageCauseDef { name: name.to_string(), flags, death_message: format!("death.{m}"), death_message_by: by })
+        .map(|((name, tags), m)| {
+            let mut e = RawEntry::engine(abi::entry_kind::DAMAGE_CAUSE, name).set(d::DEATH_MESSAGE, format!("death.{m}"));
+            if *name == "core:attack" {
+                e = e.set(d::DEATH_MESSAGE_BY, "death.attack".to_string());
+            }
+            tags.iter().fold(e, |e, t| e.tag(t))
         })
         .collect()
+}
+
+fn bake_damage_cause(e: &Entry) -> DamageCauseDef {
+    use abi::comp::damage_cause as d;
+    let text = |c: &str| e.text(c).unwrap_or_default().to_string();
+    DamageCauseDef {
+        name: e.name.clone(),
+        flags: e.flags(&d::FLAGS),
+        death_message: text(d::DEATH_MESSAGE),
+        death_message_by: text(d::DEATH_MESSAGE_BY),
+    }
+}
+
+impl DamageCauseDef {
+    pub fn has(&self, flag: u32) -> bool {
+        self.flags & flag != 0
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1154,10 +1161,68 @@ pub struct PoseDef {
     pub fallback: Vec<crate::world::Pose>,
 }
 
+fn engine_poses() -> Vec<RawEntry> {
+    use abi::comp::pose as p;
+    use abi::pose_tilt as t;
+    let pose = |name: &str, height: f32, eye: f32, speed: f32, tilt: u32, action: &str, priority: i32| {
+        RawEntry::engine(abi::entry_kind::POSE, &format!("core:{name}"))
+            .set(p::HEIGHT, height)
+            .set(p::EYE, eye)
+            .set(p::SPEED, speed)
+            .set(p::TILT, tilt)
+            .set(p::ACTION, action.to_string())
+            .set(p::PRIORITY, priority)
+    };
+    let fallback = |e: RawEntry, poses: &[&str]| e.set(p::FALLBACK, poses.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    let (in_liquid, not_flying, sprinting) = (p::WHEN[0].0, p::WHEN[1].0, p::WHEN[2].0);
+    // Modern vanilla's: the player's 1.8 and 1.62 standing. Under a low ceiling it crouches, and
+    // where that has no room either it swims in a liquid and crawls out of one.
+    vec![
+        fallback(pose("stand", 1.0, 1.0, 1.0, t::UPRIGHT, "", 0), &["core:crouch", "core:swim", "core:crawl"]),
+        fallback(pose("crouch", 1.5 / 1.8, 1.27 / 1.62, 0.3, t::UPRIGHT, "sneak", 10), &["core:swim", "core:crawl"])
+            .set(p::KEY, "core:sneak".to_string())
+            .tag(not_flying),
+        fallback(pose("swim", 0.6 / 1.8, 0.4 / 1.62, 1.0, t::ALONG_LOOK, "swim", 30), &["core:crouch", "core:crawl"])
+            .tag(p::NO_BOB)
+            .tag(sprinting)
+            .tag(in_liquid)
+            .tag(not_flying),
+        pose("crawl", 0.6 / 1.8, 0.4 / 1.62, 0.3, t::FACE_DOWN, "crawl", 20)
+            .set(p::KEY, "core:crawl".to_string())
+            .tag(not_flying),
+        // Only where a mod holds it.
+        pose("sleep", 0.2 / 1.8, 0.45 / 1.62, 0.0, t::ON_BACK, "", i32::MIN).tag(p::NO_BOB),
+    ]
+}
+
+fn bake_pose(e: &Entry) -> PoseDef {
+    use abi::comp::pose as p;
+    let share = |c: &str| {
+        e.get::<f32>(c)
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map_or(1.0, |v| v as f64)
+    };
+    PoseDef {
+        name: e.name.clone(),
+        height: share(p::HEIGHT),
+        eye: share(p::EYE),
+        speed: e.or(p::SPEED, 1.0f32).max(0.0),
+        tilt: e.or(p::TILT, 0u32).min(abi::pose_tilt::ON_BACK),
+        action: e.text(p::ACTION).unwrap_or_default().to_string(),
+        bob: !e.has(p::NO_BOB),
+        priority: e.or(p::PRIORITY, 0),
+        key: e.text(p::KEY).unwrap_or_default().to_string(),
+        when: e.flags(&p::WHEN),
+        fallback_names: e.or::<Vec<String>>(p::FALLBACK, Vec::new()).join(" "),
+        fallback: Vec::new(),
+    }
+}
+
 pub fn engine_pose_defs() -> &'static [PoseDef] {
     static DEFS: std::sync::OnceLock<Vec<PoseDef>> = std::sync::OnceLock::new();
     DEFS.get_or_init(|| {
-        let mut defs: Vec<PoseDef> = engine_poses().into_iter().map(|(_, d)| d).collect();
+        let (mut defs, _) =
+            crate::entries::bake(engine_poses(), abi::entry_kind::POSE, &|_| String::new(), &mut Vec::new(), |e, _| bake_pose(e));
         let names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
         for d in &mut defs {
             d.fallback = d
@@ -1171,51 +1236,6 @@ pub fn engine_pose_defs() -> &'static [PoseDef] {
     })
 }
 
-fn engine_poses() -> Vec<(usize, PoseDef)> {
-    use abi::{pose_tilt as t, pose_when as w};
-    let pose = |name: &str, height: f64, eye: f64, speed: f32, tilt: u32, action: &str, bob: bool| PoseDef {
-        name: format!("core:{name}"),
-        height,
-        eye,
-        speed,
-        tilt,
-        action: action.into(),
-        bob,
-        priority: 0,
-        key: String::new(),
-        when: 0,
-        fallback_names: String::new(),
-        fallback: Vec::new(),
-    };
-    let taken = |p: PoseDef, priority: i32, key: &str, when: u32, fallback: &str| PoseDef {
-        priority,
-        key: key.into(),
-        when,
-        fallback_names: fallback.into(),
-        ..p
-    };
-    // Modern vanilla's: the player's 1.8 and 1.62 standing. Under a low ceiling it crouches, and
-    // where that has no room either it swims in a liquid and crawls out of one.
-    let low = "core:swim core:crawl";
-    vec![
-        taken(pose("stand", 1.0, 1.0, 1.0, t::UPRIGHT, "", true), 0, "", 0, &format!("core:crouch {low}")),
-        taken(pose("crouch", 1.5 / 1.8, 1.27 / 1.62, 0.3, t::UPRIGHT, "sneak", true), 10, "core:sneak", w::NOT_FLYING, low),
-        taken(
-            pose("swim", 0.6 / 1.8, 0.4 / 1.62, 1.0, t::ALONG_LOOK, "swim", false),
-            30,
-            "",
-            w::SPRINTING | w::SWIM_LIQUID | w::NOT_FLYING,
-            "core:crouch core:crawl",
-        ),
-        taken(pose("crawl", 0.6 / 1.8, 0.4 / 1.62, 0.3, t::FACE_DOWN, "crawl", true), 20, "core:crawl", w::NOT_FLYING, ""),
-        // Only where a mod holds it.
-        taken(pose("sleep", 0.2 / 1.8, 0.45 / 1.62, 0.0, t::ON_BACK, "", false), i32::MIN, "", 0, ""),
-    ]
-    .into_iter()
-    .map(|p| (0, p))
-    .collect()
-}
-
 /// A game mode: what its players may do (`abi::game_mode_flags`) and the attribute modifiers
 /// they get, (attribute, op, amount).
 #[derive(Clone, Debug)]
@@ -1225,28 +1245,70 @@ pub struct GameModeDef {
     pub modifiers: Vec<(String, u32, f64)>,
 }
 
-fn engine_game_modes() -> Vec<(usize, GameModeDef)> {
+fn engine_game_modes() -> Vec<RawEntry> {
+    use abi::comp::game_mode as m;
+    let tag = |f: u32| m::FLAGS.iter().find(|t| t.1 == f).unwrap().0;
+    let modifier = |attribute: &str, op: u32, amount: f64| abi::ModeModifier { attribute: attribute.to_string(), op, amount };
+    let mode = |name: &str, flags: &[u32], modifiers: Vec<abi::ModeModifier>| {
+        flags
+            .iter()
+            .fold(RawEntry::engine(abi::entry_kind::GAME_MODE, name), |e, f| e.tag(tag(*f)))
+            .set(m::MODIFIERS, modifiers)
+    };
     use abi::game_mode_flags as f;
     // Unseen by mobs outside survival; creative reaches further.
-    let unseen = (abi::attribute::VISIBILITY.to_string(), abi::attr_op::MULTIPLY_TOTAL, -1.0);
-    let creative = f::INSTANT_BREAK | f::NO_COSTS | f::INVULNERABLE | f::CAN_FLY | f::CREATIVE_INVENTORY;
-    let spectator = f::INVULNERABLE | f::ALWAYS_FLY | f::NOCLIP | f::NO_INTERACT | f::HIDDEN | f::NO_HUD | f::NO_COSTS;
+    let unseen = || modifier(abi::attribute::VISIBILITY, abi::attr_op::MULTIPLY_TOTAL, -1.0);
     vec![
-        (0, GameModeDef { name: "core:survival".into(), flags: 0, modifiers: Vec::new() }),
-        (
-            0,
-            GameModeDef {
-                name: "core:creative".into(),
-                flags: creative,
-                modifiers: vec![
-                    (abi::attribute::BLOCK_REACH.into(), abi::attr_op::ADD, 0.5),
-                    (abi::attribute::ENTITY_REACH.into(), abi::attr_op::ADD, 2.0),
-                    unseen.clone(),
-                ],
-            },
+        mode("core:survival", &[], Vec::new()),
+        mode(
+            "core:creative",
+            &[f::INSTANT_BREAK, f::NO_COSTS, f::INVULNERABLE, f::CAN_FLY, f::CREATIVE_INVENTORY],
+            vec![
+                modifier(abi::attribute::BLOCK_REACH, abi::attr_op::ADD, 0.5),
+                modifier(abi::attribute::ENTITY_REACH, abi::attr_op::ADD, 2.0),
+                unseen(),
+            ],
         ),
-        (0, GameModeDef { name: "core:spectator".into(), flags: spectator, modifiers: vec![unseen] }),
+        mode(
+            "core:spectator",
+            &[f::INVULNERABLE, f::ALWAYS_FLY, f::NOCLIP, f::NO_INTERACT, f::HIDDEN, f::NO_HUD, f::NO_COSTS],
+            vec![unseen()],
+        ),
     ]
+}
+
+fn bake_game_mode(e: &Entry) -> GameModeDef {
+    use abi::comp::game_mode as m;
+    GameModeDef {
+        name: e.name.clone(),
+        flags: e.flags(&m::FLAGS),
+        modifiers: e
+            .or::<Vec<abi::ModeModifier>>(m::MODIFIERS, Vec::new())
+            .into_iter()
+            .map(|m| (m.attribute, m.op, m.amount))
+            .collect(),
+    }
+}
+
+fn engine_precipitations() -> Vec<RawEntry> {
+    use abi::comp::precipitation as p;
+    let e = |name: &str, texture: &str, speed: f32, density: f32| {
+        RawEntry::engine(abi::entry_kind::PRECIPITATION, name)
+            .set(p::TEXTURE, texture.to_string())
+            .set(p::SPEED, speed)
+            .set(p::DENSITY, density)
+    };
+    vec![e("core:rain", "core:environment/rain", 1.0, 0.1), e("core:snow", "core:environment/snow", 0.1, 0.5)]
+}
+
+fn bake_precipitation(e: &Entry) -> PrecipitationDef {
+    use abi::comp::precipitation as p;
+    PrecipitationDef {
+        name: e.name.clone(),
+        texture: e.text(p::TEXTURE).unwrap_or_default().to_string(),
+        speed: e.or(p::SPEED, 1.0f32).max(0.0),
+        density: e.or(p::DENSITY, 0.1f32).clamp(0.0, 1.0),
+    }
 }
 
 /// A shader effect on entities: the snippet that draws it, `ns:name`.
@@ -1785,28 +1847,9 @@ pub fn freeze(
         CategoryDef { name: "core:hostile".into(), cap: 8, despawn: 128.0, cap_radius: 64.0 },
         CategoryDef { name: "core:passive".into(), cap: 6, despawn: 0.0, cap_radius: 64.0 },
     ];
-    let mut damage_causes = engine_damage_causes();
-    let mut game_modes = engine_game_modes();
-    let mut poses = engine_poses();
-    let mut conditions: Vec<(usize, ConditionDef)> = abi::condition::NAMES
-        .iter()
-        .map(|n| (0, ConditionDef { name: n.to_string(), answer: Answer::Engine }))
-        .collect();
     let mut entries: Vec<RawEntry> = raws
         .iter_mut()
         .flat_map(|r| std::mem::take(&mut r.entries))
-        .collect();
-    let mut precipitations: Vec<(usize, PrecipitationDef)> = vec![
-        (0, PrecipitationDef { name: "core:rain".into(), texture: "core:environment/rain".into(), speed: 1.0, density: 0.1 }),
-        (0, PrecipitationDef { name: "core:snow".into(), texture: "core:environment/snow".into(), speed: 0.1, density: 0.5 }),
-    ];
-    let mut text_places: Vec<(usize, crate::hud::Place)> = crate::hud::engine_places()
-        .into_iter()
-        .map(|p| (0, p))
-        .collect();
-    let mut entity_effects: Vec<(usize, EntityEffectDef)> = abi::entity_effect::NAMES
-        .iter()
-        .map(|n| (0, EntityEffectDef { name: n.to_string(), shader: n.to_string() }))
         .collect();
     let mut entity_watchers: Vec<(ModId, String, Callback)> = Vec::new();
     let mut attached_models: Vec<(String, String, String)> = Vec::new();
@@ -1822,7 +1865,6 @@ pub fn freeze(
         particles.extend(r.particles);
         sky.extend(r.sky);
         configs.extend(r.configs);
-        conditions.extend(r.conditions);
         g.client_frames.extend(r.client_frames);
         packets.extend(r.packets);
         g.keys.extend(r.keys);
@@ -1841,12 +1883,6 @@ pub fn freeze(
             g.recipe_kind_defs.insert(k.name, k.def);
         }
         categories.extend(r.categories);
-        damage_causes.extend(r.damage_causes);
-        entity_effects.extend(r.entity_effects);
-        text_places.extend(r.text_places);
-        game_modes.extend(r.game_modes);
-        poses.extend(r.poses);
-        precipitations.extend(r.precipitations);
         sound_categories.extend(r.sound_categories);
         menus.extend(r.menus);
         g.huds.extend(r.huds);
@@ -1991,36 +2027,71 @@ pub fn freeze(
     }
     g.categories = categories;
     g.sound_categories = sound_categories;
-    for (cell, d) in damage_causes {
-        if g.damage_cause_names.contains_key(&d.name) {
-            errors.push(format!("damage cause {} registered twice", d.name));
+    let builtin = |kind: u32| -> Vec<RawEntry> {
+        match kind {
+            abi::entry_kind::DAMAGE_CAUSE => engine_damage_causes(),
+            abi::entry_kind::GAME_MODE => engine_game_modes(),
+            abi::entry_kind::POSE => engine_poses(),
+            abi::entry_kind::PRECIPITATION => engine_precipitations(),
+            abi::entry_kind::TEXT_PLACE => crate::hud::engine_places(),
+            abi::entry_kind::ENTITY_EFFECT => abi::entity_effect::NAMES
+                .iter()
+                .map(|n| RawEntry::engine(kind, n))
+                .collect(),
+            _ => abi::condition::NAMES
+                .iter()
+                .map(|n| RawEntry::engine(kind, n))
+                .collect(),
+        }
+    };
+    let mut kind = |kind: u32| {
+        let mut all = builtin(kind);
+        all.extend(take_kind(&mut entries, kind));
+        all
+    };
+    (g.damage_causes, g.damage_cause_names) =
+        crate::entries::bake(kind(abi::entry_kind::DAMAGE_CAUSE), abi::entry_kind::DAMAGE_CAUSE, mod_name, errors, |e, _| {
+            bake_damage_cause(e)
+        });
+    (g.game_modes, g.game_mode_names) =
+        crate::entries::bake(kind(abi::entry_kind::GAME_MODE), abi::entry_kind::GAME_MODE, mod_name, errors, |e, _| bake_game_mode(e));
+    (g.poses, g.pose_names) =
+        crate::entries::bake(kind(abi::entry_kind::POSE), abi::entry_kind::POSE, mod_name, errors, |e, _| bake_pose(e));
+    (g.precipitations, g.precipitation_names) =
+        crate::entries::bake(kind(abi::entry_kind::PRECIPITATION), abi::entry_kind::PRECIPITATION, mod_name, errors, |e, _| {
+            bake_precipitation(e)
+        });
+    (g.text_places, g.text_place_names) =
+        crate::entries::bake(kind(abi::entry_kind::TEXT_PLACE), abi::entry_kind::TEXT_PLACE, mod_name, errors, |e, _| {
+            crate::hud::Place::bake(e)
+        });
+    (g.entity_effects, g.entity_effect_names) =
+        crate::entries::bake(kind(abi::entry_kind::ENTITY_EFFECT), abi::entry_kind::ENTITY_EFFECT, mod_name, errors, |e, _| {
+            EntityEffectDef {
+                name: e.name.clone(),
+                shader: e
+                    .text(abi::comp::ENTITY_EFFECT_SHADER)
+                    .unwrap_or(&e.name)
+                    .to_string(),
+            }
+        });
+    (g.conditions, g.condition_names) =
+        crate::entries::bake(kind(abi::entry_kind::CONDITION), abi::entry_kind::CONDITION, mod_name, errors, |e, _| ConditionDef {
+            name: e.name.clone(),
+            answer: e
+                .callback(abi::comp::CONDITION_CALL)
+                .map_or(Answer::Engine, |(by, cb)| Answer::Mod(by, cb)),
+        });
+    // Every game mode is a condition of its name too.
+    for (i, m) in g.game_modes.iter().enumerate() {
+        if g.condition_names.contains_key(&m.name) {
+            errors.push(format!("condition {} is a game mode's name", m.name));
             continue;
         }
-        let id = g.damage_causes.len() as u32;
-        write_cell(cell, id);
-        g.damage_cause_names.insert(d.name.clone(), id);
-        g.damage_causes.push(d);
-    }
-    for (cell, d) in game_modes {
-        if g.game_mode_names.contains_key(&d.name) {
-            errors.push(format!("game mode {} registered twice", d.name));
-            continue;
-        }
-        let id = g.game_modes.len() as u32;
-        write_cell(cell, id);
-        g.game_mode_names.insert(d.name.clone(), id);
-        conditions.push((0, ConditionDef { name: d.name.clone(), answer: Answer::Mode(crate::world::GameMode(id as u16)) }));
-        g.game_modes.push(d);
-    }
-    for (cell, d) in conditions {
-        if g.condition_names.contains_key(&d.name) {
-            errors.push(format!("condition {} registered twice", d.name));
-            continue;
-        }
-        let id = g.conditions.len() as u32;
-        write_cell(cell, id);
-        g.condition_names.insert(d.name.clone(), id);
-        g.conditions.push(d);
+        g.condition_names
+            .insert(m.name.clone(), g.conditions.len() as u32);
+        g.conditions
+            .push(ConditionDef { name: m.name.clone(), answer: Answer::Mode(crate::world::GameMode(i as u16)) });
     }
     for m in g.music.iter_mut() {
         for n in std::mem::take(&mut m.when_names) {
@@ -2047,26 +2118,6 @@ pub fn freeze(
             .insert(d.name.clone(), g.weathers.len() as u32);
         g.weathers.push(d);
     }
-    for (cell, d) in precipitations {
-        if g.precipitation_names.contains_key(&d.name) {
-            errors.push(format!("precipitation {} registered twice", d.name));
-            continue;
-        }
-        let id = g.precipitations.len() as u32;
-        write_cell(cell, id);
-        g.precipitation_names.insert(d.name.clone(), id);
-        g.precipitations.push(d);
-    }
-    for (cell, d) in poses {
-        if g.pose_names.contains_key(&d.name) {
-            errors.push(format!("pose {} registered twice", d.name));
-            continue;
-        }
-        let id = g.poses.len() as u32;
-        write_cell(cell, id);
-        g.pose_names.insert(d.name.clone(), id);
-        g.poses.push(d);
-    }
     for i in 0..g.poses.len() {
         let names = g.poses[i].fallback_names.clone();
         g.poses[i].fallback = names
@@ -2084,26 +2135,6 @@ pub fn freeze(
     g.pose_order = (0..g.poses.len() as u16).map(crate::world::Pose).collect();
     g.pose_order
         .sort_by_key(|p| std::cmp::Reverse(g.poses[p.0 as usize].priority));
-    for (cell, d) in text_places {
-        if g.text_place_names.contains_key(&d.name) {
-            errors.push(format!("text place {} registered twice", d.name));
-            continue;
-        }
-        let id = g.text_places.len() as u32;
-        write_cell(cell, id);
-        g.text_place_names.insert(d.name.clone(), id);
-        g.text_places.push(d);
-    }
-    for (cell, d) in entity_effects {
-        if g.entity_effect_names.contains_key(&d.name) {
-            errors.push(format!("entity effect {} registered twice", d.name));
-            continue;
-        }
-        let id = g.entity_effects.len() as u32;
-        write_cell(cell, id);
-        g.entity_effect_names.insert(d.name.clone(), id);
-        g.entity_effects.push(d);
-    }
     for s in spawns {
         let Some(&entity) = g.entity_names.get(&s.entity) else {
             errors.push(format!("spawn rule for unknown entity {}", s.entity));

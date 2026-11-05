@@ -2266,16 +2266,6 @@ fn drop_overridden(regs: &mut [RawRegistrar]) {
         g.menus.retain(|m| !gone(ek::MENU, &m.1.name));
         g.configs.retain(|c| !gone(ek::CONFIG, &c.1.name));
         g.sounds.retain(|s| !gone(ek::SOUND, &s.1.name));
-        g.damage_causes
-            .retain(|d| !gone(ek::DAMAGE_CAUSE, &d.1.name));
-        g.entity_effects
-            .retain(|e| !gone(ek::ENTITY_EFFECT, &e.1.name));
-        g.text_places.retain(|t| !gone(ek::TEXT_PLACE, &t.1.name));
-        g.game_modes.retain(|m| !gone(ek::GAME_MODE, &m.1.name));
-        g.poses.retain(|p| !gone(ek::POSE, &p.1.name));
-        g.precipitations
-            .retain(|p| !gone(ek::PRECIPITATION, &p.1.name));
-        g.conditions.retain(|c| !gone(ek::CONDITION, &c.1.name));
     }
 }
 

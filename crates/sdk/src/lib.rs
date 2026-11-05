@@ -13,6 +13,7 @@ pub mod shapes;
 pub mod signal;
 pub use weft_noise as noise;
 mod command;
+pub mod comps;
 mod config;
 mod content;
 mod effects;
