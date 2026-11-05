@@ -91,8 +91,14 @@ pub trait Screen: std::any::Any {
 /// Engine screens open each other through this too, so a mod's replacement is used everywhere.
 pub fn named(name: &str) -> Option<Box<dyn Screen>> {
     let name = if name.contains(':') { name.to_string() } else { format!("core:{name}") };
-    if let Some(s) = crate::content::try_content().and_then(|c| c.game.screens.iter().rev().find(|s| s.name == name)) {
-        return Some(Box::new(ModScreen(s.clone())));
+    // A menu's screen opens on the client alone too, with nothing to sync.
+    if let Some(&m) = crate::content::try_content().and_then(|c| {
+        c.game
+            .menu_names
+            .get(&name)
+            .filter(|&&m| c.game.menus[m as usize].screen.is_some())
+    }) {
+        return Some(Box::new(ModScreen(m)));
     }
     Some(match name.as_str() {
         "core:title" => Box::new(Title),
@@ -346,38 +352,48 @@ impl Screen for Profile {
     }
 }
 
-/// A screen a mod built (`Registry::screen`).
-pub struct ModScreen(crate::registry::ScreenDef);
+/// A menu's screen opened on the client (`Client::menu_open`), by its menu.
+pub struct ModScreen(u32);
+
+impl ModScreen {
+    fn def(&self) -> &'static crate::registry::MenuDef {
+        &crate::content::content().game.menus[self.0 as usize]
+    }
+    fn has(&self, flag: u32) -> bool {
+        self.def().flags & flag != 0
+    }
+}
 
 impl Screen for ModScreen {
     fn name(&self) -> &str {
-        &self.0.name
+        &self.def().name
     }
 
     fn pauses(&self) -> bool {
-        self.0.flags & weft_abi::screen_flags::PAUSES != 0
+        self.has(weft_abi::screen_flags::PAUSES)
     }
 
     fn escape_closes(&self) -> bool {
-        self.0.flags & weft_abi::screen_flags::KEEP_ON_ESCAPE == 0
+        !self.has(weft_abi::screen_flags::KEEP_ON_ESCAPE)
     }
 
     fn closes_on_respawn(&self) -> bool {
-        self.0.flags & weft_abi::screen_flags::CLOSES_ON_RESPAWN != 0
+        self.has(weft_abi::screen_flags::CLOSES_ON_RESPAWN)
     }
 
     fn shows_chat(&self) -> bool {
-        self.0.flags & weft_abi::screen_flags::SHOWS_CHAT != 0
+        self.has(weft_abi::screen_flags::SHOWS_CHAT)
     }
 
     fn keys_first(&self) -> bool {
-        self.0.flags & weft_abi::screen_flags::KEYS_FIRST != 0 || self.0.on_key.is_some()
+        self.has(weft_abi::screen_flags::KEYS_FIRST) || self.def().on_key.is_some()
     }
 
     fn key(&mut self, key: Key, ctx: &mut Ctx) -> bool {
-        if self.0.on_key.is_some() {
+        let d = self.def();
+        if d.on_key.is_some() {
             ctx.requests
-                .push(Request::ModKey(self.0.owner, self.0.on_key, key.id()));
+                .push(Request::ModKey(d.owner, d.on_key, key.id()));
         }
         false
     }
@@ -386,7 +402,8 @@ impl Screen for ModScreen {
         let bg = if cx.in_game { "overlay" } else { "background" };
         ui.root_style(Style::default().stretch());
         ui.panel(bg, Style::default().grow().center(), |ui| {
-            crate::client::modui::build(ui, cx.lang, Some(cx.input), self.0.owner, self.0.cb, cx.client);
+            let d = self.def();
+            crate::client::modui::build(ui, cx.lang, Some(cx.input), d.owner, d.screen.unwrap_or_default(), cx.client);
         });
     }
 }

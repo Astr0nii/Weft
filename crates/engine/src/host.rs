@@ -127,7 +127,7 @@ pub static HOST: Host = Host {
     gizmo_shown,
     gizmo,
     gizmo_text,
-    reg_client_hook,
+    reg_client_frame,
     reg_client_entity_frame,
     reg_bone_model,
     reg_bone_motion,
@@ -1969,15 +1969,8 @@ unsafe extern "C" fn reg_recipe(r: *mut abi::Registrar, d: *const abi::RecipeDes
 unsafe extern "C" fn reg_menu(r: *mut abi::Registrar, d: *const abi::MenuDesc) {
     unsafe {
         let r = reg(r);
-        let (owner, d) = (r.owner, &*d);
-        // Its screen opens on the client alone too (`client_op::OPEN_SCREEN`), with nothing to sync.
-        if d.screen.is_some() {
-            let name = d.name.as_str().to_string();
-            r.game
-                .screens
-                .push(registry::ScreenDef { name, owner, cb: d.screen, flags: d.flags, on_key: d.on_key });
-        }
-        r.game.menus.push(registry::copy_menu(owner, d));
+        let owner = r.owner;
+        r.game.menus.push(registry::copy_menu(owner, &*d));
     }
 }
 
@@ -2816,15 +2809,10 @@ unsafe extern "C" fn reg_storage(r: *mut abi::Registrar, name: Str, slots: u32) 
 /// What storages say they hold, for mods that look one up by name.
 pub const STORAGE_SCHEMA: &str = "storage";
 
-unsafe extern "C" fn reg_client_hook(r: *mut abi::Registrar, hook: u32, cb: Callback) {
+unsafe extern "C" fn reg_client_frame(r: *mut abi::Registrar, cb: Callback) {
     unsafe {
         let r = reg(r);
-        if hook > abi::client_hook::FRAME {
-            r.errors.push(format!("client hook {hook} does not exist"));
-            return;
-        }
-        let owner = r.owner;
-        r.game.client_hooks.push((owner, hook, cb));
+        r.game.client_frames.push((r.owner, cb));
     }
 }
 

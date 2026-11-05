@@ -582,7 +582,7 @@ impl Registry {
     /// Every frame on the client, before input is handled.
     pub fn client_frame(&mut self, f: impl Fn(&Client) + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::ClientFrameArgs| f(&Client::from_raw(a.client)));
-        unsafe { (host().reg_client_hook)(self.raw, abi::client_hook::FRAME, cb) }
+        unsafe { (host().reg_client_frame)(self.raw, cb) }
     }
 
     /// Every frame on the client for each entity of `kind`, the local player too: its effects

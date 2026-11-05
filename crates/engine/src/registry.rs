@@ -172,6 +172,9 @@ pub struct MenuDef {
     pub on_take: Option<Callback>,
     pub on_tick: Option<Callback>,
     pub screen: Option<Callback>,
+    /// How its screen behaves, `abi::screen_flags`, and its keys (`MenuDesc::on_key`).
+    pub flags: u32,
+    pub on_key: Callback,
 }
 
 /// A slot group (`abi::SlotGroupDesc`), its start resolved.
@@ -356,8 +359,6 @@ pub struct Game {
     pub chat_format: Option<(ModId, Callback)>,
     pub player_menu: Option<u32>,
     pub player_layout: PlayerLayout,
-    /// Mods' screens; of two with one name the mod loaded last comes last.
-    pub screens: Vec<ScreenDef>,
     pub screen_parts: Vec<ScreenPart>,
     /// Block index -> (entity kind, inventory slots).
     pub block_entities: FxHashMap<u32, u32>,
@@ -368,8 +369,8 @@ pub struct Game {
     pub moving_kind: u32,
     pub platform_kind: u32,
     pub energy: u32,
-    /// (owner, hook, callback) in mod order, see `abi::client_hook`.
-    pub client_hooks: Vec<(ModId, u32, Callback)>,
+    /// `Host::reg_client_frame`, in mod order.
+    pub client_frames: Vec<(ModId, Callback)>,
     /// Every frame on the client, for entities of a kind, as many as mods add.
     pub client_entity_watchers: FxHashMap<u32, Vec<(ModId, Callback)>>,
     /// (entity kind's name, model, bone it goes on).
@@ -775,7 +776,6 @@ pub struct RawGame {
     /// (mod, groups (name, cols, rows, flags)): likewise.
     pub player_inventory: Option<(ModId, Vec<(String, u32, u32, u32)>)>,
     pub equipment: Vec<EquipmentSlot>,
-    pub screens: Vec<ScreenDef>,
     pub screen_parts: Vec<ScreenPart>,
     /// (set, words) for `word(#set)` command parameters.
     pub words: Vec<(String, Vec<String>)>,
@@ -793,7 +793,7 @@ pub struct RawGame {
     pub creative_tabs: Vec<(String, String)>,
     /// Components and tags set on other mods' entries.
     pub sets: Vec<RawSet>,
-    pub client_hooks: Vec<(ModId, u32, Callback)>,
+    pub client_frames: Vec<(ModId, Callback)>,
     /// (owner, entity kind, callback).
     pub client_entity_watchers: Vec<(ModId, String, Callback)>,
     /// (entity kind, parts, skin size) set with `Host::reg_entity_model`.
@@ -893,16 +893,6 @@ pub struct ScreenPart {
     pub order: i32,
     pub owner: ModId,
     pub cb: Callback,
-}
-
-#[derive(Clone)]
-pub struct ScreenDef {
-    pub name: String,
-    pub owner: ModId,
-    pub cb: Callback,
-    /// `abi::screen_flags`.
-    pub flags: u32,
-    pub on_key: Callback,
 }
 
 /// Slots of every player's inventory, laid out by the engine from the groups and equipment
@@ -1497,6 +1487,8 @@ pub(crate) unsafe fn copy_menu(owner: ModId, d: &abi::MenuDesc) -> (usize, MenuD
                 on_take: opt(d.on_take),
                 on_tick: opt(d.on_tick),
                 screen: opt(d.screen),
+                flags: d.flags,
+                on_key: d.on_key,
             },
         )
     }
@@ -1783,7 +1775,7 @@ pub fn freeze(
         sky.extend(r.sky);
         configs.extend(r.configs);
         conditions.extend(r.conditions);
-        g.client_hooks.extend(r.client_hooks);
+        g.client_frames.extend(r.client_frames);
         packets.extend(r.packets);
         g.keys.extend(r.keys);
         cameras.extend(r.cameras);
@@ -1820,7 +1812,6 @@ pub fn freeze(
                 player_menu = Some((owner, name));
             }
         }
-        g.screens.extend(r.screens);
         g.screen_parts.extend(r.screen_parts);
         if let Some((owner, l)) = r.player_inventory {
             if player_inventory
@@ -1841,7 +1832,7 @@ pub fn freeze(
     g.falling_kind = g.entity_names[FALLING];
     g.moving_kind = g.entity_names[MOVING];
     g.platform_kind = g.entity_names[PLATFORM];
-    g.client_hooks.sort_by_key(|h| order(h.0));
+    g.client_frames.sort_by_key(|h| order(h.0));
     entity_watchers.sort_by_key(|t| order(t.0));
     for (owner, kind, cb) in entity_watchers {
         match g.entity_names.get(&kind) {
@@ -2326,7 +2317,6 @@ pub fn freeze(
         g.menu_names.insert(m.name.clone(), i as u32);
         g.menus.push(m);
     }
-    g.screens.sort_by_key(|s| order(s.owner));
     g.screen_parts.sort_by_key(|p| (p.order, order(p.owner)));
     g.player_layout = match player_inventory {
         Some((_, groups)) => {

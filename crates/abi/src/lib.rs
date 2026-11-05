@@ -3063,8 +3063,8 @@ pub struct Host {
     ),
 
     // ------------------------------------------------ client side and mod channels
-    /// Client callback, see `client_hook`.
-    pub reg_client_hook: unsafe extern "C" fn(reg: *mut Registrar, hook: u32, cb: Callback),
+    /// `ClientFrameArgs`, every frame on the client before input is handled; may drive the client.
+    pub reg_client_frame: unsafe extern "C" fn(reg: *mut Registrar, cb: Callback),
     /// Every frame for each entity of `kind`, alongside whatever else runs for it.
     pub reg_client_entity_frame: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, cb: Callback),
     /// Every entity of `kind` has `model` on its bone `bone`.
@@ -4490,12 +4490,6 @@ pub struct ReactionDesc {
 defaults!(ReactionDesc { liquid: Str::EMPTY, touching: Str::EMPTY, source: Str::EMPTY, flowing: Str::EMPTY, falls_into: Str::EMPTY });
 
 // ---------------------------------------------------------------- client side
-
-/// Hooks registered with `Host::reg_client_hook`. All run on the main thread.
-pub mod client_hook {
-    /// `ClientFrameArgs`, every frame before input is handled; may drive the client.
-    pub const FRAME: u32 = 0;
-}
 
 #[repr(C)]
 pub struct ClientFrameArgs {

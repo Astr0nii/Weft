@@ -2195,9 +2195,9 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
 }
 
 fn merge_registrars(mods: &[ModMeta], mut regs: Vec<RawRegistrar>, errors: &mut Vec<String>) -> Merged {
-    drop_overridden(mods, &mut regs);
-    // Everything below goes in load order: of two mods' say on one thing the later one's wins.
+    // Everything goes in load order: of two mods' say on one thing the later one's wins.
     regs.sort_by_key(|r| mods[r.owner.0 as usize].order);
+    drop_overridden(&mut regs);
     let mut blocks: Vec<(ModId, RawBlock)> = Vec::new();
     let mut items: Vec<(ModId, RawItem)> = Vec::new();
     let mut biomes: Vec<RawBiome> = Vec::new();
@@ -2229,15 +2229,13 @@ fn merge_registrars(mods: &[ModMeta], mut regs: Vec<RawRegistrar>, errors: &mut 
 
 /// `Registry::replace` and `remove`: what other mods registered under a name replaced, or anyone
 /// under a name removed, is dropped. Of several mods replacing one thing the last in load order wins.
-fn drop_overridden(mods: &[ModMeta], regs: &mut [RawRegistrar]) {
+fn drop_overridden(regs: &mut [RawRegistrar]) {
     use weft_abi::entry_kind as ek;
     let mut by: Vec<FxHashMap<String, (ModId, bool)>> = vec![FxHashMap::default(); ek::NAMES.len()];
     for r in regs.iter() {
         for (kind, name, removed) in &r.overrides {
-            let Some(map) = by.get_mut(*kind as usize) else { continue };
-            let e = map.entry(name.clone()).or_insert((r.owner, *removed));
-            if mods[r.owner.0 as usize].order >= mods[e.0.0 as usize].order {
-                *e = (r.owner, *removed);
+            if let Some(map) = by.get_mut(*kind as usize) {
+                map.insert(name.clone(), (r.owner, *removed));
             }
         }
     }
@@ -3185,6 +3183,15 @@ fn tool_classes(components: &Components) -> Vec<(u32, Option<u32>)> {
         .collect()
 }
 
+/// An edit's fields: each one whose bit is in `set` is taken.
+fn take_set(set: u32, fields: &mut [(u32, &mut dyn FnMut())]) {
+    for (bit, take) in fields {
+        if set & *bit != 0 {
+            take();
+        }
+    }
+}
+
 /// The dimensions a `Where` names, or every one but bare ones.
 fn targets(
     dim_defs: &[DimensionDef],
@@ -3243,19 +3250,15 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
                 if !o.at.biome.is_empty() {
                     m.at.biome = o.at.biome;
                 }
-                let has = |f: u32| o.set & f != 0;
-                if has(os::VEINS) {
-                    m.veins = o.veins;
-                }
-                if has(os::BLOCKS) {
-                    m.size = o.size;
-                }
-                if has(os::SHAPE) {
-                    (m.shape, m.shape_size) = (o.shape, o.shape_size);
-                }
-                if has(os::HEIGHT) {
-                    (m.height, m.plateau, m.at.y) = (o.height, o.plateau, o.at.y);
-                }
+                take_set(
+                    o.set,
+                    &mut [
+                        (os::VEINS, &mut || m.veins = o.veins),
+                        (os::BLOCKS, &mut || m.size = o.size),
+                        (os::SHAPE, &mut || (m.shape, m.shape_size) = (o.shape, o.shape_size)),
+                        (os::HEIGHT, &mut || (m.height, m.plateau, m.at.y) = (o.height, o.plateau, o.at.y)),
+                    ],
+                );
             }
             None => errors.push(format!("ore edit {}: no such ore", o.block)),
         }
@@ -3923,31 +3926,20 @@ fn freeze_liquids(
             errors.push(format!("edit of liquid {name}: no such liquid"));
             continue;
         };
-        let (d, has) = (&mut raw[i], |f: u32| e.set & f != 0);
-        if has(ls::DELAY) {
-            d.delay = e.delay;
-        }
-        if has(ls::DROP_OFF) {
-            d.drop_off = e.drop_off;
-        }
-        if has(ls::SLOPE_FIND) {
-            d.slope_find = e.slope_find;
-        }
-        if has(ls::RENEWABLE) {
-            d.renewable = e.renewable;
-        }
-        if has(ls::DENSITY) {
-            d.density = e.density;
-        }
-        if has(ls::TEMPERATURE) {
-            d.temperature = e.temperature;
-        }
-        if has(ls::FOG) {
-            (d.fog_color, d.fog_distance) = (e.fog_color, e.fog_distance);
-        }
-        if has(ls::OVERLAY) {
-            (overlays[i], d.overlay_opacity) = (overlay, e.overlay_opacity);
-        }
+        let (d, o) = (&mut raw[i], &mut overlays[i]);
+        take_set(
+            e.set,
+            &mut [
+                (ls::DELAY, &mut || d.delay = e.delay),
+                (ls::DROP_OFF, &mut || d.drop_off = e.drop_off),
+                (ls::SLOPE_FIND, &mut || d.slope_find = e.slope_find),
+                (ls::RENEWABLE, &mut || d.renewable = e.renewable),
+                (ls::DENSITY, &mut || d.density = e.density),
+                (ls::TEMPERATURE, &mut || d.temperature = e.temperature),
+                (ls::FOG, &mut || (d.fog_color, d.fog_distance) = (e.fog_color, e.fog_distance)),
+                (ls::OVERLAY, &mut || (*o, d.overlay_opacity) = (overlay.clone(), e.overlay_opacity)),
+            ],
+        );
     }
     let mut order: Vec<usize> = (0..raw.len()).collect();
     order.sort_by(|&a, &b| names[a].cmp(&names[b]));

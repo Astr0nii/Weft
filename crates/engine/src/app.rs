@@ -1157,14 +1157,8 @@ impl Running {
     }
 
     /// Runs the mods' client hooks of one kind with a view that may drive the client.
-    fn client_hooks(&mut self) {
-        let hooks: Vec<(abi::ModId, abi::Callback)> = content()
-            .game
-            .client_hooks
-            .iter()
-            .map(|h| (h.0, h.2))
-            .collect();
-        for (owner, cb) in hooks {
+    fn client_frames(&mut self) {
+        for &(owner, cb) in &content().game.client_frames {
             let mut v = self.frame_view();
             let mut a = abi::ClientFrameArgs { client: v.raw() };
             crate::host::invoke(owner, cb, &mut a);
@@ -1688,7 +1682,7 @@ fn start_frame(r: &mut Running, opts: &Options, dt: f64) {
     r.release_mod_keys();
     r.mod_gizmos.clear();
     r.mod_screen_text.clear();
-    r.client_hooks();
+    r.client_frames();
     if opts.automated && r.screens.is_empty() && r.game.is_some() {
         // The window may not have focus while a mod drives it.
         r.input.captured = true;
