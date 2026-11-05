@@ -108,6 +108,9 @@ pub struct EntityKind {
     pub values: Vec<(u32, Box<[u8]>)>,
     /// Size of the inventory created with it (block entities), 0 = none.
     pub slots: u32,
+    /// Its equipment slots in that inventory (`entity_flags::WEARS`, the player's): never filled
+    /// by pickups, worn on the model. Laid out at freeze.
+    pub worn: std::ops::Range<u32>,
     /// Sound events hurt, death, ambient, step (`u32::MAX` none), from its `sound` component.
     pub sounds: [u32; 4],
     /// Solid bodies: riders up to this high above it move with it.
@@ -1334,7 +1337,7 @@ pub struct RawStructure {
     pub sink: i32,
 }
 
-pub(crate) fn opt(c: Callback) -> Option<Callback> {
+fn opt(c: Callback) -> Option<Callback> {
     c.is_some().then_some(c)
 }
 
@@ -1399,6 +1402,7 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
                 components: Vec::new(),
                 values: Vec::new(),
                 slots: d.slots.min(1 << 16),
+                worn: 0..0,
                 sounds: [u32::MAX; 4],
                 carry_height: d.carry_height,
                 template_name: d.template.as_str().to_string(),
@@ -1552,6 +1556,7 @@ fn builtin(name: &str, width: f32, height: f32, flags: u32) -> EntityKind {
         components: Vec::new(),
         values: Vec::new(),
         slots: 0,
+        worn: 0..0,
         sounds: [u32::MAX; 4],
         carry_height: 0.0,
         template_name: String::new(),
@@ -2327,6 +2332,15 @@ pub fn freeze(
             ..PlayerLayout::new(&[("hotbar".into(), 9, 1, weft_abi::slot_flags::HOTBAR), ("main".into(), 9, 3, 0)], equipment)
         },
     };
+    // Kinds that wear get the equipment slots after their own, the player where its layout says.
+    for k in &mut g.entities {
+        if k.name == PLAYER {
+            k.worn = g.player_layout.worn.clone();
+        } else if k.flags & weft_abi::entity_flags::WEARS != 0 {
+            k.worn = k.slots..k.slots + g.player_layout.worn.len() as u32;
+            k.slots = k.worn.end;
+        }
+    }
     // Menus showing the player's equipment get a group per slot, taking what is worn there.
     let layout = g.player_layout.clone();
     for m in &mut g.menus {

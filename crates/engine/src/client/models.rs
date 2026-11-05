@@ -1133,7 +1133,7 @@ impl Models {
             let kind = match self.by_stack.get(&key) {
                 Some(&k) => k,
                 None => {
-                    let mut a = weft_abi::ItemModelArgs { stack, model: weft_abi::Str::new("") };
+                    let mut a = weft_abi::ItemModelArgs { stack, model: weft_abi::Str::new(""), texture: weft_abi::Str::new("") };
                     crate::host::invoke(owner, cb, &mut a);
                     let name = unsafe { a.model.as_str() }.to_string();
                     let k = if name.is_empty() { None } else { self.load_file(assets, &name, Some(stack.item)) };

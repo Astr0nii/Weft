@@ -945,6 +945,12 @@ impl EntityBuilder<'_> {
         self.no_egg = true;
         self
     }
+    /// It has the player's equipment slots (`Registry::equipment_slot`) after its own: what it
+    /// wears shows on its model and counts like a player's armor; `group(EQUIPMENT_GROUP)` or a
+    /// slot's name in `w.inventory(id)` reaches them.
+    pub fn equipment(self) -> Self {
+        self.flags(entity_flags::WEARS)
+    }
     /// Damage of its melee hits (`World::attack`), like an item's.
     pub fn attack_damage(self, damage: f32) -> Self {
         crate::WithComponents::set(self, &crate::component::ATTACK_DAMAGE, damage)

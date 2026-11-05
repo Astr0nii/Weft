@@ -1369,9 +1369,10 @@ fn mode_modifiers(c: &Content, r: &mut Dim, id: u64, mode: GameMode) {
     }
 }
 
-/// Items in a player's equipment slots that show on the model.
+/// Items in an entity's equipment slots that show on the model.
 fn worn_of(c: &Content, ents: &entity::Entities, id: u64) -> Vec<u32> {
-    let worn = &c.game.player_layout.worn;
+    let Some(e) = ents.get(id) else { return Vec::new() };
+    let worn = &c.game.entities[e.kind as usize].worn;
     let Some(inv) = ents
         .inventories
         .get(&id)

@@ -208,10 +208,14 @@ pub fn register(r: &mut Registry) {
         .no_creative_break()
         .attack_damage(16f32)
         .attack_speed(0.7)
+        .condition(|s, v| {
+            if s.wear() > 0 {
+                v.model("katana_broken");
+            }
+        })
         .on_use(|_| true);
     // A metre of katana in the hand, on the ground and in a slot; much less of one once damaged.
     r.set_model(&GREATSWORD, "katana");
-    r.item_model_for_stack(&GREATSWORD, |s| (s.wear() > 0).then_some("testmod:katana_broken"));
     // Its apple has a model of its own, by one line and a file.
     r.set_model(&crate::APPLE, "food/apple");
     // Its chain hangs and sways by itself: its bones are called `hanging_..`.

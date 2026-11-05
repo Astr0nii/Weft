@@ -1524,6 +1524,22 @@ unsafe extern "C" fn inventory_group(w: *mut abi::WorldCtx, h: *const abi::Holde
                 None => 0,
             };
         }
+        // A wearing kind's equipment, each slot named like it.
+        let worn = &c.game.entities[e.kind as usize].worn;
+        let slot = layout
+            .equipment
+            .iter()
+            .position(|q| q.name == name.as_str())
+            .map(|i| i as u32);
+        let (start, len) = match slot {
+            _ if name.as_str() == registry::EQUIPMENT_GROUP => (worn.start, worn.len() as u32),
+            Some(i) if i < worn.len() as u32 => (worn.start + i, 1),
+            _ => (0, 0),
+        };
+        if len > 0 {
+            *out = abi::SlotGroup { start, len, cols: 1 };
+            return 1;
+        }
         // A block entity's are those of the menu its block opens.
         let found = c
             .game
@@ -1962,7 +1978,7 @@ unsafe extern "C" fn reg_menu(r: *mut abi::Registrar, d: *const abi::MenuDesc) {
         let r = reg(r);
         let (owner, d) = (r.owner, &*d);
         // Its screen opens on the client alone too (`client_op::OPEN_SCREEN`), with nothing to sync.
-        if crate::registry::opt(d.screen).is_some() {
+        if d.screen.is_some() {
             let name = d.name.as_str().to_string();
             r.game
                 .screens

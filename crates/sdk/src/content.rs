@@ -1005,6 +1005,7 @@ impl Registry {
             block: String::new(),
             components: Vec::new(),
             on_use: abi::Callback::NONE,
+            condition: abi::Callback::NONE,
         }
     }
 
@@ -1020,6 +1021,7 @@ impl Registry {
             block: block.to_string(),
             components: Vec::new(),
             on_use: abi::Callback::NONE,
+            condition: abi::Callback::NONE,
         }
     }
 
@@ -1159,28 +1161,6 @@ impl Registry {
     pub fn bone_motion(&mut self, model: &str, bone: &str, motion: BoneMotion) {
         let model = crate::asset("", model);
         unsafe { (host().reg_bone_motion)(self.raw, Str::new(&model), Str::new(bone), motion.gravity, motion.spring, motion.drag) }
-    }
-
-    /// Which model a stack of `item` shows as, by what is in it: `None` for its usual one. Asked once
-    /// per kind of stack. Other players' hands show the usual one: their stacks aren't sent.
-    pub fn item_model_for_stack<R: AsRef<str>>(
-        &mut self,
-        item: impl ModelTarget,
-        f: impl Fn(&abi::ItemStack) -> Option<R> + Send + Sync + 'static,
-    ) {
-        thread_local! {
-            static NAME: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
-        }
-        let cb = callback(move |a: &mut abi::ItemModelArgs| {
-            if let Some(name) = f(&a.stack) {
-                NAME.with(|n| {
-                    *n.borrow_mut() = crate::asset("", name.as_ref());
-                    a.model = Str::new(&n.borrow());
-                });
-            }
-        });
-        let item = qualify(self.ns, item.target().name());
-        unsafe { (host().reg_item_model_for_stack)(self.raw, Str::new(&item), cb) }
     }
 
     /// A text component on entries of any mod.
@@ -2606,9 +2586,25 @@ pub struct ItemBuilder<'a> {
     block: String,
     components: Vec<Pending>,
     on_use: abi::Callback,
+    condition: abi::Callback,
 }
 
 impl ItemBuilder<'_> {
+    /// How a stack of it looks by what is in it, decided once per kind of stack (its data):
+    /// `.condition(|s, v| if s.wear() > 0 { v.texture("can_empty"); })`. Other players' hands
+    /// show the usual look: their stacks aren't sent.
+    pub fn condition(mut self, f: impl Fn(&abi::ItemStack, &mut Looks) + Send + Sync + 'static) -> Self {
+        self.condition = callback(move |a: &mut abi::ItemModelArgs| {
+            let mut v = Looks::default();
+            f(&a.stack, &mut v);
+            LOOKS.with(|l| {
+                *l.borrow_mut() = v;
+                let l = l.borrow();
+                (a.model, a.texture) = (Str::new(&l.model), Str::new(&l.texture));
+            });
+        });
+        self
+    }
     pub fn texture(mut self, t: &str) -> Self {
         self.texture = crate::asset("item", t);
         self
@@ -2758,7 +2754,34 @@ impl Drop for ItemBuilder<'_> {
             ..abi::ItemDesc::DEFAULT
         };
         unsafe { (host().reg_item)(self.raw, &desc) }
+        if self.condition.is_some() {
+            unsafe { (host().reg_item_model_for_stack)(self.raw, Str::new(&self.name), self.condition) }
+        }
     }
+}
+
+/// What `ItemBuilder::condition` changes of a stack's look; what it doesn't set stays.
+#[derive(Default)]
+pub struct Looks {
+    model: String,
+    texture: String,
+}
+
+impl Looks {
+    /// A texture from `item/` instead of its own.
+    pub fn texture(&mut self, t: &str) -> &mut Self {
+        self.texture = crate::asset("item", t);
+        self
+    }
+    /// A model file instead of its own (`set_model`).
+    pub fn model(&mut self, m: &str) -> &mut Self {
+        self.model = crate::asset("", m);
+        self
+    }
+}
+
+thread_local! {
+    static LOOKS: std::cell::RefCell<Looks> = std::cell::RefCell::new(Looks::default());
 }
 
 pub struct BiomeBuilder<'a> {

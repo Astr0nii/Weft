@@ -1366,6 +1366,9 @@ pub mod entity_flags {
     pub const CRUSHES: u32 = 256;
     /// Its riders take the damage of its falls too, as a horse's rider does.
     pub const RIDERS_FALL: u32 = 512;
+    /// Has the equipment slots (`Registry::equipment_slot`) the player has, after its own:
+    /// armor on a zombie, shown on its model and counted like a player's.
+    pub const WEARS: u32 = 1024;
     /// Not a kind flag: set in `EntityState::flags` when its last move ran into a wall.
     pub const BLOCKED: u32 = 1 << 31;
 }
@@ -4491,11 +4494,13 @@ pub struct ClientFrameArgs {
     pub client: *mut ClientCtx,
 }
 
-/// `Host::reg_item_model_for_stack`: the name of the model `stack` shows as, or left empty for its usual.
+/// `Host::reg_item_model_for_stack`: the model and the texture `stack` shows as, each left
+/// empty for its usual.
 #[repr(C)]
 pub struct ItemModelArgs {
     pub stack: ItemStack,
     pub model: Str,
+    pub texture: Str,
 }
 
 /// One entity on the client, for `Host::reg_client_entity_cosmetics`.

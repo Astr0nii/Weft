@@ -178,11 +178,11 @@ Two more clips say how it lies when it isn't in a hand, both moving a bone calle
 - `ground`: on the ground. It turns and bobs by itself at half size, and for a sword to lie flat this is `root` turned 90 degrees on x.
 - `gui`: in a slot, turned like a block is, then made to fit. The picture is drawn once, so nothing moves in it and it may not be scaled.
 
-A model that depends on the stack, a sword that broke say:
+A look that depends on the stack, a sword that broke say, is the item's `condition`:
 ```rust
-r.item_model_for_stack(&SWORD, |s| (s.wear() > 100).then_some("mymod:sword_broken"));
+r.item(&SWORD).condition(|s, v| if s.wear() > 100 { v.model("sword_broken"); });
 ```
-It is asked once per kind of stack. The stacks in other players' hands aren't sent, so there they show the usual model.
+`v.texture(..)` swaps the flat picture the same way, in slots, hands and on the ground. It is asked once per kind of stack. The stacks in other players' hands aren't sent, so there they show the usual model.
 
 ## Models on models
 A second model can sit on a bone of the first, with its own texture and clips, like a tail:

@@ -175,6 +175,16 @@ pub async fn armor(t: T) -> R {
     t.check(worn > 0, "armor took no damage from a zombie hit");
     let hp = t.state().health;
     t.check(hp > 17.0, format!("armor did not reduce the hit: health {hp}"));
+    // A zombie wears the same slots: a helmet goes on its head.
+    let z = t
+        .op(&format!("spawn zombie {}", at(add(f, [3, 0, -2]))))
+        .await?;
+    t.check_eq(t.op(&format!("group {z} core:equipment")).await?, "4 0".to_string(), "a zombie's equipment");
+    t.op(&format!("put {z} 0 diamond_helmet 1")).await?;
+    t.check_eq(t.op(&format!("group {z} base:head")).await?, "1 1".to_string(), "the zombie's head slot");
+    t.c().set_look((-3f32).atan2(2.0).to_degrees(), -10.0);
+    t.secs(0.5).await?;
+    t.shot("zombie_helmet").await?;
     Ok(())
 }
 

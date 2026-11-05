@@ -520,10 +520,10 @@ impl Entities {
     /// Merges into matching stacks, then empty slots. Returns the rest.
     pub fn insert_item(&mut self, c: &Content, owner: u64, mut stack: ItemStack) -> ItemStack {
         let max = c.max_stack(stack.item);
-        // Pickups never go into a player's equipment.
-        let is_player = self.get(owner).is_some_and(|e| e.player);
-        let off = c.game.player_layout.off.filter(|_| is_player);
-        let worn = if is_player { c.game.player_layout.worn.clone() } else { 0..0 };
+        // Pickups never go into equipment.
+        let Some(e) = self.get(owner) else { return stack };
+        let off = c.game.player_layout.off.filter(|_| e.player);
+        let worn = c.game.entities[e.kind as usize].worn.clone();
         let Some(inv) = self.inventories.get_mut(&owner) else { return stack };
         for (_, s) in inv
             .iter_mut()

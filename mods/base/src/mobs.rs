@@ -150,6 +150,7 @@ pub fn register(r: &mut Registry) {
     r.set_model(&PLAYER, humanoid(false));
     r.entity(&ZOMBIE)
         .tag("hostile")
+        .equipment()
         .sound("ambient")
         .sound("hurt")
         .sound("death")
@@ -194,6 +195,7 @@ pub fn register(r: &mut Registry) {
         .goals(creeper());
     r.entity(&SKELETON)
         .tag("hostile")
+        .equipment()
         .size(0.6, 1.99)
         .max_health(20.0)
         .walk_speed(2.5)
