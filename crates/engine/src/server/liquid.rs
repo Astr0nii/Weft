@@ -2,7 +2,7 @@
 //! block reacts to neighbor changes by scheduling a tick after its delay; a tick recomputes the
 //! level from the neighbors, falls if it can and otherwise spreads sideways only towards the
 //! nearest way down within `slope_find`. Mods describe liquids and reactions as data
-//! (`abi::LiquidDesc`, `abi::ReactionDesc`), nothing calls into a mod per update.
+//! (`abi::comp::liquid`, `abi::comp::reaction`), nothing calls into a mod per update.
 
 use glam::{DVec3, IVec3};
 use weft_abi::{ItemStack, block_flags as bf};

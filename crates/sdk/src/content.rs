@@ -74,7 +74,8 @@ pub mod kind {
         TintKind = crate::abi::entry_kind::TINT_KIND,
         RecipeKind = crate::abi::entry_kind::RECIPE_KIND,
         Attribute = crate::abi::entry_kind::ATTRIBUTE,
-        Key = crate::abi::entry_kind::KEY
+        Key = crate::abi::entry_kind::KEY,
+        Liquid = crate::abi::entry_kind::LIQUID
     );
     /// Kinds without ids: entries of their own number, or things known only by name.
     macro_rules! named_kinds {
@@ -96,15 +97,26 @@ pub mod kind {
         Declaration = crate::abi::entry_kind::COMPONENT,
         Recipe = crate::abi::entry_kind::RECIPE,
         LootTable = crate::abi::entry_kind::LOOT,
+        Ore = crate::abi::entry_kind::ORE,
+        Reaction = crate::abi::entry_kind::REACTION,
+        Scatter = crate::abi::entry_kind::SCATTER,
+        Decoration = crate::abi::entry_kind::DECORATION,
+        Structure = crate::abi::entry_kind::STRUCTURE,
+        Template = crate::abi::entry_kind::TEMPLATE,
+        SpawnRule = crate::abi::entry_kind::SPAWN,
+        Terrain = crate::abi::entry_kind::TERRAIN,
         GizmoGroup,
         Shader,
-        Ore,
-        Liquid,
         Question,
-        Chain,
-        Scatter,
-        Template
+        Chain
     );
+    /// The components saying where things go in the world (`comps::common`).
+    pub struct Placement;
+    impl On<Ore> for Placement {}
+    impl On<Scatter> for Placement {}
+    impl On<Decoration> for Placement {}
+    impl On<Structure> for Placement {}
+    impl On<SpawnRule> for Placement {}
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
@@ -183,6 +195,17 @@ impl Dimension {
     /// `r.remove(OVERWORLD.sky(&base::STARS))`.
     pub fn sky(&self, object: &SkyObject) -> &'static SkyObject {
         SkyObject::generated(format!("{}/{}", self.name(), object.name()))
+    }
+    /// Its terrain, for `Registry::edit`: `r.edit(OVERWORLD.terrain()).rule_before(..)`.
+    pub fn terrain(&self) -> &'static Terrain {
+        Terrain::generated(self.name().to_string())
+    }
+}
+
+impl Template {
+    /// The structure placing it, for `Registry::edit`: `r.edit(WELL.structure()).spacing(96)`.
+    pub fn structure(&self) -> &'static Structure {
+        Structure::generated(self.name().to_string())
     }
 }
 
@@ -324,13 +347,26 @@ pub type GizmoGroup = Handle<kind::GizmoGroup>;
 pub type Shader = Handle<kind::Shader>;
 /// The ore of a block, named like it (`r.ore(&IRON_ORE)` makes one), for `Registry::edit`.
 pub type Ore = Handle<kind::Ore>;
-/// The liquid of a block, named like it (`r.liquid(&WATER)` makes one), for `Registry::edit`.
+/// The liquid of a block, named like it (`r.liquid(&WATER)` makes one), for `Registry::edit`;
+/// its id is what `liquid_of` gives.
 pub type Liquid = Handle<kind::Liquid>;
+/// What happens where two liquids meet (`Registry::liquid_reaction`).
+pub type Reaction = Handle<kind::Reaction>;
 pub type TintKind = Handle<kind::TintKind>;
 pub type Scatter = Handle<kind::Scatter>;
+/// What runs on every generated cube (`Registry::decoration`), named `<mod>:decoration`, `/2`..
+/// unless `named`.
+pub type Decoration = Handle<kind::Decoration>;
 /// A fixed shape of blocks (`Registry::template`), for world structures, moving bodies and
 /// `World::place`.
 pub type Template = Handle<kind::Template>;
+/// A template placed while generating, named like it (`Registry::structure`).
+pub type Structure = Handle<kind::Structure>;
+/// A natural spawning rule (`Registry::natural_spawn`), named `<mod>:<entity>`, `/2`.. unless
+/// `named`.
+pub type SpawnRule = Handle<kind::SpawnRule>;
+/// A dimension's terrain, named like it (`Registry::terrain`, `OVERWORLD.terrain()`).
+pub type Terrain = Handle<kind::Terrain>;
 
 /// The engine's tint kinds; biomes color them with `.tint(&GRASS, 0x..)`.
 pub mod tints {
@@ -913,7 +949,7 @@ macro_rules! with_components {
     };
 }
 
-with_components!(BlockBuilder: Block, ItemBuilder: Item, BiomeBuilder: Biome, DimensionBuilder: Dimension, LiquidBuilder: Liquid);
+with_components!(BlockBuilder: Block, ItemBuilder: Item, BiomeBuilder: Biome, DimensionBuilder: Dimension);
 
 /// What carries items: entity kinds (block entities among them) and item stacks.
 pub trait Holds: WithComponents {
@@ -1046,22 +1082,6 @@ impl kind::Edits for kind::Biome {
         b
     }
 }
-impl kind::Edits for kind::Ore {
-    type Builder<'a> = OreBuilder<'a>;
-    fn edit<'a>(r: &'a mut Registry, h: &'static Ore) -> OreBuilder<'a> {
-        let mut b = r.ore(Block::generated(h.name().to_string()));
-        b.desc.edit = 1;
-        b
-    }
-}
-impl kind::Edits for kind::Liquid {
-    type Builder<'a> = LiquidBuilder<'a>;
-    fn edit<'a>(r: &'a mut Registry, h: &'static Liquid) -> LiquidBuilder<'a> {
-        let mut b = r.liquid(Block::generated(h.name().to_string()));
-        b.desc.edit = 1;
-        b
-    }
-}
 
 macro_rules! builds {
     ($($k:ident => $b:ty, $f:ident;)*) => {
@@ -1101,7 +1121,8 @@ impl Registry {
     /// Changes only what the builder sets of something registered already, another mod's or
     /// this one's; the rest stays. Blocks (`r.edit(&base::CACTUS).light(5)`: without
     /// `.states(...)` its states stay, the components set go on top), items, biomes, ores
-    /// (`IRON_ORE.ore()`), liquids (`WATER.liquid()`) and loot tables (`ZOMBIE.loot()`).
+    /// (`IRON_ORE.ore()`), liquids (`WATER.liquid()`), terrains (`OVERWORLD.terrain()`), loot
+    /// tables (`ZOMBIE.loot()`) and the rest by their handles.
     pub fn edit<K: kind::Edits>(&mut self, handle: &'static Handle<K>) -> K::Builder<'_> {
         K::edit(self, handle)
     }
@@ -1216,43 +1237,28 @@ impl Registry {
 
     /// An ore, in every dimension whose ground it may `replace` (`.dimension(..)` limits it):
     /// `r.ore(&TIN_ORE).y(0, 64).veins(6).vein_size(8).replaces("#stone")`.
-    pub fn ore<'a>(&'a mut self, block: &Block) -> OreBuilder<'a> {
-        OreBuilder {
-            raw: self.raw,
-            ns: self.ns,
-            at: At::default(),
-            block: block.name().to_string(),
-            replace: String::new(),
-            replace_with: String::new(),
-            desc: abi::OreDesc::DEFAULT,
-            _p: PhantomData,
-        }
+    pub fn ore(&mut self, block: &Block) -> OreBuilder<'_> {
+        self.ore_entry(block.ore())
+    }
+
+    fn ore_entry(&mut self, ore: &'static Ore) -> OreBuilder<'_> {
+        OreBuilder { reg: self, e: crate::entry::Entry::of(ore) }
     }
 
     /// A template placed now and then on the surface, in every dimension but bare ones unless
     /// `.dimension(..)` says (the structure is called like the template, for `World::structure_near`).
-    pub fn structure<'a>(&'a mut self, template: &Template) -> StructureBuilder<'a> {
-        StructureBuilder {
-            raw: self.raw,
-            template: template.name().to_string(),
-            at: At::default(),
-            desc: abi::StructureDesc::DEFAULT,
-            _p: PhantomData,
-        }
+    pub fn structure(&mut self, template: &Template) -> StructureBuilder<'_> {
+        self.structure_entry(template.structure())
+    }
+
+    fn structure_entry(&mut self, structure: &'static Structure) -> StructureBuilder<'_> {
+        StructureBuilder { reg: self, e: crate::entry::Entry::of(structure) }
     }
 
     /// A fixed shape of blocks, drawn in layers of rows (`layer` + `key`) or filled with boxes
     /// (`fill`), checked when the game loads.
-    pub fn template<'a>(&'a mut self, template: &Template) -> TemplateBuilder<'a> {
-        TemplateBuilder {
-            raw: self.raw,
-            ns: self.ns,
-            name: template.name().to_string(),
-            layers: Vec::new(),
-            keys: Vec::new(),
-            fills: Vec::new(),
-            _p: PhantomData,
-        }
+    pub fn template(&mut self, template: &'static Template) -> TemplateBuilder<'_> {
+        TemplateBuilder { reg: self, e: crate::entry::Entry::of(template), layers: Vec::new(), keys: Vec::new(), fills: Vec::new() }
     }
 
     pub fn dimension<'a>(&'a mut self, dimension: &'static Dimension) -> DimensionBuilder<'a> {
@@ -3016,11 +3022,16 @@ impl Drop for BiomeBuilder<'_> {
         }
         let mut scratch = Vec::new();
         let values = raw_values(&self.components, &mut scratch);
-        let names = self.rule.names(self.ns);
+        let rule = self.rule.qualified(self.ns);
+        let ranges: Vec<abi::FieldRange> = rule
+            .ranges
+            .iter()
+            .map(|r| abi::FieldRange { name: Str::new(&r.name), min: r.min, max: r.max })
+            .collect();
         let desc = abi::BiomeDesc {
             name: Str::new(&self.name),
             cell: cell(self.handle),
-            rule: self.rule.desc(&names),
+            rule: crate::terrain::rule_desc(&rule, &ranges),
             components: Slice::new(&values),
             edit: self.edit as u32,
         };
@@ -3153,122 +3164,73 @@ impl Drop for DimensionBuilder<'_> {
     }
 }
 
-/// Where something may go, `abi::Where`, kept by the builder until it registers.
-#[derive(Default)]
-pub struct At {
-    dims: String,
-    biome: String,
-    y: Option<[i32; 2]>,
-    pub(crate) light: Option<[u32; 2]>,
-    pub(crate) condition: String,
-}
-
-impl At {
-    pub(crate) fn desc(&self) -> abi::Where {
-        let d = abi::Where::DEFAULT;
-        abi::Where {
-            dimensions: Str::new(&self.dims),
-            biome: Str::new(&self.biome),
-            y: self.y.unwrap_or(d.y),
-            light: self.light.unwrap_or(d.light),
-            condition: Str::new(&self.condition),
-        }
-    }
-}
-
-/// The same limits on everything placed in the world: ores, structures, scatters, decorations
-/// (dimensions only) and natural spawns (also `light` and `when`).
-pub trait Placed: Sized {
-    #[doc(hidden)]
-    fn at(&mut self) -> &mut At;
+/// The same limits on everything placed in the world (`comps::common`): ores, structures,
+/// scatters, decorations (dimensions only) and natural spawns.
+pub trait Placed: WithComponents
+where
+    kind::Placement: kind::On<Self::Kind>,
+{
     /// Only in this dimension (call again for more). Without, in every one but bare ones.
-    fn dimension(mut self, dimension: &Dimension) -> Self {
-        let a = self.at();
-        a.dims = format!("{} {}", a.dims, dimension.name());
-        self
+    fn dimension(self, dimension: &Dimension) -> Self {
+        self.push(&crate::comps::common::DIMENSIONS, dimension.name().to_string())
     }
-    /// Only where the biome has this tag (underground ones too: `cave`).
-    fn biome(mut self, tag: &str) -> Self {
-        self.at().biome = tag.to_string();
-        self
+    /// Only where the biome has this tag (underground ones too: `#cave`).
+    fn biome(self, tag: &str) -> Self {
+        self.set_text(&crate::comps::common::BIOME, tag)
     }
     /// Heights, inclusive: where an ore's veins start, a scatter's site, a structure's ground,
     /// a spawn spot.
-    fn y(mut self, min: i32, max: i32) -> Self {
-        self.at().y = Some([min, max]);
-        self
+    fn y(self, min: i32, max: i32) -> Self {
+        self.set(&crate::comps::common::Y, [min, max])
     }
 }
 
-macro_rules! placed {
-    ($($t:ty),*) => {
-        $(impl $crate::Placed for $t {
-            fn at(&mut self) -> &mut $crate::content::At {
-                &mut self.at
-            }
-        })*
-    };
-}
-placed!(
-    StructureBuilder<'_>,
-    OreBuilder<'_>,
-    crate::terrain::ScatterBuilder<'_>,
-    crate::terrain::DecorationBuilder<'_>,
-    crate::game::SpawnBuilder<'_>
-);
+impl<B: WithComponents> Placed for B where kind::Placement: kind::On<B::Kind> {}
 
-/// A template placed now and then while generating (see `abi::StructureDesc`):
+/// A template placed now and then while generating (see `abi::comp::structure`):
 ///
 /// ```ignore
 /// r.template(&WELL).layer(&["ccc", "cwc", "ccc"]).key('c', "cobblestone").key('w', "water");
 /// r.structure(&WELL).dimension(&OVERWORLD).spacing(64).chance(0.3).biome("#animals").buried(1);
 /// ```
 pub struct StructureBuilder<'a> {
-    raw: *mut abi::Registrar,
-    template: String,
-    at: At,
-    desc: abi::StructureDesc,
-    _p: PhantomData<&'a mut Registry>,
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
 
 impl StructureBuilder<'_> {
-    /// One chance per `blocks` x `blocks` cell.
-    pub fn spacing(mut self, blocks: u32) -> Self {
-        self.desc.spacing = blocks;
-        self
+    /// One chance per `blocks` x `blocks` cell (32 unless said).
+    pub fn spacing(self, blocks: u32) -> Self {
+        self.set(&crate::comps::structure::SPACING, blocks)
     }
-    pub fn chance(mut self, c: f32) -> Self {
-        self.desc.chance = c;
-        self
+    /// 0.5 unless said.
+    pub fn chance(self, c: f32) -> Self {
+        self.set(&crate::comps::structure::CHANCE, c)
     }
     /// How far into the ground its bottom layer goes.
-    pub fn buried(mut self, blocks: i32) -> Self {
-        self.desc.buried = blocks;
-        self
-    }
-}
-
-impl Drop for StructureBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let desc = abi::StructureDesc { template: Str::new(&self.template), at: self.at.desc(), ..self.desc };
-        unsafe { (host().reg_structure)(self.raw, &desc) }
+    pub fn buried(self, blocks: i32) -> Self {
+        self.set(&crate::comps::structure::BURIED, blocks)
     }
 }
 
 /// Layers from the bottom up, each a list of rows along z, each character one block along x:
-/// a key says which block it means, a space leaves what is there, `air` clears.
+/// a key says which block it means, a space leaves what is there, `air` clears. An edit adds its
+/// blocks to the template's.
 pub struct TemplateBuilder<'a> {
-    raw: *mut abi::Registrar,
-    ns: &'static str,
-    name: String,
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
     layers: Vec<Vec<String>>,
     keys: Vec<(char, String)>,
     fills: Vec<(String, BlockPos, BlockPos)>,
-    _p: PhantomData<&'a mut Registry>,
 }
+
+crate::entry::entry_builder!(
+    Ore => OreBuilder, ore_entry;
+    Structure => StructureBuilder, structure_entry;
+    Template => TemplateBuilder, template, finish;
+    Liquid => LiquidBuilder, liquid_entry, finish;
+    Reaction => ReactionBuilder, reaction_entry;
+);
 
 impl TemplateBuilder<'_> {
     pub fn layer(mut self, rows: &[&str]) -> Self {
@@ -3278,33 +3240,25 @@ impl TemplateBuilder<'_> {
     }
     /// `block` may name a state (`furnace[lit=true]`) or `air` to clear.
     pub fn key(mut self, c: char, block: &str) -> Self {
-        self.keys.push((c, qualify_block(self.ns, block)));
+        self.keys.push((c, qualify_block(self.reg.ns, block)));
         self
     }
     /// A box of `block` from `from` to `to`, inclusive (a moving body's deck).
     pub fn fill(mut self, block: &str, from: impl Into<BlockPos>, to: impl Into<BlockPos>) -> Self {
         let from = from.into();
         self.fills
-            .push((qualify_block(self.ns, block), from, to.into()));
+            .push((qualify_block(self.reg.ns, block), from, to.into()));
         self
     }
-}
 
-fn qualify_block(ns: &str, block: &str) -> String {
-    if block == "air" { "core:air".to_string() } else { qualify(ns, block) }
-}
-
-impl Drop for TemplateBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let mut names: Vec<(BlockPos, &str)> = Vec::new();
+    /// The layers and boxes as blocks: the whole list of a new template, more for an edit.
+    fn finish(&mut self) {
+        let mut blocks: Vec<abi::TemplateBlock> = Vec::new();
         for (y, layer) in self.layers.iter().enumerate() {
             for (z, row) in layer.iter().enumerate() {
                 for (x, ch) in row.chars().enumerate() {
                     if let Some((_, b)) = self.keys.iter().find(|k| k.0 == ch) {
-                        names.push(([x as i32, y as i32, z as i32].into(), b));
+                        blocks.push(abi::TemplateBlock { pos: [x as i32, y as i32, z as i32], block: b.clone() });
                     }
                 }
             }
@@ -3313,18 +3267,25 @@ impl Drop for TemplateBuilder<'_> {
             for y in f.y.min(t.y)..=f.y.max(t.y) {
                 for z in f.z.min(t.z)..=f.z.max(t.z) {
                     for x in f.x.min(t.x)..=f.x.max(t.x) {
-                        names.push(([x, y, z].into(), b));
+                        blocks.push(abi::TemplateBlock { pos: [x, y, z], block: b.clone() });
                     }
                 }
             }
         }
-        let blocks: Vec<abi::StructureBlock> = names
-            .iter()
-            .map(|(p, b)| abi::StructureBlock { pos: *p, block: Str::new(b) })
-            .collect();
-        let desc = abi::TemplateDesc { name: Str::new(&self.name), blocks: Slice::new(&blocks) };
-        unsafe { (host().reg_template)(self.raw, &desc) }
+        let list = &crate::comps::template::BLOCKS;
+        if self.e.mode == abi::entry_mode::EDIT {
+            let ops = blocks
+                .iter()
+                .map(|b| element(list, b, abi::value_op::PUSH, ""));
+            self.e.ops.extend(ops);
+        } else {
+            self.e.ops.push(list.raw_value(&blocks));
+        }
     }
+}
+
+fn qualify_block(ns: &str, block: &str) -> String {
+    if block == "air" { "core:air".to_string() } else { qualify(ns, block) }
 }
 
 /// Heights ore veins start at (`OreBuilder::height`).
@@ -3378,54 +3339,38 @@ impl Vein {
     }
 }
 
+/// An ore being registered or changed (`r.edit(IRON_ORE.ore())`: what it sets replaces the ore's,
+/// what it `replaces` adds to its).
 pub struct OreBuilder<'a> {
-    raw: *mut abi::Registrar,
-    ns: &'static str,
-    at: At,
-    block: String,
-    replace: String,
-    replace_with: String,
-    desc: abi::OreDesc,
-    _p: PhantomData<&'a mut Registry>,
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
 
 impl OreBuilder<'_> {
     /// How the veins spread over heights: `Height::triangle(-24, 56)` puts most in the middle,
     /// like modern vanilla's iron.
-    pub fn height(mut self, h: Height) -> Self {
-        self.at.y = Some([h.min, h.max]);
-        (self.desc.height, self.desc.plateau) = (h.curve, h.plateau);
-        self.desc.set |= abi::ore_set::HEIGHT;
-        self
+    pub fn height(self, h: Height) -> Self {
+        self.y(h.min, h.max)
+            .set(&crate::comps::ore::HEIGHT, abi::OreHeight { curve: h.curve, plateau: h.plateau })
     }
     /// What a vein looks like (a random walk of `size` blocks unless this says otherwise).
-    pub fn shape(mut self, v: Vein) -> Self {
-        self.desc.shape = v.kind;
-        self.desc.shape_size = [v.radius, v.thickness];
-        self.desc.set |= abi::ore_set::SHAPE;
-        if v.blocks > 0 {
-            self.desc.blocks = v.blocks;
-            self.desc.set |= abi::ore_set::BLOCKS;
-        }
-        self
+    pub fn shape(self, v: Vein) -> Self {
+        let b = self.set(&crate::comps::ore::SHAPE, abi::VeinShape { kind: v.kind, radius: v.radius, thickness: v.thickness });
+        if v.blocks > 0 { b.vein_size(v.blocks) } else { b }
     }
-    /// Veins started per cube.
-    pub fn veins(mut self, n: u32) -> Self {
-        self.desc.veins = n;
-        self.desc.set |= abi::ore_set::VEINS;
-        self
+    /// Veins started per cube (4 unless said).
+    pub fn veins(self, n: u32) -> Self {
+        self.set(&crate::comps::ore::VEINS, n)
     }
-    /// Blocks per vein.
-    pub fn vein_size(mut self, n: u32) -> Self {
-        self.desc.blocks = n;
-        self.desc.set |= abi::ore_set::BLOCKS;
-        self
+    /// Blocks per vein (8 unless said).
+    pub fn vein_size(self, n: u32) -> Self {
+        self.set(&crate::comps::ore::SIZE, n)
     }
     /// Blocks or `#tags` the ore may replace, space separated; again for more.
     pub fn replaces(mut self, blocks: &str) -> Self {
         for b in blocks.split_whitespace() {
-            let name = if b.starts_with('#') { b.to_string() } else { qualify(self.ns, b) };
-            self.replace = format!("{} {name}", self.replace);
+            let name = qualify(self.reg.ns, b);
+            self = self.push(&crate::comps::ore::REPLACES, name);
         }
         self
     }
@@ -3433,32 +3378,15 @@ impl OreBuilder<'_> {
     /// through stone and granite, iron ore in one and granite iron ore in the other.
     pub fn replaces_with(mut self, blocks: &str, ore: &Block) -> Self {
         for b in blocks.split_whitespace() {
-            let name = if b.starts_with('#') { b.to_string() } else { qualify(self.ns, b) };
-            self.replace_with = format!("{} {name}>{}", self.replace_with, ore.name());
+            let variant = abi::OreVariant { name: qualify(self.reg.ns, b), ore: ore.name().to_string() };
+            self = self.push(&crate::comps::ore::REPLACES_WITH, variant);
         }
         self
     }
     /// Share of its blocks left out where they would touch air, as vanilla's in caves (0.5 for
     /// most of them).
-    pub fn exposed(mut self, share: f32) -> Self {
-        self.desc.exposed = share;
-        self
-    }
-}
-
-impl Drop for OreBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let desc = abi::OreDesc {
-            at: self.at.desc(),
-            block: Str::new(&self.block),
-            replace: Str::new(&self.replace),
-            replace_with: Str::new(&self.replace_with),
-            ..self.desc
-        };
-        unsafe { (host().reg_ore)(self.raw, &desc) }
+    pub fn exposed(self, share: f32) -> Self {
+        self.set(&crate::comps::ore::EXPOSED, share)
     }
 }
 
@@ -3800,90 +3728,71 @@ impl ItemUse {
     }
 }
 
-/// A liquid: its block (16 states) and flow rules, optionally a filled bucket item.
+/// A liquid: its block (16 states) and flow rules, optionally a filled bucket item. Its own
+/// components are its flow (`comps::liquid`); its block's (tags, particles) go in `.block(..)`,
+/// and the block's tags are its item's too.
 ///
 /// ```ignore
-/// r.liquid(&OIL).block(|b| b.light_opacity(4)).flow_delay(15).drop_off(2).bucket(&OIL_BUCKET, &BUCKET, &TOOLS);
+/// r.liquid(&OIL).block(|b| b.light_opacity(4).tag("oil")).flow_delay(15).drop_off(2).bucket(&OIL_BUCKET, &BUCKET, &TOOLS);
 /// r.liquid_reaction("#hot", "#water").source_turns_into("obsidian").flowing_turns_into("cobblestone").below_turns_into("stone");
 /// ```
 pub struct LiquidBuilder<'a> {
     reg: &'a mut Registry,
-    name: String,
-    handle: &'static Block,
+    e: crate::entry::Entry,
+    block: &'static Block,
     look: Option<BlockLook>,
-    components: Vec<Pending>,
-    desc: abi::LiquidDesc,
-    overlay: String,
     bucket: Option<(&'static Item, String, String)>,
 }
 
 impl LiquidBuilder<'_> {
     /// Its block, on top of what makes it a liquid (texture `<name>_still`, drawn solid like
-    /// lava): `.block(|b| b.tint(&tints::WATER).translucent().drag(0.4).light(15))`.
+    /// lava): `.block(|b| b.tint(&tints::WATER).translucent().drag(0.4).light(15).tag("water"))`.
+    /// In an edit, what it changes of the block (and the tags of its item).
     pub fn block(mut self, f: impl for<'r> FnOnce(BlockBuilder<'r>) -> BlockBuilder<'r> + 'static) -> Self {
         self.look = Some(Box::new(f));
         self
     }
     /// Ticks between flow steps (water 5, lava 30).
-    pub fn flow_delay(mut self, ticks: u32) -> Self {
-        self.desc.delay = ticks;
-        self.desc.set |= abi::liquid_set::DELAY;
-        self
+    pub fn flow_delay(self, ticks: u32) -> Self {
+        self.set(&crate::comps::liquid::DELAY, ticks)
     }
     /// Level lost per block spread (water 1: 7 blocks, lava 2: 3 blocks).
-    pub fn drop_off(mut self, n: u32) -> Self {
-        self.desc.drop_off = n;
-        self.desc.set |= abi::liquid_set::DROP_OFF;
-        self
+    pub fn drop_off(self, n: u32) -> Self {
+        self.set(&crate::comps::liquid::DROP_OFF, n)
     }
     /// How far it looks for a way down (water 4, lava 2).
-    pub fn slope_find(mut self, n: u32) -> Self {
-        self.desc.slope_find = n;
-        self.desc.set |= abi::liquid_set::SLOPE_FIND;
-        self
+    pub fn slope_find(self, n: u32) -> Self {
+        self.set(&crate::comps::liquid::SLOPE_FIND, n)
     }
     /// New sources form where at least `sources` sources are beside a spot over solid ground
     /// (vanilla water 2). 0: always, one bucket fills everything up to its level; more than the
     /// sides there are: never, as without this call.
-    pub fn renewable(mut self, sources: u32) -> Self {
-        self.desc.renewable = sources;
-        self.desc.set |= abi::liquid_set::RENEWABLE;
-        self
+    pub fn renewable(self, sources: u32) -> Self {
+        self.set(&crate::comps::liquid::RENEWABLE, sources)
     }
     /// Rises instead of falling.
-    pub fn flows_up(mut self) -> Self {
-        self.desc.density = -self.desc.density.abs().max(1);
-        self.desc.set |= abi::liquid_set::DENSITY;
-        self
+    pub fn flows_up(self) -> Self {
+        self.set(&crate::comps::liquid::DENSITY, -1000)
     }
     /// Roughly Kelvin; 1000 and more burns what touches it.
-    pub fn heat(mut self, t: u32) -> Self {
-        self.desc.temperature = t;
-        self.desc.set |= abi::liquid_set::TEMPERATURE;
-        self
+    pub fn heat(self, t: u32) -> Self {
+        self.set(&crate::comps::liquid::HEAT, t)
     }
     /// The fog seen from inside: its color (0xRRGGBB) and how many blocks away it hides
     /// everything. By default the average color of its texture, 96 blocks.
-    pub fn fog(mut self, rgb: u32, blocks: f32) -> Self {
-        self.desc.fog_color = rgb;
-        self.desc.fog_distance = blocks;
-        self.desc.set |= abi::liquid_set::FOG;
-        self
+    pub fn fog(self, rgb: u32, blocks: f32) -> Self {
+        self.set(&crate::comps::liquid::FOG, abi::LiquidFog { color: rgb, distance: blocks })
     }
     /// The picture over the screen from inside, relative names are under `block/`, and how much
     /// of it shows. By default its own texture at 0.1; for an inside that looks unlike the surface, set
     /// this and `fog` apart from its texture.
-    pub fn overlay(mut self, texture: &str, opacity: f32) -> Self {
-        self.overlay = crate::asset("block", texture);
-        self.desc.overlay_opacity = opacity;
-        self.desc.set |= abi::liquid_set::OVERLAY;
-        self
+    pub fn overlay(self, texture: &str, opacity: f32) -> Self {
+        let texture = crate::asset("block", texture);
+        self.set(&crate::comps::liquid::OVERLAY, abi::LiquidOverlay { texture, opacity })
     }
     /// Nothing over the screen from inside.
-    pub fn no_overlay(mut self) -> Self {
-        self.desc.overlay_opacity = 0.0;
-        self.desc.set |= abi::liquid_set::OVERLAY;
-        self
+    pub fn no_overlay(self) -> Self {
+        self.set(&crate::comps::liquid::OVERLAY, abi::LiquidOverlay { texture: String::new(), opacity: 0.0 })
     }
     /// Also registers `item`: `empty` (a container item, any mod's) filled with this liquid, in
     /// creative tab `tab` (any mod's). The engine fills and pours it; no code needed.
@@ -3891,145 +3800,125 @@ impl LiquidBuilder<'_> {
         self.bucket = Some((item, empty.name().to_string(), tab_tag(tab)));
         self
     }
-}
 
-impl Drop for LiquidBuilder<'_> {
-    fn drop(&mut self) {
+    /// Its block and item: registered with a new liquid, edited where `.block(..)` says so.
+    fn finish(&mut self) {
         if std::thread::panicking() {
             return;
         }
-        if self.desc.edit != 0 {
-            let desc = abi::LiquidDesc { name: Str::new(&self.name), overlay: Str::new(&self.overlay), ..self.desc };
-            unsafe { (host().reg_liquid)(self.reg.raw, &desc) };
-            // Its block's and its item's say: the look, tags and components set.
-            if self.look.is_some() || !self.components.is_empty() {
-                let look = self.look.take().unwrap_or_else(|| Box::new(|b| b));
-                let mut b = look(self.reg.edit(self.handle));
-                b.components.extend(self.components.iter().cloned());
-                drop(b);
-                let mut it = self.reg.edit(Item::generated(self.name.clone()));
-                it.components = std::mem::take(&mut self.components);
-                drop(it);
-            }
-            self.register_bucket();
-            return;
+        let name = self.e.name.clone();
+        let new = self.e.mode == abi::entry_mode::NEW;
+        if new || self.look.is_some() {
+            let look = self.look.take().unwrap_or_else(|| Box::new(|b| b));
+            // The engine makes its 16 states liquid (flags, look, level) from its entry.
+            let b = if new {
+                let tex = format!("{}_still", self.block.path());
+                look(
+                    self.reg
+                        .block(self.block)
+                        .texture(&tex)
+                        .prop("level", 0..=15)
+                        .unbreakable()
+                        .light_opacity(2)
+                        .no_item()
+                        .drops_nothing(),
+                )
+            } else {
+                look(self.reg.edit(self.block))
+            };
+            let texture = new.then(|| b.states[0].textures[0].clone());
+            // The same tags on its item: `#water` in a recipe is the liquid too.
+            let tags: Vec<Pending> = b
+                .components
+                .iter()
+                .filter(|p| p.is_tag())
+                .cloned()
+                .collect();
+            drop(b);
+            let item = Item::generated(name.clone());
+            let mut it = match texture {
+                Some(texture) => {
+                    let mut it = self
+                        .reg
+                        .item(item)
+                        .set_text(&c::FLUID, &name)
+                        .max_stack(u32::MAX);
+                    it.texture = texture;
+                    it
+                }
+                None => self.reg.edit(item),
+            };
+            it.components.extend(tags);
         }
-        let look = self.look.take().unwrap_or_else(|| Box::new(|b| b));
-        let tex = format!("{}_still", self.handle.path());
-        // The engine makes its 16 states liquid (flags, look, level) from `reg_liquid`.
-        let mut b = look(
-            self.reg
-                .block(self.handle)
-                .texture(&tex)
-                .prop("level", 0..=15)
-                .unbreakable()
-                .light_opacity(2)
-                .no_item()
-                .drops_nothing(),
-        );
-        let tex = b.states[0].textures[0].clone();
-        // The same tags on its item: `#water` in a recipe is the liquid too.
-        b.components.append(&mut self.components);
-        let tags: Vec<String> = b
-            .components
-            .iter()
-            .filter(|p| p.is_tag())
-            .map(|p| p.name.clone())
-            .collect();
-        drop(b);
-        let mut it = self
-            .reg
-            .item(&Item::generated(self.name.clone()))
-            .set_text(&c::FLUID, &self.name)
-            .max_stack(u32::MAX);
-        it.texture = tex;
-        for t in &tags {
-            it = it.tag(t);
-        }
-        drop(it);
-        let desc = abi::LiquidDesc { name: Str::new(&self.name), overlay: Str::new(&self.overlay), ..self.desc };
-        unsafe { (host().reg_liquid)(self.reg.raw, &desc) };
-        self.register_bucket();
-    }
-}
-
-impl LiquidBuilder<'_> {
-    fn register_bucket(&mut self) {
         if let Some((item, empty, tab)) = self.bucket.take() {
             self.reg
                 .item(item)
                 .max_stack(1)
-                .set_text(&c::LIQUID, &self.name)
+                .set_text(&c::LIQUID, &name)
                 .set_text(&c::REMAINDER, &empty)
                 .tag(&tab);
         }
     }
 }
 
+/// What happens where two liquids meet, named `<mod>:<liquid>><touching>` (`base:hot>water`)
+/// unless `named`.
 pub struct ReactionBuilder<'a> {
     reg: &'a mut Registry,
-    liquid: String,
-    touching: String,
-    source: String,
-    flowing: String,
-    falls_into: String,
+    e: crate::entry::Entry,
 }
 
 impl ReactionBuilder<'_> {
-    /// What a source of the liquid becomes.
-    pub fn source_turns_into(mut self, block: &str) -> Self {
-        self.source = qualify(self.reg.ns, block);
+    /// Its name instead of `<mod>:<liquid>><touching>`.
+    pub fn named(mut self, name: &str) -> Self {
+        let derived = std::mem::replace(&mut self.e.name, qualify(self.reg.ns, name));
+        self.reg.derived.retain(|n| *n != derived);
         self
+    }
+    /// What a source of the liquid becomes.
+    pub fn source_turns_into(self, block: &str) -> Self {
+        let block = qualify(self.reg.ns, block);
+        self.set_text(&crate::comps::reaction::SOURCE, &block)
     }
     /// What flowing liquid becomes.
-    pub fn flowing_turns_into(mut self, block: &str) -> Self {
-        self.flowing = qualify(self.reg.ns, block);
-        self
+    pub fn flowing_turns_into(self, block: &str) -> Self {
+        let block = qualify(self.reg.ns, block);
+        self.set_text(&crate::comps::reaction::FLOWING, &block)
     }
     /// What the touched liquid becomes when this one flows down into it.
-    pub fn below_turns_into(mut self, block: &str) -> Self {
-        self.falls_into = qualify(self.reg.ns, block);
-        self
-    }
-}
-
-impl Drop for ReactionBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let desc = abi::ReactionDesc {
-            liquid: Str::new(&self.liquid),
-            touching: Str::new(&self.touching),
-            source: Str::new(&self.source),
-            flowing: Str::new(&self.flowing),
-            falls_into: Str::new(&self.falls_into),
-            ..abi::ReactionDesc::DEFAULT
-        };
-        unsafe { (host().reg_liquid_reaction)(self.reg.raw, &desc) }
+    pub fn below_turns_into(self, block: &str) -> Self {
+        let block = qualify(self.reg.ns, block);
+        self.set_text(&crate::comps::reaction::FALLS_INTO, &block)
     }
 }
 
 impl Registry {
     /// A liquid the engine flows; see `LiquidBuilder`. Defaults are vanilla water's numbers, an
     /// average of its texture for the fog's color.
-    pub fn liquid<'a>(&'a mut self, liquid: &'static Block) -> LiquidBuilder<'a> {
-        LiquidBuilder {
-            name: liquid.name().to_string(),
-            reg: self,
-            handle: liquid,
-            look: None,
-            components: Vec::new(),
-            desc: abi::LiquidDesc::DEFAULT,
-            overlay: String::new(),
-            bucket: None,
-        }
+    pub fn liquid(&mut self, liquid: &'static Block) -> LiquidBuilder<'_> {
+        LiquidBuilder { e: crate::entry::Entry::of(liquid.liquid()), reg: self, block: liquid, look: None, bucket: None }
+    }
+
+    fn liquid_entry(&mut self, liquid: &'static Liquid) -> LiquidBuilder<'_> {
+        let block = Block::generated(liquid.name().to_string());
+        LiquidBuilder { e: crate::entry::Entry::of(liquid), reg: self, block, look: None, bucket: None }
     }
 
     /// When `liquid` touches `touching` (names or `#tags` of liquid blocks), see `ReactionBuilder`.
-    pub fn liquid_reaction<'a>(&'a mut self, liquid: &str, touching: &str) -> ReactionBuilder<'a> {
+    pub fn liquid_reaction(&mut self, liquid: &str, touching: &str) -> ReactionBuilder<'_> {
         let (liquid, touching) = (qualify(self.ns, liquid), qualify(self.ns, touching));
-        ReactionBuilder { reg: self, liquid, touching, source: String::new(), flowing: String::new(), falls_into: String::new() }
+        let path = |n: &str| {
+            let n = n.trim_start_matches('#');
+            n.split_once(':').map_or(n, |x| x.1).to_string()
+        };
+        let name = self.derive_name(&format!("{}>{}", path(&liquid), path(&touching)));
+        ReactionBuilder { reg: self, e: crate::entry::Entry::new(abi::entry_kind::REACTION, name) }
+            .set_text(&crate::comps::reaction::LIQUID, &liquid)
+            .set_text(&crate::comps::reaction::TOUCHING, &touching)
+    }
+
+    fn reaction_entry(&mut self, reaction: &'static Reaction) -> ReactionBuilder<'_> {
+        ReactionBuilder { reg: self, e: crate::entry::Entry::of(reaction) }
     }
 }
 

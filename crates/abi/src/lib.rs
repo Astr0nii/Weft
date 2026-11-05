@@ -406,10 +406,26 @@ pub mod entry_kind {
     pub const RECIPE: u32 = 32;
     /// Named like the block or entity kind that drops it, or a table of its own.
     pub const LOOT: u32 = 33;
+    /// Named like its block.
+    pub const ORE: u32 = 34;
+    /// Named like its block (16 states, see `comp::liquid`).
+    pub const LIQUID: u32 = 35;
+    /// What happens where two liquids meet, `<mod>:<liquid>><touching>` by default.
+    pub const REACTION: u32 = 36;
+    pub const SCATTER: u32 = 37;
+    /// `<mod>:decoration`, `/2`.. by default.
+    pub const DECORATION: u32 = 38;
+    /// Named like its template.
+    pub const STRUCTURE: u32 = 39;
+    pub const TEMPLATE: u32 = 40;
+    /// A natural spawning rule, `<mod>:<entity>`, `/2`.. by default.
+    pub const SPAWN: u32 = 41;
+    /// A dimension's terrain, named like the dimension.
+    pub const TERRAIN: u32 = 42;
     /// Kinds that carry components (block to dimension).
     pub const COUNT: usize = 5;
     /// Each kind's name for messages, by value.
-    pub const NAMES: [&str; 34] = [
+    pub const NAMES: [&str; 43] = [
         "block",
         "item",
         "entity",
@@ -444,6 +460,15 @@ pub mod entry_kind {
         "component",
         "recipe",
         "loot table",
+        "ore",
+        "liquid",
+        "liquid reaction",
+        "scatter",
+        "decoration",
+        "structure",
+        "template",
+        "spawn rule",
+        "terrain",
     ];
 }
 
@@ -893,6 +918,142 @@ pub mod comp {
     pub mod loot {
         pub const POOLS: &str = "loot.pools";
         pub const SWAPS: &str = "loot.swaps";
+    }
+
+    /// Where an ore, scatter, structure, decoration or spawn rule goes; what isn't set doesn't
+    /// limit it. `DIMENSIONS` (`[str]`, full names; none: every one but `dim_flags::BARE` ones),
+    /// `BIOME` (`str`, a tag the biome must carry: `cave`), `Y` (`[i32;2]`, inclusive heights: where
+    /// an ore's veins start, a scatter's site, a structure's ground, a spawn spot). A decoration
+    /// decides biome and height itself.
+    pub mod common {
+        pub const DIMENSIONS: &str = "dimensions";
+        pub const BIOME: &str = "biome";
+        pub const Y: &str = "y";
+    }
+
+    /// An ore's (`entry_kind::ORE`), scattered after the dimension's generator: `VEINS` (`u32`,
+    /// started per cube, 4), `SIZE` (`u32`, blocks per vein, 8), `SHAPE` (`VeinShape`, a walk),
+    /// `HEIGHT` (`OreHeight`, how the starts spread over `common::Y`, evenly), `REPLACES`
+    /// (`[str]`, blocks or `#tags` it may replace), `REPLACES_WITH` (`[OreVariant]`), `EXPOSED`
+    /// (`f32`, share of its blocks left out where they would touch air, 0).
+    pub mod ore {
+        pub const VEINS: &str = "ore.veins";
+        pub const SIZE: &str = "ore.size";
+        pub const SHAPE: &str = "ore.shape";
+        pub const HEIGHT: &str = "ore.height";
+        pub const REPLACES: &str = "ore.replaces";
+        pub const REPLACES_WITH: &str = "ore.replaces_with";
+        pub const EXPOSED: &str = "ore.exposed";
+    }
+
+    /// A liquid's flow (`entry_kind::LIQUID`; its block has 16 states: 0 the source, 1..7 flowing
+    /// with less and less, 8 falling): `DELAY` (`u32`, ticks between flow steps, 5), `DROP_OFF`
+    /// (`u32`, level lost per block of spread, 1: 7 blocks), `SLOPE_FIND` (`u32`, how far flowing
+    /// liquid looks for a way down, 4), `RENEWABLE` (`u32`, a spot over solid ground or a source
+    /// with at least this many sources beside it becomes one, 0 always; never), `DENSITY` (`i32`,
+    /// negative rises, 1000), `HEAT` (`u32`, roughly Kelvin, 300; from 1000 up it burns what
+    /// touches it), `FOG` (`LiquidFog`, seen from inside, the average color of its texture and 96
+    /// blocks), `OVERLAY` (`LiquidOverlay`, over the screen from inside, its own texture at 0.1).
+    pub mod liquid {
+        pub const DELAY: &str = "liquid.delay";
+        pub const DROP_OFF: &str = "liquid.drop_off";
+        pub const SLOPE_FIND: &str = "liquid.slope_find";
+        pub const RENEWABLE: &str = "liquid.renewable";
+        pub const DENSITY: &str = "liquid.density";
+        pub const HEAT: &str = "liquid.heat";
+        pub const FOG: &str = "liquid.fog";
+        pub const OVERLAY: &str = "liquid.overlay";
+    }
+
+    /// What happens where two liquids meet (`entry_kind::REACTION`): when `LIQUID` (`str`, a
+    /// liquid block or `#tag`) has `TOUCHING` (`str`, likewise) beside or above it, it turns into
+    /// `SOURCE` (`str`, a block) if it was a source, else `FLOWING` (`str`); when it flows down
+    /// into `TOUCHING`, that block becomes `FALLS_INTO` (`str`). What is not set stays as it is.
+    pub mod reaction {
+        pub const LIQUID: &str = "reaction.liquid";
+        pub const TOUCHING: &str = "reaction.touching";
+        pub const SOURCE: &str = "reaction.source";
+        pub const FLOWING: &str = "reaction.flowing";
+        pub const FALLS_INTO: &str = "reaction.falls_into";
+    }
+
+    /// Something scattered over the ground on a grid (`entry_kind::SCATTER`, trees): one site per
+    /// `CELL` x `CELL` square (`i32`, 8) at a seeded spot, kept with the chance the biome's
+    /// `DENSITY` component gives (`str`, the name of an `f32` 0..1 on biomes; none there: no
+    /// sites), on `GROUND` (`[str]`, blocks or `#tags`; none: any), not under the terrain's sea
+    /// nor where caves took the ground. `SHAPE` (`callback`, `ScatterArgs`, pure: called for each
+    /// cube the site reaches) puts blocks up to `REACH` (`i32`, 0) sideways, `REACH_UP` (`i32`,
+    /// 32) above and `REACH_DOWN` (`i32`, 16) below the site; what goes further is left out.
+    pub mod scatter {
+        pub const CELL: &str = "scatter.cell";
+        pub const REACH: &str = "scatter.reach";
+        pub const REACH_UP: &str = "scatter.reach_up";
+        pub const REACH_DOWN: &str = "scatter.reach_down";
+        pub const DENSITY: &str = "scatter.density";
+        pub const GROUND: &str = "scatter.ground";
+        pub const SHAPE: &str = "scatter.shape";
+    }
+
+    /// A decoration's `GENERATE` (`callback`, `GenArgs`): runs on every generated cube after the
+    /// generator and the scatters, pure like a generator.
+    pub mod decoration {
+        pub const GENERATE: &str = "decoration.generate";
+    }
+
+    /// A structure's (`entry_kind::STRUCTURE`, named like the template it places): a `CHANCE`
+    /// (`f32`, 0.5) per `SPACING` x `SPACING` cell (`u32`, 32) of the world, standing on the
+    /// surface sunk by `BURIED` (`i32`, 0) blocks.
+    pub mod structure {
+        pub const SPACING: &str = "structure.spacing";
+        pub const CHANCE: &str = "structure.chance";
+        pub const BURIED: &str = "structure.buried";
+    }
+
+    /// A template's `BLOCKS` (`[TemplateBlock]`): a fixed shape for world structures, moving
+    /// bodies and `Host::place_template`, checked when the game loads.
+    pub mod template {
+        pub const BLOCKS: &str = "template.blocks";
+    }
+
+    /// A natural spawning rule's (`entry_kind::SPAWN`). Every two seconds the engine tries a few
+    /// spots 20 to 45 blocks from each player; a spot takes one of the rules that hold there, by
+    /// `WEIGHT` (`u32`, 1), while that entity category is under its cap near the player (8
+    /// hostile, 6 passive, 6 other within 64 blocks). `ENTITY` (`str`) spawns `GROUP` (`[u32;2]`,
+    /// at least and at most, 1 and 1) at a time with `CHANCE` (`f32`, 1) per attempt once picked,
+    /// at a `PLACE` (`u32`, `spawn_place`, on the ground) whose block carries tag `GROUND` (`str`:
+    /// under it, above it for a ceiling, the liquid itself; none: any), where the light is in
+    /// `LIGHT` (`[u32;2]`, inclusive, the brighter of sky light times daylight and block light;
+    /// 0..15) and condition `WHEN` (`str`) holds. The `core:mob_spawning` rule turns it off.
+    pub mod spawn {
+        pub const ENTITY: &str = "spawn.entity";
+        pub const GROUND: &str = "spawn.ground";
+        pub const PLACE: &str = "spawn.place";
+        pub const GROUP: &str = "spawn.group";
+        pub const WEIGHT: &str = "spawn.weight";
+        pub const CHANCE: &str = "spawn.chance";
+        pub const LIGHT: &str = "spawn.light";
+        pub const WHEN: &str = "spawn.when";
+    }
+
+    /// A dimension's terrain (`entry_kind::TERRAIN`): `STONE` (`str`, the block it is made of),
+    /// `BASE_HEIGHT` (`f64`, the ground before features, 64), `SEA` (`TerrainSea`, none), `CAVES`
+    /// (`TerrainCaves`, none), `FIELDS` (`[TerrainField]`, after the engine's `temperature`,
+    /// `humidity` and `continent`; one named again takes the earlier one's place), `FEATURES`
+    /// (`[TerrainFeature]`), `MASKS` (`[FeatureMask]`), `RULES` (`[BiomeRule]`, tried in order:
+    /// the first that fits wins, the last where none does), `RULE_EDITS` (`[BiomeRule]`: what
+    /// each one's `fields` give replaces that of the rule of its name), `CAVE_BIOMES`
+    /// (`[CaveBiome]`).
+    pub mod terrain {
+        pub const STONE: &str = "terrain.stone";
+        pub const BASE_HEIGHT: &str = "terrain.base_height";
+        pub const SEA: &str = "terrain.sea";
+        pub const CAVES: &str = "terrain.caves";
+        pub const FIELDS: &str = "terrain.fields";
+        pub const FEATURES: &str = "terrain.features";
+        pub const MASKS: &str = "terrain.masks";
+        pub const RULES: &str = "terrain.rules";
+        pub const RULE_EDITS: &str = "terrain.rule_edits";
+        pub const CAVE_BIOMES: &str = "terrain.cave_biomes";
     }
 
     /// A weather's (`entry_kind::WEATHER`). How it looks, each `f32` 0..1 (rain's unless set):
@@ -1486,59 +1647,6 @@ pub struct GenArgs {
     pub columns: *const TerrainColumn,
 }
 
-/// Where something may go (ores, structures, scatters, decorations, natural spawns); what is
-/// left empty doesn't limit it.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Where {
-    /// Space separated full dimension names, empty: every dimension (`dim_flags::BARE` ones only
-    /// when named).
-    pub dimensions: Str,
-    /// Tag the biome must carry (`forest`, `cave`).
-    pub biome: Str,
-    /// Inclusive heights: the vein's start, the site, the structure's ground, the spawn spot.
-    pub y: [i32; 2],
-    /// Natural spawns: inclusive range of light at the spot, the brighter of sky light times
-    /// daylight and block light.
-    pub light: [u32; 2],
-    /// Natural spawns: a condition (name) the spot has to meet too.
-    pub condition: Str,
-}
-defaults!(Where { dimensions: Str::EMPTY, biome: Str::EMPTY, y: [i32::MIN, i32::MAX], light: [0, 15], condition: Str::EMPTY });
-
-/// Something scattered over the ground on a grid (trees), in every dimension where its
-/// biomes stand. One site per `cell` x `cell` square at a seeded spot, kept with the chance
-/// the biome's `density` component gives; not under the terrain's sea, not where caves took
-/// the ground.
-#[repr(C)]
-pub struct ScatterDesc {
-    pub name: Str,
-    pub at: Where,
-    pub cell: i32,
-    /// How far blocks reach sideways from the site, so cubes next to it get their part.
-    pub reach: i32,
-    /// How far above and below the site blocks may go; further ones are left out.
-    pub reach_up: i32,
-    pub reach_down: i32,
-    /// A biome component (`f32`, 0..1): the chance of a site per cell. No value: none there.
-    pub density: Str,
-    /// Space-separated block names or `#tags` the ground may contain.
-    pub ground: Str,
-    /// `ScatterArgs`. Pure: called once for each cube the site reaches.
-    pub shape: Callback,
-}
-defaults!(ScatterDesc {
-    name: Str::EMPTY,
-    at: Where::DEFAULT,
-    cell: 8,
-    reach: 0,
-    reach_up: 32,
-    reach_down: 16,
-    density: Str::EMPTY,
-    ground: Str::EMPTY,
-    shape: Callback::NONE
-});
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ScatterBlock {
@@ -1654,37 +1762,10 @@ pub struct ColumnArgs {
     pub biome: u32,
 }
 
-/// A block of a structure template, relative to its lowest corner.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct StructureBlock {
-    pub pos: BlockPos,
-    /// Block state name (`base:furnace#2`); `core:air` clears what is there.
-    pub block: Str,
-}
-
-/// A structure the engine places while generating (`Host::reg_structure`): one chance per
-/// `spacing` x `spacing` cell of the world, standing on the surface (the dimension's `column`)
-/// sunk by `buried` blocks, where the biome has the tag.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct StructureDesc {
-    /// The template (`Host::reg_template`) it places; the structure is called like it.
-    pub template: Str,
-    pub at: Where,
-    pub spacing: u32,
-    pub chance: f32,
-    pub buried: i32,
-}
-defaults!(StructureDesc { template: Str::EMPTY, at: Where::DEFAULT, spacing: 32, chance: 0.5, buried: 0 });
-
-/// A fixed shape of blocks, checked when the game loads: world structures, moving bodies
-/// (`EntityDesc::template`) and `Host::place_template` take it.
-#[repr(C)]
-pub struct TemplateDesc {
-    pub name: Str,
-    /// Positions from its lowest corner; `core:air` clears.
-    pub blocks: Slice<StructureBlock>,
+crate::data! {
+    /// A block of a template (`comp::template::BLOCKS`) from its lowest corner: a block or one of
+    /// its states (`base:furnace[lit=true]`), `core:air` clearing what is there.
+    pub struct TemplateBlock { pub pos: [i32; 3], pub block: alloc::string::String }
 }
 
 // ---------------------------------------------------------------- callback args
@@ -1935,7 +2016,7 @@ pub struct EntityDesc {
     /// Solid bodies: how far above it a rider may be (jumping) and still move with it, keeping
     /// its own motion relative to the body; 0 = only while standing on it.
     pub carry_height: f32,
-    /// A moving body built of this template (`Host::reg_template`), block (0, 0, 0)
+    /// A moving body built of this template (`entry_kind::TEMPLATE`), block (0, 0, 0)
     /// centered on the entity; its box is what the blocks fill.
     pub template: Str,
     /// A category by name (`core:misc`, `core:hostile`, `core:passive`, or a mod's
@@ -3077,11 +3158,6 @@ pub struct Host {
     /// `client` non-zero: it runs on the client that types it, never sent to the server, `cb` getting
     /// `CommandArgs` with `client` set.
     pub reg_command: unsafe extern "C" fn(reg: *mut Registrar, name: Str, usage: Str, client: u32, cb: Callback),
-    pub reg_ore: unsafe extern "C" fn(reg: *mut Registrar, desc: *const OreDesc),
-    pub reg_scatter: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ScatterDesc),
-    /// `cb` (`GenArgs`) runs after a cube was generated, in the dimensions named (space
-    /// separated; empty: every dimension but `dim_flags::BARE` ones). Pure like a generator.
-    pub reg_decoration: unsafe extern "C" fn(reg: *mut Registrar, at: *const Where, cb: Callback),
 
     /// Sets or removes a component (or tag) on entries of any mod, see `SetDesc`.
     pub reg_set: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SetDesc),
@@ -3407,9 +3483,6 @@ pub struct Host {
     pub name_of: unsafe extern "C" fn(kind: u32, id: u32) -> Str,
 
     // ------------------------------------------------ liquids
-    /// Makes a registered block (16 liquid states, see `LiquidDesc`) a liquid the engine flows.
-    pub reg_liquid: unsafe extern "C" fn(reg: *mut Registrar, desc: *const LiquidDesc),
-    pub reg_liquid_reaction: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ReactionDesc),
     /// Liquid id of a block state, `u32::MAX` for none.
     pub liquid_of: unsafe extern "C" fn(state: u32) -> u32,
     /// Places or takes a liquid like a bucket would for `player` holding `stack` (what the engine
@@ -3520,8 +3593,6 @@ pub struct Host {
     pub play_sound: unsafe extern "C" fn(world: *mut WorldCtx, sound: u32, pos: *const Vec3, volume: f32, pitch: f32),
     /// Client: only this client hears it; `pos` null = not positioned (UI).
     pub client_play_sound: unsafe extern "C" fn(client: *mut ClientCtx, sound: u32, pos: *const Vec3, volume: f32, pitch: f32),
-    /// A natural spawning rule, see `SpawnDesc`.
-    pub reg_spawn: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SpawnDesc),
     /// Biome id at a block (underground biomes included); 0 where nothing is loaded.
     pub biome_at: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos) -> u32,
     /// Entity `id` walks to `target` by itself along a path around obstacles (a moving target can
@@ -3530,8 +3601,6 @@ pub struct Host {
     pub navigate: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, target: *const Vec3, speed: f32) -> u32,
     /// Whether `id` is still walking somewhere.
     pub navigating: unsafe extern "C" fn(world: *mut WorldCtx, id: u64) -> u32,
-    pub reg_structure: unsafe extern "C" fn(reg: *mut Registrar, desc: *const StructureDesc),
-    pub reg_template: unsafe extern "C" fn(reg: *mut Registrar, desc: *const TemplateDesc),
     /// A `blocks` component value's list: (state, weight) pairs.
     pub block_list: unsafe extern "C" fn(index: u32) -> Slice<[u32; 2]>,
     /// Places template `name` with its lowest corner at `pos`; 0 if it doesn't exist or part of
@@ -3586,8 +3655,6 @@ pub struct Host {
     pub body_move_to: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, pos: *const Vec3, ticks: u32),
     /// What a comparator would read of the block at `pos` may be different now.
     pub signal_read_changed: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos),
-    /// Describes or edits the terrain of a dimension, see `TerrainDesc`.
-    pub reg_terrain: unsafe extern "C" fn(reg: *mut Registrar, desc: *const TerrainDesc),
     /// Column (`x`, `z`) of dimension `dim` for `seed` (its terrain's or `DimensionDesc::column`),
     /// generated or not. Returns 0 if the dimension has neither.
     pub dim_column: unsafe extern "C" fn(dim: u32, seed: u64, x: i32, z: i32, out: *mut TerrainColumn) -> u32,
@@ -3612,36 +3679,6 @@ pub struct Host {
         unsafe extern "C" fn(world: *mut WorldCtx, key: u64, from: *const BlockPos, to: *const BlockPos, mode: u32, ticks: u32) -> u32,
     pub player_camera: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, mode: u32, locked: u32, transition: f32, easing: u32),
 }
-
-/// Natural spawning around players (`Host::reg_spawn`). Every two seconds the engine tries a few
-/// spots 20 to 45 blocks from each player; a spot takes one of the rules whose conditions all
-/// hold there (by weight) while that entity category is under its cap near the player (8
-/// hostile, 6 passive, 6 other within 64 blocks). The `core:mob_spawning` rule turns it off.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SpawnDesc {
-    pub entity: Str,
-    pub at: Where,
-    /// Tag the block the spot rests on must carry (under it, above it for `CEILING`, the
-    /// liquid itself for `IN_LIQUID`), empty: any.
-    pub ground: Str,
-    /// `spawn_place`: what kind of spot it takes.
-    pub place: u32,
-    /// How many spawn together.
-    pub group: [u32; 2],
-    pub weight: u32,
-    /// Chance per attempt once the rule is picked.
-    pub chance: f32,
-}
-defaults!(SpawnDesc {
-    entity: Str::EMPTY,
-    at: Where::DEFAULT,
-    ground: Str::EMPTY,
-    place: spawn_place::GROUND,
-    group: [1, 1],
-    weight: 1,
-    chance: 1.0,
-});
 
 /// Where a natural spawn stands. Every kind needs room for the mob's height.
 pub mod spawn_place {
@@ -4348,82 +4385,17 @@ pub mod stack_flags {
     pub const NO_SAVE: u32 = 2;
 }
 
-/// Flow rules of a liquid. Its block (registered by the same mod under the same name) has 16
-/// states: 0 the source, 1..7 flowing with less and less liquid, 8 falling.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LiquidDesc {
-    /// The block's full name.
-    pub name: Str,
-    /// Ticks between flow steps (vanilla water 5, lava 30).
-    pub delay: u32,
-    /// Level lost per block of spread: water 1 (7 blocks), lava 2 (3 blocks).
-    pub drop_off: u32,
-    /// How far flowing liquid looks for a way down before choosing directions (water 4, lava 2).
-    pub slope_find: u32,
-    /// A spot over solid ground (or a source) with at least this many sources beside it
-    /// becomes one (vanilla water 2); 0 always; `u32::MAX` never.
-    pub renewable: u32,
-    /// Positive: falls; negative: rises (lighter than air).
-    pub density: i32,
-    /// Roughly Kelvin: water 300, lava 1300. From 1000 up it burns what touches it.
-    pub temperature: u32,
-    /// The fog seen from inside: 0xRRGGBB (`u32::MAX`: the average color of its texture) and the
-    /// blocks it takes to hide everything.
-    pub fog_color: u32,
-    pub fog_distance: f32,
-    /// The picture over the screen from inside (empty: its own texture), under `textures/`, and
-    /// how much of it shows.
-    pub overlay: Str,
-    pub overlay_opacity: f32,
-    /// Non-zero: `Registry::edit`, onto the liquid of this name: what `set` says.
-    pub edit: u32,
-    /// `liquid_set`: which fields an edit gives.
-    pub set: u32,
+crate::data! {
+    /// A liquid's fog from inside (`comp::liquid::FOG`): 0xRRGGBB (`u32::MAX`: the average color
+    /// of its texture) and the blocks it takes to hide everything.
+    pub struct LiquidFog { pub color: u32, pub distance: f32 }
 }
 
-pub mod liquid_set {
-    pub const DELAY: u32 = 1;
-    pub const DROP_OFF: u32 = 2;
-    pub const SLOPE_FIND: u32 = 4;
-    pub const RENEWABLE: u32 = 8;
-    pub const DENSITY: u32 = 16;
-    pub const TEMPERATURE: u32 = 32;
-    /// `fog_color` and `fog_distance`.
-    pub const FOG: u32 = 64;
-    /// `overlay` and `overlay_opacity`.
-    pub const OVERLAY: u32 = 128;
+crate::data! {
+    /// The picture over the screen inside a liquid (`comp::liquid::OVERLAY`), under `textures/`
+    /// (empty: its own texture), and how much of it shows.
+    pub struct LiquidOverlay { pub texture: alloc::string::String, pub opacity: f32 }
 }
-defaults!(LiquidDesc {
-    name: Str::EMPTY,
-    delay: 5,
-    drop_off: 1,
-    slope_find: 4,
-    renewable: u32::MAX,
-    density: 1000,
-    temperature: 300,
-    fog_color: u32::MAX,
-    fog_distance: 96.0,
-    overlay: Str::EMPTY,
-    overlay_opacity: 0.1,
-    edit: 0,
-    set: 0,
-});
-
-/// What happens where two liquids meet. `liquid` and `touching` are block names or `#tags` of
-/// liquid blocks. When `liquid` has `touching` beside or above it, it turns into `source` (if
-/// it was a source) or `flowing`; when it flows down into `touching`, that block becomes
-/// `falls_into`. Empty results leave things as they are.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ReactionDesc {
-    pub liquid: Str,
-    pub touching: Str,
-    pub source: Str,
-    pub flowing: Str,
-    pub falls_into: Str,
-}
-defaults!(ReactionDesc { liquid: Str::EMPTY, touching: Str::EMPTY, source: Str::EMPTY, flowing: Str::EMPTY, falls_into: Str::EMPTY });
 
 // ---------------------------------------------------------------- client side
 
@@ -4712,65 +4684,23 @@ pub mod client_text {
     pub const INPUT: u32 = 4;
 }
 
-/// Ore veins a mod adds to any dimension, its own or another mod's. The engine scatters them after
-/// the dimension's generator, so generators never need to know about each other's ores.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct OreDesc {
-    /// Its `y` is where veins start (`height`).
-    pub at: Where,
-    pub block: Str,
-    /// Space separated block names or `#tags` the ore may replace.
-    pub replace: Str,
-    /// Veins started per cube.
-    pub veins: u32,
-    /// Blocks per vein.
-    pub blocks: u32,
-    /// `vein_shape`: what a vein looks like.
-    pub shape: u32,
-    /// `SPHERE`: radius; `DISK`: radius and thickness.
-    pub shape_size: [f32; 2],
-    /// `height_curve`: how the veins' starts spread over `at.y`.
-    pub height: u32,
-    /// `TRAPEZOID`: blocks in the middle where it is at its most.
-    pub plateau: i32,
-    /// Space separated `from>ore` pairs: where the vein meets `from` (a block or `#tag`), that
-    /// ore block goes instead of `block` (granite iron ore in granite).
-    pub replace_with: Str,
-    /// Share of its blocks left out where they would touch air (vanilla's ores in caves); NaN:
-    /// as it was (0 for a new ore).
-    pub exposed: f32,
-    /// Non-zero: `Registry::edit`, onto the ore of `block` registered already: `replace` and
-    /// `replace_with` add to its, `exposed` if not NaN, `at` where it names something, and the
-    /// numbers `set` says.
-    pub edit: u32,
-    /// `ore_set`: which numbers an edit gives.
-    pub set: u32,
+crate::data! {
+    /// What an ore's veins look like (`comp::ore::SHAPE`): `kind` (`vein_shape`), the `radius` of
+    /// a sphere or a disk and the `thickness` of a disk.
+    pub struct VeinShape { pub kind: u32, pub radius: f32, pub thickness: f32 }
 }
 
-pub mod ore_set {
-    pub const VEINS: u32 = 1;
-    pub const BLOCKS: u32 = 2;
-    /// `shape` and `shape_size`.
-    pub const SHAPE: u32 = 4;
-    /// `height`, `plateau` and `at.y`.
-    pub const HEIGHT: u32 = 8;
+crate::data! {
+    /// How an ore's veins spread over its heights (`comp::ore::HEIGHT`): `curve`
+    /// (`height_curve`), and how many blocks in the middle a trapezoid is at its most.
+    pub struct OreHeight { pub curve: u32, pub plateau: i32 }
 }
-defaults!(OreDesc {
-    at: Where::DEFAULT,
-    block: Str::EMPTY,
-    replace: Str::EMPTY,
-    veins: 4,
-    blocks: 8,
-    shape: vein_shape::WALK,
-    shape_size: [0.0; 2],
-    height: height_curve::UNIFORM,
-    plateau: 0,
-    replace_with: Str::EMPTY,
-    exposed: f32::NAN,
-    edit: 0,
-    set: 0,
-});
+
+crate::data! {
+    /// Where an ore's vein meets `name` (a block or `#tag`), block `ore` goes there instead of
+    /// the ore (granite iron ore in granite).
+    pub struct OreVariant { pub name: alloc::string::String, pub ore: alloc::string::String }
+}
 
 pub mod vein_shape {
     /// A random walk of `blocks` steps.
@@ -4800,24 +4730,15 @@ pub struct TerrainColumn {
     pub biome: u32,
 }
 
-/// One step of a terrain expression, the steps of a whole expression in postfix order: a step
-/// takes its operands from the stack the steps before it left and pushes its result. Everything
-/// is a 32-bit integer so every machine and the GPU get the same bits: positions and lengths are
-/// in 1/16 block (Q4), noise values, strengths and factors in 1/4096 (Q12, 4096 is 1.0).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ExprStep {
-    /// `expr`.
-    pub kind: u32,
-    /// `expr::NOISE`, `expr::SITE`: names the noise, so two with the same salt and size line up.
-    pub salt: u64,
-    pub a: i32,
-    pub b: i32,
-    pub c: i32,
-    /// `expr::FIELD`: the field's name.
-    pub name: Str,
+crate::data! {
+    /// One step of a terrain expression, the steps of a whole expression in postfix order: a step
+    /// takes its operands from the stack the steps before it left and pushes its result.
+    /// Everything is a 32-bit integer so every machine and the GPU get the same bits: positions
+    /// and lengths are in 1/16 block (Q4), noise values, strengths and factors in 1/4096 (Q12,
+    /// 4096 is 1.0). `kind` is `expr`, `salt` names the noise of `expr::NOISE` and `expr::SITE`
+    /// (two with the same salt and size line up), `name` the field of `expr::FIELD`.
+    pub struct ExprStep { pub kind: u32, pub salt: u64, pub a: i32, pub b: i32, pub c: i32, pub name: alloc::string::String }
 }
-defaults!(ExprStep { kind: 0, salt: 0, a: 0, b: 0, c: 0, name: Str::EMPTY });
 
 /// What an `ExprStep` does. In a binary step `rhs` is the value pushed last. Sums and
 /// differences wrap around at 32 bits, nothing traps.
@@ -4828,7 +4749,7 @@ pub mod expr {
     pub const X: u32 = 1;
     pub const Z: u32 = 2;
     /// Pushes the value of the field named `name` at this position; a field is an expression
-    /// of its own (`TerrainDesc` op `terrain_op::FIELD`) and may only use fields declared before it.
+    /// of its own (`comp::terrain::FIELDS`) and may only use fields declared before it.
     pub const FIELD: u32 = 3;
     pub const ADD: u32 = 4;
     pub const SUB: u32 = 5;
@@ -4863,19 +4784,70 @@ pub struct FieldRange {
     pub max: f64,
 }
 
-/// Adds height to every column of a terrain, scaled by its mask.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct FeatureDesc {
-    /// Full name, empty for none: other mods' edits find it by this.
-    pub name: Str,
-    /// The height added at full strength (Q4).
-    pub height: Slice<ExprStep>,
-    /// Its strength (0 to 4096); nothing is added where it isn't above 0. Empty: everywhere at
-    /// full strength.
-    pub mask: Slice<ExprStep>,
+crate::data! {
+    /// A named value over a terrain's columns (`comp::terrain::FIELDS`) that rules ask for and
+    /// expressions use (`expr::FIELD`); the name is used as written.
+    pub struct TerrainField { pub name: alloc::string::String, pub value: alloc::vec::Vec<ExprStep> }
 }
-defaults!(FeatureDesc { name: Str::EMPTY, height: Slice::EMPTY, mask: Slice::EMPTY });
+
+crate::data! {
+    /// Adds `height` (Q4) to every column of a terrain at the strength of its `mask` (0 to 4096;
+    /// nothing is added where it isn't above 0; empty: everywhere at full strength). Other mods
+    /// find it by its full `name`.
+    pub struct TerrainFeature {
+        pub name: alloc::string::String,
+        pub height: alloc::vec::Vec<ExprStep>,
+        pub mask: alloc::vec::Vec<ExprStep>,
+    }
+}
+
+crate::data! {
+    /// Multiplied into the mask of the feature `name` (`comp::terrain::MASKS`).
+    pub struct FeatureMask { pub name: alloc::string::String, pub mask: alloc::vec::Vec<ExprStep> }
+}
+
+crate::data! {
+    /// A rule's condition: field `name` is in `min <= value < max`.
+    pub struct RuleRange { pub name: alloc::string::String, pub min: f64, pub max: f64 }
+}
+
+crate::data! {
+    /// Where a biome goes in a terrain (`comp::terrain::RULES`), `BiomeRuleDesc` as data: other
+    /// mods find it by its full `name`; the fields `fields` (`rule_field`) doesn't give come from
+    /// the biome's own.
+    pub struct BiomeRule {
+        pub name: alloc::string::String,
+        pub fields: u32,
+        pub biome: alloc::string::String,
+        pub ranges: alloc::vec::Vec<RuleRange>,
+        pub height: [i32; 2],
+        pub top: alloc::string::String,
+        pub filler: alloc::string::String,
+        pub depth: i32,
+        pub under: alloc::string::String,
+        pub under_layers: i32,
+        pub deep_top: alloc::string::String,
+        pub deep_below: i32,
+        pub bare_above: i32,
+        pub ice: alloc::string::String,
+    }
+}
+
+crate::data! {
+    /// A biome in whole cubes (`comp::terrain::CAVE_BIOMES`): biome `name` at least `depth`
+    /// blocks under the surface, where a 3D noise of patches `size` across is above `threshold`.
+    pub struct CaveBiome { pub name: alloc::string::String, pub depth: i32, pub size: f64, pub threshold: f64 }
+}
+
+crate::data! {
+    /// Everything up to `level` that isn't ground is `block` (`comp::terrain::SEA`).
+    pub struct TerrainSea { pub level: i32, pub block: alloc::string::String }
+}
+
+crate::data! {
+    /// Tunnels and caverns (`comp::terrain::CAVES`); lakes of `lava` between `from` and `to`.
+    pub struct TerrainCaves { pub lava: alloc::string::String, pub from: i32, pub to: i32 }
+}
 
 /// Which fields of a `BiomeRuleDesc` are given (all of them count for a new rule; an edit
 /// changes only these).
@@ -4937,72 +4909,6 @@ defaults!(BiomeRuleDesc {
     deep_below: i32::MIN,
     bare_above: i32::MAX,
     ice: Str::EMPTY
-});
-
-pub mod terrain_op {
-    /// `block`: the stone everything is made of.
-    pub const STONE: u32 = 0;
-    /// `value`: the ground height before features.
-    pub const BASE_HEIGHT: u32 = 1;
-    /// `block` fills everything up to `level`.
-    pub const SEA: u32 = 2;
-    /// Tunnels and caverns; lava lakes (`block`) between `level` and `to`.
-    pub const CAVES: u32 = 3;
-    pub const FEATURE: u32 = 4;
-    /// The feature named `anchor` goes away.
-    pub const FEATURE_REMOVE: u32 = 5;
-    /// The mask of `feature` is multiplied into the one of the feature named `anchor`.
-    pub const FEATURE_MASK: u32 = 6;
-    /// `rule` after all others.
-    pub const BIOME: u32 = 7;
-    pub const BIOME_BEFORE: u32 = 8;
-    pub const BIOME_AFTER: u32 = 9;
-    pub const BIOME_REPLACE: u32 = 10;
-    pub const BIOME_REMOVE: u32 = 11;
-    /// `rule.biome` in whole cubes at least `level` blocks under the surface, where a 3D noise
-    /// of patches `size` across is above `value`.
-    pub const CAVE_BIOME: u32 = 13;
-    /// The cave biome `anchor` goes away.
-    pub const CAVE_BIOME_REMOVE: u32 = 14;
-    /// `field` is the expression of the field named `anchor` (used as written, no mod prefix
-    /// is added): `temperature`, `humidity` and `continent` are the engine's, and one declared
-    /// again takes the place of the earlier one.
-    pub const FIELD: u32 = 15;
-}
-
-/// One part of a dimension's terrain (`Host::reg_terrain`). The mod that owns the dimension
-/// describes it; others edit it, applied after the owner's in load order.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct TerrainDesc {
-    /// Full dimension name.
-    pub dimension: Str,
-    /// `terrain_op`.
-    pub op: u32,
-    /// The full name of the feature, rule or cave biome an op refers to.
-    pub anchor: Str,
-    pub block: Str,
-    pub level: i32,
-    pub to: i32,
-    pub value: f64,
-    pub size: f64,
-    pub feature: FeatureDesc,
-    pub rule: BiomeRuleDesc,
-    /// `terrain_op::FIELD`.
-    pub field: Slice<ExprStep>,
-}
-defaults!(TerrainDesc {
-    dimension: Str::EMPTY,
-    op: 0,
-    anchor: Str::EMPTY,
-    block: Str::EMPTY,
-    level: 0,
-    to: 0,
-    value: 0.0,
-    size: 0.0,
-    feature: FeatureDesc::DEFAULT,
-    rule: BiomeRuleDesc::DEFAULT,
-    field: Slice::EMPTY
 });
 
 /// One command argument; kinds in `command_value`.

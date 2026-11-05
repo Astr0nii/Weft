@@ -232,14 +232,14 @@ pub async fn camera(t: T) -> R {
 /// Mods change a player's state from the server, and its client follows: a mace's smash by the
 /// fall it reads, then the look, the hand, flight and fire set from outside.
 /// `r.edit` of an item and a biome: the edit's values win, the rest stays (testkit's own, see
-/// its registration; its ore and liquid edits of testmod's would fail the load if they found
-/// nothing).
+/// its registration; its ore, liquid and terrain edits of testmod's would fail the load if they
+/// found nothing).
 pub async fn edits(t: T) -> R {
     t.flat().await?;
     t.check_eq(
         t.op("edited").await?,
-        "8 3 2 true 7 4 true base:cobblestonex2,testkit:editedx1".to_string(),
-        "max stack, damage, warmth, tag, a weather's flags, an attribute's default, a recipe removed, a loot table's pools after the edits",
+        "8 3 2 true 7 4 true base:cobblestonex2,testkit:editedx1 true true true".to_string(),
+        "max stack, damage, warmth, tag, a weather's flags, an attribute's default, a recipe removed, a loot table's pools, a liquid's id, its block's and item's tag, a column of Mars after the edits",
     );
     Ok(())
 }

@@ -302,23 +302,25 @@ pub fn register(r: &mut Registry) {
     // Players swim in water; what they wear may add more (`SWIMS_IN` on an item).
     r.set_text_on(Target::Entity("core:player"), &SWIMS_IN, "#water");
     r.liquid(&WATER)
-        .block(|b| b.tint(&tints::WATER).translucent())
+        .block(|b| {
+            b.tint(&tints::WATER)
+                .translucent()
+                .set_text(&DRIP, abi::particle::DRIP)
+                .set_text(&SPLASH, abi::particle::SPLASH)
+                .set_text(&BUBBLE, abi::particle::BUBBLE)
+                .tag("water")
+        })
         .renewable(2)
         .fog(0x050533, 96.0)
-        .set_text(&DRIP, abi::particle::DRIP)
-        .set_text(&SPLASH, abi::particle::SPLASH)
-        .set_text(&BUBBLE, abi::particle::BUBBLE)
-        .tag("water")
         .bucket(Item::generated("water_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
     r.liquid(&LAVA)
-        .block(|b| b.light(15).drag(0.4))
+        .block(|b| b.light(15).drag(0.4).tag("lava"))
         .flow_delay(30)
         .drop_off(2)
         .slope_find(2)
         .heat(1300)
         .fog(0x991A00, 1.0)
         .no_overlay()
-        .tag("lava")
         .bucket(Item::generated("lava_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
     r.liquid_reaction("#hot", "#water")
         .source_turns_into("obsidian")

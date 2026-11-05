@@ -232,13 +232,23 @@ pub fn bake_by<D, K: Ord>(
     mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
     key: impl FnMut(&Entry) -> K,
-    mut make: impl FnMut(&Entry, &mut Vec<String>) -> D,
+    make: impl FnMut(&Entry, &mut Vec<String>) -> D,
 ) -> (Vec<D>, FxHashMap<String, u32>) {
     let what = abi::entry_kind::NAMES
         .get(kind as usize)
         .copied()
         .unwrap_or("entry");
-    let mut f = fold(what, raw, mod_name, errors);
+    let f = fold(what, raw, mod_name, errors);
+    finish(f, errors, key, make)
+}
+
+/// The rest of `bake_by`, for a kind folded early (what liquids' heat says of their blocks).
+pub fn finish<D, K: Ord>(
+    mut f: Folded,
+    errors: &mut Vec<String>,
+    key: impl FnMut(&Entry) -> K,
+    mut make: impl FnMut(&Entry, &mut Vec<String>) -> D,
+) -> (Vec<D>, FxHashMap<String, u32>) {
     f.entries.sort_by_cached_key(key);
     f.apply_patterns(errors);
     f.write_cells();

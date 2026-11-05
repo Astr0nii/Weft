@@ -4,6 +4,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use weft_sdk::abi::entry_kind as ek;
+use weft_sdk::terrain::{BiomeRule, Expr};
 use weft_sdk::*;
 
 /// How many of each event arrived since `events reset`, in `EVENT_NAMES` order.
@@ -35,6 +36,10 @@ static STORM: Weather = Weather::named("storm");
 static GRIT: Attribute = Attribute::named("grit");
 static TIN_ORE: Block = Block::named("testmod:tin_ore");
 static OIL: Block = Block::named("testmod:oil");
+static MARS: Dimension = Dimension::named("testmod:mars");
+/// A column of Mars, far from what other tests look at, that an edit of its terrain gives base's
+/// plains.
+const PROBE: [i32; 2] = [-20000, 20000];
 /// Only the equipment of what it opens on (the `armor` test opens it on a zombie).
 static GEAR: Menu = Menu::named("gear");
 /// How many cells of the world a drill on a moving body has come to.
@@ -115,7 +120,24 @@ pub fn register(r: &mut Registry) {
         .remove_item(&comps::loot::POOLS, "#1")
         .replace_drop("base:stick", "edited")
         .pool(Pool::new().items("base:cobblestone", 2, 2));
-    r.edit(OIL.liquid()).flow_delay(12);
+    r.edit(OIL.liquid())
+        .flow_delay(12)
+        .block(|b| b.tag("testkit:edited"));
+    let off = |at: i32, of: Expr| (of - Expr::blocks(at as f64)).abs();
+    r.edit(MARS.terrain())
+        .field(
+            "testkit:probe",
+            off(PROBE[0], Expr::x())
+                .max(off(PROBE[1], Expr::z()))
+                .ramp_blocks(1.0, 1.0)
+                .not(),
+        )
+        .rule_before(
+            "#0",
+            BiomeRule::new("base:plains")
+                .named("probe")
+                .field("testkit:probe", 0.5..),
+        );
     r.menu(&GEAR).equipment().player_inventory().screen(|ui| {
         ui.panel("panel", S::column().pad(7.0).gap(4.0), |ui| {
             ui.title();
@@ -723,8 +745,10 @@ const OPS: &[(&str, &str, Run)] = &[
             .map(|s| format!("{}x{}", item_name(s.item), s.count))
             .collect();
         drops.sort();
+        let oil = Tag::named("testkit:edited");
+        let probe = |dx: i32| name_of(ek::BIOME, MARS.column(w.seed(), PROBE[0] + dx, PROBE[1]).biome) == "base:plains";
         Ok(format!(
-            "{} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {} {}",
             MAX_STACK.on_item(i).unwrap_or(0),
             ATTACK_DAMAGE.on_item(i).unwrap_or(0.0),
             WARMTH.on_biome(b).unwrap_or(0.0),
@@ -733,6 +757,9 @@ const OPS: &[(&str, &str, Run)] = &[
             w.attribute(player, &GRIT),
             recipe_process(&base_api::SMELTING, i).is_none(),
             drops.join(","),
+            liquid_of(OIL.id()) == Some(OIL.liquid().id()),
+            oil.on_block(OIL.id()) && oil.on_item(Item::generated(OIL.name().to_string()).id()),
+            (probe(0), probe(4)) == (true, false),
         ))
     }),
     ("look", "", |w, _, player, _| {

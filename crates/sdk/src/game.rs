@@ -2147,76 +2147,62 @@ impl SpawnPlace {
     }
 }
 
-/// A natural spawning rule (see `abi::SpawnDesc`):
-/// `r.spawn("pig").biome("#animals").ground("#animal_spawn").light(9, 15).group(2, 3).chance(0.05)`.
+/// A natural spawning rule (see `abi::comp::spawn`), named `<mod>:<entity>`, `/2`.. unless `named`:
+/// `r.natural_spawn(&PIG).biome("#animals").ground("#animal_spawn").light(9, 15).pack_size(2, 3).chance(0.05)`.
 pub struct SpawnBuilder<'a> {
-    raw: *mut abi::Registrar,
-    entity: String,
-    ground: String,
-    pub(crate) at: crate::content::At,
-    desc: abi::SpawnDesc,
-    _p: std::marker::PhantomData<&'a mut Registry>,
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
 
 impl Registry {
-    pub fn natural_spawn<'a>(&'a mut self, entity: &EntityKind) -> SpawnBuilder<'a> {
-        SpawnBuilder {
-            raw: self.raw,
-            entity: entity.name().to_string(),
-            ground: String::new(),
-            at: Default::default(),
-            desc: abi::SpawnDesc::DEFAULT,
-            _p: std::marker::PhantomData,
-        }
+    pub fn natural_spawn(&mut self, entity: &EntityKind) -> SpawnBuilder<'_> {
+        let name = self.derive_name(entity.path());
+        SpawnBuilder { reg: self, e: crate::entry::Entry::new(abi::entry_kind::SPAWN, name) }.set_text(&comps::spawn::ENTITY, entity.name())
+    }
+
+    fn spawn_entry(&mut self, rule: &'static crate::SpawnRule) -> SpawnBuilder<'_> {
+        SpawnBuilder { reg: self, e: crate::entry::Entry::of(rule) }
     }
 }
 
+crate::entry::entry_builder!(SpawnRule => SpawnBuilder, spawn_entry;);
+
 impl SpawnBuilder<'_> {
-    /// Only on blocks with this tag (under the spot; what `place` says it rests on).
-    pub fn ground(mut self, tag: &str) -> Self {
-        self.ground = tag.to_string();
+    /// Its name instead of `<mod>:<entity>`.
+    pub fn named(mut self, name: &str) -> Self {
+        let derived = std::mem::replace(&mut self.e.name, qualify(self.reg.ns, name));
+        self.reg.derived.retain(|n| *n != derived);
         self
+    }
+    /// Only on blocks with this tag (under the spot; what `place` says it rests on).
+    pub fn ground(self, tag: &str) -> Self {
+        self.set_text(&comps::spawn::GROUND, tag)
     }
     /// What kind of spot it takes: on the ground (the default), in a liquid, under a ceiling.
     /// The mob's height decides how much room it needs.
-    pub fn place(mut self, place: SpawnPlace) -> Self {
-        self.desc.place = place.kind;
-        if let Some(t) = place.tag {
-            self.ground = t.to_string();
+    pub fn place(self, place: SpawnPlace) -> Self {
+        let b = self.set(&comps::spawn::PLACE, place.kind);
+        match place.tag {
+            Some(t) => b.ground(t),
+            None => b,
         }
-        self
     }
     /// Only where this condition holds too.
-    pub fn when(mut self, condition: &crate::Condition) -> Self {
-        self.at.condition = condition.name().to_string();
-        self
+    pub fn when(self, condition: &crate::Condition) -> Self {
+        self.set_text(&comps::spawn::WHEN, condition.name())
     }
     /// Light at the spot, inclusive (0..15).
-    pub fn light(mut self, min: u32, max: u32) -> Self {
-        self.at.light = Some([min, max]);
-        self
+    pub fn light(self, min: u32, max: u32) -> Self {
+        self.set(&comps::spawn::LIGHT, [min, max])
     }
-    pub fn pack_size(mut self, min: u32, max: u32) -> Self {
-        self.desc.group = [min, max];
-        self
+    pub fn pack_size(self, min: u32, max: u32) -> Self {
+        self.set(&comps::spawn::GROUP, [min, max])
     }
-    pub fn weight(mut self, w: u32) -> Self {
-        self.desc.weight = w;
-        self
+    pub fn weight(self, w: u32) -> Self {
+        self.set(&comps::spawn::WEIGHT, w)
     }
-    pub fn chance(mut self, c: f32) -> Self {
-        self.desc.chance = c;
-        self
-    }
-}
-
-impl Drop for SpawnBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let desc = abi::SpawnDesc { entity: Str::new(&self.entity), at: self.at.desc(), ground: Str::new(&self.ground), ..self.desc };
-        unsafe { (host().reg_spawn)(self.raw, &desc) }
+    pub fn chance(self, c: f32) -> Self {
+        self.set(&comps::spawn::CHANCE, c)
     }
 }
 

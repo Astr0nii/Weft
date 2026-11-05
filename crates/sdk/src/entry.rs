@@ -84,9 +84,9 @@ pub trait Registers {
 }
 
 /// Declares a builder as an entry of a kind: `Registry` makes it (`$make`), `edit` and `replace`
-/// start it in that mode, and dropping it sends it.
+/// start it in that mode, and dropping it sends it, after its `$finish` if it has one.
 macro_rules! entry_builder {
-    ($($k:ident => $b:ident, $make:ident;)*) => {
+    ($($k:ident => $b:ident, $make:ident $(, $finish:ident)?;)*) => {
         $(impl $crate::entry::Registers for $b<'_> {
             fn entry(&mut self) -> &mut $crate::entry::Entry {
                 &mut self.e
@@ -100,6 +100,7 @@ macro_rules! entry_builder {
         }
         impl Drop for $b<'_> {
             fn drop(&mut self) {
+                $(self.$finish();)?
                 self.e.send(&*self.reg);
             }
         }

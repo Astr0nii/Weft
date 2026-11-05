@@ -702,10 +702,7 @@ fn bake_component(e: &Entry) -> ComponentDecl {
 /// Every component's declaration: the engine's, then mods' (`abi::entry_kind::COMPONENT`).
 pub fn freeze_components(raws: &mut [RawGame], mod_name: &dyn Fn(ModId) -> String, errors: &mut Vec<String>) -> Vec<ComponentDecl> {
     let mut all = engine_components();
-    all.extend(
-        raws.iter_mut()
-            .flat_map(|r| take_kind(&mut r.entries, ek::COMPONENT)),
-    );
+    all.extend(entries_of(raws, ek::COMPONENT));
     bake(all, ek::COMPONENT, mod_name, errors, |e, _| bake_component(e)).0
 }
 
@@ -747,13 +744,6 @@ pub struct RawGame {
     pub block_entities: Vec<(String, String)>,
     /// (kind, component, its starting value on that kind).
     pub attach: Vec<(String, String, Option<Vec<u8>>)>,
-    pub ores: Vec<RawOre>,
-    pub scatters: Vec<RawScatter>,
-    /// (owner, dimensions (empty: every dimension but bare ones), callback).
-    pub decorations: Vec<(ModId, RawWhere, Callback)>,
-    pub terrain: Vec<crate::server::terrain::RawTerrain>,
-    pub structures: Vec<RawStructure>,
-    pub templates: Vec<RawTemplate>,
     /// Components and tags set on other mods' entries.
     pub sets: Vec<RawSet>,
     pub client_frames: Vec<(ModId, Callback)>,
@@ -767,12 +757,8 @@ pub struct RawGame {
     /// (owner, name, side, callback).
     /// (owner, channel, schema, side, callback).
     pub packets: Vec<(ModId, String, String, u32, Callback)>,
-    /// (block name, flow rules).
-    pub liquids: Vec<(String, String, weft_abi::LiquidDesc)>,
     /// (command, level), mods' say on what their commands ask for.
     pub command_permissions: Vec<(String, u32)>,
-    /// liquid, touching, source result, flowing result, falls-into result.
-    pub reactions: Vec<[String; 5]>,
     /// (owner, event, schema, handler).
     pub event_handlers: Vec<(ModId, String, String, Callback)>,
     pub interceptors: Vec<(ModId, String, Callback)>,
@@ -780,21 +766,9 @@ pub struct RawGame {
     pub modifiers: Vec<(ModId, String, u32, Callback)>,
     /// (owner, component, schema, system).
     pub systems: Vec<(ModId, String, String, Callback)>,
-    pub spawns: Vec<RawSpawn>,
 }
 
-/// A spawning rule as registered (names).
-pub struct RawSpawn {
-    pub entity: String,
-    pub at: RawWhere,
-    pub ground: String,
-    pub place: u32,
-    pub group: [u32; 2],
-    pub weight: u32,
-    pub chance: f32,
-}
-
-/// A spawning rule with its names resolved (see `abi::SpawnDesc`).
+/// A spawning rule with its names resolved (see `abi::comp::spawn`).
 pub struct SpawnRule {
     pub entity: u32,
     pub category: u32,
@@ -1379,78 +1353,62 @@ pub fn name_hash(s: &str) -> u64 {
     weft_noise::fnv(s.as_bytes())
 }
 
-pub struct RawOre {
-    /// Empty: every dimension but bare ones.
-    pub at: RawWhere,
-    pub block: String,
-    pub replace: Vec<String>,
-    pub veins: u32,
-    pub size: u32,
-    pub shape: u32,
-    pub shape_size: [f32; 2],
-    pub height: u32,
-    pub plateau: i32,
-    /// (block or `#tag` met, ore block put there).
-    pub replace_with: Vec<(String, String)>,
-    pub exposed: f32,
-    pub edit: bool,
-    /// `abi::ore_set`: what an edit gives.
-    pub set: u32,
-}
-
-pub struct RawScatter {
-    pub owner: ModId,
-    pub name: String,
-    pub at: RawWhere,
-    pub cell: i32,
-    pub reach: i32,
-    /// Down and up.
-    pub reach_y: [i32; 2],
-    pub density: String,
-    pub ground: Vec<String>,
-    pub shape: Callback,
-}
-
-pub struct RawTemplate {
-    pub name: String,
-    pub blocks: Vec<([i32; 3], String)>,
-}
-
-pub struct RawStructure {
-    pub template: String,
-    pub at: RawWhere,
-    pub spacing: u32,
-    pub chance: f32,
-    pub sink: i32,
-}
-
-/// `abi::Where` as registered (names).
-#[derive(Clone)]
-pub struct RawWhere {
-    pub dims: Vec<String>,
-    pub biome: String,
-    pub y: [i32; 2],
-    pub light: [u32; 2],
-    pub condition: String,
-}
-
-impl RawWhere {
-    pub unsafe fn copy(w: &abi::Where) -> RawWhere {
-        unsafe {
-            RawWhere {
-                dims: w
-                    .dimensions
-                    .as_str()
-                    .split_whitespace()
-                    .map(str::to_string)
-                    .collect(),
-                biome: w.biome.as_str().to_string(),
-                y: w.y,
-                light: w.light,
-                condition: w.condition.as_str().to_string(),
-            }
-        }
+/// A natural spawning rule with its names resolved; `None` (and an error) for a name that isn't there.
+fn bake_spawn(e: &Entry, g: &Game, c: &Components, dim_names: &FxHashMap<String, u32>, errors: &mut Vec<String>) -> Option<SpawnRule> {
+    use abi::comp::{common as p, spawn as s};
+    let what = format!("spawn rule {}", e.name);
+    let name = e.text(s::ENTITY).unwrap_or_default();
+    let Some(&entity) = g.entity_names.get(name) else {
+        errors.push(format!("{what}: unknown entity {name:?}"));
+        return None;
+    };
+    let ground = match e.text(s::GROUND).unwrap_or_default() {
+        "" => None,
+        t => Some(
+            crate::refs::tag(c, t)
+                .map_err(|err| errors.push(format!("{what}: ground: {err}")))
+                .ok()?,
+        ),
+    };
+    let biome = crate::content::biome_tag(c, &what, e, errors).ok()?;
+    let names: Vec<String> = e.or(p::DIMENSIONS, Vec::new());
+    let dims: Vec<u32> = names
+        .iter()
+        .filter_map(|d| dim_names.get(d).copied())
+        .collect();
+    if dims.len() != names.len() {
+        errors.push(format!("{what}: unknown dimension in {names:?}"));
+        return None;
     }
+    let condition = match e.text(s::WHEN).unwrap_or_default() {
+        "" => None,
+        n => match g.condition_names.get(n) {
+            Some(&id) => Some(id),
+            None => {
+                errors.push(format!("{what}: no condition {n}"));
+                return None;
+            }
+        },
+    };
+    let kind = &g.entities[entity as usize];
+    let [min, max] = e.or(s::GROUP, [1u32, 1]);
+    Some(SpawnRule {
+        entity,
+        category: kind.category,
+        biome,
+        ground,
+        place: e
+            .or(s::PLACE, abi::spawn_place::GROUND)
+            .min(abi::spawn_place::CEILING),
+        height: (kind.height.ceil() as i32).max(1),
+        condition,
+        dims,
+        light: e.or(s::LIGHT, [0, 15]),
+        y: e.or(p::Y, [i32::MIN, i32::MAX]),
+        group: [min.max(1), max.max(min).max(1)],
+        weight: e.or(s::WEIGHT, 1),
+        chance: e.or(s::CHANCE, 1.0),
+    })
 }
 
 fn opt(c: Callback) -> Option<Callback> {
@@ -1634,6 +1592,13 @@ fn raw_recipe(e: &Entry) -> RawRecipe {
 }
 
 /// The entries of `kind`, taken out of `all`, in load order.
+/// Every mod's entries of a kind, in load order.
+pub(crate) fn entries_of(raws: &mut [RawGame], kind: u32) -> Vec<RawEntry> {
+    raws.iter_mut()
+        .flat_map(|r| take_kind(&mut r.entries, kind))
+        .collect()
+}
+
 pub(crate) fn take_kind(all: &mut Vec<RawEntry>, kind: u32) -> Vec<RawEntry> {
     let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(all)
         .into_iter()
@@ -1822,7 +1787,6 @@ pub fn freeze(
     let mut systems: Vec<(ModId, String, String, Callback)> = Vec::new();
     let mut interceptors: Vec<(ModId, String, Callback)> = Vec::new();
     let mut modifiers: Vec<(ModId, String, u32, Callback)> = Vec::new();
-    let mut spawns: Vec<RawSpawn> = Vec::new();
     let mut entries: Vec<RawEntry> = raws
         .iter_mut()
         .flat_map(|r| std::mem::take(&mut r.entries))
@@ -1837,7 +1801,6 @@ pub fn freeze(
         item_models.extend(r.item_model_for_stack);
         g.client_frames.extend(r.client_frames);
         packets.extend(r.packets);
-        spawns.extend(r.spawns);
         event_handlers.extend(r.event_handlers);
         systems.extend(r.systems);
         interceptors.extend(r.interceptors);
@@ -2118,60 +2081,8 @@ pub fn freeze(
     g.pose_order = (0..g.poses.len() as u16).map(crate::world::Pose).collect();
     g.pose_order
         .sort_by_key(|p| std::cmp::Reverse(g.poses[p.0 as usize].priority));
-    for s in spawns {
-        let Some(&entity) = g.entity_names.get(&s.entity) else {
-            errors.push(format!("spawn rule for unknown entity {}", s.entity));
-            continue;
-        };
-        let tag = |name: &str, what: &str, errors: &mut Vec<String>| -> Result<Option<u32>, ()> {
-            if name.is_empty() {
-                return Ok(None);
-            }
-            crate::refs::tag(c, name)
-                .map(Some)
-                .map_err(|e| errors.push(format!("spawn rule for {}: {what}: {e}", s.entity)))
-        };
-        let what = format!("spawn rule for {}", s.entity);
-        let (Ok(biome), Ok(ground)) = (crate::content::biome_tag(c, &what, &s.at, errors), tag(&s.ground, "block", errors)) else {
-            continue;
-        };
-        let dims: Vec<u32> =
-            s.at.dims
-                .iter()
-                .filter_map(|d| dim_names.get(d).copied())
-                .collect();
-        if dims.len() != s.at.dims.len() {
-            errors.push(format!("{what}: unknown dimension in {:?}", s.at.dims));
-            continue;
-        }
-        let category = g.entities[entity as usize].category;
-        let height = (g.entities[entity as usize].height.ceil() as i32).max(1);
-        let condition = match s.at.condition.as_str() {
-            "" => None,
-            n => match g.condition_names.get(n) {
-                Some(&id) => Some(id),
-                None => {
-                    errors.push(format!("spawn rule for {}: no condition {n}", s.entity));
-                    continue;
-                }
-            },
-        };
-        g.spawns.push(SpawnRule {
-            entity,
-            category,
-            biome,
-            ground,
-            place: s.place,
-            height,
-            condition,
-            dims,
-            light: s.at.light,
-            y: s.at.y,
-            group: s.group,
-            weight: s.weight,
-            chance: s.chance,
-        });
-    }
+    let (spawns, _) = bake(kind(ek::SPAWN), ek::SPAWN, mod_name, errors, |e, errors| bake_spawn(e, &g, c, dim_names, errors));
+    g.spawns = spawns.into_iter().flatten().collect();
     // Natural spawning (`spawns`) runs while this is on.
 
     let mut events: Vec<EventDef> = ENGINE_EVENTS

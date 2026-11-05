@@ -29,9 +29,6 @@ pub static HOST: Host = Host {
     set_player_menu,
     set_block_entity,
     reg_command,
-    reg_ore,
-    reg_scatter,
-    reg_decoration,
     reg_set,
     find,
     block_of,
@@ -168,8 +165,6 @@ pub static HOST: Host = Host {
     image_save: crate::app::api::image_save,
     image_unload: crate::app::api::image_free,
     name_of,
-    reg_liquid,
-    reg_liquid_reaction,
     liquid_of,
     use_container,
     reg_event_handler,
@@ -211,12 +206,9 @@ pub static HOST: Host = Host {
     action_override,
     play_sound,
     client_play_sound: crate::app::api::client_play_sound,
-    reg_spawn,
     biome_at,
     navigate,
     navigating,
-    reg_structure,
-    reg_template,
     block_list,
     place_template,
     world_seed,
@@ -238,7 +230,6 @@ pub static HOST: Host = Host {
     world_leave_body,
     body_move_to,
     signal_read_changed,
-    reg_terrain,
     dim_column,
     dim_surface_carved,
     dim_surface_block,
@@ -250,21 +241,6 @@ pub static HOST: Host = Host {
 
 unsafe extern "C" fn fall_block(w: *mut abi::WorldCtx, pos: *const abi::BlockPos) -> u64 {
     unsafe { dim(w).fall_block(content(), ip(pos)) }
-}
-
-unsafe extern "C" fn reg_template(r: *mut abi::Registrar, d: *const abi::TemplateDesc) {
-    unsafe {
-        let d = &*d;
-        reg(r).game.templates.push(registry::RawTemplate {
-            name: d.name.as_str().to_string(),
-            blocks: d
-                .blocks
-                .as_slice()
-                .iter()
-                .map(|b| (b.pos.to_array(), b.block.as_str().to_string()))
-                .collect(),
-        });
-    }
 }
 
 unsafe extern "C" fn block_list(index: u32) -> abi::Slice<[u32; 2]> {
@@ -290,19 +266,6 @@ unsafe extern "C" fn place_template(w: *mut abi::WorldCtx, name: Str, pos: *cons
             d.set(c, at + p, state);
         }
         1
-    }
-}
-
-unsafe extern "C" fn reg_structure(r: *mut abi::Registrar, d: *const abi::StructureDesc) {
-    unsafe {
-        let d = *d;
-        reg(r).game.structures.push(registry::RawStructure {
-            template: d.template.as_str().to_string(),
-            at: registry::RawWhere::copy(&d.at),
-            spacing: d.spacing,
-            chance: d.chance,
-            sink: d.buried,
-        });
     }
 }
 
@@ -355,22 +318,6 @@ unsafe extern "C" fn biome_at(w: *mut abi::WorldCtx, pos: *const abi::BlockPos) 
             .cubes
             .get(&crate::world::cube_of(p))
             .map_or(0, |c| c.biome((p.x & 15) as usize, (p.z & 15) as usize) as u32)
-    }
-}
-
-unsafe extern "C" fn reg_spawn(r: *mut abi::Registrar, d: *const abi::SpawnDesc) {
-    unsafe {
-        let d = *d;
-        let tag = |s: Str| s.as_str().to_string();
-        reg(r).game.spawns.push(registry::RawSpawn {
-            entity: d.entity.as_str().to_string(),
-            at: registry::RawWhere::copy(&d.at),
-            ground: tag(d.ground),
-            place: d.place.min(abi::spawn_place::CEILING),
-            group: [d.group[0].max(1), d.group[1].max(d.group[0]).max(1)],
-            weight: d.weight,
-            chance: d.chance,
-        });
     }
 }
 
@@ -1629,6 +1576,7 @@ unsafe extern "C" fn find(kind: u32, name: Str, count: *mut u32) -> u32 {
         abi::entry_kind::RECIPE_KIND => c.game.recipe_kinds.get(name).copied(),
         abi::entry_kind::ATTRIBUTE => c.game.attr_names.get(name).copied(),
         abi::entry_kind::KEY => at(c.game.keys.iter().map(|k| k.0.as_str()), name),
+        abi::entry_kind::LIQUID => at(c.liquids.iter().map(|l| l.name.as_str()), name),
         _ => None,
     };
     if !count.is_null() {
@@ -1877,48 +1825,6 @@ unsafe extern "C" fn reg_set(r: *mut abi::Registrar, d: *const abi::SetDesc) {
     }
 }
 
-unsafe extern "C" fn reg_scatter(r: *mut abi::Registrar, d: *const abi::ScatterDesc) {
-    unsafe {
-        let r = reg(r);
-        let d = &*d;
-        r.game.scatters.push(registry::RawScatter {
-            owner: r.owner,
-            name: d.name.as_str().to_string(),
-            at: registry::RawWhere::copy(&d.at),
-            cell: d.cell,
-            reach: d.reach,
-            reach_y: [d.reach_down.clamp(0, 256), d.reach_up.clamp(0, 256)],
-            density: d.density.as_str().to_string(),
-            ground: d
-                .ground
-                .as_str()
-                .split_whitespace()
-                .map(str::to_string)
-                .collect(),
-            shape: d.shape,
-        });
-    }
-}
-
-unsafe extern "C" fn reg_decoration(r: *mut abi::Registrar, at: *const abi::Where, cb: Callback) {
-    unsafe {
-        let r = reg(r);
-        r.game
-            .decorations
-            .push((r.owner, registry::RawWhere::copy(&*at), cb));
-    }
-}
-
-unsafe extern "C" fn reg_terrain(r: *mut abi::Registrar, d: *const abi::TerrainDesc) {
-    unsafe {
-        let r = reg(r);
-        let owner = r.owner;
-        r.game
-            .terrain
-            .push(crate::server::terrain::copy(owner, &*d));
-    }
-}
-
 unsafe extern "C" fn dim_column(dim: u32, seed: u64, x: i32, z: i32, out: *mut abi::TerrainColumn) -> u32 {
     let Some(col) = content()
         .dims
@@ -1943,41 +1849,6 @@ unsafe extern "C" fn dim_surface_block(dim: u32, seed: u64, x: i32, z: i32) -> u
         .dims
         .get(dim as usize)
         .map_or(0, |d| d.surface_block(seed, x, z))
-}
-
-unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {
-    unsafe {
-        let r = reg(r);
-        let d = &*d;
-        r.game.ores.push(registry::RawOre {
-            at: registry::RawWhere::copy(&d.at),
-            block: d.block.as_str().to_string(),
-            replace: d
-                .replace
-                .as_str()
-                .split_whitespace()
-                .map(str::to_string)
-                .collect(),
-            veins: d.veins,
-            size: d.blocks,
-            shape: d.shape,
-            shape_size: d
-                .shape_size
-                .map(|v| if v.is_finite() { v.clamp(0.0, 15.0) } else { 0.0 }),
-            height: d.height,
-            replace_with: d
-                .replace_with
-                .as_str()
-                .split_whitespace()
-                .filter_map(|p| p.split_once('>'))
-                .map(|(a, b)| (a.to_string(), b.to_string()))
-                .collect(),
-            exposed: d.exposed,
-            edit: d.edit != 0,
-            set: d.set,
-            plateau: d.plateau.max(0),
-        });
-    }
 }
 
 unsafe extern "C" fn reg_command(r: *mut abi::Registrar, name: Str, usage: Str, client: u32, cb: Callback) {
@@ -2064,27 +1935,6 @@ unsafe extern "C" fn reg_attach(r: *mut abi::Registrar, kind: Str, component: St
             .game
             .attach
             .push((kind.as_str().to_string(), component.as_str().to_string(), (!value.is_empty()).then(|| value.to_vec())))
-    }
-}
-
-unsafe extern "C" fn reg_liquid(r: *mut abi::Registrar, d: *const abi::LiquidDesc) {
-    unsafe {
-        let d = *d;
-        reg(r).game.liquids.push((
-            d.name.as_str().to_string(),
-            d.overlay.as_str().to_string(),
-            abi::LiquidDesc { overlay: Str::EMPTY, ..d },
-        ));
-    }
-}
-
-unsafe extern "C" fn reg_liquid_reaction(r: *mut abi::Registrar, d: *const abi::ReactionDesc) {
-    unsafe {
-        let d = *d;
-        reg(r)
-            .game
-            .reactions
-            .push([d.liquid, d.touching, d.source, d.flowing, d.falls_into].map(|s| s.as_str().to_string()));
     }
 }
 

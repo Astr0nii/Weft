@@ -325,7 +325,7 @@ Look at testmod's generator for an example.
 
 ### Liquids
 `r.liquid(&LIQUID)` and then:
-- `block(|b| ..)`: its block like any other, on top of what makes it a liquid: `b.translucent()` to see through it (water, otherwise drawn solid like lava), `tint`, `light`, `light_opacity`, `drag` (how fast things move inside: water 1, lava 0.4), `texture` (`<name>_still` by default)
+- `block(|b| ..)`: its block like any other, on top of what makes it a liquid: `b.translucent()` to see through it (water, otherwise drawn solid like lava), `tint`, `light`, `light_opacity`, `drag` (how fast things move inside: water 1, lava 0.4), `texture` (`<name>_still` by default), and its tags (`tag("water")`), which its item gets too
 - `flow_delay`, `drop_off`, `slope_find`, `flows_up()`
 - `renewable(n)`: a new source where n sources meet (water 2)
 - `heat` (roughly Kelvin, 1000 and more burns)
@@ -333,9 +333,9 @@ Look at testmod's generator for an example.
 - `fog(rgb, blocks)` and `overlay(texture, opacity)` or `no_overlay()`: what you see from inside. By default both come from its texture; set them when the inside should look different from the surface: `r.liquid(&TAR).fog(0x1A1408, 6.0).overlay("tar_inside", 0.4)`
 - `bucket(..)`
 
-Another mod's liquid: `r.edit(WATER.liquid()).fog(0x204020, 12.0)`, any of the above; what you don't set stays.
+Another mod's liquid: `r.edit(WATER.liquid()).fog(0x204020, 12.0)`, any of the above; what you don't set stays, and `.block(..)` there edits its block.
 
-Reactions: `r.liquid_reaction("#hot", "#water").source_turns_into("obsidian")`.\
+Reactions: `r.liquid_reaction("#hot", "#water").source_turns_into("obsidian")`, named `base:hot>water` for others' `edit` and `remove` (`.named(..)` for one of your choice).\
 Every liquid is also an item of its name and tags, its count in millibuckets: what liquid slots (`Slots::liquid(capacity)`) hold and recipes count, see the [block entities guide](block_entities.md).
 
 ### World
@@ -343,16 +343,16 @@ Every liquid is also an item of its name and tags, its count in millibuckets: wh
 - `r.dimension(..)` (`spawn`, `height`, `gravity`, `fixed_time`, `sky`, `bare`, or `generator` + `column` to fill it in code)
 - weather is a value too: `r.weather(&ACID_RAIN).darkness(0.5).gray(0.8, 0.6, 0.9).sound("mymod:weather.acid").duration(2400, 6000).weight(1)` (`falls`, `lightning`, `shelters_from_sun`, or the whole `look`), and a dimension lists what comes there after clear weather, `.weathers(&[&weathers::RAIN, &weathers::THUNDER, &ACID_RAIN])`. `w.weather()` is the id now (`w.raining()`, `w.thundering()` read its flags), `w.set_weather(&weathers::THUNDER, ticks)` changes it, and `r.on_event(&WEATHER_TICK, ..)` hears every tick of it for acid on whoever stands outside. What falls is the biome's: `.precipitation(&ASH)` after `r.precipitation(&ASH)`, `.snows()` for snow
 - `r.sky_body(&DIM, &OBJECT)`, `r.sky_stars`, `r.sky_dome`, `r.sky_clouds` for what is in its sky, the sun and the moon included; `OVERWORLD.sky(&MOON)` is one of them for `r.edit` and `r.remove`
-- `r.terrain(dim)` for its terrain, yours or another mod's
+- `r.terrain(&DIM)` for your dimension's terrain, `r.edit(OVERWORLD.terrain())` for another mod's
 - `r.ore(block)`, in every dimension whose stone it replaces (`.dimension(..)` limits it). `.replaces_with("#granite", &GRANITE_IRON_ORE)` makes the same vein go on as another block where it meets granite, so veins don't stop at stone borders; `.exposed(0.5)` leaves out half of what would touch a cave, as vanilla's gold and diamonds. `r.edit(IRON_ORE.ore())` changes another mod's ore: what you set, its `replaces` and `replaces_with` added to its own
-- `r.scatter(&TREES)` for trees and the like, `r.decoration(f)` for plants, in every dimension
-- `r.template(&T)` (layers and keys, or `fill` boxes) for a shape of blocks, then `r.structure(dim, &T)`, `.body(&T)` on an entity or `w.place_template(&T, pos)`
-- `r.natural_spawn(entity).biome("#animals").light(7, 15)`
+- `r.scatter(&TREES)` for trees and the like, `r.decoration(f)` for plants (named `<mod>:decoration`, `/2`..), in every dimension
+- `r.template(&T)` (layers and keys, or `fill` boxes) for a shape of blocks, then `r.structure(&T)` (`T.structure()` to edit it), `.body(&T)` on an entity or `w.place_template(&T, pos)`
+- `r.natural_spawn(&ENTITY).biome("#animals").light(7, 15)`, named `<mod>:<entity>`, `/2`..
 
 The terrain has presets like hills, canyons, dunes, caves, lava lakes if you don't want to write noise by hand.\
 Mars in testmod is built from presets only.\
 Your own shapes are formulas (`Expr`) the GPU runs as fast as the presets, and `.field(..)` gives biome rules any value you make, not just temperature and humidity.\
-It works on other mods' dimensions too, so adding a biome to base's overworld is a `rule_before("base:desert", ..)` away.
+It works on other mods' dimensions too, so adding a biome to base's overworld is a `r.edit(OVERWORLD.terrain()).rule_before("base:desert", ..)` away.
 
 ### Recipes
 - `r.shaped(&KIND, out, count, &["iii", " s ", " s "], &[('i', "#ingots/iron"), ('s', "#stick")])`
@@ -367,7 +367,7 @@ A block's table is all it drops, there is no tool check in front of it: put `Con
 and other mods' tables without replacing them: `r.edit(ZOMBIE.loot()).pool(..)` with `ZOMBIE = EntityKind::named("base:zombie")` adds a pool, `.replace_drop("rotten_flesh", "mymod:brain")` and `.remove_drop(..)` change what any pool of it gives, `.clear()` empties it, and the pools are a list like any (`.remove_item(&comps::loot::POOLS, "#0")` takes out the first).
 
 ### Changing something of another mod
-- `r.edit(&base::TORCH).light(5)`: only what you set changes, the rest stays (testmod edits its own torch this way). Blocks, items and biomes by their handle, and the parts of a block by its: `IRON_ORE.ore()`, `WATER.liquid()`, `ZOMBIE.loot()`. A block's edit says of its item only what it sets (`item_texture`, `no_item()`).
+- `r.edit(&base::TORCH).light(5)`: only what you set changes, the rest stays (testmod edits its own torch this way). Blocks, items and biomes by their handle, and the parts of a block by its: `IRON_ORE.ore()`, `WATER.liquid()`, `ZOMBIE.loot()`, `OVERWORLD.terrain()`, `WELL.structure()`. A block's edit says of its item only what it sets (`item_texture`, `no_item()`).
 - `r.replace(&base::TORCH)...`: registers it from scratch, nothing of theirs stays; for every kind with a builder (blocks, items, entities, biomes, dimensions, menus, particles, sounds, poses, game modes, weathers, damage causes, text places, sky objects, HUD elements, recipes, loot tables...).
 - `r.remove(&base::RUBY_ORE)`: as if nobody had registered it.
 

@@ -403,7 +403,7 @@ fn init(r: &mut Registry) {
         .cave_biome("crystal_caves", 24, 96.0, 0.0);
     // Mars edited as from outside: a biome tried before its dust, a rock needle from a feature
     // of this mod's own, and boulders on the new biome.
-    r.terrain(&MARS)
+    r.edit(MARS.terrain())
         .rule_before("testmod:dust", BiomeRule::new("scorched"))
         .feature(
             // 90 blocks up within 3 of the spot: a step where the distance passes 3.
@@ -445,11 +445,10 @@ fn init(r: &mut Registry) {
 
     // A liquid of its own, flowing by the engine's rules; its bucket fills from the base game's.
     r.liquid(&OIL)
-        .block(|b| b.light_opacity(4).drag(0.4))
+        .block(|b| b.light_opacity(4).drag(0.4).tag("oil"))
         .flow_delay(15)
         .drop_off(2)
         .slope_find(3)
-        .tag("oil")
         .bucket(&OIL_BUCKET, &BUCKET, &BASE_TOOLS);
 
     // Healing food without touching the base game's eating code: any used item that heals (its
