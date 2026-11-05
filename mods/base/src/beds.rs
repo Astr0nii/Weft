@@ -384,15 +384,16 @@ fn client(r: &mut Registry) {
         }
     });
     // Leaving the screen (Escape, the button) gets the player up.
-    r.client_screen(|c, screen| {
-        if screen != SLEEP_SCREEN.name() && LYING_SINCE.lock().unwrap().take().is_some() {
-            c.post_effect(SLEEP_EFFECT, 0.0);
-            c.send(&GET_UP, &());
-        }
-    });
     r.client_frame(|c| {
-        if let Some(since) = *LYING_SINCE.lock().unwrap() {
-            c.post_effect(SLEEP_EFFECT, (since.elapsed().as_secs_f32() / 2.5).clamp(0.01, 1.0));
+        let mut lying = LYING_SINCE.lock().unwrap();
+        if let Some(since) = *lying {
+            if c.screen() != SLEEP_SCREEN.name() {
+                *lying = None;
+                c.post_effect(SLEEP_EFFECT, 0.0);
+                c.send(&GET_UP, &());
+            } else {
+                c.post_effect(SLEEP_EFFECT, (since.elapsed().as_secs_f32() / 2.5).clamp(0.01, 1.0));
+            }
         }
     });
     r.menu(&SLEEP_SCREEN)

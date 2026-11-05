@@ -147,7 +147,7 @@ pub fn register(r: &mut Registry) {
         .size(0.4, 0.4)
         .max_health(4.0)
         .walk_speed(1.5)
-        .flags(entity_flags::NO_GRAVITY)
+        .with(entity_flags::NO_GRAVITY)
         .unpushable()
         .model(
             Model::from(vec![ModelPart::new("wisp", [0.0, 3.0, 0.0]).cuboid([-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], [0.0, 0.0])])
@@ -184,7 +184,7 @@ pub fn register(r: &mut Registry) {
     r.entity(&ORB)
         .size(0.6, 0.9)
         .max_health(4.0)
-        .flags(entity_flags::NO_GRAVITY)
+        .with(entity_flags::NO_GRAVITY)
         .model(
             Model::from(vec![
                 ModelPart::new("core", [0.0, 8.0, 0.0]).mesh(sphere_mesh([0.0, 8.0, 0.0], 4.0, 8, 12, [0.0, 0.0, 16.0, 16.0])),

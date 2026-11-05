@@ -945,11 +945,16 @@ impl EntityBuilder<'_> {
         self.no_egg = true;
         self
     }
+    /// The client makes no steps, idle noises or death smoke for it: `r.client_entity_frame`
+    /// does its cosmetics instead.
+    pub fn own_effects(self) -> Self {
+        self.with(entity_flags::OWN_EFFECTS)
+    }
     /// It has the player's equipment slots (`Registry::equipment_slot`) after its own: what it
     /// wears shows on its model and counts like a player's armor; `group(EQUIPMENT_GROUP)` or a
     /// slot's name in `w.inventory(id)` reaches them.
     pub fn equipment(self) -> Self {
-        self.flags(entity_flags::WEARS)
+        self.with(entity_flags::WEARS)
     }
     /// Damage of its melee hits (`World::attack`), like an item's.
     pub fn attack_damage(self, damage: f32) -> Self {
@@ -979,7 +984,8 @@ impl EntityBuilder<'_> {
         self.speed = s;
         self
     }
-    pub fn flags(mut self, f: u32) -> Self {
+    /// Raw `entity_flags` on top of what the presets set.
+    pub fn with(mut self, f: u32) -> Self {
         self.flags |= f;
         self
     }
@@ -1690,7 +1696,7 @@ impl Registry {
         drop(f(self
             .entity(kind)
             .no_egg()
-            .flags(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE)));
+            .with(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE)));
         unsafe { (host().set_block_entity)(self.raw, Str::new(block.name()), Str::new(kind.name()), slots) }
     }
 

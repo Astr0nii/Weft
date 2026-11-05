@@ -291,10 +291,6 @@ impl Weather {
     }
 }
 
-fn set_flag(flags: u32, flag: u32, on: bool) -> u32 {
-    if on { flags | flag } else { flags & !flag }
-}
-
 pub mod weathers {
     use super::Weather;
     pub static CLEAR: Weather = Weather::named("core:clear");
@@ -337,18 +333,18 @@ impl crate::Registry {
 }
 
 impl WeatherBuilder<'_> {
-    /// Whether something falls (rain, snow, each biome's own).
-    pub fn falls(mut self, yes: bool) -> Self {
-        self.desc.flags = set_flag(self.desc.flags, abi::weather_flags::FALLS, yes);
+    /// Nothing falls (by default rain, snow, each biome's own does).
+    pub fn no_falling(mut self) -> Self {
+        self.desc.flags &= !abi::weather_flags::FALLS;
         self
     }
-    pub fn lightning(mut self, yes: bool) -> Self {
-        self.desc.flags = set_flag(self.desc.flags, abi::weather_flags::LIGHTNING, yes);
+    pub fn lightning(mut self) -> Self {
+        self.desc.flags |= abi::weather_flags::LIGHTNING;
         self
     }
-    /// Under it nothing burns in the sun (rain does; a sandstorm need not).
-    pub fn shelters_from_sun(mut self, yes: bool) -> Self {
-        self.desc.flags = set_flag(self.desc.flags, abi::weather_flags::SHELTERS, yes);
+    /// Things burn in the sun under it, a sandstorm (under rain they don't).
+    pub fn no_shelter(mut self) -> Self {
+        self.desc.flags &= !abi::weather_flags::SHELTERS;
         self
     }
     /// How it looks: `abi::WeatherLook`, rain's by default (`WeatherDesc::DEFAULT.look`).
@@ -466,9 +462,9 @@ impl PoseBuilder<'_> {
         self.action = name.to_string();
         self
     }
-    /// Whether the camera bobs walking in it.
-    pub fn bob(mut self, yes: bool) -> Self {
-        self.desc.bob = yes as u32;
+    /// The camera doesn't bob walking in it.
+    pub fn no_bob(mut self) -> Self {
+        self.desc.bob = 0;
         self
     }
     /// Of the poses a player may take, the highest is taken (the engine's: stand 0, crouch 10,
@@ -535,7 +531,7 @@ impl GameMode {
 ///
 /// ```ignore
 /// static ADVENTURE: GameMode = GameMode::named("adventure");
-/// r.game_mode(&ADVENTURE).breaks(Breaking::None).places(false);
+/// r.game_mode(&ADVENTURE).breaks(Breaking::None).no_placing();
 /// ```
 /// `/gamemode mymod:adventure` sets it, `{if:mymod:adventure}` in text asks for it.
 pub struct GameModeBuilder<'a> {
@@ -569,51 +565,57 @@ impl crate::Registry {
 }
 
 impl GameModeBuilder<'_> {
-    fn flag(mut self, f: u32, on: bool) -> Self {
-        self.flags = set_flag(self.flags, f, on);
+    /// Raw `abi::game_mode_flags`, what the presets below set.
+    pub fn with(mut self, flags: u32) -> Self {
+        self.flags |= flags;
         self
     }
     pub fn breaks(self, how: Breaking) -> Self {
         use abi::game_mode_flags as f;
-        self.flag(f::INSTANT_BREAK, how == Breaking::Instant)
-            .flag(f::NO_BREAK, how == Breaking::None)
-    }
-    pub fn places(self, yes: bool) -> Self {
-        self.flag(abi::game_mode_flags::NO_PLACE, !yes)
-    }
-    /// Whether anything gets used up: placed blocks, poured buckets, wear. Without costs,
-    /// picking a block gives a stack of it.
-    pub fn costs(self, yes: bool) -> Self {
-        self.flag(abi::game_mode_flags::NO_COSTS, !yes)
-    }
-    /// No damage, hunger or air.
-    pub fn invulnerable(self, yes: bool) -> Self {
-        self.flag(abi::game_mode_flags::INVULNERABLE, yes)
+        self.with(match how {
+            Breaking::Instant => f::INSTANT_BREAK,
+            Breaking::None => f::NO_BREAK,
+            Breaking::Normal => 0,
+        })
     }
     pub fn flight(self, how: Flight) -> Self {
         use abi::game_mode_flags as f;
-        self.flag(f::CAN_FLY, how == Flight::Allowed)
-            .flag(f::ALWAYS_FLY, how == Flight::Always)
+        self.with(match how {
+            Flight::Allowed => f::CAN_FLY,
+            Flight::Always => f::ALWAYS_FLY,
+            Flight::None => 0,
+        })
+    }
+    pub fn no_placing(self) -> Self {
+        self.with(abi::game_mode_flags::NO_PLACE)
+    }
+    /// Nothing gets used up: placed blocks, poured buckets, wear. Picking a block gives a stack.
+    pub fn no_costs(self) -> Self {
+        self.with(abi::game_mode_flags::NO_COSTS)
+    }
+    /// No damage, hunger or air.
+    pub fn invulnerable(self) -> Self {
+        self.with(abi::game_mode_flags::INVULNERABLE)
     }
     /// Through blocks.
-    pub fn noclip(self, yes: bool) -> Self {
-        self.flag(abi::game_mode_flags::NOCLIP, yes)
+    pub fn noclip(self) -> Self {
+        self.with(abi::game_mode_flags::NOCLIP)
     }
     /// Unnoticed by mobs, spawning and other players, and not a body to hit.
-    pub fn hidden(self, yes: bool) -> Self {
-        self.flag(abi::game_mode_flags::HIDDEN, yes)
+    pub fn hidden(self) -> Self {
+        self.with(abi::game_mode_flags::HIDDEN)
     }
-    /// Whether it can use, hit, pick up, drop and hold anything.
-    pub fn interacts(self, yes: bool) -> Self {
-        self.flag(abi::game_mode_flags::NO_INTERACT, !yes)
+    /// It can't use, hit, pick up, drop or hold anything.
+    pub fn no_interacting(self) -> Self {
+        self.with(abi::game_mode_flags::NO_INTERACT)
     }
-    /// Whether the hotbar and bars show.
-    pub fn hud(self, yes: bool) -> Self {
-        self.flag(abi::game_mode_flags::NO_HUD, !yes)
+    /// The hotbar and bars don't show.
+    pub fn no_hud(self) -> Self {
+        self.with(abi::game_mode_flags::NO_HUD)
     }
     /// The inventory key opens the creative inventory.
-    pub fn creative_inventory(self, yes: bool) -> Self {
-        self.flag(abi::game_mode_flags::CREATIVE_INVENTORY, yes)
+    pub fn creative_inventory(self) -> Self {
+        self.with(abi::game_mode_flags::CREATIVE_INVENTORY)
     }
     /// An attribute modifier its players have while in it (longer reach, `visibility` 0).
     pub fn modifier(mut self, attribute: &crate::Attribute, op: u32, amount: f64) -> Self {
@@ -1654,7 +1656,8 @@ macro_rules! state_setters {
             });
             self
         }
-        pub fn flags(mut self, f: u32) -> Self {
+        /// Raw `block_flags` on top of what the presets set.
+        pub fn with(mut self, f: u32) -> Self {
             self.each(|s| s.flags |= f);
             self
         }

@@ -370,8 +370,6 @@ pub struct Game {
     pub energy: u32,
     /// (owner, hook, callback) in mod order, see `abi::client_hook`.
     pub client_hooks: Vec<(ModId, u32, Callback)>,
-    /// Client cosmetics by entity kind (`Host::reg_client_entity_tick`).
-    pub client_entity_ticks: FxHashMap<u32, (ModId, Callback)>,
     /// Every frame on the client, for entities of a kind, as many as mods add.
     pub client_entity_watchers: FxHashMap<u32, Vec<(ModId, Callback)>>,
     /// (entity kind's name, model, bone it goes on).
@@ -797,7 +795,6 @@ pub struct RawGame {
     pub sets: Vec<RawSet>,
     pub client_hooks: Vec<(ModId, u32, Callback)>,
     /// (owner, entity kind, callback).
-    pub client_entity_ticks: Vec<(ModId, String, Callback)>,
     pub client_entity_watchers: Vec<(ModId, String, Callback)>,
     /// (entity kind, parts, skin size) set with `Host::reg_entity_model`.
     pub entity_models: Vec<(String, Vec<Part>, [u32; 2])>,
@@ -1749,13 +1746,11 @@ pub fn freeze(
         .iter()
         .map(|n| (0, EntityEffectDef { name: n.to_string(), shader: n.to_string() }))
         .collect();
-    let mut entity_ticks: Vec<(ModId, String, Callback)> = Vec::new();
     let mut entity_watchers: Vec<(ModId, String, Callback)> = Vec::new();
     let mut attached_models: Vec<(String, String, String)> = Vec::new();
     let mut item_models: Vec<(ModId, String, Callback)> = Vec::new();
     let mut cameras: Vec<RawCamera> = Vec::new();
     for r in raws {
-        entity_ticks.extend(r.client_entity_ticks);
         entity_watchers.extend(r.client_entity_watchers);
         attached_models.extend(r.attached_models);
         g.bone_motions.extend(r.bone_motions);
@@ -1825,15 +1820,6 @@ pub fn freeze(
     g.moving_kind = g.entity_names[MOVING];
     g.platform_kind = g.entity_names[PLATFORM];
     g.client_hooks.sort_by_key(|h| order(h.0));
-    entity_ticks.sort_by_key(|t| order(t.0));
-    for (owner, kind, cb) in entity_ticks {
-        match g.entity_names.get(&kind) {
-            Some(&k) => {
-                g.client_entity_ticks.insert(k, (owner, cb));
-            }
-            None => errors.push(format!("client entity tick for unknown entity {kind}")),
-        }
-    }
     entity_watchers.sort_by_key(|t| order(t.0));
     for (owner, kind, cb) in entity_watchers {
         match g.entity_names.get(&kind) {

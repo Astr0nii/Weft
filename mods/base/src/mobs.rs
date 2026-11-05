@@ -158,7 +158,7 @@ pub fn register(r: &mut Registry) {
         .max_health(20.0)
         .walk_speed(2.6)
         .hostile()
-        .flags(entity_flags::BURNS_IN_SUN)
+        .with(entity_flags::BURNS_IN_SUN)
         .model(humanoid(true))
         .attack_damage(3.0)
         .reach(1.3)
@@ -200,7 +200,7 @@ pub fn register(r: &mut Registry) {
         .max_health(20.0)
         .walk_speed(2.5)
         .hostile()
-        .flags(entity_flags::BURNS_IN_SUN)
+        .with(entity_flags::BURNS_IN_SUN)
         .model(skeleton_model())
         .attach(&FUSE)
         .goals(skeleton());

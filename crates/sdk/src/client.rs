@@ -585,23 +585,11 @@ impl Registry {
         unsafe { (host().reg_client_hook)(self.raw, abi::client_hook::FRAME, cb) }
     }
 
-    /// Cosmetics of entities of `kind` on the client, every frame (wing flaps, sparks, purring),
-    /// instead of the engine's steps, idle noises and death smoke; `e.run_engine_effects()` keeps
-    /// those. One per kind: a later mod's replaces an earlier one's.
-    pub fn client_entity_cosmetics(&mut self, kind: &crate::EntityKind, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
-        unsafe { (host().reg_client_entity_cosmetics)(self.raw, abi_str(kind.name()), entity_callback(f)) }
-    }
-
-    /// Every frame on the client for each entity of `kind`, the local player too, beside whatever
-    /// else runs for them: any number of mods may watch one kind, and steps and such go on.
+    /// Every frame on the client for each entity of `kind`, the local player too: its cosmetics
+    /// (wing flaps, sparks, purring), any number of mods on one kind. The engine's steps, idle
+    /// noises and death smoke go on unless the kind has `.own_effects()`.
     pub fn client_entity_frame(&mut self, kind: &crate::EntityKind, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
         unsafe { (host().reg_client_entity_frame)(self.raw, abi_str(kind.name()), entity_callback(f)) }
-    }
-
-    /// When the top screen changes; the name is empty back in the world.
-    pub fn client_screen(&mut self, f: impl Fn(&Client, &str) + Send + Sync + 'static) {
-        let cb = callback(move |a: &mut abi::ClientScreenArgs| f(&Client::from_raw(a.client), unsafe { a.screen.as_str() }));
-        unsafe { (host().reg_client_hook)(self.raw, abi::client_hook::SCREEN, cb) }
     }
 
     /// Server side of a channel: `f` gets every value a client sends on it, with who sent it.
@@ -754,10 +742,5 @@ impl ClientEntity {
     /// Seconds since the last call.
     pub fn dt(&self) -> f32 {
         self.0.dt
-    }
-    /// What the engine does for kinds without a tick: steps, idle noises, death smoke.
-    pub fn run_engine_effects(&self) {
-        let mut a = abi::ClientEntityArgs { ..self.0 };
-        unsafe { (host().client_engine_effects)(&mut a) }
     }
 }

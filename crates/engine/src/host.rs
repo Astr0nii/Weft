@@ -128,7 +128,6 @@ pub static HOST: Host = Host {
     gizmo,
     gizmo_text,
     reg_client_hook,
-    reg_client_entity_cosmetics,
     reg_client_entity_frame,
     reg_bone_model,
     reg_bone_motion,
@@ -138,7 +137,6 @@ pub static HOST: Host = Host {
     client_action_current: crate::app::api::client_entity_action,
     client_clip_length: crate::app::api::client_clip_length,
     client_held_item: crate::app::api::client_entity_held,
-    client_engine_effects: crate::app::api::client_entity_defaults,
     reg_packet,
     reg_key,
     reg_mistake,
@@ -2855,7 +2853,7 @@ pub const STORAGE_SCHEMA: &str = "storage";
 unsafe extern "C" fn reg_client_hook(r: *mut abi::Registrar, hook: u32, cb: Callback) {
     unsafe {
         let r = reg(r);
-        if hook > abi::client_hook::SCREEN {
+        if hook > abi::client_hook::FRAME {
             r.errors.push(format!("client hook {hook} does not exist"));
             return;
         }
@@ -2896,16 +2894,6 @@ unsafe extern "C" fn reg_item_model_for_stack(r: *mut abi::Registrar, item: Str,
         r.game
             .item_model_for_stack
             .push((owner, item.as_str().to_string(), cb));
-    }
-}
-
-unsafe extern "C" fn reg_client_entity_cosmetics(r: *mut abi::Registrar, kind: Str, cb: Callback) {
-    unsafe {
-        let r = reg(r);
-        let owner = r.owner;
-        r.game
-            .client_entity_ticks
-            .push((owner, kind.as_str().to_string(), cb));
     }
 }
 

@@ -1157,31 +1157,27 @@ impl Running {
     }
 
     /// Runs the mods' client hooks of one kind with a view that may drive the client.
-    fn client_hooks(&mut self, hook: u32, screen: &str) {
+    fn client_hooks(&mut self) {
         let hooks: Vec<(abi::ModId, abi::Callback)> = content()
             .game
             .client_hooks
             .iter()
-            .filter(|h| h.1 == hook)
             .map(|h| (h.0, h.2))
             .collect();
         for (owner, cb) in hooks {
             let mut v = self.frame_view();
-            if hook == abi::client_hook::FRAME {
-                let mut a = abi::ClientFrameArgs { client: v.raw() };
-                crate::host::invoke(owner, cb, &mut a);
-            } else {
-                let mut a = abi::ClientScreenArgs { client: v.raw(), screen: abi::Str::new(screen) };
-                crate::host::invoke(owner, cb, &mut a);
-            }
+            let mut a = abi::ClientFrameArgs { client: v.raw() };
+            crate::host::invoke(owner, cb, &mut a);
         }
     }
 
-    /// Every entity's cosmetics this frame: its kind's mod tick or the engine's; finished deaths
-    /// go after their last call.
+    /// Every entity's cosmetics this frame: the engine's unless its kind has its own
+    /// (`entity_flags::OWN_EFFECTS`), and mods' `client_entity_frame`, the local player's too;
+    /// finished deaths go after their last call.
     fn entity_ticks(&mut self, dt: f32) {
         let Some(g) = &self.game else { return };
         let c = content();
+        let mine = g.client.me.args(g.client.player_id, dt);
         let all: Vec<abi::ClientEntityArgs> = g
             .client
             .entities
@@ -1189,47 +1185,23 @@ impl Running {
             .filter(|(_, e)| e.item.is_empty() && e.structure.is_none())
             .map(|(&id, e)| e.args(id, dt))
             .collect();
-        for mut a in all {
-            match c.game.client_entity_ticks.get(&a.kind) {
-                Some(&(owner, cb)) => {
-                    let mut v = self.frame_view();
-                    a.client = v.raw();
-                    crate::host::invoke(owner, cb, &mut a);
-                }
-                None => {
-                    if let Some(g) = &mut self.game {
-                        g.client.entity_effects(&a);
-                    }
+        for mut a in all.into_iter().chain([mine]) {
+            let own = c.game.entities[a.kind as usize].flags & abi::entity_flags::OWN_EFFECTS != 0;
+            if !own && a.entity != mine.entity {
+                if let Some(g) = &mut self.game {
+                    g.client.entity_effects(&a);
                 }
             }
-        }
-        // Who only watches, every one of them; the local player is an entity to them as well.
-        if !c.game.client_entity_watchers.is_empty() {
-            let mine = self
+            for &(owner, cb) in c
                 .game
-                .as_ref()
-                .map(|g| g.client.me.args(g.client.player_id, dt));
-            let others = self.game.as_ref().map_or(Vec::new(), |g| {
-                g.client
-                    .entities
-                    .iter()
-                    .filter(|(_, e)| e.item.is_empty() && e.structure.is_none())
-                    .filter(|(_, e)| c.game.client_entity_watchers.contains_key(&e.kind))
-                    .map(|(&id, e)| e.args(id, dt))
-                    .collect()
-            });
-            for mut a in others.into_iter().chain(mine) {
-                for &(owner, cb) in c
-                    .game
-                    .client_entity_watchers
-                    .get(&a.kind)
-                    .into_iter()
-                    .flatten()
-                {
-                    let mut v = self.frame_view();
-                    a.client = v.raw();
-                    crate::host::invoke(owner, cb, &mut a);
-                }
+                .client_entity_watchers
+                .get(&a.kind)
+                .into_iter()
+                .flatten()
+            {
+                let mut v = self.frame_view();
+                a.client = v.raw();
+                crate::host::invoke(owner, cb, &mut a);
             }
         }
         if let Some(g) = &mut self.game {
@@ -1716,7 +1688,7 @@ fn start_frame(r: &mut Running, opts: &Options, dt: f64) {
     r.release_mod_keys();
     r.mod_gizmos.clear();
     r.mod_screen_text.clear();
-    r.client_hooks(abi::client_hook::FRAME, "");
+    r.client_hooks();
     if opts.automated && r.screens.is_empty() && r.game.is_some() {
         // The window may not have focus while a mod drives it.
         r.input.captured = true;
@@ -2065,10 +2037,8 @@ fn end_input(r: &mut Running) {
             .unwrap_or_default(),
     );
     if top != r.screen_seen {
-        let name = top.1.clone();
         r.screen_seen = top;
         r.screen_frames = 0;
-        r.client_hooks(abi::client_hook::SCREEN, &name);
     } else {
         r.screen_frames = r.screen_frames.saturating_add(1);
     }

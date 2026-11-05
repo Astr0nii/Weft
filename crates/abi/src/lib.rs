@@ -1369,6 +1369,9 @@ pub mod entity_flags {
     /// Has the equipment slots (`Registry::equipment_slot`) the player has, after its own:
     /// armor on a zombie, shown on its model and counted like a player's.
     pub const WEARS: u32 = 1024;
+    /// The client makes no steps, idle noises or death smoke for it: its mod's
+    /// `client_entity_frame` does what it wants instead.
+    pub const OWN_EFFECTS: u32 = 2048;
     /// Not a kind flag: set in `EntityState::flags` when its last move ran into a wall.
     pub const BLOCKED: u32 = 1 << 31;
 }
@@ -3040,10 +3043,6 @@ pub struct Host {
     // ------------------------------------------------ client side and mod channels
     /// Client callback, see `client_hook`.
     pub reg_client_hook: unsafe extern "C" fn(reg: *mut Registrar, hook: u32, cb: Callback),
-    /// Cosmetics of entities of `kind` on the client (`ClientEntityArgs`), every frame, instead of
-    /// the engine's (steps, idle noises, the smoke when a death ends); one per kind, a later mod's
-    /// replaces an earlier one's.
-    pub reg_client_entity_cosmetics: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, cb: Callback),
     /// Every frame for each entity of `kind`, alongside whatever else runs for it.
     pub reg_client_entity_frame: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, cb: Callback),
     /// Every entity of `kind` has `model` on its bone `bone`.
@@ -3062,8 +3061,6 @@ pub struct Host {
     pub client_held_item: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, hand: u32) -> u32,
     /// Where a bone of what `entity` is or has on was, the last frame. 0 if there is none.
     pub client_bone_position: unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, bone: Str, out: *mut Vec3) -> u32,
-    /// The engine's own cosmetics for this entity, what a kind without a tick gets.
-    pub client_engine_effects: unsafe extern "C" fn(args: *mut ClientEntityArgs),
     /// Message channel `name` between a mod's client and server parts, carrying values of
     /// `schema` (both sides must agree, sends with another are refused). `side` 0: `cb` runs on
     /// the server with `PacketArgs` when a client sends; 1: on the client with `ClientPacketArgs`.
@@ -4485,8 +4482,6 @@ defaults!(ReactionDesc { liquid: Str::EMPTY, touching: Str::EMPTY, source: Str::
 pub mod client_hook {
     /// `ClientFrameArgs`, every frame before input is handled; may drive the client.
     pub const FRAME: u32 = 0;
-    /// `ClientScreenArgs`: the top screen changed (empty name = no screen, back in the world).
-    pub const SCREEN: u32 = 1;
 }
 
 #[repr(C)]
@@ -4503,7 +4498,7 @@ pub struct ItemModelArgs {
     pub texture: Str,
 }
 
-/// One entity on the client, for `Host::reg_client_entity_cosmetics`.
+/// One entity on the client, for `Host::reg_client_entity_frame`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ClientEntityArgs {
@@ -4520,12 +4515,6 @@ pub struct ClientEntityArgs {
     pub age: f32,
     /// Seconds since the last call.
     pub dt: f32,
-}
-
-#[repr(C)]
-pub struct ClientScreenArgs {
-    pub client: *mut ClientCtx,
-    pub screen: Str,
 }
 
 #[repr(C)]

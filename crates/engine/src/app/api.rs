@@ -685,15 +685,6 @@ pub unsafe extern "C" fn client_screen_text(
     }
 }
 
-pub unsafe extern "C" fn client_entity_defaults(a: *mut abi::ClientEntityArgs) {
-    unsafe {
-        let Some(a) = a.as_ref() else { return };
-        if let Some(g) = run(a.client).and_then(|r| r.game.as_mut()) {
-            g.client.entity_effects(a);
-        }
-    }
-}
-
 pub unsafe extern "C" fn client_send_packet(c: *mut abi::ClientCtx, name: Str, schema: Str, data: Slice<u8>) {
     unsafe {
         let Some(r) = run(c) else { return };
