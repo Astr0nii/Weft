@@ -16,7 +16,7 @@ use crate::abi::Vec3;
 use std::marker::PhantomData;
 
 use crate::abi::{self, Slice, Str, particle_flags as pf};
-use crate::{Client, ClientView, Dimension, Music, Particle, Registry, SkyObject, SoundCategory, World, callback, host};
+use crate::{Client, ClientView, Dimension, Music, Particle, Registry, SkyObject, SoundCategory, WithComponents, World, callback, host};
 
 pub struct ParticleBuilder<'a> {
     raw: *mut abi::Registrar,
@@ -571,52 +571,51 @@ impl Client {
     }
 }
 
+/// A sound event being registered (`Registry::sound`): at volume 1 and as recorded, heard 16
+/// blocks away, a block sound, unless told otherwise.
 pub struct SoundBuilder<'a> {
-    raw: *mut abi::Registrar,
-    name: String,
-    files: Vec<String>,
-    handle: Option<&'static crate::Sound>,
-    desc: abi::SoundDesc,
-    category_name: String,
-    _p: PhantomData<&'a mut Registry>,
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
+
+crate::entry::entry_builder!(
+    Sound => SoundBuilder, sound;
+    Music => MusicBuilder, music;
+    SoundCategory => SoundCategoryBuilder, sound_category_entry;
+);
 
 impl SoundBuilder<'_> {
     /// Variants picked at random: `sounds/<name>.ogg` or `.wav`, relative to this mod.
-    pub fn files(mut self, names: &[&str]) -> Self {
-        self.files = names.iter().map(|n| crate::asset("", n)).collect();
-        self
+    pub fn files(self, names: &[&str]) -> Self {
+        let files = names.iter().map(|n| crate::asset("", n)).collect();
+        self.set(&crate::comps::sound::FILES, files)
     }
     /// Category for its volume setting: the engine's (`core:creatures` ...) or one registered
     /// with `Registry::sound_category` (any mod's).
-    pub fn category(mut self, category: &SoundCategory) -> Self {
-        self.category_name = category.name().to_string();
-        self
+    pub fn category(self, category: &SoundCategory) -> Self {
+        self.set_text(&crate::comps::sound::CATEGORY, category.name())
     }
-    pub fn volume(mut self, v: f32) -> Self {
-        self.desc.volume = v;
-        self
+    pub fn volume(self, v: f32) -> Self {
+        self.set(&crate::comps::sound::VOLUME, v)
     }
     /// Playback speed picked between the two.
-    pub fn pitch(mut self, min: f32, max: f32) -> Self {
-        self.desc.pitch = [min, max];
-        self
+    pub fn pitch(self, min: f32, max: f32) -> Self {
+        self.set(&crate::comps::sound::PITCH, [min, max])
     }
     /// Blocks away it is still heard.
-    pub fn range(mut self, blocks: f32) -> Self {
-        self.desc.range = blocks;
-        self
+    pub fn range(self, blocks: f32) -> Self {
+        self.set(&crate::comps::sound::RANGE, blocks)
     }
     /// Full volume within `full_within` blocks, then fading to nothing at `range` along `curve`
     /// (by default within 1 block, evenly).
-    pub fn falloff(mut self, full_within: f32, curve: Falloff) -> Self {
-        self.desc.full_within = full_within;
-        self.desc.falloff = match curve {
+    pub fn falloff(self, full_within: f32, curve: Falloff) -> Self {
+        let n = match curve {
             Falloff::Even => 0,
             Falloff::Late(n) => n.clamp(1, 8) as i32,
             Falloff::Early(n) => -(n.clamp(1, 8) as i32),
         };
-        self
+        self.set(&crate::comps::sound::FULL_WITHIN, full_within)
+            .set(&crate::comps::sound::FALLOFF, n)
     }
 }
 
@@ -630,97 +629,55 @@ pub enum Falloff {
     Early(u8),
 }
 
-impl Drop for SoundBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let files: Vec<Str> = self.files.iter().map(|f| Str::new(f)).collect();
-        let desc = abi::SoundDesc {
-            name: Str::new(&self.name),
-            cell: self.handle.map_or(std::ptr::null(), |h| h.id_cell()),
-            files: Slice::new(&files),
-            category_name: Str::new(&self.category_name),
-            ..self.desc
-        };
-        unsafe { (host().reg_sound)(self.raw, &desc) }
-    }
-}
-
+/// Background music being registered (`Registry::music`): after a quiet while, a track of the
+/// first music whose conditions hold.
 pub struct MusicBuilder<'a> {
-    raw: *mut abi::Registrar,
-    name: String,
-    tracks: Vec<String>,
-    dimension: String,
-    when: String,
-    _p: PhantomData<&'a mut Registry>,
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
 
 impl MusicBuilder<'_> {
     /// Files streamed (`sounds/<name>.ogg|.wav`), relative to this mod.
-    pub fn tracks(mut self, names: &[&str]) -> Self {
-        self.tracks = names.iter().map(|n| crate::asset("", n)).collect();
-        self
+    pub fn tracks(self, names: &[&str]) -> Self {
+        let tracks = names.iter().map(|n| crate::asset("", n)).collect();
+        self.set(&crate::comps::music::TRACKS, tracks)
     }
-    pub fn dimension(mut self, dimension: &crate::Dimension) -> Self {
-        self.dimension = dimension.name().to_string();
-        self
+    pub fn dimension(self, dimension: &crate::Dimension) -> Self {
+        self.set_text(&crate::comps::music::DIMENSION, dimension.name())
     }
     /// Plays only while this condition holds (`conditions::NIGHT`, a mod's own); call again
     /// for more, all of which have to hold.
-    pub fn when(mut self, condition: &crate::Condition) -> Self {
-        self.when = format!("{} {}", self.when, condition.name());
-        self
+    pub fn when(self, condition: &crate::Condition) -> Self {
+        self.push(&crate::comps::music::WHEN, condition.name().to_string())
     }
 }
 
-impl Drop for MusicBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let tracks: Vec<Str> = self.tracks.iter().map(|f| Str::new(f)).collect();
-        let desc = abi::MusicDesc {
-            name: Str::new(&self.name),
-            tracks: Slice::new(&tracks),
-            dimension: Str::new(&self.dimension),
-            when: Str::new(&self.when),
-            ..abi::MusicDesc::DEFAULT
-        };
-        unsafe { (host().reg_music)(self.raw, &desc) }
-    }
+/// A sound category being registered (`Registry::sound_category`).
+pub struct SoundCategoryBuilder<'a> {
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
 
 impl Registry {
     /// A sound event, see `SoundBuilder`; blocks and entities name groups of them with `.sound_group()`.
     pub fn sound<'a>(&'a mut self, sound: &'static crate::Sound) -> SoundBuilder<'a> {
-        SoundBuilder {
-            raw: self.raw,
-            name: sound.name().to_string(),
-            files: Vec::new(),
-            handle: Some(sound),
-            desc: abi::SoundDesc::DEFAULT,
-            category_name: String::new(),
-            _p: PhantomData,
-        }
+        SoundBuilder { reg: self, e: crate::entry::Entry::of(sound) }
     }
 
     /// A sound category with its own volume setting (`<ns>:volume_<name>`, in the mod's
     /// settings); `world`: heard through caves and water like block sounds.
-    pub fn sound_category(&mut self, category: &SoundCategory, world: bool) {
-        unsafe { (host().reg_sound_category)(self.raw, Str::new(category.name()), world as u32) }
+    pub fn sound_category(&mut self, category: &'static SoundCategory, world: bool) -> SoundCategoryBuilder<'_> {
+        let b = self.sound_category_entry(category);
+        if world { b.tag(abi::comp::SOUND_CATEGORY_WORLD) } else { b }
+    }
+
+    fn sound_category_entry(&mut self, category: &'static SoundCategory) -> SoundCategoryBuilder<'_> {
+        SoundCategoryBuilder { reg: self, e: crate::entry::Entry::of(category) }
     }
 
     /// Background music, see `MusicBuilder`.
-    pub fn music<'a>(&'a mut self, music: &Music) -> MusicBuilder<'a> {
-        MusicBuilder {
-            raw: self.raw,
-            name: music.name().to_string(),
-            tracks: Vec::new(),
-            dimension: String::new(),
-            when: String::new(),
-            _p: PhantomData,
-        }
+    pub fn music<'a>(&'a mut self, music: &'static Music) -> MusicBuilder<'a> {
+        MusicBuilder { reg: self, e: crate::entry::Entry::of(music) }
     }
 }
 

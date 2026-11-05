@@ -10,6 +10,7 @@ use crate::registry::RawWhere;
 use weft_abi::{self as abi, BlockModel, Callback, ModId, RenderLayer};
 
 use crate::components::{self as comps, Components, RawSet, RawValue, Target};
+use crate::entries::RawEntry;
 
 pub const AIR: u32 = 0;
 
@@ -1146,7 +1147,6 @@ pub struct RawRegistrar {
     pub items: Vec<RawItem>,
     pub biomes: Vec<RawBiome>,
     pub dims: Vec<(DimensionDef, usize, Vec<RawValue>)>,
-    pub tint_kinds: Vec<(String, u32)>,
     /// Biome, tint kind, color.
     pub biome_tints: Vec<(String, String, u32)>,
     pub game: crate::registry::RawGame,
@@ -1231,7 +1231,6 @@ impl RawRegistrar {
             blocks: Vec::new(),
             items: Vec::new(),
             biomes: Vec::new(),
-            tint_kinds: Vec::new(),
             biome_tints: Vec::new(),
             dims: Vec::new(),
             game: Default::default(),
@@ -1781,23 +1780,26 @@ fn picture_exists(mods: &[ModMeta], name: &str) -> bool {
     })
 }
 
+/// No handle cells: a tab's number is its place among the tabs shown (`Host::find`).
 fn creative_tabs(
     mods: &[ModMeta],
-    games: &[crate::registry::RawGame],
+    raw: Vec<RawEntry>,
     items: &[ItemDef],
     item_names: &FxHashMap<String, u32>,
     c: &Components,
+    mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) -> Vec<CreativeTab> {
     let mut tabs: Vec<CreativeTab> = Vec::new();
-    for g in games {
-        for (name, icon) in &g.creative_tabs {
-            let Some(&icon) = item_names.get(icon) else {
-                errors.push(format!("creative tab {name}: unknown icon item {icon}"));
-                continue;
-            };
-            tabs.push(CreativeTab { name: name.clone(), icon, items: Vec::new() });
-        }
+    let mut f = crate::entries::fold("creative tab", raw, mod_name, errors);
+    f.apply_patterns(errors);
+    for e in &f.entries {
+        let icon = e.text(abi::comp::CREATIVE_TAB_ICON).unwrap_or_default();
+        let Some(&icon) = item_names.get(icon) else {
+            errors.push(format!("creative tab {}: unknown icon item {icon}", e.name));
+            continue;
+        };
+        tabs.push(CreativeTab { name: e.name.clone(), icon, items: Vec::new() });
     }
     // Every entity's egg goes here, whichever mod's it is. Its icon is the first of them.
     tabs.push(CreativeTab { name: "core:spawn_eggs".into(), icon: 0, items: Vec::new() });
@@ -1894,7 +1896,7 @@ struct Merged {
     items: Vec<(ModId, RawItem)>,
     biomes: Vec<RawBiome>,
     dims: Vec<RawDim>,
-    tint_kinds: Vec<(String, u32)>,
+    tint_kinds: Vec<RawEntry>,
     biome_tints: Vec<(u32, (String, String, u32))>,
     games: Vec<crate::registry::RawGame>,
 }
@@ -1968,7 +1970,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         .map(|b| (b.1.name.clone(), b.1.shares_cell.clone()))
         .collect();
     apply_block_models(&mods, &mut blocks, &mut errors);
-    let tint_kinds = freeze_tints(tint_kinds, biome_tints, &mut biomes, &mut errors);
+    let mod_name = |m: ModId| {
+        mods.get(m.0 as usize)
+            .map_or("the engine".to_string(), |m| m.id.clone())
+    };
+    let tint_kinds = freeze_tints(tint_kinds, biome_tints, &mut biomes, &mod_name, &mut errors);
     check_unique(&mods, &blocks, &mut items, &mut biomes, &mut dims, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
@@ -2048,17 +2054,17 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }
     let (item_liquid, containers) = item_containers(&item_defs, &liquids, &components, &mut errors);
     let (fluid_items, item_fluid) = fluid_items(&item_defs, &liquids, &components, &mut errors);
-    let creative_tabs = creative_tabs(&mods, &games, &item_defs, &item_names, &components, &mut errors);
+    let tabs = games
+        .iter_mut()
+        .flat_map(|g| crate::registry::take_kind(&mut g.entries, abi::entry_kind::CREATIVE_TAB))
+        .collect();
+    let creative_tabs = creative_tabs(&mods, tabs, &item_defs, &item_names, &components, &mod_name, &mut errors);
     let mut ordered_items: Vec<u32> = (1..item_defs.len() as u32).collect();
     ordered_items.sort_by_key(|&i| item_defs[i as usize].order);
     let tag_items = crate::refs::tag_items(&components, &ordered_items);
     let loot = freeze_loot(&mut games, &item_defs, &item_names, &tag_items, look, &mut errors);
     let stack_flags = collect_stack_flags(&games, &components);
     let order_of = |m: ModId| mods.get(m.0 as usize).map_or(u32::MAX, |m| m.order);
-    let mod_name = |m: ModId| {
-        mods.get(m.0 as usize)
-            .map_or("the engine".to_string(), |m| m.id.clone())
-    };
     let mut game = crate::registry::freeze(
         games,
         entities,
@@ -2207,13 +2213,12 @@ fn merge_registrars(mods: &[ModMeta], mut regs: Vec<RawRegistrar>, errors: &mut 
     let mut items: Vec<(ModId, RawItem)> = Vec::new();
     let mut biomes: Vec<RawBiome> = Vec::new();
     let mut dims: Vec<(DimensionDef, usize, Vec<RawValue>)> = Vec::new();
-    let mut tint_kinds: Vec<(String, u32)> =
-        vec![("core:grass".into(), 0x8db360), ("core:foliage".into(), 0x77ab2f), ("core:water".into(), 0x3f76e4)];
+    let mut tint_kinds = Vec::new();
     let mut biome_tints = Vec::new();
     let mut games = Vec::new();
-    for r in regs {
+    for mut r in regs {
+        tint_kinds.extend(crate::registry::take_kind(&mut r.game.entries, abi::entry_kind::TINT_KIND));
         games.push(r.game);
-        tint_kinds.extend(r.tint_kinds);
         biome_tints.extend(
             r.biome_tints
                 .into_iter()
@@ -2264,8 +2269,6 @@ fn drop_overridden(regs: &mut [RawRegistrar]) {
         }
         g.particles.retain(|p| !gone(ek::PARTICLE, &p.name));
         g.menus.retain(|m| !gone(ek::MENU, &m.1.name));
-        g.configs.retain(|c| !gone(ek::CONFIG, &c.1.name));
-        g.sounds.retain(|s| !gone(ek::SOUND, &s.1.name));
     }
 }
 
@@ -2326,18 +2329,22 @@ fn model_file(mods: &[ModMeta], name: &str) -> Option<String> {
 }
 
 fn freeze_tints(
-    mut tint_kinds: Vec<(String, u32)>,
+    raw: Vec<RawEntry>,
     mut biome_tints: Vec<(u32, (String, String, u32))>,
     biomes: &mut Vec<RawBiome>,
+    mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) -> Vec<(String, u32)> {
+    let mut all: Vec<RawEntry> = [("core:grass", 0x8db360u32), ("core:foliage", 0x77ab2f), ("core:water", 0x3f76e4)]
+        .iter()
+        .map(|&(name, color)| RawEntry::engine(abi::entry_kind::TINT_KIND, name).set(abi::comp::TINT_KIND_DEFAULT, color))
+        .collect();
+    all.extend(raw);
+    let (mut tint_kinds, _) = crate::entries::bake(all, abi::entry_kind::TINT_KIND, mod_name, errors, |e, _| {
+        (e.name.clone(), e.or(abi::comp::TINT_KIND_DEFAULT, 0xFFFFFFu32))
+    });
     if tint_kinds.len() > abi::tint::MAX_KINDS as usize {
         errors.push(format!("{} tint kinds registered, at most {} fit", tint_kinds.len(), abi::tint::MAX_KINDS));
-    }
-    for (i, (name, _)) in tint_kinds.iter().enumerate() {
-        if tint_kinds[..i].iter().any(|k| &k.0 == name) {
-            errors.push(format!("tint kind {name} registered twice"));
-        }
     }
     let tint_id = |name: &str| {
         tint_kinds
@@ -3844,7 +3851,7 @@ fn check_loot_smelting(loot: &FxHashMap<String, crate::loot::Table>, game: &crat
             .flat_map(|p| &p.entries)
             .filter_map(|e| e.smelt.as_ref())
         {
-            if !game.recipe_kinds.contains(k) {
+            if !game.recipe_kinds.contains_key(k) {
                 errors.push(format!("loot table {table} smelts by recipe kind {k}, which no mod registers"));
             }
         }

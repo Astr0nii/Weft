@@ -220,6 +220,18 @@ pub fn bake<D>(
     kind: u32,
     mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
+    make: impl FnMut(&Entry, &mut Vec<String>) -> D,
+) -> (Vec<D>, FxHashMap<String, u32>) {
+    bake_by(raw, kind, mod_name, errors, |_| (), make)
+}
+
+/// `bake`, the ids in the order of `key` (stable: the order they came in where it is equal).
+pub fn bake_by<D, K: Ord>(
+    raw: Vec<RawEntry>,
+    kind: u32,
+    mod_name: &dyn Fn(ModId) -> String,
+    errors: &mut Vec<String>,
+    key: impl FnMut(&Entry) -> K,
     mut make: impl FnMut(&Entry, &mut Vec<String>) -> D,
 ) -> (Vec<D>, FxHashMap<String, u32>) {
     let what = abi::entry_kind::NAMES
@@ -227,6 +239,7 @@ pub fn bake<D>(
         .copied()
         .unwrap_or("entry");
     let mut f = fold(what, raw, mod_name, errors);
+    f.entries.sort_by_cached_key(key);
     f.apply_patterns(errors);
     f.write_cells();
     let names = f

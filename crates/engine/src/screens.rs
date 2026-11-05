@@ -712,7 +712,7 @@ impl Screen for ChatSettings {
 
 // ---------------------------------------------------------------- settings mods declare
 
-/// Mods that declared settings (`Host::reg_config`).
+/// Mods that declared settings (`entry_kind::CONFIG`).
 pub struct ModSettings;
 
 impl Screen for ModSettings {

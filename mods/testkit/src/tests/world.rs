@@ -208,7 +208,7 @@ pub async fn camera(t: T) -> R {
     t.secs(0.3).await?;
     t.check_eq(t.state().camera, 0, "its key again comes back");
 
-    let orbit = CameraMode::generated("testmod:orbit".to_string()).camera_id();
+    let orbit = CameraMode::generated("testmod:orbit".to_string()).id();
     t.press("testmod:orbit");
     t.secs(0.8).await?;
     t.check_eq(t.state().camera, orbit, "a mod's camera on its key");
@@ -236,7 +236,11 @@ pub async fn camera(t: T) -> R {
 /// nothing).
 pub async fn edits(t: T) -> R {
     t.flat().await?;
-    t.check_eq(t.op("edited").await?, "8 3 2 true 7".to_string(), "max stack, damage, warmth, tag, a weather's flags after the edits");
+    t.check_eq(
+        t.op("edited").await?,
+        "8 3 2 true 7 4".to_string(),
+        "max stack, damage, warmth, tag, a weather's flags, an attribute's default after the edits",
+    );
     Ok(())
 }
 

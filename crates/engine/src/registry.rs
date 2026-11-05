@@ -4,10 +4,10 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use rustc_hash::FxHashMap;
-use weft_abi::{self as abi, Callback, ModId, entity_flags as ef};
+use weft_abi::{self as abi, Callback, ModId, entity_flags as ef, entry_kind as ek};
 
 use crate::components::{self as comps, Components, RawSet, RawValue};
-use crate::entries::{Entry, RawEntry};
+use crate::entries::{Entry, RawEntry, bake, bake_by};
 
 pub const ENGINE: ModId = ModId(u32::MAX);
 pub const PLAYER: &str = "core:player";
@@ -300,7 +300,7 @@ impl Recipe {
     }
 }
 
-/// How the recipe viewer shows a kind of recipe (`abi::RecipeKindDesc`).
+/// How the recipe viewer shows a kind of recipe (`abi::comp::recipe_kind`).
 pub struct RecipeKindDef {
     pub owner: ModId,
     pub input_grid: [u32; 2],
@@ -310,14 +310,9 @@ pub struct RecipeKindDef {
     pub display: Option<Callback>,
 }
 
-pub struct RawRecipeKind {
-    pub name: String,
-    pub def: RecipeKindDef,
-}
-
 #[derive(Default)]
 pub struct Game {
-    /// Camera modes by id (`abi::CameraDesc`): the engine's (`camera::*`) first.
+    /// Camera modes by id (`abi::comp::camera`): the engine's (`camera::*`) first.
     pub cameras: Vec<CameraMode>,
     pub camera_names: FxHashMap<String, u32>,
     pub entities: Vec<EntityKind>,
@@ -327,7 +322,7 @@ pub struct Game {
     pub menus: Vec<MenuDef>,
     pub menu_names: FxHashMap<String, u32>,
     pub recipes: FxHashMap<String, Vec<Recipe>>,
-    pub recipe_kinds: rustc_hash::FxHashSet<String>,
+    pub recipe_kinds: FxHashMap<String, u32>,
     pub recipe_kind_defs: FxHashMap<String, RecipeKindDef>,
     /// Entity categories by `EntityKind::category`: the engine's three first.
     pub categories: Vec<CategoryDef>,
@@ -451,8 +446,6 @@ pub struct SoundDef {
     pub name: String,
     pub files: Vec<String>,
     pub category: u32,
-    /// Set by mods naming their own category; resolved at freeze.
-    pub category_name: String,
     pub volume: f32,
     pub pitch: [f32; 2],
     pub range: f32,
@@ -464,9 +457,8 @@ pub struct MusicDef {
     pub name: String,
     pub tracks: Vec<String>,
     pub dimension: Option<u32>,
-    /// Conditions that all hold while it may play, and their names until the freeze.
+    /// Conditions that all hold while it may play.
     pub when: Vec<u32>,
-    pub when_names: Vec<String>,
 }
 
 /// A condition and who answers it.
@@ -749,16 +741,12 @@ pub struct RawRecipe {
 pub struct RawGame {
     /// `Host::reg_entry`, in the order the mod made them.
     pub entries: Vec<crate::entries::RawEntry>,
-    pub cameras: Vec<RawCamera>,
     pub entities: Vec<RawEntity>,
     pub components: Vec<RawComponent>,
     /// (owner, kind, hook, callback); hook 0 is the tick.
     /// (owner, callback) run once per tick in every region (`Host::reg_world_tick`).
     pub world_ticks: Vec<(ModId, Callback)>,
     pub recipes: Vec<RawRecipe>,
-    pub recipe_kinds: Vec<RawRecipeKind>,
-    pub categories: Vec<CategoryDef>,
-    pub sound_categories: Vec<SoundCategory>,
     pub menus: Vec<(usize, MenuDef)>,
     pub huds: Vec<HudElement>,
     pub chat_format: Option<(ModId, Callback)>,
@@ -771,7 +759,6 @@ pub struct RawGame {
     pub player_menu: Option<(ModId, String)>,
     /// (mod, groups (name, cols, rows, flags)): likewise.
     pub player_inventory: Option<(ModId, Vec<(String, u32, u32, u32)>)>,
-    pub equipment: Vec<EquipmentSlot>,
     pub screen_parts: Vec<ScreenPart>,
     /// (set, words) for `word(#set)` command parameters.
     pub words: Vec<(String, Vec<String>)>,
@@ -785,8 +772,6 @@ pub struct RawGame {
     pub terrain: Vec<crate::server::terrain::RawTerrain>,
     pub structures: Vec<RawStructure>,
     pub templates: Vec<RawTemplate>,
-    /// (name, icon item) in registration order.
-    pub creative_tabs: Vec<(String, String)>,
     /// Components and tags set on other mods' entries.
     pub sets: Vec<RawSet>,
     pub client_frames: Vec<(ModId, Callback)>,
@@ -800,7 +785,6 @@ pub struct RawGame {
     /// (owner, name, side, callback).
     /// (owner, channel, schema, side, callback).
     pub packets: Vec<(ModId, String, String, u32, Callback)>,
-    pub keys: Vec<(String, String)>,
     /// (block name, flow rules).
     pub liquids: Vec<(String, String, weft_abi::LiquidDesc)>,
     /// (command, level), mods' say on what their commands ask for.
@@ -812,8 +796,6 @@ pub struct RawGame {
     pub interceptors: Vec<(ModId, String, Callback)>,
     /// (owner, chain, stage, modifier).
     pub modifiers: Vec<(ModId, String, u32, Callback)>,
-    /// (name, default, min, max).
-    pub attributes: Vec<(String, f64, f64, f64)>,
     pub loot: Vec<crate::loot::RawLoot>,
     pub loot_mods: Vec<crate::loot::RawLootMod>,
     /// (component, schema, `stack_flags`).
@@ -822,13 +804,6 @@ pub struct RawGame {
     pub systems: Vec<(ModId, String, String, Callback)>,
     pub particles: Vec<RawParticle>,
     pub sky: Vec<RawSky>,
-    /// (handle cell, setting).
-    pub configs: Vec<(usize, crate::config::ConfigDef)>,
-    /// (recipe type, item).
-    /// (handle cell, event).
-    pub sounds: Vec<(usize, SoundDef)>,
-    /// (dimension name, music).
-    pub music: Vec<(String, MusicDef)>,
     pub spawns: Vec<RawSpawn>,
 }
 
@@ -993,6 +968,17 @@ impl SoundCategory {
         let setting = (name != "core:ui").then(|| format!("{ns}:volume_{short}"));
         SoundCategory { name: name.to_string(), setting, world }
     }
+}
+
+/// Music first (`MUSIC_CATEGORY`); the order is also that of the volume settings.
+fn engine_sound_categories() -> Vec<RawEntry> {
+    ["music", "blocks", "creatures", "players", "ambient", "ui"]
+        .iter()
+        .map(|n| {
+            let e = RawEntry::engine(abi::entry_kind::SOUND_CATEGORY, &format!("core:{n}"));
+            if *n == "music" || *n == "ui" { e } else { e.tag(abi::comp::SOUND_CATEGORY_WORLD) }
+        })
+        .collect()
 }
 
 /// `SoundDef::category` of the engine's music track: the first category.
@@ -1330,6 +1316,31 @@ pub struct CategoryDef {
     pub cap_radius: f64,
 }
 
+fn engine_categories() -> Vec<RawEntry> {
+    use abi::comp::entity_category as c;
+    [("core:misc", 6, 0.0f32), ("core:hostile", 8, 128.0), ("core:passive", 6, 0.0)]
+        .iter()
+        .map(|&(name, cap, despawn)| {
+            RawEntry::engine(abi::entry_kind::ENTITY_CATEGORY, name)
+                .set(c::CAP, cap as u32)
+                .set(c::DESPAWN, despawn)
+        })
+        .collect()
+}
+
+fn bake_category(e: &Entry) -> CategoryDef {
+    use abi::comp::entity_category as c;
+    CategoryDef {
+        name: e.name.clone(),
+        cap: e.or(c::CAP, 0),
+        despawn: e.or(c::DESPAWN, 0.0f32) as f64,
+        cap_radius: e
+            .get::<f32>(c::CAP_RADIUS)
+            .filter(|r| *r > 0.0)
+            .map_or(64.0, |r| r as f64),
+    }
+}
+
 pub struct AttrDef {
     pub name: String,
     pub default: f64,
@@ -1339,6 +1350,29 @@ pub struct AttrDef {
     pub hash: u64,
     /// The entity kind component of the same name holding a kind's own value.
     pub comp: Option<u32>,
+}
+
+fn engine_attributes() -> Vec<RawEntry> {
+    use abi::attribute as a;
+    [
+        (a::MAX_HEALTH, 20.0, 1.0, 1024.0),
+        (a::MOVEMENT_SPEED, 1.0, 0.0, 16.0),
+        (a::VISIBILITY, 1.0, 0.0, 16.0),
+        (a::JUMP_STRENGTH, 1.0, 0.0, 16.0),
+        (a::ATTACK_SPEED, 1.0, 0.0, 16.0),
+        (a::CAN_SPRINT, 1.0, 0.0, 1.0),
+        (a::BLOCK_REACH, 4.5, 0.0, 1024.0),
+        (a::ENTITY_REACH, 3.0, 0.0, 1024.0),
+        (a::MINING_SPEED, 1.0, 0.0, 1024.0),
+        (a::FOV, 1.0, 0.05, 8.0),
+    ]
+    .iter()
+    .map(|&(name, default, min, max)| {
+        RawEntry::engine(abi::entry_kind::ATTRIBUTE, name)
+            .set(abi::comp::attribute::DEFAULT, default)
+            .set(abi::comp::attribute::RANGE, [min, max])
+    })
+    .collect()
 }
 
 /// Events the engine emits, with the schemas of their `abi` structs.
@@ -1812,7 +1846,6 @@ pub fn freeze(
     let mut menus = Vec::new();
     let mut player_menu = None;
     let mut player_inventory: Option<(ModId, Vec<(String, u32, u32, u32)>)> = None;
-    let mut equipment: Vec<EquipmentSlot> = Vec::new();
     let mut block_entities = Vec::new();
     let mut attach: Vec<(String, String, Option<Vec<u8>>)> = Vec::new();
     let mut packets: Vec<(ModId, String, String, u32, Callback)> = Vec::new();
@@ -1820,33 +1853,9 @@ pub fn freeze(
     let mut systems: Vec<(ModId, String, String, Callback)> = Vec::new();
     let mut interceptors: Vec<(ModId, String, Callback)> = Vec::new();
     let mut modifiers: Vec<(ModId, String, u32, Callback)> = Vec::new();
-    let mut attributes: Vec<(String, f64, f64, f64)> = vec![
-        (abi::attribute::MAX_HEALTH.into(), 20.0, 1.0, 1024.0),
-        (abi::attribute::MOVEMENT_SPEED.into(), 1.0, 0.0, 16.0),
-        (abi::attribute::VISIBILITY.into(), 1.0, 0.0, 16.0),
-        (abi::attribute::JUMP_STRENGTH.into(), 1.0, 0.0, 16.0),
-        (abi::attribute::ATTACK_SPEED.into(), 1.0, 0.0, 16.0),
-        (abi::attribute::CAN_SPRINT.into(), 1.0, 0.0, 1.0),
-        (abi::attribute::BLOCK_REACH.into(), 4.5, 0.0, 1024.0),
-        (abi::attribute::ENTITY_REACH.into(), 3.0, 0.0, 1024.0),
-        (abi::attribute::MINING_SPEED.into(), 1.0, 0.0, 1024.0),
-        (abi::attribute::FOV.into(), 1.0, 0.05, 8.0),
-    ];
     let mut particles: Vec<RawParticle> = engine_particles();
     let mut sky: Vec<RawSky> = Vec::new();
-    let mut configs: Vec<(usize, crate::config::ConfigDef)> = Vec::new();
-    let mut sounds: Vec<(usize, SoundDef)> = engine_sounds();
-    let mut music: Vec<(String, MusicDef)> = Vec::new();
     let mut spawns: Vec<RawSpawn> = Vec::new();
-    // Music first (`MUSIC_CATEGORY`); the order is also that of the volume settings.
-    let mut sound_categories: Vec<SoundCategory> = ["music", "blocks", "creatures", "players", "ambient", "ui"]
-        .map(|n| SoundCategory::new(&format!("core:{n}"), n != "music" && n != "ui"))
-        .to_vec();
-    let mut categories: Vec<CategoryDef> = vec![
-        CategoryDef { name: "core:misc".into(), cap: 6, despawn: 0.0, cap_radius: 64.0 },
-        CategoryDef { name: "core:hostile".into(), cap: 8, despawn: 128.0, cap_radius: 64.0 },
-        CategoryDef { name: "core:passive".into(), cap: 6, despawn: 0.0, cap_radius: 64.0 },
-    ];
     let mut entries: Vec<RawEntry> = raws
         .iter_mut()
         .flat_map(|r| std::mem::take(&mut r.entries))
@@ -1854,36 +1863,23 @@ pub fn freeze(
     let mut entity_watchers: Vec<(ModId, String, Callback)> = Vec::new();
     let mut attached_models: Vec<(String, String, String)> = Vec::new();
     let mut item_models: Vec<(ModId, String, Callback)> = Vec::new();
-    let mut cameras: Vec<RawCamera> = Vec::new();
     for r in raws {
         entity_watchers.extend(r.client_entity_watchers);
         attached_models.extend(r.attached_models);
         g.bone_motions.extend(r.bone_motions);
         item_models.extend(r.item_model_for_stack);
-        sounds.extend(r.sounds);
-        music.extend(r.music);
         particles.extend(r.particles);
         sky.extend(r.sky);
-        configs.extend(r.configs);
         g.client_frames.extend(r.client_frames);
         packets.extend(r.packets);
-        g.keys.extend(r.keys);
-        cameras.extend(r.cameras);
         spawns.extend(r.spawns);
         event_handlers.extend(r.event_handlers);
         systems.extend(r.systems);
         interceptors.extend(r.interceptors);
         modifiers.extend(r.modifiers);
-        attributes.extend(r.attributes);
         components.extend(r.components);
         world_ticks.extend(r.world_ticks);
         recipes.extend(r.recipes);
-        for k in r.recipe_kinds {
-            g.recipe_kinds.insert(k.name.clone());
-            g.recipe_kind_defs.insert(k.name, k.def);
-        }
-        categories.extend(r.categories);
-        sound_categories.extend(r.sound_categories);
         menus.extend(r.menus);
         g.huds.extend(r.huds);
         g.chat_format = r.chat_format.or(g.chat_format);
@@ -1904,7 +1900,6 @@ pub fn freeze(
                 player_inventory = Some((owner, l));
             }
         }
-        equipment.extend(r.equipment);
         block_entities.extend(r.block_entities);
         attach.extend(r.attach);
     }
@@ -1945,41 +1940,51 @@ pub fn freeze(
     }
     freeze_particles(&mut g, particles, errors);
     freeze_sky(&mut g, sky, dim_names, errors);
-    let volumes: Vec<(usize, crate::config::ConfigDef)> = sound_categories
-        .iter()
-        .filter_map(|k| k.setting.as_deref())
-        .map(|s| (0, crate::config::volume(s)))
-        .collect();
-    configs.extend(volumes);
-    sounds.sort_by(|a, b| a.1.name.cmp(&b.1.name));
-    for (cell, mut d) in sounds {
-        let category = if d.category_name.is_empty() { "core:blocks" } else { &d.category_name };
-        match sound_categories.iter().position(|k| k.name == category) {
-            Some(i) => d.category = i as u32,
-            None => errors.push(format!("sound {}: no category {category}", d.name)),
+    let configs = take_kind(&mut entries, ek::CONFIG);
+    let builtin = |kind: u32| -> Vec<RawEntry> {
+        match kind {
+            ek::SOUND_CATEGORY => engine_sound_categories(),
+            ek::SOUND => engine_sounds(),
+            ek::ENTITY_CATEGORY => engine_categories(),
+            ek::CAMERA => engine_cameras(),
+            ek::ATTRIBUTE => engine_attributes(),
+            ek::DAMAGE_CAUSE => engine_damage_causes(),
+            ek::GAME_MODE => engine_game_modes(),
+            ek::POSE => engine_poses(),
+            ek::PRECIPITATION => engine_precipitations(),
+            ek::TEXT_PLACE => crate::hud::engine_places(),
+            ek::WEATHER => engine_weathers(),
+            ek::ENTITY_EFFECT => abi::entity_effect::NAMES
+                .iter()
+                .map(|n| RawEntry::engine(kind, n))
+                .collect(),
+            ek::CONDITION => abi::condition::NAMES
+                .iter()
+                .map(|n| RawEntry::engine(kind, n))
+                .collect(),
+            _ => Vec::new(),
         }
-        if g.sound_names.contains_key(&d.name) {
-            errors.push(format!("sound {} registered twice", d.name));
-            continue;
+    };
+    let mut kind = |kind: u32| {
+        let mut all = builtin(kind);
+        all.extend(take_kind(&mut entries, kind));
+        all
+    };
+    (g.sound_categories, _) = bake(kind(ek::SOUND_CATEGORY), ek::SOUND_CATEGORY, mod_name, errors, |e, _| {
+        SoundCategory::new(&e.name, e.has(abi::comp::SOUND_CATEGORY_WORLD))
+    });
+    (g.sounds, g.sound_names) =
+        bake_by(kind(ek::SOUND), ek::SOUND, mod_name, errors, |e| e.name.clone(), |e, errors| bake_sound(e, &g.sound_categories, errors));
+    (g.keys, _) = bake(kind(ek::KEY), ek::KEY, mod_name, errors, |e, errors| {
+        let key = e
+            .text(abi::comp::KEY_DEFAULT)
+            .unwrap_or_default()
+            .to_string();
+        if crate::input::Chord::parse(&key).is_none() {
+            errors.push(format!("key {}: unknown key name {key:?}", e.name));
         }
-        let id = g.sounds.len() as u32;
-        write_cell(cell, id);
-        g.sound_names.insert(d.name.clone(), id);
-        g.sounds.push(d);
-    }
-    for (dim, mut m) in music {
-        if !dim.is_empty() {
-            match dim_names.get(&dim) {
-                Some(&d) => m.dimension = Some(d),
-                None => {
-                    errors.push(format!("music {} plays in unknown dimension {dim}", m.name));
-                    continue;
-                }
-            }
-        }
-        g.music.push(m);
-    }
-    freeze_cameras(&mut g, cameras);
+        (e.name.clone(), key)
+    });
     // The engine's settings, with a binding per key: the engine's and the mods'.
     let mut keys: Vec<(String, String)> = crate::input::ENGINE_KEYS
         .iter()
@@ -1991,97 +1996,83 @@ pub fn freeze(
             None => errors.push(format!("key {action}: unknown key {key}")),
         }
     }
-    configs.extend(
-        crate::config::engine_configs(&keys)
-            .into_iter()
-            .map(|d| (0, d)),
+    let mut all = crate::config::engine_configs(&keys);
+    all.extend(
+        g.sound_categories
+            .iter()
+            .filter_map(|k| k.setting.as_deref())
+            .map(crate::config::volume),
     );
-    configs.sort_by(|a, b| a.1.name.cmp(&b.1.name));
-    for (cell, d) in configs {
-        if g.config_names.contains_key(&d.name) {
-            errors.push(format!("setting {} registered twice", d.name));
-            continue;
-        }
-        let id = g.configs.len() as u32;
-        write_cell(cell, id);
-        g.config_names.insert(d.name.clone(), id);
-        g.configs.push(d);
-    }
+    all.extend(configs);
+    // By name: a mod's settings come together on its screen.
+    (g.configs, g.config_names) = bake_by(all, ek::CONFIG, mod_name, errors, |e| e.name.clone(), crate::config::bake);
     g.mob_spawning = g.config_names["core:mob_spawning"];
     g.keep_inventory = g.config_names["core:keep_inventory"];
     g.simulation_distance = g.config_names["core:simulation_distance"];
-    for d in &categories {
-        if categories.iter().filter(|o| o.name == d.name).count() > 1 && !errors.iter().any(|e| e.contains(&d.name)) {
-            errors.push(format!("entity category {} registered twice", d.name));
-        }
-    }
+    (g.categories, _) = bake(kind(ek::ENTITY_CATEGORY), ek::ENTITY_CATEGORY, mod_name, errors, |e, _| bake_category(e));
     for k in g
         .entities
         .iter_mut()
         .filter(|k| !k.category_name.is_empty())
     {
-        match categories.iter().position(|d| d.name == k.category_name) {
+        match g.categories.iter().position(|d| d.name == k.category_name) {
             Some(i) => k.category = i as u32,
             None => errors.push(format!("entity {}: no category {}", k.name, k.category_name)),
         }
     }
-    g.categories = categories;
-    g.sound_categories = sound_categories;
-    let builtin = |kind: u32| -> Vec<RawEntry> {
-        match kind {
-            abi::entry_kind::DAMAGE_CAUSE => engine_damage_causes(),
-            abi::entry_kind::GAME_MODE => engine_game_modes(),
-            abi::entry_kind::POSE => engine_poses(),
-            abi::entry_kind::PRECIPITATION => engine_precipitations(),
-            abi::entry_kind::TEXT_PLACE => crate::hud::engine_places(),
-            abi::entry_kind::ENTITY_EFFECT => abi::entity_effect::NAMES
-                .iter()
-                .map(|n| RawEntry::engine(kind, n))
-                .collect(),
-            _ => abi::condition::NAMES
-                .iter()
-                .map(|n| RawEntry::engine(kind, n))
-                .collect(),
-        }
-    };
-    let mut kind = |kind: u32| {
-        let mut all = builtin(kind);
-        all.extend(take_kind(&mut entries, kind));
-        all
-    };
-    (g.damage_causes, g.damage_cause_names) =
-        crate::entries::bake(kind(abi::entry_kind::DAMAGE_CAUSE), abi::entry_kind::DAMAGE_CAUSE, mod_name, errors, |e, _| {
-            bake_damage_cause(e)
-        });
-    (g.game_modes, g.game_mode_names) =
-        crate::entries::bake(kind(abi::entry_kind::GAME_MODE), abi::entry_kind::GAME_MODE, mod_name, errors, |e, _| bake_game_mode(e));
-    (g.poses, g.pose_names) =
-        crate::entries::bake(kind(abi::entry_kind::POSE), abi::entry_kind::POSE, mod_name, errors, |e, _| bake_pose(e));
+    (g.cameras, g.camera_names) = bake(kind(ek::CAMERA), ek::CAMERA, mod_name, errors, |e, _| bake_camera(e));
+    (g.attributes, g.attr_names) = bake(kind(ek::ATTRIBUTE), ek::ATTRIBUTE, mod_name, errors, |e, _| {
+        let [min, max] = e.or(abi::comp::attribute::RANGE, [f64::NEG_INFINITY, f64::INFINITY]);
+        let default = e.or(abi::comp::attribute::DEFAULT, 0.0);
+        AttrDef { hash: name_hash(&e.name), comp: c.id(&e.name), name: e.name.clone(), default, min: min.min(max), max }
+    });
+    let (recipe_kinds, names) = bake(kind(ek::RECIPE_KIND), ek::RECIPE_KIND, mod_name, errors, |e, _| {
+        use abi::comp::recipe_kind as r;
+        let layout = e.callback(r::LAYOUT);
+        let def = RecipeKindDef {
+            owner: layout.map_or(e.owner, |l| l.0),
+            input_grid: e.or(r::INPUTS, [0; 2]),
+            output_grid: e.or(r::OUTPUTS, [0; 2]),
+            info: e
+                .text(r::INFO)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            info_values: e.or(r::INFO_VALUES, Vec::new()),
+            display: layout.map(|l| l.1),
+        };
+        (e.name.clone(), def)
+    });
+    (g.recipe_kind_defs, g.recipe_kinds) = (recipe_kinds.into_iter().collect(), names);
+    // The other hand numbered last, as the player's layout has it.
+    let off_last = |e: &Entry| e.name == abi::OFF_HAND_SLOT;
+    let (equipment, _) = bake_by(kind(ek::EQUIPMENT_SLOT), ek::EQUIPMENT_SLOT, mod_name, errors, off_last, |e, _| {
+        let bones: Vec<String> = e.or(abi::comp::equipment_slot::COVERS, Vec::new());
+        let background = e
+            .text(abi::comp::equipment_slot::BACKGROUND)
+            .unwrap_or_default()
+            .to_string();
+        EquipmentSlot { name: e.name.clone(), roles: crate::model::roles_of(&bones), bones, background }
+    });
+    (g.damage_causes, g.damage_cause_names) = bake(kind(ek::DAMAGE_CAUSE), ek::DAMAGE_CAUSE, mod_name, errors, |e, _| bake_damage_cause(e));
+    (g.game_modes, g.game_mode_names) = bake(kind(ek::GAME_MODE), ek::GAME_MODE, mod_name, errors, |e, _| bake_game_mode(e));
+    (g.poses, g.pose_names) = bake(kind(ek::POSE), ek::POSE, mod_name, errors, |e, _| bake_pose(e));
     (g.precipitations, g.precipitation_names) =
-        crate::entries::bake(kind(abi::entry_kind::PRECIPITATION), abi::entry_kind::PRECIPITATION, mod_name, errors, |e, _| {
-            bake_precipitation(e)
-        });
-    (g.text_places, g.text_place_names) =
-        crate::entries::bake(kind(abi::entry_kind::TEXT_PLACE), abi::entry_kind::TEXT_PLACE, mod_name, errors, |e, _| {
-            crate::hud::Place::bake(e)
-        });
+        bake(kind(ek::PRECIPITATION), ek::PRECIPITATION, mod_name, errors, |e, _| bake_precipitation(e));
+    (g.text_places, g.text_place_names) = bake(kind(ek::TEXT_PLACE), ek::TEXT_PLACE, mod_name, errors, |e, _| crate::hud::Place::bake(e));
     (g.entity_effects, g.entity_effect_names) =
-        crate::entries::bake(kind(abi::entry_kind::ENTITY_EFFECT), abi::entry_kind::ENTITY_EFFECT, mod_name, errors, |e, _| {
-            EntityEffectDef {
-                name: e.name.clone(),
-                shader: e
-                    .text(abi::comp::ENTITY_EFFECT_SHADER)
-                    .unwrap_or(&e.name)
-                    .to_string(),
-            }
-        });
-    (g.conditions, g.condition_names) =
-        crate::entries::bake(kind(abi::entry_kind::CONDITION), abi::entry_kind::CONDITION, mod_name, errors, |e, _| ConditionDef {
+        bake(kind(ek::ENTITY_EFFECT), ek::ENTITY_EFFECT, mod_name, errors, |e, _| EntityEffectDef {
             name: e.name.clone(),
-            answer: e
-                .callback(abi::comp::CONDITION_CALL)
-                .map_or(Answer::Engine, |(by, cb)| Answer::Mod(by, cb)),
+            shader: e
+                .text(abi::comp::ENTITY_EFFECT_SHADER)
+                .unwrap_or(&e.name)
+                .to_string(),
         });
+    (g.conditions, g.condition_names) = bake(kind(ek::CONDITION), ek::CONDITION, mod_name, errors, |e, _| ConditionDef {
+        name: e.name.clone(),
+        answer: e
+            .callback(abi::comp::CONDITION_CALL)
+            .map_or(Answer::Engine, |(by, cb)| Answer::Mod(by, cb)),
+    });
     // Every game mode is a condition of its name too.
     for (i, m) in g.game_modes.iter().enumerate() {
         if g.condition_names.contains_key(&m.name) {
@@ -2093,20 +2084,28 @@ pub fn freeze(
         g.conditions
             .push(ConditionDef { name: m.name.clone(), answer: Answer::Mode(crate::world::GameMode(i as u16)) });
     }
-    for m in g.music.iter_mut() {
-        for n in std::mem::take(&mut m.when_names) {
+    (g.music, _) = bake(kind(ek::MUSIC), ek::MUSIC, mod_name, errors, |e, errors| {
+        use abi::comp::music as m;
+        let dimension = e
+            .text(m::DIMENSION)
+            .filter(|d| !d.is_empty())
+            .and_then(|d| {
+                let id = dim_names.get(d).copied();
+                if id.is_none() {
+                    errors.push(format!("music {} plays in unknown dimension {d}", e.name));
+                }
+                id
+            });
+        let mut when = Vec::new();
+        for n in e.or::<Vec<String>>(m::WHEN, Vec::new()) {
             match g.condition_names.get(&n) {
-                Some(&id) => m.when.push(id),
-                None => errors.push(format!("music {}: no condition {n}", m.name)),
+                Some(&id) => when.push(id),
+                None => errors.push(format!("music {}: no condition {n}", e.name)),
             }
         }
-    }
-    let mut weathers = engine_weathers();
-    weathers.extend(take_kind(&mut entries, weft_abi::entry_kind::WEATHER));
-    let mut folded = crate::entries::fold("weather", weathers, mod_name, errors);
-    folded.apply_patterns(errors);
-    folded.write_cells();
-    for e in &folded.entries {
+        MusicDef { name: e.name.clone(), tracks: e.or(m::TRACKS, Vec::new()), dimension, when }
+    });
+    (g.weathers, g.weather_names) = bake(kind(ek::WEATHER), ek::WEATHER, mod_name, errors, |e, errors| {
         let mut d = bake_weather(e);
         if !d.sound_name.is_empty() {
             d.sound = g.sound_names.get(&d.sound_name).copied();
@@ -2114,10 +2113,8 @@ pub fn freeze(
                 errors.push(format!("weather {}: no sound {}", d.name, d.sound_name));
             }
         }
-        g.weather_names
-            .insert(d.name.clone(), g.weathers.len() as u32);
-        g.weathers.push(d);
-    }
+        d
+    });
     for i in 0..g.poses.len() {
         let names = g.poses[i].fallback_names.clone();
         g.poses[i].fallback = names
@@ -2220,19 +2217,6 @@ pub fn freeze(
             .entry(name)
             .or_default()
             .push((stage, owner, cb));
-    }
-    for (name, default, min, max) in attributes {
-        if let Some(&a) = g.attr_names.get(&name) {
-            // Declared again the same way is fine (mods sharing it); differently is not.
-            let d = &g.attributes[a as usize];
-            if (d.default, d.min, d.max) != (default, min.min(max), max) {
-                errors.push(format!("attribute {name} is declared twice with different values"));
-            }
-            continue;
-        }
-        g.attr_names.insert(name.clone(), g.attributes.len() as u32);
-        g.attributes
-            .push(AttrDef { hash: name_hash(&name), comp: c.id(&name), name, default, min: min.min(max), max });
     }
     packets.sort_by(|a, b| a.1.cmp(&b.1).then(a.3.cmp(&b.3)));
     for (owner, name, schema, side, cb) in packets {
@@ -2518,7 +2502,7 @@ pub fn freeze(
     let one = |s: &str| crate::refs::Ref::parse(s).and_then(|r| crate::refs::item(&r, item_names, c, tag_items));
     let recipes = expanded;
     for r in recipes {
-        if !g.recipe_kinds.contains(&r.kind) {
+        if !g.recipe_kinds.contains_key(&r.kind) {
             errors.push(format!("recipe for {}: no recipe kind {}", r.output, r.kind));
             continue;
         }
@@ -2692,27 +2676,42 @@ impl Game {
 }
 
 /// Sounds the engine plays itself (files in its own assets, packs may replace them).
-fn engine_sounds() -> Vec<(usize, SoundDef)> {
+fn engine_sounds() -> Vec<RawEntry> {
+    use abi::comp::sound as s;
     let one = |name: &str, file: &str, category: &str, volume: f32, pitch: [f32; 2]| {
-        (
-            0,
-            SoundDef {
-                name: name.into(),
-                files: vec![file.into()],
-                category: 0,
-                category_name: category.into(),
-                volume,
-                pitch,
-                range: 16.0,
-                full_within: 1.0,
-                falloff: 0,
-            },
-        )
+        RawEntry::engine(abi::entry_kind::SOUND, name)
+            .set(s::FILES, vec![file.to_string()])
+            .set(s::CATEGORY, category.to_string())
+            .set(s::VOLUME, volume)
+            .set(s::PITCH, pitch)
     };
     vec![
         one("core:ui.click", "core:ui/click", "core:ui", 0.6, [1.0, 1.0]),
         one("core:item.pickup", "core:item/pickup", "core:players", 0.4, [1.4, 2.2]),
     ]
+}
+
+/// A sound from its entry, its category's index among `categories`.
+fn bake_sound(e: &Entry, categories: &[SoundCategory], errors: &mut Vec<String>) -> SoundDef {
+    use abi::comp::sound as s;
+    let category = e.text(s::CATEGORY).unwrap_or("core:blocks");
+    let pitch: [f32; 2] = e.or(s::PITCH, [1.0, 1.0]);
+    SoundDef {
+        name: e.name.clone(),
+        files: e.or(s::FILES, Vec::new()),
+        category: categories
+            .iter()
+            .position(|k| k.name == category)
+            .unwrap_or_else(|| {
+                errors.push(format!("sound {}: no category {category}", e.name));
+                0
+            }) as u32,
+        volume: e.or(s::VOLUME, 1.0),
+        pitch: [pitch[0].min(pitch[1]).max(0.01), pitch[0].max(pitch[1]).max(0.01)],
+        range: e.or(s::RANGE, 16.0f32).max(1.0),
+        full_within: e.or(s::FULL_WITHIN, 1.0f32).max(0.0),
+        falloff: e.or(s::FALLOFF, 0i32).clamp(-8, 8),
+    }
 }
 
 /// Kinds the engine spawns itself; mods may replace their look by registering the same name.
@@ -3141,18 +3140,6 @@ impl CameraMode {
     }
 }
 
-/// A `Host::reg_camera` call: a new mode or edits to one.
-pub struct RawCamera {
-    pub owner: ModId,
-    pub name: String,
-    pub flags: u32,
-    pub flags_off: u32,
-    pub key: String,
-    pub call: Callback,
-    pub transition: f32,
-    pub easing: u32,
-}
-
 /// The engine's camera modes, in id order.
 pub mod camera {
     pub const FIRST_PERSON: u32 = 0;
@@ -3161,47 +3148,34 @@ pub mod camera {
     pub const FREE: u32 = 3;
 }
 
-fn freeze_cameras(g: &mut Game, raws: Vec<RawCamera>) {
+fn engine_cameras() -> Vec<RawEntry> {
     use abi::camera_flags as cf;
-    let builtin = |name: &str, flags: u32, key: Option<&str>| CameraMode {
-        name: name.to_string(),
-        flags,
-        key: key.map(str::to_string),
-        call: None,
-        transition: 0.0,
-        easing: abi::easing::IN_OUT,
+    let mode = |name: &str, flags: u32| {
+        abi::comp::camera::FLAGS
+            .iter()
+            .filter(|f| flags & f.1 != 0)
+            .fold(RawEntry::engine(abi::entry_kind::CAMERA, name), |e, f| e.tag(f.0))
     };
-    g.cameras = vec![
-        builtin("core:first_person", cf::HAND | cf::HUD | cf::EFFECTS | cf::CYCLE, None),
-        builtin("core:behind", cf::BODY | cf::HUD | cf::CLIP | cf::CYCLE, None),
-        builtin("core:front", cf::BODY | cf::HUD | cf::CLIP | cf::CYCLE, None),
-        builtin("core:free", cf::BODY | cf::SOLID | cf::DETACHED | cf::NO_INTERACT | cf::ASK, Some("core:freecam")),
-    ];
-    for r in raws {
-        let i = match g.cameras.iter().position(|m| m.name == r.name) {
-            Some(i) => i,
-            None => {
-                g.cameras
-                    .push(CameraMode { name: r.name.clone(), flags: 0, key: None, call: None, transition: 0.0, easing: r.easing });
-                g.cameras.len() - 1
-            }
-        };
-        let m = &mut g.cameras[i];
-        m.flags = (m.flags | r.flags) & !r.flags_off;
-        if !r.key.is_empty() {
-            m.key = Some(r.key);
-        }
-        if r.call.func.is_some() {
-            m.call = Some((r.owner, r.call));
-        }
-        if r.transition.is_finite() {
-            (m.transition, m.easing) = (r.transition.max(0.0), r.easing);
-        }
+    vec![
+        mode("core:first_person", cf::HAND | cf::HUD | cf::EFFECTS | cf::CYCLE),
+        mode("core:behind", cf::BODY | cf::HUD | cf::CLIP | cf::CYCLE),
+        mode("core:front", cf::BODY | cf::HUD | cf::CLIP | cf::CYCLE),
+        mode("core:free", cf::BODY | cf::SOLID | cf::DETACHED | cf::NO_INTERACT | cf::ASK)
+            .set(abi::comp::camera::KEY, "core:freecam".to_string()),
+    ]
+}
+
+fn bake_camera(e: &Entry) -> CameraMode {
+    use abi::comp::camera as c;
+    CameraMode {
+        name: e.name.clone(),
+        flags: e.flags(&c::FLAGS),
+        key: e.text(c::KEY).filter(|k| !k.is_empty()).map(str::to_string),
+        call: e.callback(c::CALL),
+        transition: e
+            .get::<f32>(c::TRANSITION)
+            .filter(|t| t.is_finite())
+            .map_or(0.0, |t| t.max(0.0)),
+        easing: e.or(c::EASING, abi::easing::IN_OUT),
     }
-    g.camera_names = g
-        .cameras
-        .iter()
-        .enumerate()
-        .map(|(i, m)| (m.name.clone(), i as u32))
-        .collect();
 }

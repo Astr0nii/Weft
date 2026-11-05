@@ -82,3 +82,112 @@ pub mod entity_effect {
     use crate::{Component, Text};
     pub static SHADER: Component<Text, EntityEffect> = Component::named(crate::abi::comp::ENTITY_EFFECT_SHADER);
 }
+
+/// What a sound event is made of (`abi::comp::sound`).
+pub mod sound {
+    use crate::abi::comp::sound as s;
+    use crate::kind::Sound;
+    use crate::{Component, Text};
+    pub static FILES: Component<Vec<String>, Sound> = Component::named(s::FILES);
+    pub static VOLUME: Component<f32, Sound> = Component::named(s::VOLUME);
+    pub static PITCH: Component<[f32; 2], Sound> = Component::named(s::PITCH);
+    pub static RANGE: Component<f32, Sound> = Component::named(s::RANGE);
+    pub static FULL_WITHIN: Component<f32, Sound> = Component::named(s::FULL_WITHIN);
+    pub static FALLOFF: Component<i32, Sound> = Component::named(s::FALLOFF);
+    pub static CATEGORY: Component<Text, Sound> = Component::named(s::CATEGORY);
+}
+
+/// What background music is made of.
+pub mod music {
+    use crate::abi::comp::music as m;
+    use crate::kind::Music;
+    use crate::{Component, Text};
+    pub static TRACKS: Component<Vec<String>, Music> = Component::named(m::TRACKS);
+    pub static DIMENSION: Component<Text, Music> = Component::named(m::DIMENSION);
+    pub static WHEN: Component<Vec<String>, Music> = Component::named(m::WHEN);
+}
+
+/// What a camera mode is made of: a tag per flag (`abi::comp::camera::FLAGS`) and these.
+pub mod camera {
+    use crate::abi::comp::camera as c;
+    use crate::kind::CameraMode;
+    use crate::{Component, Text};
+    pub static KEY: Component<Text, CameraMode> = Component::named(c::KEY);
+    pub static CALL: Component<crate::abi::Callback, CameraMode> = Component::named(c::CALL);
+    pub static TRANSITION: Component<f32, CameraMode> = Component::named(c::TRANSITION);
+    pub static EASING: Component<u32, CameraMode> = Component::named(c::EASING);
+}
+
+/// What a setting is made of (`abi::comp::config`).
+pub mod config {
+    use crate::abi::comp::config as c;
+    use crate::kind::Config;
+    use crate::{Component, Text};
+    pub static KIND: Component<u32, Config> = Component::named(c::KIND);
+    pub static DEFAULT: Component<f64, Config> = Component::named(c::DEFAULT);
+    pub static RANGE: Component<[f64; 2], Config> = Component::named(c::RANGE);
+    pub static STEP: Component<f64, Config> = Component::named(c::STEP);
+    pub static CHOICES: Component<Vec<String>, Config> = Component::named(c::CHOICES);
+    pub static SCOPE: Component<u32, Config> = Component::named(c::SCOPE);
+    pub static TEXT: Component<Text, Config> = Component::named(c::TEXT);
+}
+
+/// What an equipment slot is made of.
+pub mod equipment_slot {
+    use crate::abi::comp::equipment_slot as e;
+    use crate::kind::EquipmentSlot;
+    use crate::{Component, Text};
+    pub static COVERS: Component<Vec<String>, EquipmentSlot> = Component::named(e::COVERS);
+    pub static BACKGROUND: Component<Text, EquipmentSlot> = Component::named(e::BACKGROUND);
+}
+
+/// What an entity category is made of.
+pub mod entity_category {
+    use crate::Component;
+    use crate::abi::comp::entity_category as c;
+    use crate::kind::EntityCategory;
+    pub static CAP: Component<u32, EntityCategory> = Component::named(c::CAP);
+    pub static DESPAWN: Component<f32, EntityCategory> = Component::named(c::DESPAWN);
+    pub static CAP_RADIUS: Component<f32, EntityCategory> = Component::named(c::CAP_RADIUS);
+}
+
+/// What a recipe kind is made of (`abi::comp::recipe_kind`).
+pub mod recipe_kind {
+    use crate::abi::comp::recipe_kind as r;
+    use crate::kind::RecipeKind;
+    use crate::{Component, Text};
+    pub static INPUTS: Component<[u32; 2], RecipeKind> = Component::named(r::INPUTS);
+    pub static OUTPUTS: Component<[u32; 2], RecipeKind> = Component::named(r::OUTPUTS);
+    pub static INFO: Component<Text, RecipeKind> = Component::named(r::INFO);
+    pub static INFO_VALUES: Component<Vec<String>, RecipeKind> = Component::named(r::INFO_VALUES);
+    pub static LAYOUT: Component<crate::abi::Callback, RecipeKind> = Component::named(r::LAYOUT);
+}
+
+/// What an attribute is made of.
+pub mod attribute {
+    use crate::Component;
+    use crate::kind::Attribute;
+    pub static DEFAULT: Component<f64, Attribute> = Component::named(crate::abi::comp::attribute::DEFAULT);
+    pub static RANGE: Component<[f64; 2], Attribute> = Component::named(crate::abi::comp::attribute::RANGE);
+}
+
+/// A creative tab's icon.
+pub mod creative_tab {
+    use crate::kind::CreativeTab;
+    use crate::{Component, Text};
+    pub static ICON: Component<Text, CreativeTab> = Component::named(crate::abi::comp::CREATIVE_TAB_ICON);
+}
+
+/// A tint kind's color where no biome gives one.
+pub mod tint_kind {
+    use crate::Component;
+    use crate::kind::TintKind;
+    pub static DEFAULT: Component<u32, TintKind> = Component::named(crate::abi::comp::TINT_KIND_DEFAULT);
+}
+
+/// A key's default binding.
+pub mod key {
+    use crate::kind::Key;
+    use crate::{Component, Text};
+    pub static DEFAULT: Component<Text, Key> = Component::named(crate::abi::comp::KEY_DEFAULT);
+}

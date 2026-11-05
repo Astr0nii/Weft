@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::abi::{self, ItemStack, Slice, Str};
 use crate::component::Value;
-use crate::{Attribute, Chain, LootSource, Question, Registry, World, callback, host, qualify};
+use crate::{Attribute, Chain, LootSource, Question, Registry, WithComponents, World, callback, host, qualify};
 
 pub use abi::{
     BlockChange, ChatMessage, Death, DimensionChange, Hurt, Interaction, ItemUsed, Pickup, PlayerEvent, attr_op, permission, stage,
@@ -276,7 +276,7 @@ impl Ask {
     }
     /// Whether `question::CAMERA` asks about `mode`.
     pub fn is_camera(&self, mode: &crate::CameraMode) -> bool {
-        self.query().amount == mode.camera_id() as f64
+        self.query().amount == mode.id() as f64
     }
 }
 
@@ -602,6 +602,14 @@ impl<T> SystemBatch<'_, T> {
     }
 }
 
+/// An attribute being registered (`Registry::attribute`).
+pub struct AttributeBuilder<'a> {
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
+}
+
+crate::entry::entry_builder!(Attribute => AttributeBuilder, attribute_entry;);
+
 impl Registry {
     /// A system over a per-entity component (`Registry::entity_component`): once per tick and
     /// region with all values in one slice, no host call per entity.
@@ -668,8 +676,14 @@ impl Registry {
     }
 
     /// An attribute of living entities (`attribute::*` are the engine's).
-    pub fn attribute(&mut self, attribute: &Attribute, default: f64, min: f64, max: f64) {
-        unsafe { (host().reg_attribute)(self.raw, Str::new(attribute.name()), default, min, max) }
+    pub fn attribute(&mut self, attribute: &'static Attribute, default: f64, min: f64, max: f64) -> AttributeBuilder<'_> {
+        self.attribute_entry(attribute)
+            .set(&crate::comps::attribute::DEFAULT, default)
+            .set(&crate::comps::attribute::RANGE, [min, max])
+    }
+
+    fn attribute_entry(&mut self, attribute: &'static Attribute) -> AttributeBuilder<'_> {
+        AttributeBuilder { reg: self, e: crate::entry::Entry::of(attribute) }
     }
 
     /// A loot table: a block's or entity kind's is what it drops, a `LootTable` is one of its own.

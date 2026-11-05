@@ -35,7 +35,6 @@ pub static HOST: Host = Host {
     reg_ore,
     reg_scatter,
     reg_decoration,
-    reg_creative_tab,
     reg_set,
     find,
     block_of,
@@ -138,7 +137,6 @@ pub static HOST: Host = Host {
     client_clip_length: crate::app::api::client_clip_length,
     client_held_item: crate::app::api::client_entity_held,
     reg_packet,
-    reg_key,
     reg_mistake,
     launch_option: crate::app::api::launch_option,
     send_packet,
@@ -185,7 +183,6 @@ pub static HOST: Host = Host {
     reg_chain_modifier,
     chain_compute,
     explanation,
-    reg_attribute,
     attribute,
     attribute_add_modifier,
     attribute_remove_modifier,
@@ -215,13 +212,10 @@ pub static HOST: Host = Host {
     particle_burst,
     signal_at,
     client_particle_burst: crate::app::api::client_particle_burst,
-    reg_config,
     config_value,
     config_set,
     config_text,
     config_set_text,
-    reg_sound,
-    reg_music,
     action_play,
     action_override,
     play_sound,
@@ -238,14 +232,9 @@ pub static HOST: Host = Host {
     structure_near,
     fall_block,
     reg_attach,
-    reg_recipe_kind,
-    reg_entity_category,
     damage_cause_flags,
-    reg_sound_category,
-    reg_tint_kind,
     reg_biome_tint,
     reg_player_inventory,
-    reg_equipment_slot,
     player_inventory_group,
     reg_words,
     set_entity_size,
@@ -264,8 +253,6 @@ pub static HOST: Host = Host {
     dim_column,
     dim_surface_carved,
     dim_surface_block,
-    reg_camera,
-    camera_id,
     ease,
     force_load,
     asset_exists,
@@ -395,56 +382,6 @@ unsafe extern "C" fn reg_spawn(r: *mut abi::Registrar, d: *const abi::SpawnDesc)
             weight: d.weight,
             chance: d.chance,
         });
-    }
-}
-
-unsafe extern "C" fn reg_sound(r: *mut abi::Registrar, d: *const abi::SoundDesc) {
-    unsafe {
-        let d = *d;
-        let def = registry::SoundDef {
-            name: d.name.as_str().to_string(),
-            files: d
-                .files
-                .as_slice()
-                .iter()
-                .map(|s| s.as_str().to_string())
-                .collect(),
-            category: 0,
-            category_name: d.category_name.as_str().to_string(),
-            volume: d.volume,
-            pitch: [d.pitch[0].min(d.pitch[1]).max(0.01), d.pitch[0].max(d.pitch[1]).max(0.01)],
-            range: d.range.max(1.0),
-            full_within: d.full_within.max(0.0),
-            falloff: d.falloff.clamp(-8, 8),
-        };
-        reg(r).game.sounds.push((d.cell as usize, def));
-    }
-}
-
-unsafe extern "C" fn reg_music(r: *mut abi::Registrar, d: *const abi::MusicDesc) {
-    unsafe {
-        let d = *d;
-        let m = registry::MusicDef {
-            name: d.name.as_str().to_string(),
-            tracks: d
-                .tracks
-                .as_slice()
-                .iter()
-                .map(|s| s.as_str().to_string())
-                .collect(),
-            dimension: None,
-            when: Vec::new(),
-            when_names: d
-                .when
-                .as_str()
-                .split_whitespace()
-                .map(str::to_string)
-                .collect(),
-        };
-        reg(r)
-            .game
-            .music
-            .push((d.dimension.as_str().to_string(), m));
     }
 }
 
@@ -1185,23 +1122,6 @@ unsafe extern "C" fn shape_bounds(shape: abi::Slice<abi::ShapeStep>, min: *mut a
     }
 }
 
-unsafe extern "C" fn reg_camera(r: *mut abi::Registrar, d: *const abi::CameraDesc) {
-    unsafe {
-        let r = reg(r);
-        let d = &*d;
-        r.game.cameras.push(registry::RawCamera {
-            owner: r.owner,
-            name: d.name.as_str().to_string(),
-            flags: d.flags,
-            flags_off: d.flags_off,
-            key: d.key.as_str().to_string(),
-            call: d.call,
-            transition: d.transition,
-            easing: d.easing,
-        });
-    }
-}
-
 unsafe extern "C" fn force_load(
     w: *mut abi::WorldCtx,
     key: u64,
@@ -1238,17 +1158,6 @@ unsafe extern "C" fn asset_exists(name: Str, kind: Str, ext: Str) -> u32 {
 
 unsafe extern "C" fn ease(kind: u32, t: f32) -> f32 {
     crate::client::camera::ease(kind, t)
-}
-
-unsafe extern "C" fn camera_id(name: Str) -> u32 {
-    unsafe {
-        content()
-            .game
-            .camera_names
-            .get(name.as_str())
-            .copied()
-            .unwrap_or(u32::MAX)
-    }
 }
 
 unsafe extern "C" fn player_camera(w: *mut abi::WorldCtx, player: u64, mode: u32, locked: u32, transition: f32, easing: u32) {
@@ -1568,23 +1477,6 @@ unsafe extern "C" fn player_inventory_group(name: Str, out: *mut abi::SlotGroup)
     }
 }
 
-unsafe extern "C" fn reg_equipment_slot(r: *mut abi::Registrar, name: Str, bones: Str, background: Str) {
-    unsafe {
-        let r = reg(r);
-        let bones: Vec<String> = bones
-            .as_str()
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-        r.game.equipment.push(registry::EquipmentSlot {
-            name: name.as_str().to_string(),
-            roles: crate::model::roles_of(&bones),
-            bones,
-            background: background.as_str().to_string(),
-        });
-    }
-}
-
 unsafe extern "C" fn menu_get(m: *mut abi::MenuCtx, slot: u32) -> ItemStack {
     unsafe { menu(m).get(slot) }
 }
@@ -1697,6 +1589,9 @@ unsafe extern "C" fn find(kind: u32, name: Str, count: *mut u32) -> u32 {
     let name = unsafe { name.as_str() };
     let Some(c) = try_content() else { return u32::MAX };
     let mut n = 1;
+    fn at<'a>(mut names: impl Iterator<Item = &'a str>, name: &str) -> Option<u32> {
+        names.position(|n| n == name).map(|i| i as u32)
+    }
     let id = match kind {
         // `#tag`: the first block carrying it, in mod load order (biome surfaces by tag).
         // `#tag`: its preferred block (mod load order) or item.
@@ -1728,6 +1623,23 @@ unsafe extern "C" fn find(kind: u32, name: Str, count: *mut u32) -> u32 {
         abi::entry_kind::WEATHER => c.game.weather_names.get(name).copied(),
         abi::entry_kind::PRECIPITATION => c.game.precipitation_names.get(name).copied(),
         abi::entry_kind::CONDITION => c.game.condition_names.get(name).copied(),
+        abi::entry_kind::MUSIC => at(c.game.music.iter().map(|m| m.name.as_str()), name),
+        abi::entry_kind::CAMERA => c.game.camera_names.get(name).copied(),
+        abi::entry_kind::EQUIPMENT_SLOT => at(
+            c.game
+                .player_layout
+                .equipment
+                .iter()
+                .map(|e| e.name.as_str()),
+            name,
+        ),
+        abi::entry_kind::CREATIVE_TAB => at(c.creative_tabs.iter().map(|t| t.name.as_str()), name),
+        abi::entry_kind::SOUND_CATEGORY => at(c.game.sound_categories.iter().map(|k| k.name.as_str()), name),
+        abi::entry_kind::ENTITY_CATEGORY => at(c.game.categories.iter().map(|k| k.name.as_str()), name),
+        abi::entry_kind::TINT_KIND => at(c.tint_kinds.iter().map(|k| k.0.as_str()), name),
+        abi::entry_kind::RECIPE_KIND => c.game.recipe_kinds.get(name).copied(),
+        abi::entry_kind::ATTRIBUTE => c.game.attr_names.get(name).copied(),
+        abi::entry_kind::KEY => at(c.game.keys.iter().map(|k| k.0.as_str()), name),
         _ => None,
     };
     if !count.is_null() {
@@ -1994,15 +1906,6 @@ unsafe extern "C" fn reg_set(r: *mut abi::Registrar, d: *const abi::SetDesc) {
     }
 }
 
-unsafe extern "C" fn reg_creative_tab(r: *mut abi::Registrar, name: Str, icon: Str) {
-    unsafe {
-        let r = reg(r);
-        r.game
-            .creative_tabs
-            .push((name.as_str().to_string(), icon.as_str().to_string()));
-    }
-}
-
 unsafe extern "C" fn reg_screen_part(r: *mut abi::Registrar, screen: Str, area: Str, order: i32, cb: Callback) {
     unsafe {
         let r = reg(r);
@@ -2198,10 +2101,6 @@ unsafe extern "C" fn set_player_menu(r: *mut abi::Registrar, menu: Str) {
     }
 }
 
-unsafe extern "C" fn reg_tint_kind(r: *mut abi::Registrar, name: Str, default: u32) {
-    unsafe { reg(r).tint_kinds.push((name.as_str().to_string(), default)) }
-}
-
 unsafe extern "C" fn reg_biome_tint(r: *mut abi::Registrar, biome: Str, kind: Str, color: u32) {
     unsafe {
         reg(r)
@@ -2210,53 +2109,10 @@ unsafe extern "C" fn reg_biome_tint(r: *mut abi::Registrar, biome: Str, kind: St
     }
 }
 
-unsafe extern "C" fn reg_sound_category(r: *mut abi::Registrar, name: Str, world: u32) {
-    unsafe {
-        reg(r)
-            .game
-            .sound_categories
-            .push(registry::SoundCategory::new(name.as_str(), world != 0))
-    }
-}
-
 unsafe extern "C" fn damage_cause_flags(cause: u32) -> u32 {
     try_content()
         .and_then(|c| c.game.damage_causes.get(cause as usize))
         .map_or(0, |d| d.flags)
-}
-
-unsafe extern "C" fn reg_entity_category(r: *mut abi::Registrar, name: Str, cap: u32, despawn: f32, cap_radius: f32) {
-    unsafe {
-        reg(r).game.categories.push(crate::registry::CategoryDef {
-            name: name.as_str().to_string(),
-            cap,
-            despawn: despawn as f64,
-            cap_radius: if cap_radius > 0.0 { cap_radius as f64 } else { 64.0 },
-        })
-    }
-}
-
-unsafe extern "C" fn reg_recipe_kind(r: *mut abi::Registrar, d: *const abi::RecipeKindDesc) {
-    unsafe {
-        let d = &*d;
-        let r = reg(r);
-        let def = registry::RecipeKindDef {
-            owner: r.owner,
-            input_grid: d.input_grid,
-            output_grid: d.output_grid,
-            info: (d.info.len > 0).then(|| d.info.as_str().to_string()),
-            info_values: d
-                .info_values
-                .as_slice()
-                .iter()
-                .map(|s| s.as_str().to_string())
-                .collect(),
-            display: d.layout.is_some().then_some(d.layout),
-        };
-        r.game
-            .recipe_kinds
-            .push(registry::RawRecipeKind { name: d.name.as_str().to_string(), def });
-    }
 }
 
 unsafe extern "C" fn reg_attach(r: *mut abi::Registrar, kind: Str, component: Str, value: abi::Slice<u8>) {
@@ -2378,15 +2234,6 @@ unsafe extern "C" fn explanation() -> Str {
         *t = crate::server::explanation();
         Str { ptr: t.as_ptr(), len: t.len() }
     })
-}
-
-unsafe extern "C" fn reg_attribute(r: *mut abi::Registrar, name: Str, default: f64, min: f64, max: f64) {
-    unsafe {
-        reg(r)
-            .game
-            .attributes
-            .push((name.as_str().to_string(), default, min, max))
-    }
 }
 
 unsafe extern "C" fn attribute(w: *mut abi::WorldCtx, entity: u64, name: Str) -> f64 {
@@ -2756,19 +2603,6 @@ unsafe extern "C" fn reg_mistake(r: *mut abi::Registrar, message: Str) {
     unsafe { reg(r).errors.push(message.as_str().to_string()) }
 }
 
-unsafe extern "C" fn reg_key(r: *mut abi::Registrar, name: Str, key: Str) {
-    unsafe {
-        let r = reg(r);
-        if crate::input::Chord::parse(key.as_str()).is_none() {
-            r.errors
-                .push(format!("key {}: unknown key name {:?}", name.as_str(), key.as_str()));
-        }
-        r.game
-            .keys
-            .push((name.as_str().to_string(), key.as_str().to_string()))
-    }
-}
-
 unsafe extern "C" fn set_block_entity(r: *mut abi::Registrar, block: Str, entity: Str) {
     unsafe {
         reg(r)
@@ -2857,37 +2691,6 @@ unsafe extern "C" fn signal_at(w: *mut abi::WorldCtx, pos: *const abi::BlockPos)
         d.space
             .signals
             .power_at(content(), d.signal_view(), crate::world::ivec(*pos)) as u32
-    }
-}
-
-unsafe extern "C" fn reg_config(r: *mut abi::Registrar, d: *const abi::ConfigDesc) {
-    unsafe {
-        let d = *d;
-        let def = crate::config::ConfigDef {
-            name: d.name.as_str().to_string(),
-            kind: d.kind,
-            default: d.default,
-            min: d.min,
-            max: d.max,
-            step: d.step,
-            choices: d
-                .choices
-                .as_slice()
-                .iter()
-                .map(|s| s.as_str().to_string())
-                .collect(),
-            flags: d.flags,
-            scope: d.scope,
-            text: d.text.as_str().to_string(),
-        };
-        if def.kind == abi::config_kind::TEXT && def.scope != abi::config_scope::CLIENT {
-            reg(r)
-                .errors
-                .push(format!("setting {}: text settings are the client's own", def.name));
-            return;
-        }
-        let def = crate::config::ConfigDef { default: def.fit(d.default), ..def };
-        reg(r).game.configs.push((d.cell as usize, def));
     }
 }
 

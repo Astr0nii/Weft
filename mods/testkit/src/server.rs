@@ -31,6 +31,7 @@ static EDITED: Item = Item::named("edited");
 static EDITED_BIOME: Biome = Biome::named("edited");
 static WARMTH: Component<f32> = Component::named("testkit:warmth");
 static STORM: Weather = Weather::named("storm");
+static GRIT: Attribute = Attribute::named("grit");
 static TIN_ORE: Block = Block::named("testmod:tin_ore");
 static OIL: Block = Block::named("testmod:oil");
 /// Only the equipment of what it opens on (the `armor` test opens it on a zombie).
@@ -100,6 +101,8 @@ pub fn register(r: &mut Registry) {
     r.edit(&EDITED_BIOME).set(&WARMTH, 2.0);
     r.weather(&STORM).no_falling().weight(0);
     r.edit(&STORM).lightning().untag(abi::comp::weather::DRY);
+    r.attribute(&GRIT, 1.0, 0.0, 10.0);
+    r.edit(&GRIT).set(&comps::attribute::DEFAULT, 4.0);
     r.edit(TIN_ORE.ore()).veins(7);
     r.edit(OIL.liquid()).flow_delay(12);
     r.menu(&GEAR).equipment().player_inventory().screen(|ui| {
@@ -700,16 +703,17 @@ const OPS: &[(&str, &str, Run)] = &[
         Ok(String::new())
     }),
     ("rings", "", |_, _, _, _| Ok(RINGS.load(Ordering::Relaxed).to_string())),
-    ("edited", "", |_, _, _, _| {
+    ("edited", "", |w, _, player, _| {
         let i = EDITED.id();
         let b = EDITED_BIOME.id();
         Ok(format!(
-            "{} {} {} {} {}",
+            "{} {} {} {} {} {}",
             MAX_STACK.on_item(i).unwrap_or(0),
             ATTACK_DAMAGE.on_item(i).unwrap_or(0.0),
             WARMTH.on_biome(b).unwrap_or(0.0),
             Tag::named("edited_a").on_biome(b),
             Weather::flags_of(STORM.id()),
+            w.attribute(player, &GRIT),
         ))
     }),
     ("look", "", |w, _, player, _| {
@@ -829,10 +833,10 @@ const OPS: &[(&str, &str, Run)] = &[
         if name == "release" {
             w.release_camera(player, None);
         } else {
-            let m = CameraMode::generated(name.to_string());
-            if m.camera_id() == u32::MAX {
+            if CameraMode::lookup(name).is_none() {
                 return Err(format!("no camera {name}"));
             }
+            let m = CameraMode::generated(name.to_string());
             if cmd.int("locked") == Some(1) {
                 w.force_camera(player, m, None);
             } else {

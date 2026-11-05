@@ -5,7 +5,7 @@ use crate::content::{
     Biome, Block, EntityCategory, EntityKind, EquipmentSlot, GizmoGroup, HudElement, Menu, Pending, RecipeKind, TintKind,
 };
 use crate::ui::{Ui, ui_cb};
-use crate::{Id, Registry, World, callback, host, qualify};
+use crate::{Id, Registry, WithComponents, World, callback, host, qualify};
 
 pub use abi::{EYE_SHARE, Energy, EntityState, component_flags, damage_cause, damage_flags, entity_flags, slot_flags};
 
@@ -1670,10 +1670,16 @@ impl Registry {
     /// `leftArm`, `leg0`) covers every bone of that role. `background` (from `gui/`) shows while
     /// it is empty. Items go there with `.wearable(&SLOT, ..)`; menus show the slots with
     /// `.equipment()`.
-    pub fn equipment_slot(&mut self, slot: &EquipmentSlot, covers: &[&str], background: &str) {
+    pub fn equipment_slot(&mut self, slot: &'static EquipmentSlot, covers: &[&str], background: &str) -> EquipmentSlotBuilder<'_> {
         let bg = crate::asset("gui", background);
-        let bones = covers.join(" ");
-        unsafe { (host().reg_equipment_slot)(self.raw, Str::new(slot.name()), Str::new(&bones), Str::new(&bg)) }
+        let covers = covers.iter().map(|c| c.to_string()).collect();
+        self.equipment_slot_entry(slot)
+            .set(&crate::comps::equipment_slot::COVERS, covers)
+            .set_text(&crate::comps::equipment_slot::BACKGROUND, &bg)
+    }
+
+    fn equipment_slot_entry(&mut self, slot: &'static EquipmentSlot) -> EquipmentSlotBuilder<'_> {
+        EquipmentSlotBuilder { reg: self, e: crate::entry::Entry::of(slot) }
     }
 
     /// The menu the inventory key opens.
@@ -1781,8 +1787,13 @@ impl Registry {
     /// The recipe viewer shows `item` (a furnace or workstation) next to recipes of type `kind`.
     /// A tint kind: blocks with `.tint(&KIND)` take its color from the biome they stand in
     /// (`biome_tint`), `default` (0xRRGGBB) elsewhere and on items.
-    pub fn tint_kind(&mut self, kind: &TintKind, default: u32) {
-        unsafe { (host().reg_tint_kind)(self.raw, Str::new(kind.name()), default) }
+    pub fn tint_kind(&mut self, kind: &'static TintKind, default: u32) -> TintKindBuilder<'_> {
+        self.tint_kind_entry(kind)
+            .set(&crate::comps::tint_kind::DEFAULT, default)
+    }
+
+    fn tint_kind_entry(&mut self, kind: &'static TintKind) -> TintKindBuilder<'_> {
+        TintKindBuilder { reg: self, e: crate::entry::Entry::of(kind) }
     }
 
     /// The color of a tint kind in a biome; either may be another mod's.
@@ -1792,22 +1803,19 @@ impl Registry {
 
     /// An entity category: at most `cap` of it spawn naturally near a player; with `despawn` > 0
     /// they vanish when no player is within that many blocks.
-    pub fn entity_category(&mut self, category: &EntityCategory, cap: u32, despawn: f32) -> CategoryBuilder<'_> {
-        CategoryBuilder { raw: self.raw, name: category.name().to_string(), cap, despawn, cap_radius: 64.0, _p: std::marker::PhantomData }
+    pub fn entity_category(&mut self, category: &'static EntityCategory, cap: u32, despawn: f32) -> CategoryBuilder<'_> {
+        self.entity_category_entry(category)
+            .set(&crate::comps::entity_category::CAP, cap)
+            .set(&crate::comps::entity_category::DESPAWN, despawn)
+    }
+
+    fn entity_category_entry(&mut self, category: &'static EntityCategory) -> CategoryBuilder<'_> {
+        CategoryBuilder { reg: self, e: crate::entry::Entry::of(category) }
     }
 
     /// Registers a recipe kind this mod owns, and how the recipe viewer shows it.
-    pub fn recipe_kind<'a>(&'a mut self, kind: &RecipeKind) -> RecipeKindBuilder<'a> {
-        RecipeKindBuilder {
-            raw: self.raw,
-            name: kind.name().to_string(),
-            input_grid: [0; 2],
-            output_grid: [0; 2],
-            info: String::new(),
-            info_values: Vec::new(),
-            display: abi::Callback::NONE,
-            _p: std::marker::PhantomData,
-        }
+    pub fn recipe_kind<'a>(&'a mut self, kind: &'static RecipeKind) -> RecipeKindBuilder<'a> {
+        RecipeKindBuilder { reg: self, e: crate::entry::Entry::of(kind) }
     }
 
     /// Shaped recipe: `pattern` rows use the characters in `keys`; ingredients are item names or
@@ -1947,62 +1955,55 @@ impl Drop for RecipeBuilder<'_> {
 
 /// A recipe kind being registered; sent when dropped.
 pub struct RecipeKindBuilder<'a> {
-    raw: *mut abi::Registrar,
-    name: String,
-    input_grid: [u32; 2],
-    output_grid: [u32; 2],
-    info: String,
-    info_values: Vec<String>,
-    display: abi::Callback,
-    _p: std::marker::PhantomData<&'a mut Registry>,
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
+
+crate::entry::entry_builder!(
+    RecipeKind => RecipeKindBuilder, recipe_kind;
+    EntityCategory => CategoryBuilder, entity_category_entry;
+    EquipmentSlot => EquipmentSlotBuilder, equipment_slot_entry;
+    TintKind => TintKindBuilder, tint_kind_entry;
+);
 
 impl RecipeKindBuilder<'_> {
     /// The recipe viewer shows inputs as a grid this big, whatever a recipe uses (a crafting
     /// table's 3 x 3).
-    pub fn inputs(mut self, cols: u32, rows: u32) -> Self {
-        self.input_grid = [cols, rows];
-        self
+    pub fn inputs(self, cols: u32, rows: u32) -> Self {
+        self.set(&crate::comps::recipe_kind::INPUTS, [cols, rows])
     }
-    pub fn outputs(mut self, cols: u32, rows: u32) -> Self {
-        self.output_grid = [cols, rows];
-        self
+    pub fn outputs(self, cols: u32, rows: u32) -> Self {
+        self.set(&crate::comps::recipe_kind::OUTPUTS, [cols, rows])
     }
     /// A line under each recipe: translation `key`, its `{0}`.. filled with `values`: `time`
     /// (seconds) or components the recipe carries (`mymod:energy_per_tick`).
-    pub fn info_line(mut self, key: &str, values: &[&str]) -> Self {
-        self.info = key.to_string();
-        self.info_values = values.iter().map(|v| v.to_string()).collect();
-        self
+    pub fn info_line(self, key: &str, values: &[&str]) -> Self {
+        let values = values.iter().map(|v| v.to_string()).collect();
+        self.set_text(&crate::comps::recipe_kind::INFO, key)
+            .set(&crate::comps::recipe_kind::INFO_VALUES, values)
     }
     /// Builds each recipe yourself instead of the usual inputs, arrow, outputs:
     /// `ui.recipe_inputs()`, `ui.recipe_outputs()` and `ui.recipe_input(i)` place its slots.
-    pub fn layout(mut self, f: impl Fn(&mut Ui, &Recipe) + Send + Sync + 'static) -> Self {
-        self.display = callback(move |a: &mut abi::RecipeUiArgs| {
+    pub fn layout(self, f: impl Fn(&mut Ui, &Recipe) + Send + Sync + 'static) -> Self {
+        let cb = callback(move |a: &mut abi::RecipeUiArgs| {
             let mut ui = Ui::from_raw(a.ui, a.client);
             let r = Recipe { kind: unsafe { a.kind.as_str() }.to_string(), index: a.recipe };
             f(&mut ui, &r);
         });
-        self
+        self.set(&crate::comps::recipe_kind::LAYOUT, cb)
     }
 }
 
-impl Drop for RecipeKindBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let values: Vec<Str> = self.info_values.iter().map(|v| Str::new(v)).collect();
-        let desc = abi::RecipeKindDesc {
-            name: Str::new(&self.name),
-            input_grid: self.input_grid,
-            output_grid: self.output_grid,
-            info: Str::new(&self.info),
-            info_values: Slice::new(&values),
-            layout: self.display,
-        };
-        unsafe { (host().reg_recipe_kind)(self.raw, &desc) }
-    }
+/// An equipment slot being registered (`Registry::equipment_slot`).
+pub struct EquipmentSlotBuilder<'a> {
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
+}
+
+/// A tint kind being registered (`Registry::tint_kind`).
+pub struct TintKindBuilder<'a> {
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
 
 /// One recipe of a kind, found by `recipe_find` (or shown by a kind's `display`).
@@ -2053,27 +2054,14 @@ impl Recipe {
 
 /// An entity category being registered (`Registry::entity_category`).
 pub struct CategoryBuilder<'a> {
-    raw: *mut abi::Registrar,
-    name: String,
-    cap: u32,
-    despawn: f32,
-    cap_radius: f32,
-    _p: std::marker::PhantomData<&'a mut Registry>,
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
 
 impl CategoryBuilder<'_> {
     /// How close to a player its mobs count for the cap (64 by default).
-    pub fn cap_radius(mut self, blocks: f32) -> Self {
-        self.cap_radius = blocks;
-        self
-    }
-}
-
-impl Drop for CategoryBuilder<'_> {
-    fn drop(&mut self) {
-        if !std::thread::panicking() {
-            unsafe { (host().reg_entity_category)(self.raw, Str::new(&self.name), self.cap, self.despawn, self.cap_radius) }
-        }
+    pub fn cap_radius(self, blocks: f32) -> Self {
+        self.set(&crate::comps::entity_category::CAP_RADIUS, blocks)
     }
 }
 

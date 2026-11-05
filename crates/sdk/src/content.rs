@@ -64,7 +64,17 @@ pub mod kind {
         Pose = crate::abi::entry_kind::POSE,
         Weather = crate::abi::entry_kind::WEATHER,
         Precipitation = crate::abi::entry_kind::PRECIPITATION,
-        Condition = crate::abi::entry_kind::CONDITION
+        Condition = crate::abi::entry_kind::CONDITION,
+        Music = crate::abi::entry_kind::MUSIC,
+        CameraMode = crate::abi::entry_kind::CAMERA,
+        EquipmentSlot = crate::abi::entry_kind::EQUIPMENT_SLOT,
+        CreativeTab = crate::abi::entry_kind::CREATIVE_TAB,
+        SoundCategory = crate::abi::entry_kind::SOUND_CATEGORY,
+        EntityCategory = crate::abi::entry_kind::ENTITY_CATEGORY,
+        TintKind = crate::abi::entry_kind::TINT_KIND,
+        RecipeKind = crate::abi::entry_kind::RECIPE_KIND,
+        Attribute = crate::abi::entry_kind::ATTRIBUTE,
+        Key = crate::abi::entry_kind::KEY
     );
     macro_rules! named_kinds {
         ($($n:ident),*) => {
@@ -75,29 +85,7 @@ pub mod kind {
             impl On<$n> for $n {})*
         };
     }
-    named_kinds!(
-        SkyObject,
-        Key,
-        CameraMode,
-        HudElement,
-        GizmoGroup,
-        Shader,
-        Ore,
-        Liquid,
-        TintKind,
-        EntityCategory,
-        SoundCategory,
-        CreativeTab,
-        Question,
-        Chain,
-        Attribute,
-        RecipeKind,
-        LootTable,
-        Music,
-        EquipmentSlot,
-        Scatter,
-        Template
-    );
+    named_kinds!(SkyObject, HudElement, GizmoGroup, Shader, Ore, Liquid, Question, Chain, LootTable, Scatter, Template);
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
@@ -742,6 +730,14 @@ fn tab_tag(tab: &CreativeTab) -> String {
     format!("tab/{}", tab.name())
 }
 
+/// A creative tab being registered (`Registry::creative_tab`).
+pub struct CreativeTabBuilder<'a> {
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
+}
+
+crate::entry::entry_builder!(CreativeTab => CreativeTabBuilder, creative_tab_entry;);
+
 /// The creative tab every entity's spawn egg goes to.
 pub static SPAWN_EGGS: CreativeTab = CreativeTab::named("core:spawn_eggs");
 pub type RecipeKind = Handle<kind::RecipeKind>;
@@ -1037,7 +1033,6 @@ builds!(
     Dimension => DimensionBuilder<'a>, dimension;
     Menu => crate::game::MenuBuilder<'a>, menu;
     Particle => crate::effects::ParticleBuilder<'a>, particle;
-    Sound => crate::effects::SoundBuilder<'a>, sound;
 );
 
 impl Registry {
@@ -1151,8 +1146,14 @@ impl Registry {
 
     /// Creative inventory tab named `tab.<ns>.<name>` in the language files, shown with `icon`.
     /// Blocks and items join with `.tab(&TAB)`; untabbed items land in a tab named after the mod.
-    pub fn creative_tab(&mut self, tab: &CreativeTab, icon: &Item) {
-        unsafe { (host().reg_creative_tab)(self.raw, Str::new(tab.name()), Str::new(icon.name())) }
+    /// Tabs come in mod load order, then registration order.
+    pub fn creative_tab(&mut self, tab: &'static CreativeTab, icon: &Item) -> CreativeTabBuilder<'_> {
+        self.creative_tab_entry(tab)
+            .set_text(&crate::comps::creative_tab::ICON, icon.name())
+    }
+
+    fn creative_tab_entry(&mut self, tab: &'static CreativeTab) -> CreativeTabBuilder<'_> {
+        CreativeTabBuilder { reg: self, e: crate::entry::Entry::of(tab) }
     }
 
     /// An ore, in every dimension whose ground it may `replace` (`.dimension(..)` limits it):

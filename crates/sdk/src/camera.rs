@@ -7,11 +7,11 @@
 //! static ORBIT: CameraMode = CameraMode::named("orbit");
 //! static ORBIT_KEY: Key = Key::named("orbit");
 //! r.camera(&ORBIT).shot(shot::orbit(6.0)).key(&ORBIT_KEY, "O").transition(0.6, easing::SMOOTH);
-//! r.camera(&cameras::FRONT).without(camera_flags::CYCLE); // F5 skips it
+//! r.edit(&cameras::FRONT).without(camera_flags::CYCLE); // F5 skips it
 //! ```
 
-use crate::abi::{self, CameraArgs, CameraPose, Str, Vec3, camera_flags as cf};
-use crate::{CameraMode, Key, Registry, World, callback, host};
+use crate::abi::{self, CameraArgs, CameraPose, Vec3, camera_flags as cf};
+use crate::{CameraMode, Key, Registry, WithComponents, World, callback, host};
 
 pub use abi::{camera_flags, easing};
 
@@ -30,13 +30,6 @@ pub mod cameras {
 /// moves too.
 pub fn ease(kind: u32, t: f32) -> f32 {
     unsafe { (host().ease)(kind, t) }
-}
-
-impl CameraMode {
-    /// Its id as `actions::CAMERA` asks about it (`Ask::amount`), `u32::MAX` if there's none.
-    pub fn camera_id(&self) -> u32 {
-        unsafe { (host().camera_id)(Str::new(self.name())) }
-    }
 }
 
 /// How a camera moves: called each frame on the client with the keys, the player's eyes and
@@ -191,39 +184,39 @@ pub mod shot {
 /// `Registry::camera`: registers when dropped.
 pub struct CameraBuilder<'a> {
     reg: &'a mut Registry,
-    mode: &'static CameraMode,
-    flags: u32,
-    off: u32,
-    key: Option<&'static Key>,
-    shot: Option<Shot>,
-    transition: f32,
-    easing: u32,
+    e: crate::entry::Entry,
 }
 
+crate::entry::entry_builder!(CameraMode => CameraBuilder, camera;);
+
 impl Registry {
-    /// A camera mode, or the edits to one already there (the engine's `cameras::*`, another
-    /// mod's): flags added and taken away, its shot, key and change replaced.
+    /// A camera mode; `r.edit(&cameras::FRONT)` changes one already there (the engine's,
+    /// another mod's): flags added and taken away, its shot, key and change replaced.
     pub fn camera(&mut self, mode: &'static CameraMode) -> CameraBuilder<'_> {
-        CameraBuilder { reg: self, mode, flags: 0, off: 0, key: None, shot: None, transition: f32::NAN, easing: easing::IN_OUT }
+        CameraBuilder { reg: self, e: crate::entry::Entry::of(mode) }
     }
 }
 
 impl CameraBuilder<'_> {
     /// How it moves, with the flags that takes.
-    pub fn shot(mut self, shot: Shot) -> Self {
-        self.flags |= shot.flags;
-        self.shot = Some(shot);
-        self
+    pub fn shot(self, shot: Shot) -> Self {
+        let flags = shot.flags;
+        let call = callback(move |a: &mut CameraArgs| (shot.f)(a));
+        self.with(flags).set(&crate::comps::camera::CALL, call)
     }
     /// These `camera_flags` on.
-    pub fn with(mut self, flags: u32) -> Self {
-        (self.flags, self.off) = (self.flags | flags, self.off & !flags);
-        self
+    pub fn with(self, flags: u32) -> Self {
+        abi::comp::camera::FLAGS
+            .iter()
+            .filter(|f| flags & f.1 != 0)
+            .fold(self, |b, f| b.tag(f.0))
     }
     /// These off.
-    pub fn without(mut self, flags: u32) -> Self {
-        (self.flags, self.off) = (self.flags & !flags, self.off | flags);
-        self
+    pub fn without(self, flags: u32) -> Self {
+        abi::comp::camera::FLAGS
+            .iter()
+            .filter(|f| flags & f.1 != 0)
+            .fold(self, |b, f| b.untag(f.0))
     }
     /// One F5 goes through.
     pub fn in_cycle(self) -> Self {
@@ -234,34 +227,14 @@ impl CameraBuilder<'_> {
         self.with(cf::ASK)
     }
     /// A key that turns it on and back off, `default` as `Registry::key` takes it.
-    pub fn key(mut self, key: &'static Key, default: &str) -> Self {
-        unsafe { (host().reg_key)(self.reg.raw, Str::new(key.name()), Str::new(default)) }
-        self.key = Some(key);
-        self
+    pub fn key(self, key: &'static Key, default: &str) -> Self {
+        drop(self.reg.key(key, default));
+        self.set_text(&crate::comps::camera::KEY, key.name())
     }
     /// The change into it takes `secs`, eased by `easing` (`easing::*`).
-    pub fn transition(mut self, secs: f32, easing: u32) -> Self {
-        (self.transition, self.easing) = (secs, easing);
-        self
-    }
-}
-
-impl Drop for CameraBuilder<'_> {
-    fn drop(&mut self) {
-        let call = self
-            .shot
-            .take()
-            .map_or(abi::Callback::NONE, |s| callback(move |a: &mut CameraArgs| (s.f)(a)));
-        let desc = abi::CameraDesc {
-            name: Str::new(self.mode.name()),
-            flags: self.flags,
-            flags_off: self.off,
-            key: self.key.map_or(Str::EMPTY, |k| Str::new(k.name())),
-            call,
-            transition: self.transition,
-            easing: self.easing,
-        };
-        unsafe { (host().reg_camera)(self.reg.raw, &desc) }
+    pub fn transition(self, secs: f32, easing: u32) -> Self {
+        self.set(&crate::comps::camera::TRANSITION, secs)
+            .set(&crate::comps::camera::EASING, easing)
     }
 }
 
@@ -269,11 +242,11 @@ impl World {
     /// Puts `player` in camera `mode` and keeps it there until `release_camera`; the change
     /// over `over` (seconds, `easing::*`) or as the mode says.
     pub fn force_camera(&self, player: u64, mode: &CameraMode, over: Option<(f32, u32)>) {
-        self.send_camera(player, mode.camera_id(), true, over)
+        self.send_camera(player, mode.id(), true, over)
     }
     /// Puts `player` in camera `mode`, which it may leave as usual.
     pub fn set_camera(&self, player: u64, mode: &CameraMode, over: Option<(f32, u32)>) {
-        self.send_camera(player, mode.camera_id(), false, over)
+        self.send_camera(player, mode.id(), false, over)
     }
     /// Back to the camera the player had chosen, free to change it again.
     pub fn release_camera(&self, player: u64, over: Option<(f32, u32)>) {

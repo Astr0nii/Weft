@@ -11,7 +11,7 @@
 
 use crate::abi::{self, ItemStack, Slice, Str, gizmo_kind as gk};
 use crate::abi::{BlockPos, Vec3};
-use crate::{ClientView, Key, Menu, Registry, Value, World, callback, host};
+use crate::{ClientView, Key, Menu, Registry, Value, WithComponents, World, callback, host};
 
 pub use abi::{ClientState, client_flags};
 
@@ -619,15 +619,22 @@ impl Registry {
     /// `.on_server(..)`, or read with `Client::key_pressed`/`key_held`. Keys only act while the
     /// world has the input (not while typing in the chat or with a screen open).
     pub fn key<'a>(&'a mut self, key: &'static Key, default: &str) -> KeyBuilder<'a> {
-        unsafe { (host().reg_key)(self.raw, abi_str(key.name()), abi_str(default)) }
-        KeyBuilder { reg: self, key }
+        self.key_entry(key)
+            .set_text(&crate::comps::key::DEFAULT, default)
+    }
+
+    fn key_entry(&mut self, key: &'static Key) -> KeyBuilder<'_> {
+        KeyBuilder { reg: self, e: crate::entry::Entry::of(key), key }
     }
 }
 
 pub struct KeyBuilder<'a> {
     reg: &'a mut Registry,
+    e: crate::entry::Entry,
     key: &'static Key,
 }
+
+crate::entry::entry_builder!(Key => KeyBuilder, key_entry;);
 
 impl KeyBuilder<'_> {
     /// On the client, every time the key goes down.
@@ -652,7 +659,7 @@ impl KeyBuilder<'_> {
         let key = self.key;
         let channel: &'static Channel<()> = Channel::generated(format!("{}.pressed", key.name()));
         self.reg.packet(channel, move |p, ()| f(p));
-        KeyBuilder { reg: self.reg, key }.on_client(move |c| c.send(channel, &()))
+        self.on_client(move |c| c.send(channel, &()))
     }
 }
 

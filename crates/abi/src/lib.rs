@@ -386,10 +386,20 @@ pub mod entry_kind {
     pub const WEATHER: u32 = 14;
     pub const PRECIPITATION: u32 = 15;
     pub const CONDITION: u32 = 16;
+    pub const MUSIC: u32 = 17;
+    pub const CAMERA: u32 = 18;
+    pub const EQUIPMENT_SLOT: u32 = 19;
+    pub const CREATIVE_TAB: u32 = 20;
+    pub const SOUND_CATEGORY: u32 = 21;
+    pub const ENTITY_CATEGORY: u32 = 22;
+    pub const TINT_KIND: u32 = 23;
+    pub const RECIPE_KIND: u32 = 24;
+    pub const ATTRIBUTE: u32 = 25;
+    pub const KEY: u32 = 26;
     /// Kinds that carry components (block to dimension).
     pub const COUNT: usize = 5;
     /// Each kind's name for messages, by value.
-    pub const NAMES: [&str; 17] = [
+    pub const NAMES: [&str; 27] = [
         "block",
         "item",
         "entity",
@@ -407,6 +417,16 @@ pub mod entry_kind {
         "weather",
         "precipitation",
         "condition",
+        "music",
+        "camera mode",
+        "equipment slot",
+        "creative tab",
+        "sound category",
+        "entity category",
+        "tint kind",
+        "recipe kind",
+        "attribute",
+        "key",
     ];
 }
 
@@ -612,6 +632,115 @@ pub mod comp {
     /// default); a condition's `CALL` (`callback`, `ConditionArgs`).
     pub const ENTITY_EFFECT_SHADER: &str = "entity_effect.shader";
     pub const CONDITION_CALL: &str = "condition.call";
+
+    /// A sound event's: `FILES` (`[str]`, `sounds/<name>.ogg` or `.wav`, one picked at random),
+    /// `VOLUME` (`f32`, 1), `PITCH` (`[f32;2]`, playback speed picked between, 1), `RANGE` (`f32`,
+    /// blocks away still heard, 16), `FULL_WITHIN` (`f32`, blocks at full volume, 1), `FALLOFF`
+    /// (`i32` -8..8, the fade from there to `RANGE`: 0 even, n > 0 staying loud longer, n < 0
+    /// dropping early), `CATEGORY` (`str`, a sound category, `core:blocks`).
+    pub mod sound {
+        pub const FILES: &str = "sound.files";
+        pub const VOLUME: &str = "sound.volume";
+        pub const PITCH: &str = "sound.pitch";
+        pub const RANGE: &str = "sound.range";
+        pub const FULL_WITHIN: &str = "sound.full_within";
+        pub const FALLOFF: &str = "sound.falloff";
+        pub const CATEGORY: &str = "sound.category";
+    }
+
+    /// Background music's: after a quiet while, a track of the first music whose conditions hold.
+    /// `TRACKS` (`[str]`, sound files streamed), `DIMENSION` (`str`, the one it plays in, any
+    /// unless set), `WHEN` (`[str]`, conditions that all have to hold).
+    pub mod music {
+        pub const TRACKS: &str = "music.tracks";
+        pub const DIMENSION: &str = "music.dimension";
+        pub const WHEN: &str = "music.when";
+    }
+
+    /// A camera mode's: one tag per `camera_flags` (`FLAGS`), `KEY` (`str`, an action that turns
+    /// it on and back to where it was), `CALL` (`callback`, `CameraArgs`: where the camera is each
+    /// frame), `TRANSITION` (`f32`, seconds from the camera before, 0) eased by `EASING` (`u32`,
+    /// `easing`, `IN_OUT`).
+    pub mod camera {
+        use crate::camera_flags as f;
+        pub const KEY: &str = "camera.key";
+        pub const CALL: &str = "camera.call";
+        pub const TRANSITION: &str = "camera.transition";
+        pub const EASING: &str = "camera.easing";
+        pub const FLAGS: [(&str, u32); 11] = [
+            ("camera.body", f::BODY),
+            ("camera.hand", f::HAND),
+            ("camera.hud", f::HUD),
+            ("camera.effects", f::EFFECTS),
+            ("camera.clip", f::CLIP),
+            ("camera.solid", f::SOLID),
+            ("camera.cycle", f::CYCLE),
+            ("camera.detached", f::DETACHED),
+            ("camera.aim", f::AIM),
+            ("camera.no_interact", f::NO_INTERACT),
+            ("camera.ask", f::ASK),
+        ];
+    }
+
+    /// A setting's, shown as `config.<ns>.<key>` (and `.tooltip`) from the language files: `KIND`
+    /// (`u32`, `config_kind`, `BOOL`), `DEFAULT` (`f64`, 0), `RANGE` (`[f64;2]`, 0..1) and `STEP`
+    /// (`f64`, 0 any) of numbers, `CHOICES` (`[str]`), `SCOPE` (`u32`, `config_scope`, `CLIENT`),
+    /// `TEXT` (`str`, the default of a text setting), tag `RESTART_REQUIRED`.
+    pub mod config {
+        pub const KIND: &str = "config.kind";
+        pub const DEFAULT: &str = "config.default";
+        pub const RANGE: &str = "config.range";
+        pub const STEP: &str = "config.step";
+        pub const CHOICES: &str = "config.choices";
+        pub const SCOPE: &str = "config.scope";
+        pub const TEXT: &str = "config.text";
+        pub const RESTART_REQUIRED: &str = "config.restart_required";
+        pub const FLAGS: [(&str, u32); 1] = [(RESTART_REQUIRED, crate::config_flags::RESTART_REQUIRED)];
+    }
+
+    /// An equipment slot's: `COVERS` (`[str]`, bones what is worn there covers; a name with a role,
+    /// `head`, `leftArm`, `leg0`, covers every bone of that role) and `BACKGROUND` (`str`, the GUI
+    /// texture of the empty slot).
+    pub mod equipment_slot {
+        pub const COVERS: &str = "equipment_slot.covers";
+        pub const BACKGROUND: &str = "equipment_slot.background";
+    }
+
+    /// An entity category's: `CAP` (`u32`, at most this many spawn naturally near a player, 0),
+    /// `DESPAWN` (`f32`, further than this from every player they vanish, 0 never), `CAP_RADIUS`
+    /// (`f32`, how near a player the cap counts them, 64).
+    pub mod entity_category {
+        pub const CAP: &str = "entity_category.cap";
+        pub const DESPAWN: &str = "entity_category.despawn";
+        pub const CAP_RADIUS: &str = "entity_category.cap_radius";
+    }
+
+    /// A recipe kind's, for the recipe viewer: `INPUTS` and `OUTPUTS` (`[u32;2]`, grids this big
+    /// whatever a recipe uses, 0 as many as it has), `INFO` (`str`, a translation under each
+    /// recipe, `{0}`.. filled from `INFO_VALUES`, `[str]`: `time` in seconds or components the
+    /// recipe carries), `LAYOUT` (`callback`, `RecipeUiArgs`: builds one recipe instead).
+    pub mod recipe_kind {
+        pub const INPUTS: &str = "recipe_kind.inputs";
+        pub const OUTPUTS: &str = "recipe_kind.outputs";
+        pub const INFO: &str = "recipe_kind.info";
+        pub const INFO_VALUES: &str = "recipe_kind.info_values";
+        pub const LAYOUT: &str = "recipe_kind.layout";
+    }
+
+    /// An attribute's `DEFAULT` (`f64`, 0) and `RANGE` (`[f64;2]`, unbounded) its value stays in.
+    pub mod attribute {
+        pub const DEFAULT: &str = "attribute.default";
+        pub const RANGE: &str = "attribute.range";
+    }
+
+    /// A creative tab's `ICON` (`str`, an item); a sound category's tag `WORLD` (heard through
+    /// caves and water like block sounds, else like music); a tint kind's `DEFAULT` (`u32`,
+    /// 0xRRGGBB where the biome sets none and on items, white); a key's `DEFAULT` (`str`, the
+    /// key by its settings name, `KeyJ`, `mouse3`).
+    pub const CREATIVE_TAB_ICON: &str = "creative_tab.icon";
+    pub const SOUND_CATEGORY_WORLD: &str = "sound_category.world";
+    pub const TINT_KIND_DEFAULT: &str = "tint_kind.default";
+    pub const KEY_DEFAULT: &str = "key.default";
 
     /// A weather's (`entry_kind::WEATHER`). How it looks, each `f32` 0..1 (rain's unless set):
     /// `FALLS` how much of the precipitation falls, `SKY_GRAY`, `SKY_COVER` (sun, moon, stars),
@@ -1656,8 +1785,8 @@ pub struct EntityDesc {
     /// A moving body built of this template (`Host::reg_template`), block (0, 0, 0)
     /// centered on the entity; its box is what the blocks fill.
     pub template: Str,
-    /// A category by name (`core:misc`, `core:hostile`, `core:passive`, or one from
-    /// `Host::reg_entity_category`); empty = `core:misc`.
+    /// A category by name (`core:misc`, `core:hostile`, `core:passive`, or a mod's
+    /// `entry_kind::ENTITY_CATEGORY`); empty = `core:misc`.
     pub category_name: Str,
     /// Where riders sit on it (`Host::entity_mount`), in its own frame turned by its yaw.
     pub seats: Slice<SeatDesc>,
@@ -1769,37 +1898,10 @@ impl Schema for Mounting {
     const SCHEMA: &'static str = "{rider:u64,mount:u64,seat:u32,pad:u32}";
 }
 
-/// A way to look at the world (`Host::reg_camera`): each frame on the client its `call`
-/// (`CameraArgs`) says where the camera is, and `flags` what goes with it. The engine's are
-/// `core:first_person`, `core:behind`, `core:front` (F5 goes through those `camera_flags::CYCLE`
-/// has) and `core:free` (`core:freecam`, P). Registering one by a name that is there already
-/// edits it: `flags` added, `flags_off` taken away, a `call` replacing its own, a `transition`
-/// that isn't NaN replacing its.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct CameraDesc {
-    pub name: Str,
-    pub flags: u32,
-    pub flags_off: u32,
-    /// An action that turns it on, and back to where it was (`Host::reg_key`'s); empty: none.
-    pub key: Str,
-    pub call: Callback,
-    /// Seconds from the camera before to this one, eased by `easing` (`easing::*`); 0 at once.
-    pub transition: f32,
-    pub easing: u32,
-}
-
-defaults!(CameraDesc {
-    name: Str::EMPTY,
-    flags: 0,
-    flags_off: 0,
-    key: Str::EMPTY,
-    call: Callback::NONE,
-    transition: f32::NAN,
-    easing: easing::IN_OUT,
-});
-
-/// What a camera mode is and does (`CameraDesc::flags`).
+/// What a camera mode (`entry_kind::CAMERA`, `comp::camera`) is and does: each frame on the
+/// client its `call` (`CameraArgs`) says where the camera is, and these what goes with it. The
+/// engine's are `core:first_person`, `core:behind`, `core:front` (F5 goes through those with
+/// `CYCLE`) and `core:free` (`core:freecam`, P).
 pub mod camera_flags {
     /// The player's own body is drawn.
     pub const BODY: u32 = 1;
@@ -1839,7 +1941,7 @@ pub mod force_load {
     pub const ALL: u32 = 2;
 }
 
-/// How a move goes from start to end (`CameraDesc::easing`, `Host::player_camera`).
+/// How a move goes from start to end (`comp::camera::EASING`, `Host::player_camera`).
 pub mod easing {
     pub const LINEAR: u32 = 0;
     /// Slow at first.
@@ -1878,7 +1980,7 @@ pub struct CameraPose {
 
 defaults!(CameraPose { pos: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, yaw: 0.0, pitch: 0.0, roll: 0.0, fov: 1.0 });
 
-/// A camera mode's frame (`CameraDesc::call`), on the client.
+/// A camera mode's frame (`comp::camera::CALL`), on the client.
 #[repr(C)]
 pub struct CameraArgs {
     /// The keys, and in `yaw`/`pitch` the look: the camera's own, turned by the mouse, when
@@ -2423,31 +2525,6 @@ pub struct RecipeOutput {
     pub chance: f32,
 }
 
-/// A kind of recipe and how the recipe viewer shows it.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct RecipeKindDesc {
-    pub name: Str,
-    /// Inputs and outputs as grids of this size (a crafting table's 3 x 3 whatever the recipe
-    /// uses); 0: as many as a recipe has.
-    pub input_grid: [u32; 2],
-    pub output_grid: [u32; 2],
-    /// Translation under each recipe, with `{0}`.. filled from `info_values`: `time` (seconds) or
-    /// the name of a component the recipe carries.
-    pub info: Str,
-    pub info_values: Slice<Str>,
-    /// `RecipeUiArgs`, client: builds one recipe instead of the default layout.
-    pub layout: Callback,
-}
-defaults!(RecipeKindDesc {
-    name: Str::EMPTY,
-    input_grid: [0; 2],
-    output_grid: [0; 2],
-    info: Str::EMPTY,
-    info_values: Slice::EMPTY,
-    layout: Callback::NONE
-});
-
 /// A recipe the viewer shows with a kind's own `display`.
 #[repr(C)]
 pub struct RecipeUiArgs {
@@ -2917,9 +2994,7 @@ pub struct Host {
     /// `cb` (`GenArgs`) runs after a cube was generated, in the dimensions named (space
     /// separated; empty: every dimension but `dim_flags::BARE` ones). Pure like a generator.
     pub reg_decoration: unsafe extern "C" fn(reg: *mut Registrar, at: *const Where, cb: Callback),
-    /// Creative inventory tab shown with `icon` (an item name); items join it with the tag
-    /// `tab/<name>`. Tabs appear in mod load order, then registration order.
-    pub reg_creative_tab: unsafe extern "C" fn(reg: *mut Registrar, name: Str, icon: Str),
+
     /// Sets or removes a component (or tag) on entries of any mod, see `SetDesc`.
     pub reg_set: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SetDesc),
 
@@ -3155,9 +3230,7 @@ pub struct Host {
     /// `schema` (both sides must agree, sends with another are refused). `side` 0: `cb` runs on
     /// the server with `PacketArgs` when a client sends; 1: on the client with `ClientPacketArgs`.
     pub reg_packet: unsafe extern "C" fn(reg: *mut Registrar, name: Str, schema: Str, side: u32, cb: Callback),
-    /// Key binding `name` (shown in Controls as `key.<ns>.<name>`), default key by its settings
-    /// name (`KeyJ`, `mouse3`, ...). Read with `client_key_state`.
-    pub reg_key: unsafe extern "C" fn(reg: *mut Registrar, name: Str, key: Str),
+
     /// A mistake in what a mod registers that the SDK caught (a bad asset path ...): loading
     /// stops at freeze with it, named with the mod.
     pub reg_mistake: unsafe extern "C" fn(reg: *mut Registrar, message: Str),
@@ -3277,8 +3350,7 @@ pub struct Host {
     pub chain_compute: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, base: f64, ctx: *const Query, explain: u32) -> f64,
     /// Steps of the last explained `chain_compute` or `attribute_explain` on this thread.
     pub explanation: unsafe extern "C" fn() -> Str,
-    /// An attribute of living entities (`attribute::*` are the engine's).
-    pub reg_attribute: unsafe extern "C" fn(reg: *mut Registrar, name: Str, default: f64, min: f64, max: f64),
+
     /// Its current value for an entity: base (the kind's component of the same name, else the
     /// default), then modifiers by `attr_op`, clamped.
     pub attribute: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str) -> f64,
@@ -3354,8 +3426,6 @@ pub struct Host {
     pub client_particle_burst: unsafe extern "C" fn(client: *mut ClientCtx, burst: *const ParticleBurst),
 
     // ------------------------------------------------ configs, sound, models
-    /// A setting players change in Settings > Mods (and `config/<ns>.txt`), see `ConfigDesc`.
-    pub reg_config: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ConfigDesc),
     /// Current value of config `id` (bools 0/1, choices their index); 0 for unknown ids.
     pub config_value: unsafe extern "C" fn(id: u32) -> f64,
     /// Changes config `id` (clamped to its range, saved). Synced ones only on the server.
@@ -3363,10 +3433,7 @@ pub struct Host {
     /// The value of a `TEXT` setting.
     pub config_text: unsafe extern "C" fn(id: u32) -> Str,
     pub config_set_text: unsafe extern "C" fn(id: u32, value: Str),
-    /// A sound event, see `SoundDesc`.
-    pub reg_sound: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SoundDesc),
-    /// Background music, see `MusicDesc`.
-    pub reg_music: unsafe extern "C" fn(reg: *mut Registrar, desc: *const MusicDesc),
+
     /// Server: entity `id` plays action `name` for everyone who sees it; `looping` keeps it going
     /// until another one starts, empty `name` ends it.
     pub action_play: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, name: Str, looping: u32),
@@ -3405,32 +3472,17 @@ pub struct Host {
     /// Gives every entity of `kind` the component `component` (any mod's or the engine's) at
     /// spawn, starting as `value` (the component's size in bytes), empty: the component's default.
     pub reg_attach: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, component: Str, value: Slice<u8>),
-    /// A kind of recipe (`base:crafting`): recipes, stations and loot naming a kind nobody
-    /// registered are freeze errors.
-    pub reg_recipe_kind: unsafe extern "C" fn(reg: *mut Registrar, desc: *const RecipeKindDesc),
-    /// An entity category: at most `cap` of it spawn naturally within 64 blocks of a player;
-    /// with `despawn` > 0 they vanish when no player is that close.
-    /// `cap_radius`: how far from a player the cap counts them (64 for the engine's).
-    pub reg_entity_category: unsafe extern "C" fn(reg: *mut Registrar, name: Str, cap: u32, despawn: f32, cap_radius: f32),
+
     /// `damage_flags` of a cause, 0 for one that doesn't exist.
     pub damage_cause_flags: unsafe extern "C" fn(cause: u32) -> u32,
-    /// A sound category with its own volume setting (`<ns>:volume_<name>`); `world` != 0: heard
-    /// through caves and water like block sounds (else like music and UI).
-    pub reg_sound_category: unsafe extern "C" fn(reg: *mut Registrar, name: Str, world: u32),
-    /// A tint kind: blocks naming it take a color per biome, `default` (0xRRGGBB) where the biome
-    /// sets none and on items.
-    pub reg_tint_kind: unsafe extern "C" fn(reg: *mut Registrar, name: Str, default: u32),
+
     /// The color of a tint kind in a biome (any mod's of either).
     pub reg_biome_tint: unsafe extern "C" fn(reg: *mut Registrar, biome: Str, kind: Str, color: u32),
     /// The player inventory as named groups (one flagged `slot_flags::HOTBAR`); the engine lays
     /// them out, the hotbar first and the equipment slots last. Of several, the mod loaded last
     /// wins.
     pub reg_player_inventory: unsafe extern "C" fn(reg: *mut Registrar, groups: Slice<SlotGroupDesc>),
-    /// An equipment slot of players, `background` the GUI texture of the empty slot. It takes
-    /// items tagged `worn/<name>`, is never filled by pickups and shows on the model, over the
-    /// bones named in `bones` (space separated); a name with a role (`head`, `leftArm`, `leg0`)
-    /// covers every bone of that role, whatever it is called in a model.
-    pub reg_equipment_slot: unsafe extern "C" fn(reg: *mut Registrar, name: Str, bones: Str, background: Str),
+
     /// Adds comma separated words to a word set: command parameters `word(#set)` complete from
     /// it (`core:rules`, `core:gizmos`, or any mod's).
     pub reg_words: unsafe extern "C" fn(reg: *mut Registrar, set: Str, words: Str),
@@ -3474,10 +3526,7 @@ pub struct Host {
     /// The state the terrain leaves at the top of column (`x`, `z`): 0 where caves took it or the
     /// dimension has no terrain.
     pub dim_surface_block: unsafe extern "C" fn(dim: u32, seed: u64, x: i32, z: i32) -> u32,
-    /// A camera mode, or edits to one by its name (`CameraDesc`).
-    pub reg_camera: unsafe extern "C" fn(reg: *mut Registrar, desc: *const CameraDesc),
-    /// The id of camera mode `name`, `u32::MAX` if there's none.
-    pub camera_id: unsafe extern "C" fn(name: Str) -> u32,
+
     /// Puts `player` in camera mode `mode` (`u32::MAX`: back to its own choice); `locked`, it
     /// can't leave it until told. The change takes `transition` seconds eased by `easing`
     /// (NaN: as the mode says).
@@ -3622,72 +3671,21 @@ pub struct Rect {
 /// `Host::reg_entity_hook`.
 
 /// Tint kinds of block faces: color from the biome. The engine has `core:grass`,
-/// `core:foliage` and `core:water`; mods add their own with `Host::reg_tint_kind` and name them
+/// `core:foliage` and `core:water`; mods add their own (`entry_kind::TINT_KIND`) and name them
 /// in `StateDesc::tint_name`.
 pub mod tint {
     /// Kinds that fit the face and quad records, the engine's three included.
     pub const MAX_KINDS: u32 = 15;
 }
 
-/// A sound event: plays one of `files` (`sounds/<name>.ogg` or `.wav` in any mod or resource
-/// pack) picked at random.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SoundDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    pub files: Slice<Str>,
-    pub volume: f32,
-    /// Playback speed picked between the two (1 = as recorded).
-    pub pitch: [f32; 2],
-    /// Blocks away it can still be heard (at volume 1).
-    pub range: f32,
-    /// Blocks within which it is at full volume.
-    pub full_within: f32,
-    /// How it fades from `full_within` to `range`: 0 evenly, n > 0 staying loud longer (the
-    /// fade's power), n < 0 dropping early.
-    pub falloff: i32,
-    /// Category by name, for its volume setting: the engine's `core:blocks` (empty),
-    /// `core:creatures`, `core:players`, `core:ambient`, `core:music`, `core:ui`, or one from
-    /// `Host::reg_sound_category`.
-    pub category_name: Str,
-}
-defaults!(SoundDesc {
-    name: Str::EMPTY,
-    cell: core::ptr::null(),
-    files: Slice::EMPTY,
-    volume: 1.0,
-    pitch: [1.0, 1.0],
-    range: 16.0,
-    full_within: 1.0,
-    falloff: 0,
-    category_name: Str::EMPTY
-});
-
-/// When background music may play; 0 = always.
-
-/// Background music: after a quiet while, a track of the first entry whose conditions hold.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct MusicDesc {
-    pub name: Str,
-    /// Sound files streamed (`sounds/<name>.ogg|.wav`).
-    pub tracks: Slice<Str>,
-    /// Full dimension name it plays in, empty = any.
-    pub dimension: Str,
-    /// Conditions that all have to hold (space separated names), empty: always.
-    pub when: Str,
-}
-defaults!(MusicDesc { name: Str::EMPTY, tracks: Slice::EMPTY, dimension: Str::EMPTY, when: Str::EMPTY });
-
-/// Kinds of `ConfigDesc` values.
+/// Kinds of settings (`comp::config::KIND`).
 pub mod config_kind {
     pub const BOOL: u32 = 0;
     pub const INT: u32 = 1;
     pub const FLOAT: u32 = 2;
     /// One of `choices`, stored as its index.
     pub const CHOICE: u32 = 3;
-    /// Text (`Host::config_text`); its default is `ConfigDesc::text`. Client scope only.
+    /// Text (`Host::config_text`); its default is `comp::config::TEXT`. Client scope only.
     pub const TEXT: u32 = 4;
 }
 
@@ -3705,40 +3703,6 @@ pub mod config_scope {
     /// Saved with the world (game rules, changed with `/rule`); players get it like the server's.
     pub const WORLD: u32 = 2;
 }
-
-/// A mod setting. Shown as `config.<ns>.<key>` (and `.tooltip`) from the language files.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ConfigDesc {
-    /// `ns:key`.
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    pub kind: u32,
-    pub default: f64,
-    /// Range of ints and floats, and the step the slider moves by (0 = any).
-    pub min: f64,
-    pub max: f64,
-    pub step: f64,
-    pub choices: Slice<Str>,
-    pub flags: u32,
-    /// `config_scope`.
-    pub scope: u32,
-    /// The default of a `TEXT` setting.
-    pub text: Str,
-}
-defaults!(ConfigDesc {
-    name: Str::EMPTY,
-    cell: core::ptr::null(),
-    kind: config_kind::BOOL,
-    default: 0.0,
-    min: 0.0,
-    max: 1.0,
-    step: 0.0,
-    choices: Slice::EMPTY,
-    flags: 0,
-    scope: config_scope::CLIENT,
-    text: Str::EMPTY
-});
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -4239,7 +4203,7 @@ pub mod action {
     pub const MOUNT: &str = "core:mount";
     /// `Mounting`. `entity` getting off `other` (`amount` its seat).
     pub const DISMOUNT: &str = "core:dismount";
-    /// `Query`: player `entity` turning on camera mode `amount` (`Host::camera_id`), one with
+    /// `Query`: player `entity` turning on camera mode `amount` (its id), one with
     /// `camera_flags::ASK`. With nobody allowing or denying, it may in a game mode that flies.
     pub const CAMERA: &str = "core:camera";
     /// `Query`: cubes from `pos` kept loaded (`Host::force_load`), `amount` the mode, `other`
@@ -4672,7 +4636,7 @@ pub struct ClientState {
     pub shown: Vec3,
     /// Columns distant terrain takes from saved cubes, not the terrain (`ToClient::LodColumns`).
     pub lod_columns: u32,
-    /// The camera mode on (`Host::camera_id`) and where the camera is this frame.
+    /// The camera mode on (its id) and where the camera is this frame.
     pub camera: u32,
     pub camera_pos: Vec3,
     /// The block looked at and the structure (entity) it is part of, 0 for the world;
