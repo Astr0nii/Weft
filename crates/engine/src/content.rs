@@ -1951,7 +1951,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }
     let mut errors: Vec<String> = Vec::new();
     let Merged { blocks, mut items, mut biomes, mut dims, tint_kinds, biome_tints, mut games } = merge_registrars(&mods, regs, &mut errors);
-    let mut blocks = apply_replacements(&mods, blocks, &mut items);
+    let mut blocks = apply_edits(&mods, blocks, &mut items, &mut errors);
     for (name, _, _) in games
         .iter()
         .flat_map(|g| &g.liquids)
@@ -2275,36 +2275,37 @@ fn drop_overridden(regs: &mut [RawRegistrar]) {
     }
 }
 
-fn apply_replacements(mods: &[ModMeta], mut blocks: Vec<(ModId, RawBlock)>, items: &mut Vec<(ModId, RawItem)>) -> Vec<(ModId, RawBlock)> {
-    blocks.par_sort_by(|a, b| a.1.name.cmp(&b.1.name).then(a.1.replace.cmp(&b.1.replace)));
+/// Edits (`Registry::edit`) go onto the block of their name, in load order. Its item stays: it
+/// points at the block by name.
+fn apply_edits(
+    mods: &[ModMeta],
+    blocks: Vec<(ModId, RawBlock)>,
+    items: &mut [(ModId, RawItem)],
+    errors: &mut Vec<String>,
+) -> Vec<(ModId, RawBlock)> {
     items.par_sort_by(|a, b| a.1.name.cmp(&b.1.name));
-    // A replacement wins over the original if its mod is the original's or depends on it. The
-    // original's item stays (it already points at the block by name).
-    let depends = |m: ModId, on: ModId| m == on || mods[m.0 as usize].deps.contains(&mods[on.0 as usize].id);
-    let mut kept: Vec<(ModId, RawBlock)> = Vec::with_capacity(blocks.len());
-    for (owner, b) in blocks {
-        match kept.last() {
-            Some((prev_owner, prev)) if prev.name == b.name && b.replace && depends(owner, *prev_owner) => {
-                log::info!("{} replaces block {}", mods[owner.0 as usize].id, b.name);
-                let (_, old) = kept.pop().unwrap();
-                let mut b = b;
-                if !b.own_states {
-                    inherit_states(&mut b, &old);
-                    for (_, item) in items
-                        .iter_mut()
-                        .filter(|(_, i)| i.name == b.name || i.block == b.name)
-                    {
-                        if let Some((_, to)) = b.retexture.iter().find(|r| r.0 == item.texture) {
-                            item.texture = to.clone();
-                        }
-                    }
+    let (edits, mut kept): (Vec<_>, Vec<_>) = blocks.into_iter().partition(|(_, b)| b.replace);
+    kept.par_sort_by(|a, b| a.1.name.cmp(&b.1.name));
+    for (owner, mut b) in edits {
+        let Ok(at) = kept.binary_search_by(|(_, k)| k.name.cmp(&b.name)) else {
+            errors.push(format!("{}: edit of block {}: no such block", mods[owner.0 as usize].id, b.name));
+            continue;
+        };
+        let old = &kept[at].1;
+        if !b.own_states {
+            inherit_states(&mut b, old);
+            for (_, item) in items
+                .iter_mut()
+                .filter(|(_, i)| i.name == b.name || i.block == b.name)
+            {
+                if let Some((_, to)) = b.retexture.iter().find(|r| r.0 == item.texture) {
+                    item.texture = to.clone();
                 }
-                b.extra_cells.push(old.cell);
-                b.extra_cells.extend(old.extra_cells);
-                kept.push((owner, b));
             }
-            _ => kept.push((owner, b)),
         }
+        b.extra_cells.push(old.cell);
+        b.extra_cells.extend(old.extra_cells.iter().copied());
+        kept[at] = (owner, b);
     }
     kept
 }
