@@ -870,6 +870,7 @@ pub struct EntityBuilder<'a> {
 
 /// Components of the kind (not per entity; see `Registry::entity_component` for that).
 impl crate::WithComponents for EntityBuilder<'_> {
+    type Kind = crate::kind::Entity;
     fn pending(&mut self) -> &mut Vec<Pending> {
         &mut self.components
     }

@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::abi::{self, BlockModel, RenderLayer, Slice, Str, block_flags as bf};
-use crate::component::{self as c, Component, Value};
+use crate::component::{self as c, Component, Data, Value};
 use crate::{World, callback, host, qualify};
 
 /// What a handle can name. Kinds with engine ids (`HasId`) can also be resolved to one.
@@ -32,6 +32,10 @@ pub mod kind {
         where
             Self: 'a;
         fn builder<'a>(r: &'a mut crate::Registry, h: &'static super::Handle<Self>) -> Self::Builder<'a>;
+        fn replace<'a>(r: &'a mut crate::Registry, h: &'static super::Handle<Self>) -> Self::Builder<'a> {
+            unsafe { (crate::host().reg_override)(r.raw, Self::KIND, crate::abi::Str::new(h.name()), 0) };
+            Self::builder(r, h)
+        }
     }
     macro_rules! kinds {
         ($($n:ident = $v:expr),*) => {
@@ -134,6 +138,10 @@ impl<K: kind::Kind> Handle<K> {
         self.full.get_or_init(|| crate::full_name(self.name))
     }
 
+    pub(crate) fn id_cell(&self) -> *const AtomicU32 {
+        &self.id
+    }
+
     /// The name without its namespace.
     pub fn path(&self) -> &str {
         let n = self.name();
@@ -222,10 +230,6 @@ impl<K: kind::HasId> Handle<K> {
     #[inline]
     pub fn is(&self, state: u32) -> bool {
         state.wrapping_sub(self.id()) < self.count.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn id_cell(&self) -> *const AtomicU32 {
-        &self.id
     }
 
     pub(crate) fn set_count(&self, n: u32) {
@@ -359,14 +363,31 @@ pub mod precipitations {
 /// `/weather mymod:acid_rain` sets it; the engine brings it now and then after clear weather.
 pub struct WeatherBuilder<'a> {
     reg: &'a mut crate::Registry,
-    handle: &'static Weather,
-    sound: String,
-    desc: abi::WeatherDesc,
+    e: crate::entry::Entry,
+}
+
+crate::entry::entry_builder!(Weather => WeatherBuilder, weather;);
+
+/// What a weather is made of: rain's look and flags where nothing is set.
+pub mod weather {
+    use crate::abi::comp::weather as w;
+    use crate::kind::Weather;
+    use crate::{Component, Text};
+    pub static FALLS: Component<f32, Weather> = Component::named(w::FALLS);
+    pub static SKY_GRAY: Component<f32, Weather> = Component::named(w::SKY_GRAY);
+    pub static SKY_COVER: Component<f32, Weather> = Component::named(w::SKY_COVER);
+    pub static FOG_GRAY: Component<f32, Weather> = Component::named(w::FOG_GRAY);
+    pub static CLOUD_GRAY: Component<f32, Weather> = Component::named(w::CLOUD_GRAY);
+    pub static CLOUD_DARK: Component<f32, Weather> = Component::named(w::CLOUD_DARK);
+    pub static DARKNESS: Component<f32, Weather> = Component::named(w::DARKNESS);
+    pub static SOUND: Component<Text, Weather> = Component::named(w::SOUND);
+    pub static DURATION: Component<[u32; 2], Weather> = Component::named(w::DURATION);
+    pub static WEIGHT: Component<u32, Weather> = Component::named(w::WEIGHT);
 }
 
 impl crate::Registry {
     pub fn weather<'a>(&'a mut self, weather: &'static Weather) -> WeatherBuilder<'a> {
-        WeatherBuilder { reg: self, handle: weather, sound: String::new(), desc: abi::WeatherDesc::DEFAULT }
+        WeatherBuilder { reg: self, e: crate::entry::Entry::of(weather) }
     }
 
     /// Something to fall from the sky: `textures/<texture>.png` as a strip of drops, `speed`
@@ -380,60 +401,39 @@ impl crate::Registry {
 
 impl WeatherBuilder<'_> {
     /// Nothing falls (by default rain, snow, each biome's own does).
-    pub fn no_falling(mut self) -> Self {
-        self.desc.flags &= !abi::weather_flags::FALLS;
-        self
+    pub fn no_falling(self) -> Self {
+        self.tag(abi::comp::weather::DRY)
     }
-    pub fn lightning(mut self) -> Self {
-        self.desc.flags |= abi::weather_flags::LIGHTNING;
-        self
+    pub fn lightning(self) -> Self {
+        self.tag(abi::comp::weather::LIGHTNING)
     }
     /// Things burn in the sun under it, a sandstorm (under rain they don't).
-    pub fn no_shelter(mut self) -> Self {
-        self.desc.flags &= !abi::weather_flags::SHELTERS;
-        self
-    }
-    /// How it looks: `abi::WeatherLook`, rain's by default (`WeatherDesc::DEFAULT.look`).
-    pub fn look(mut self, look: abi::WeatherLook) -> Self {
-        self.desc.look = look;
-        self
+    pub fn no_shelter(self) -> Self {
+        self.tag(abi::comp::weather::UNSHELTERED)
     }
     /// Share of daylight it takes away (rain 0.3125).
-    pub fn darkness(mut self, share: f32) -> Self {
-        self.desc.look.darkness = share;
-        self
+    pub fn darkness(self, share: f32) -> Self {
+        self.set(&weather::DARKNESS, share)
     }
     /// How far the sky (rain 0.75), the fog (0.5) and the clouds (0.95) go gray.
-    pub fn gray(mut self, sky: f32, fog: f32, clouds: f32) -> Self {
-        (self.desc.look.sky_gray, self.desc.look.fog_gray, self.desc.look.cloud_gray) = (sky, fog, clouds);
-        self
+    pub fn gray(self, sky: f32, fog: f32, clouds: f32) -> Self {
+        self.set(&weather::SKY_GRAY, sky)
+            .set(&weather::FOG_GRAY, fog)
+            .set(&weather::CLOUD_GRAY, clouds)
     }
     /// A sound event played now and then around players under the open sky while it falls.
-    pub fn sound(mut self, sound: &str) -> Self {
-        self.sound = crate::full_name(sound);
-        self
+    pub fn sound(self, sound: &str) -> Self {
+        let name = crate::full_name(sound);
+        self.set_text(&weather::SOUND, &name)
     }
     /// Ticks it lasts, at least and at most.
-    pub fn duration(mut self, min: u32, max: u32) -> Self {
-        self.desc.duration = [min, max];
-        self
+    pub fn duration(self, min: u32, max: u32) -> Self {
+        self.set(&weather::DURATION, [min, max])
     }
     /// How likely it comes after clear weather next to the others (rain 3, thunder 1); 0 only
     /// by command or code.
-    pub fn weight(mut self, w: u32) -> Self {
-        self.desc.weight = w;
-        self
-    }
-}
-
-impl Drop for WeatherBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let d =
-            abi::WeatherDesc { name: Str::new(self.handle.name()), cell: self.handle.id_cell(), sound: Str::new(&self.sound), ..self.desc };
-        unsafe { (host().reg_weather)(self.reg.raw, &d) }
+    pub fn weight(self, w: u32) -> Self {
+        self.set(&weather::WEIGHT, w)
     }
 }
 
@@ -843,6 +843,8 @@ impl LootSource for LootTable {
 /// Builders of content carrying components (blocks, items, biomes, dimensions, liquids, entity
 /// kinds) tag and set values the same way.
 pub trait WithComponents: Sized {
+    /// The kind it registers (`kind`): which components it takes.
+    type Kind;
     #[doc(hidden)]
     fn pending(&mut self) -> &mut Vec<Pending>;
 
@@ -850,23 +852,69 @@ pub trait WithComponents: Sized {
         self.pending().push(Pending::tag(tag));
         self
     }
+    /// Takes a tag away (another mod's, in an edit).
+    fn untag(mut self, tag: &str) -> Self {
+        self.pending()
+            .push(Pending::tag(tag).as_op(abi::value_op::UNSET, ""));
+        self
+    }
     /// A component value (on every state of a block, and its item).
-    fn set<T: Value>(mut self, comp: &Component<T>, v: T) -> Self {
+    fn set<T: Data, K: kind::On<Self::Kind>>(mut self, comp: &Component<T, K>, v: T) -> Self {
         self.pending().push(comp.raw_value(&v));
         self
     }
-    /// A value written as text: plain text, or block names the engine resolves (`BlockRef`,
+    /// Takes a component away (another mod's, in an edit).
+    fn unset<T: Data, K: kind::On<Self::Kind>>(mut self, comp: &Component<T, K>) -> Self {
+        self.pending()
+            .push(Pending::tag(comp.name()).as_op(abi::value_op::UNSET, ""));
+        self
+    }
+    /// A value written as text: plain text, or names the engine resolves (`BlockRef`,
     /// `BlockList`).
-    fn set_text<T: c::TextValue>(mut self, comp: &Component<T>, text: &str) -> Self {
+    fn set_text<T: c::TextValue, K: kind::On<Self::Kind>>(mut self, comp: &Component<T, K>, text: &str) -> Self {
         self.pending()
             .push(Pending::text_as(comp.name(), &T::schema(), text));
         self
     }
+    /// One more element at the end of a list.
+    fn push<T: Data, K: kind::On<Self::Kind>>(mut self, list: &Component<Vec<T>, K>, item: T) -> Self {
+        self.pending()
+            .push(element(list, &item, abi::value_op::PUSH, ""));
+        self
+    }
+    /// An element before the one `anchor` names (its `name`, or `#index`).
+    fn insert_before<T: Data, K: kind::On<Self::Kind>>(mut self, list: &Component<Vec<T>, K>, anchor: &str, item: T) -> Self {
+        self.pending()
+            .push(element(list, &item, abi::value_op::INSERT_BEFORE, anchor));
+        self
+    }
+    fn insert_after<T: Data, K: kind::On<Self::Kind>>(mut self, list: &Component<Vec<T>, K>, anchor: &str, item: T) -> Self {
+        self.pending()
+            .push(element(list, &item, abi::value_op::INSERT_AFTER, anchor));
+        self
+    }
+    /// The element `anchor` names becomes `item`.
+    fn replace_item<T: Data, K: kind::On<Self::Kind>>(mut self, list: &Component<Vec<T>, K>, anchor: &str, item: T) -> Self {
+        self.pending()
+            .push(element(list, &item, abi::value_op::REPLACE_ITEM, anchor));
+        self
+    }
+    fn remove_item<T: Data + Default, K: kind::On<Self::Kind>>(mut self, list: &Component<Vec<T>, K>, anchor: &str) -> Self {
+        self.pending()
+            .push(element(list, &T::default(), abi::value_op::REMOVE_ITEM, anchor));
+        self
+    }
+}
+
+/// A list operation's value: one element, with the element's schema.
+fn element<T: Data, K>(list: &Component<Vec<T>, K>, item: &T, op: u32, anchor: &str) -> Pending {
+    Pending::value(list.name(), T::schema(), abi::data::bytes_of(item)).as_op(op, anchor)
 }
 
 macro_rules! with_components {
-    ($($b:ident),*) => {
+    ($($b:ident: $k:ident),*) => {
         $(impl WithComponents for $b<'_> {
+            type Kind = kind::$k;
             fn pending(&mut self) -> &mut Vec<Pending> {
                 &mut self.components
             }
@@ -874,7 +922,7 @@ macro_rules! with_components {
     };
 }
 
-with_components!(BlockBuilder, ItemBuilder, BiomeBuilder, DimensionBuilder, LiquidBuilder);
+with_components!(BlockBuilder: Block, ItemBuilder: Item, BiomeBuilder: Biome, DimensionBuilder: Dimension, LiquidBuilder: Liquid);
 
 /// What carries items: entity kinds (block entities among them) and item stacks.
 pub trait Holds: WithComponents {
@@ -891,6 +939,7 @@ impl Holds for crate::EntityBuilder<'_> {}
 
 /// On one state only, on top of the block's.
 impl WithComponents for State<'_> {
+    type Kind = kind::Block;
     fn pending(&mut self) -> &mut Vec<Pending> {
         &mut self.def.components
     }
@@ -903,11 +952,18 @@ pub struct Pending {
     schema: String,
     bytes: Vec<u8>,
     text: Option<String>,
+    /// `abi::value_op`, and the list element it is about.
+    pub(crate) op: u32,
+    pub(crate) anchor: String,
 }
 
 impl Pending {
     pub(crate) fn value(name: &str, schema: String, bytes: Vec<u8>) -> Pending {
-        Pending { name: name.to_string(), schema, bytes, text: None }
+        Pending { name: name.to_string(), schema, bytes, text: None, op: abi::value_op::SET, anchor: String::new() }
+    }
+    /// The same value as another operation (`abi::value_op`) on `anchor`.
+    pub(crate) fn as_op(self, op: u32, anchor: &str) -> Pending {
+        Pending { op, anchor: anchor.to_string(), ..self }
     }
     pub(crate) fn text(name: &str, text: &str) -> Pending {
         Pending::text_as(name, "str", text)
@@ -926,10 +982,17 @@ impl Pending {
                 .join(" "),
             _ => text.to_string(),
         };
-        Pending { name: name.to_string(), schema: schema.into(), bytes: Vec::new(), text: Some(text) }
+        Pending {
+            name: name.to_string(),
+            schema: schema.into(),
+            bytes: Vec::new(),
+            text: Some(text),
+            op: abi::value_op::SET,
+            anchor: String::new(),
+        }
     }
-    fn tag(name: &str) -> Pending {
-        Pending { name: name.to_string(), schema: String::new(), bytes: Vec::new(), text: None }
+    pub(crate) fn tag(name: &str) -> Pending {
+        Pending::value(name, String::new(), Vec::new())
     }
     fn is_tag(&self) -> bool {
         self.schema.is_empty() && self.text.is_none() && self.bytes.is_empty()
@@ -1036,7 +1099,6 @@ builds!(
     TextPlace => crate::show::TextPlaceBuilder<'a>, text_place;
     GameMode => GameModeBuilder<'a>, game_mode;
     Pose => PoseBuilder<'a>, pose;
-    Weather => WeatherBuilder<'a>, weather;
 );
 
 impl Registry {
@@ -1056,13 +1118,15 @@ impl Registry {
     /// staying: `r.replace(&base::TORCH).texture("blue_torch")`. Of several mods replacing one
     /// thing, the last in load order wins.
     pub fn replace<K: kind::Builds>(&mut self, handle: &'static Handle<K>) -> K::Builder<'_> {
-        unsafe { (host().reg_override)(self.raw, K::KIND, Str::new(handle.name()), 0) };
-        K::builder(self, handle)
+        K::replace(self, handle)
     }
 
     /// As if nobody had registered `handle` (a block takes its item along).
     pub fn remove<K: kind::Kind>(&mut self, handle: &Handle<K>) {
         unsafe { (host().reg_override)(self.raw, K::KIND, Str::new(handle.name()), 1) };
+        let mut e = crate::entry::Entry::of(handle);
+        e.mode = abi::entry_mode::REMOVE;
+        e.send(self);
     }
 
     /// Registers a block and, unless `.no_item()` is called, an item that places it (and carries

@@ -236,7 +236,7 @@ pub async fn camera(t: T) -> R {
 /// nothing).
 pub async fn edits(t: T) -> R {
     t.flat().await?;
-    t.check_eq(t.op("edited").await?, "8 3 2 true".to_string(), "max stack, damage, warmth, tag after the edits");
+    t.check_eq(t.op("edited").await?, "8 3 2 true 7".to_string(), "max stack, damage, warmth, tag, a weather's flags after the edits");
     Ok(())
 }
 

@@ -519,6 +519,28 @@ pub struct ItemInfo {
 /// `mining_speed: f32` (default 1). Blocks: `mineable/<class>` tags, and with `harvest_level: u32`
 /// nothing drops without a tool of a matching class and at least that level (SDK `mined_by`). Stacks: `damage: u32`.
 pub mod comp {
+    /// A weather's (`entry_kind::WEATHER`). How it looks, each `f32` 0..1 (rain's unless set):
+    /// `FALLS` how much of the precipitation falls, `SKY_GRAY`, `SKY_COVER` (sun, moon, stars),
+    /// `FOG_GRAY`, `CLOUD_GRAY`, `CLOUD_DARK` (thunder 0.95), `DARKNESS` the share of daylight
+    /// taken. `SOUND` (`str`) a sound event now and then under the open sky while it falls,
+    /// `DURATION` (`[u32;2]`) ticks at least and at most, `WEIGHT` (`u32`) how likely it comes
+    /// after clear weather. Tags: `DRY` nothing falls, `LIGHTNING`, `UNSHELTERED` things burn in
+    /// the sun under it.
+    pub mod weather {
+        pub const FALLS: &str = "weather.falls";
+        pub const SKY_GRAY: &str = "weather.sky_gray";
+        pub const SKY_COVER: &str = "weather.sky_cover";
+        pub const FOG_GRAY: &str = "weather.fog_gray";
+        pub const CLOUD_GRAY: &str = "weather.cloud_gray";
+        pub const CLOUD_DARK: &str = "weather.cloud_dark";
+        pub const DARKNESS: &str = "weather.darkness";
+        pub const SOUND: &str = "weather.sound";
+        pub const DURATION: &str = "weather.duration";
+        pub const WEIGHT: &str = "weather.weight";
+        pub const DRY: &str = "weather.dry";
+        pub const LIGHTNING: &str = "weather.lightning";
+        pub const UNSHELTERED: &str = "weather.unsheltered";
+    }
     pub const MAX_STACK: &str = "max_stack";
     pub const DURABILITY: &str = "durability";
     pub const ATTACK_DAMAGE: &str = "attack_damage";
@@ -2024,7 +2046,7 @@ pub struct ModeModifier {
     pub amount: f64,
 }
 
-/// The engine's weathers (`Host::reg_weather`), registered first in this order. Clear comes
+/// The engine's weathers, registered first in this order. Clear comes
 /// between all the others.
 pub mod weather {
     pub const CLEAR: u32 = 0;
@@ -2057,33 +2079,6 @@ pub struct WeatherLook {
     /// Share of daylight it takes away (rain 0.3125).
     pub darkness: f32,
 }
-
-/// A weather: what it does to the world, and how often and long it comes.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct WeatherDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    /// `weather_flags`.
-    pub flags: u32,
-    pub look: WeatherLook,
-    /// Played now and then around a player under the open sky while it falls (`str` sound
-    /// event name), empty for none.
-    pub sound: Str,
-    /// Ticks it lasts, at least and at most.
-    pub duration: [u32; 2],
-    /// How likely it comes after clear weather, next to the others (rain 3, thunder 1).
-    pub weight: u32,
-}
-defaults!(WeatherDesc {
-    name: Str::EMPTY,
-    cell: core::ptr::null(),
-    flags: weather_flags::FALLS | weather_flags::SHELTERS,
-    look: WeatherLook { falls: 1.0, sky_gray: 0.75, sky_cover: 1.0, fog_gray: 0.5, cloud_gray: 0.95, cloud_dark: 0.0, darkness: 0.3125 },
-    sound: Str::EMPTY,
-    duration: [12000, 24000],
-    weight: 1
-});
 
 /// What falls from the sky in a biome when a weather `falls` (`BiomeBuilder::precipitation`).
 #[repr(C)]
@@ -3324,8 +3319,6 @@ pub struct Host {
     pub client_weather: unsafe extern "C" fn(client: *mut ClientCtx) -> u32,
     /// `weather_flags` of a weather, 0 for one that doesn't exist.
     pub weather_flags: unsafe extern "C" fn(weather: u32) -> u32,
-    /// A weather (`WeatherDesc`).
-    pub reg_weather: unsafe extern "C" fn(reg: *mut Registrar, d: *const WeatherDesc),
     /// What falls from the sky in biomes that name it (`PrecipitationDesc`).
     pub reg_precipitation: unsafe extern "C" fn(reg: *mut Registrar, d: *const PrecipitationDesc),
     /// Shader effect `effect` on an entity for everyone who sees it (players coming along later

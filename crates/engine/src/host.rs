@@ -202,7 +202,6 @@ pub static HOST: Host = Host {
     reg_system,
     set_weather,
     weather_now,
-    reg_weather,
     reg_precipitation,
     weather_flags,
     entity_effect,
@@ -2573,30 +2572,6 @@ unsafe extern "C" fn set_weather(w: *mut abi::WorldCtx, weather: u32, ticks: u32
 
 unsafe extern "C" fn weather_now(w: *mut abi::WorldCtx) -> u32 {
     unsafe { dim(w).weather as u32 }
-}
-
-unsafe extern "C" fn reg_weather(r: *mut abi::Registrar, d: *const abi::WeatherDesc) {
-    unsafe {
-        let d = &*d;
-        let def = registry::WeatherDef {
-            name: d.name.as_str().to_string(),
-            flags: d.flags,
-            look: abi::WeatherLook {
-                falls: d.look.falls.clamp(0.0, 1.0),
-                sky_gray: d.look.sky_gray.clamp(0.0, 1.0),
-                sky_cover: d.look.sky_cover.clamp(0.0, 1.0),
-                fog_gray: d.look.fog_gray.clamp(0.0, 1.0),
-                cloud_gray: d.look.cloud_gray.clamp(0.0, 1.0),
-                cloud_dark: d.look.cloud_dark.clamp(0.0, 1.0),
-                darkness: d.look.darkness.clamp(0.0, 1.0),
-            },
-            sound_name: d.sound.as_str().to_string(),
-            sound: None,
-            duration: [d.duration[0].max(1) as u64, d.duration[1].max(d.duration[0]).max(1) as u64],
-            weight: d.weight,
-        };
-        reg(r).game.weathers.push((d.cell as usize, def));
-    }
 }
 
 unsafe extern "C" fn reg_precipitation(r: *mut abi::Registrar, d: *const abi::PrecipitationDesc) {

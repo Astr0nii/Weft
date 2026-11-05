@@ -7,6 +7,7 @@ use rustc_hash::FxHashMap;
 use weft_abi::{self as abi, Callback, ModId, entity_flags as ef};
 
 use crate::components::{self as comps, Components, RawSet, RawValue};
+use crate::entries::RawEntry;
 
 pub const ENGINE: ModId = ModId(u32::MAX);
 pub const PLAYER: &str = "core:player";
@@ -762,7 +763,6 @@ pub struct RawGame {
     pub text_places: Vec<(usize, crate::hud::Place)>,
     pub game_modes: Vec<(usize, GameModeDef)>,
     pub poses: Vec<(usize, PoseDef)>,
-    pub weathers: Vec<(usize, WeatherDef)>,
     pub precipitations: Vec<(usize, PrecipitationDef)>,
     pub sound_categories: Vec<SoundCategory>,
     pub menus: Vec<(usize, MenuDef)>,
@@ -1074,20 +1074,53 @@ impl WeatherDef {
     }
 }
 
-fn engine_weathers() -> Vec<(usize, WeatherDef)> {
-    let w = |name: &str, flags: u32, look: abi::WeatherLook, duration: [u64; 2], weight: u32| {
-        (0, WeatherDef { name: format!("core:{name}"), flags, look, sound_name: String::new(), sound: None, duration, weight })
+/// Vanilla's timing: clear for 10 minutes to 2.5 hours, rain for 10 to 20 minutes, a quarter of
+/// it with thunder.
+fn engine_weathers() -> Vec<RawEntry> {
+    use weft_abi::comp::weather as w;
+    let e = |name: &str, duration: [u32; 2], weight: u32| {
+        RawEntry::engine(weft_abi::entry_kind::WEATHER, &format!("core:{name}"))
+            .set(w::DURATION, duration)
+            .set(w::WEIGHT, weight)
     };
-    // Vanilla's timing: clear for 10 minutes to 2.5 hours, rain for 10 to 20 minutes, a quarter
-    // of it with thunder.
-    use abi::weather_flags as f;
-    let rain = abi::WeatherDesc::DEFAULT.look;
-    let thunder = abi::WeatherLook { cloud_dark: 0.95, ..rain };
+    let clear = [w::FALLS, w::SKY_GRAY, w::SKY_COVER, w::FOG_GRAY, w::CLOUD_GRAY, w::DARKNESS]
+        .into_iter()
+        .fold(e("clear", [12000, 180000], 0), |e, c| e.set(c, 0.0f32))
+        .tag(w::DRY)
+        .tag(w::UNSHELTERED);
     vec![
-        w("clear", 0, abi::WeatherLook::default(), [12000, 180000], 0),
-        w("rain", f::FALLS | f::SHELTERS, rain, [12000, 24000], 3),
-        w("thunder", f::FALLS | f::SHELTERS | f::LIGHTNING, thunder, [12000, 24000], 1),
+        clear,
+        e("rain", [12000, 24000], 3),
+        e("thunder", [12000, 24000], 1)
+            .set(w::CLOUD_DARK, 0.95f32)
+            .tag(w::LIGHTNING),
     ]
+}
+
+/// A weather from its entry: rain's look and flags where it says nothing.
+fn bake_weather(e: &crate::entries::Entry) -> WeatherDef {
+    use weft_abi::{comp::weather as w, weather_flags as f};
+    let share = |c: &str, rain: f32| e.or(c, rain).clamp(0.0, 1.0);
+    let flags =
+        (!e.has(w::DRY) as u32 * f::FALLS) | (e.has(w::LIGHTNING) as u32 * f::LIGHTNING) | (!e.has(w::UNSHELTERED) as u32 * f::SHELTERS);
+    let duration: [u32; 2] = e.or(w::DURATION, [12000, 24000]);
+    WeatherDef {
+        name: e.name.clone(),
+        flags,
+        look: abi::WeatherLook {
+            falls: share(w::FALLS, 1.0),
+            sky_gray: share(w::SKY_GRAY, 0.75),
+            sky_cover: share(w::SKY_COVER, 1.0),
+            fog_gray: share(w::FOG_GRAY, 0.5),
+            cloud_gray: share(w::CLOUD_GRAY, 0.95),
+            cloud_dark: share(w::CLOUD_DARK, 0.0),
+            darkness: share(w::DARKNESS, 0.3125),
+        },
+        sound_name: e.text(w::SOUND).unwrap_or_default().to_string(),
+        sound: None,
+        duration: [duration[0].max(1) as u64, duration[1].max(duration[0]).max(1) as u64],
+        weight: e.or(w::WEIGHT, 1),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1534,6 +1567,15 @@ pub(crate) unsafe fn copy_recipe(d: &abi::RecipeDesc) -> RawRecipe {
     }
 }
 
+/// The entries of `kind`, taken out of `all`, in load order.
+pub(crate) fn take_kind(all: &mut Vec<RawEntry>, kind: u32) -> Vec<RawEntry> {
+    let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(all)
+        .into_iter()
+        .partition(|e| e.kind == kind);
+    *all = rest;
+    mine
+}
+
 pub(crate) fn write_cell(cell: usize, id: u32) {
     if cell != 0 {
         unsafe { (*(cell as *const AtomicU32)).store(id, Ordering::Relaxed) }
@@ -1689,7 +1731,7 @@ pub fn freeze_entities(raws: &mut [RawGame], errors: &mut Vec<String>) -> Entiti
 }
 
 pub fn freeze(
-    raws: Vec<RawGame>,
+    mut raws: Vec<RawGame>,
     entities: Entities,
     block_names: &FxHashMap<String, u32>,
     item_names: &FxHashMap<String, u32>,
@@ -1698,6 +1740,7 @@ pub fn freeze(
     c: &Components,
     tag_items: &FxHashMap<u32, Vec<u32>>,
     order: &dyn Fn(ModId) -> u32,
+    mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) -> Game {
     let mut g = Game::default();
@@ -1749,7 +1792,10 @@ pub fn freeze(
         .iter()
         .map(|n| (0, ConditionDef { name: n.to_string(), answer: Answer::Engine }))
         .collect();
-    let mut weathers = engine_weathers();
+    let mut entries: Vec<RawEntry> = raws
+        .iter_mut()
+        .flat_map(|r| std::mem::take(&mut r.entries))
+        .collect();
     let mut precipitations: Vec<(usize, PrecipitationDef)> = vec![
         (0, PrecipitationDef { name: "core:rain".into(), texture: "core:environment/rain".into(), speed: 1.0, density: 0.1 }),
         (0, PrecipitationDef { name: "core:snow".into(), texture: "core:environment/snow".into(), speed: 0.1, density: 0.5 }),
@@ -1800,7 +1846,6 @@ pub fn freeze(
         text_places.extend(r.text_places);
         game_modes.extend(r.game_modes);
         poses.extend(r.poses);
-        weathers.extend(r.weathers);
         precipitations.extend(r.precipitations);
         sound_categories.extend(r.sound_categories);
         menus.extend(r.menus);
@@ -1985,20 +2030,21 @@ pub fn freeze(
             }
         }
     }
-    for (cell, mut d) in weathers {
-        if g.weather_names.contains_key(&d.name) {
-            errors.push(format!("weather {} registered twice", d.name));
-            continue;
-        }
+    let mut weathers = engine_weathers();
+    weathers.extend(take_kind(&mut entries, weft_abi::entry_kind::WEATHER));
+    let mut folded = crate::entries::fold("weather", weathers, mod_name, errors);
+    folded.apply_patterns(errors);
+    folded.write_cells();
+    for e in &folded.entries {
+        let mut d = bake_weather(e);
         if !d.sound_name.is_empty() {
             d.sound = g.sound_names.get(&d.sound_name).copied();
             if d.sound.is_none() {
                 errors.push(format!("weather {}: no sound {}", d.name, d.sound_name));
             }
         }
-        let id = g.weathers.len() as u32;
-        write_cell(cell, id);
-        g.weather_names.insert(d.name.clone(), id);
+        g.weather_names
+            .insert(d.name.clone(), g.weathers.len() as u32);
         g.weathers.push(d);
     }
     for (cell, d) in precipitations {

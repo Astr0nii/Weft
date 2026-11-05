@@ -27,6 +27,28 @@ pub struct RawEntry {
 }
 
 impl RawEntry {
+    /// One of the engine's own, before every mod's.
+    pub fn engine(kind: u32, name: &str) -> RawEntry {
+        RawEntry { owner: ModId(u32::MAX), kind, name: name.to_string(), cell: 0, mode: em::NEW, ops: Vec::new(), parts: Vec::new() }
+    }
+
+    pub fn set<T: data::Data>(mut self, name: &str, v: T) -> RawEntry {
+        let bytes = data::bytes_of(&v);
+        let schema = T::schema();
+        let text = data::is_text(&schema)
+            .then(|| data::from_bytes::<String>(&bytes))
+            .flatten();
+        self.ops
+            .push(RawOp { op: vo::SET, value: RawValue { name: name.to_string(), schema, bytes, text }, anchor: String::new() });
+        self
+    }
+
+    pub fn tag(mut self, name: &str) -> RawEntry {
+        self.ops
+            .push(RawOp { op: vo::SET, value: RawValue::tag(name), anchor: String::new() });
+        self
+    }
+
     /// # Safety
     /// The descriptor's pointers must be valid for this call.
     pub unsafe fn copy(owner: ModId, d: &abi::EntryDesc) -> RawEntry {
@@ -175,39 +197,40 @@ pub fn is_pattern(name: &str) -> bool {
     name.starts_with('#') || name.contains('*') || name.contains('[')
 }
 
-/// Folds one kind's entries, in load order, into one per name (sorted by name). `kind` names it
-/// in errors. Edits naming a pattern are left in `patterns` for the kind to apply, as only it
-/// knows its tags and states.
+/// Folds one kind's entries, in load order, into one per name, in the order they were first
+/// registered (the engine's own first). `kind` names it in errors. Edits naming a pattern are
+/// left in `patterns` for the kind to apply, as only it knows its tags and states.
 pub fn fold(kind: &str, raw: Vec<RawEntry>, mod_name: &dyn Fn(ModId) -> String, errors: &mut Vec<String>) -> Folded {
-    let mut by: FxHashMap<String, Entry> = FxHashMap::default();
+    // Name -> (place, entry); a replacement keeps the place.
+    let mut by: FxHashMap<String, (usize, Entry)> = FxHashMap::default();
     let mut late: Vec<RawEntry> = Vec::new();
     let mut patterns: Vec<RawEntry> = Vec::new();
     let mut gone_cells: Vec<usize> = Vec::new();
-    for e in raw {
+    for (seq, e) in raw.into_iter().enumerate() {
         match e.mode {
             em::NEW | em::REPLACE => {
-                if e.mode == em::NEW {
-                    if let Some(old) = by.get(&e.name) {
-                        errors.push(format!("{kind} {} registered by both {} and {}", e.name, mod_name(old.owner), mod_name(e.owner)));
-                        continue;
-                    }
+                if let (em::NEW, Some((_, old))) = (e.mode, by.get(&e.name)) {
+                    errors.push(format!("{kind} {} registered by both {} and {}", e.name, mod_name(old.owner), mod_name(e.owner)));
+                    continue;
                 }
-                let mut cells = by.remove(&e.name).map_or(Vec::new(), |o| o.cells);
+                let (at, mut cells) = by
+                    .remove(&e.name)
+                    .map_or((seq, Vec::new()), |(at, o)| (at, o.cells));
                 cells.push(e.cell);
                 let mut entry = Entry { name: e.name.clone(), owner: e.owner, cells, values: Vec::new(), parts: e.parts };
                 for op in &e.ops {
                     entry.apply(op, errors);
                 }
-                by.insert(e.name, entry);
+                by.insert(e.name, (at, entry));
             }
             em::REMOVE => {
-                if let Some(old) = by.remove(&e.name) {
+                if let Some((_, old)) = by.remove(&e.name) {
                     gone_cells.extend(old.cells);
                 }
             }
             em::EDIT if is_pattern(&e.name) => patterns.push(e),
             em::EDIT => match by.get_mut(&e.name) {
-                Some(entry) => edit(entry, e, errors),
+                Some((_, entry)) => edit(entry, e, errors),
                 // Its mod may come later in the load order.
                 None => late.push(e),
             },
@@ -216,13 +239,13 @@ pub fn fold(kind: &str, raw: Vec<RawEntry>, mod_name: &dyn Fn(ModId) -> String, 
     }
     for e in late {
         match by.get_mut(&e.name) {
-            Some(entry) => edit(entry, e, errors),
+            Some((_, entry)) => edit(entry, e, errors),
             None => errors.push(format!("{}: edit of {kind} {}: no such {kind}", mod_name(e.owner), e.name)),
         }
     }
-    let mut entries: Vec<Entry> = by.into_values().collect();
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
-    Folded { entries, patterns, gone_cells }
+    let mut entries: Vec<(usize, Entry)> = by.into_values().collect();
+    entries.sort_by_key(|e| e.0);
+    Folded { entries: entries.into_iter().map(|e| e.1).collect(), patterns, gone_cells }
 }
 
 fn edit(entry: &mut Entry, e: RawEntry, errors: &mut Vec<String>) {
@@ -304,7 +327,7 @@ mod tests {
         ];
         let f = fold("thing", raw, &|m| format!("mod{}", m.0), &mut errors);
         let names: Vec<&str> = f.entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, ["a:x", "a:z"]);
+        assert_eq!(names, ["a:x", "a:z"], "in the order they first came");
         assert_eq!(f.entries[0].get::<u32>("speed"), Some(9), "an edit before its entry still applies");
         assert_eq!(f.entries[0].get::<u32>("size"), Some(2));
         assert_eq!((f.entries[1].get::<u32>("speed"), f.entries[1].get::<u32>("size")), (None, Some(7)));

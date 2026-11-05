@@ -2055,6 +2055,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let loot = freeze_loot(&mut games, &item_defs, &item_names, &tag_items, look, &mut errors);
     let stack_flags = collect_stack_flags(&games, &components);
     let order_of = |m: ModId| mods.get(m.0 as usize).map_or(u32::MAX, |m| m.order);
+    let mod_name = |m: ModId| {
+        mods.get(m.0 as usize)
+            .map_or("the engine".to_string(), |m| m.id.clone())
+    };
     let mut game = crate::registry::freeze(
         games,
         entities,
@@ -2065,6 +2069,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         &components,
         &tag_items,
         &order_of,
+        &mod_name,
         &mut errors,
     );
     link_particles(&mut game, &mut textures);
@@ -2268,7 +2273,6 @@ fn drop_overridden(regs: &mut [RawRegistrar]) {
         g.text_places.retain(|t| !gone(ek::TEXT_PLACE, &t.1.name));
         g.game_modes.retain(|m| !gone(ek::GAME_MODE, &m.1.name));
         g.poses.retain(|p| !gone(ek::POSE, &p.1.name));
-        g.weathers.retain(|w| !gone(ek::WEATHER, &w.1.name));
         g.precipitations
             .retain(|p| !gone(ek::PRECIPITATION, &p.1.name));
         g.conditions.retain(|c| !gone(ek::CONDITION, &c.1.name));
