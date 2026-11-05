@@ -11,6 +11,7 @@ use crate::content::Content;
 
 pub const PAD: usize = 18;
 pub const PAD_VOLUME: usize = PAD * PAD * PAD;
+pub const ABSENT: u32 = u32::MAX;
 
 #[inline]
 pub const fn pidx(x: i32, y: i32, z: i32) -> usize {
@@ -83,7 +84,7 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
         for (x, &s) in states[row * PAD..(row + 1) * PAD].iter().enumerate() {
             if s != 0 {
                 *f |= 1 << x;
-                if ctm.hides(c.tight[s as usize].flags, s) {
+                if n.light[row * PAD + x] != ABSENT && ctm.hides(c.tight[s as usize].flags, s) {
                     *o |= 1 << x;
                 }
             }
@@ -313,7 +314,7 @@ fn corner_data(
         let mut count = 0;
         for (idx, solid) in [(i0, false), (i1, s1 || !r1), (i2, s2 || !r2), (i3, s3 || (s1 && s2) || !r3)] {
             // A block with holes is still opaque to light, there is none in it to go by.
-            if solid || ctm.is_open(n.states[idx]) {
+            if solid || n.light[idx] == ABSENT || ctm.is_open(n.states[idx]) {
                 continue;
             }
             let l = n.light[idx];
@@ -337,6 +338,9 @@ fn brightest_around(n: &Neighborhood, x: i32, y: i32, z: i32) -> u32 {
         for dz in -1..=1 {
             for dx in -1..=1 {
                 let l = n.light[pidx(x + dx, y + dy, z + dz)];
+                if l == ABSENT {
+                    continue;
+                }
                 for (ch, m) in most.iter_mut().enumerate() {
                     *m = (*m).max((l >> (ch * 8)) & 0xFF);
                 }
