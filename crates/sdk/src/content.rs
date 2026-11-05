@@ -1052,11 +1052,10 @@ impl Registry {
         OreBuilder {
             raw: self.raw,
             ns: self.ns,
-            dimensions: String::new(),
+            at: At::default(),
             block: block.name().to_string(),
             replace: String::new(),
             replace_with: String::new(),
-            biome: String::new(),
             desc: abi::OreDesc::DEFAULT,
             _p: PhantomData,
         }
@@ -1073,12 +1072,11 @@ impl Registry {
 
     /// A template placed now and then on the surface of `dimension` (the structure is called
     /// like the template, for `World::structure_near`).
-    pub fn structure<'a>(&'a mut self, dimension: &Dimension, template: &Template) -> StructureBuilder<'a> {
+    pub fn structure<'a>(&'a mut self, template: &Template) -> StructureBuilder<'a> {
         StructureBuilder {
             raw: self.raw,
             template: template.name().to_string(),
-            dimension: dimension.name().to_string(),
-            biome: String::new(),
+            at: At::default(),
             desc: abi::StructureDesc::DEFAULT,
             _p: PhantomData,
         }
@@ -3002,11 +3000,68 @@ impl Drop for DimensionBuilder<'_> {
 ///     .layer(&["ccc", "cwc", "ccc"]).layer(&["c c", "   ", "c c"])
 ///     .key('c', "cobblestone").key('w', "water").spacing(64).chance(0.3).biome("#animals").buried(1);
 /// ```
+/// Where something may go, `abi::Where`, kept by the builder until it registers.
+#[derive(Default)]
+pub struct At {
+    dims: String,
+    biome: String,
+    y: Option<[i32; 2]>,
+    pub(crate) light: Option<[u32; 2]>,
+    pub(crate) condition: String,
+}
+
+impl At {
+    pub(crate) fn desc(&self) -> abi::Where {
+        let d = abi::Where::DEFAULT;
+        abi::Where {
+            dimensions: Str::new(&self.dims),
+            biome: Str::new(&self.biome),
+            y: self.y.unwrap_or(d.y),
+            light: self.light.unwrap_or(d.light),
+            condition: Str::new(&self.condition),
+        }
+    }
+}
+
+/// The same limits on everything placed in the world: ores, structures, scatters, decorations
+/// (dimensions only) and natural spawns (also `light` and `when`).
+pub trait Placed: Sized {
+    #[doc(hidden)]
+    fn at(&mut self) -> &mut At;
+    /// Only in this dimension (call again for more). Without, in every one but bare ones.
+    fn dimension(mut self, dimension: &Dimension) -> Self {
+        let a = self.at();
+        a.dims = format!("{} {}", a.dims, dimension.name());
+        self
+    }
+    /// Only where the biome has this tag (underground ones too: `cave`).
+    fn biome(mut self, tag: &str) -> Self {
+        self.at().biome = tag.to_string();
+        self
+    }
+    /// Heights, inclusive: where an ore's veins start, a scatter's site, a structure's ground,
+    /// a spawn spot.
+    fn y(mut self, min: i32, max: i32) -> Self {
+        self.at().y = Some([min, max]);
+        self
+    }
+}
+
+macro_rules! placed {
+    ($($t:ident),*) => {
+        $(impl Placed for $t<'_> {
+            fn at(&mut self) -> &mut At {
+                &mut self.at
+            }
+        })*
+    };
+}
+placed!(StructureBuilder, OreBuilder);
+
 pub struct StructureBuilder<'a> {
     raw: *mut abi::Registrar,
     template: String,
-    dimension: String,
-    biome: String,
+    at: At,
     desc: abi::StructureDesc,
     _p: PhantomData<&'a mut Registry>,
 }
@@ -3021,11 +3076,6 @@ impl StructureBuilder<'_> {
         self.desc.chance = c;
         self
     }
-    /// Only where the biome has this tag.
-    pub fn biome(mut self, tag: &str) -> Self {
-        self.biome = tag.to_string();
-        self
-    }
     /// How far into the ground its bottom layer goes.
     pub fn buried(mut self, blocks: i32) -> Self {
         self.desc.buried = blocks;
@@ -3038,12 +3088,7 @@ impl Drop for StructureBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
-        let desc = abi::StructureDesc {
-            template: Str::new(&self.template),
-            dimension: Str::new(&self.dimension),
-            biome: Str::new(&self.biome),
-            ..self.desc
-        };
+        let desc = abi::StructureDesc { template: Str::new(&self.template), at: self.at.desc(), ..self.desc };
         unsafe { (host().reg_structure)(self.raw, &desc) }
     }
 }
@@ -3171,34 +3216,20 @@ impl Vein {
 pub struct OreBuilder<'a> {
     raw: *mut abi::Registrar,
     ns: &'static str,
-    dimensions: String,
+    at: At,
     block: String,
     replace: String,
     replace_with: String,
-    biome: String,
     desc: abi::OreDesc,
     _p: PhantomData<&'a mut Registry>,
 }
 
 impl OreBuilder<'_> {
-    /// Only in this dimension (call again for more). Without, in every dimension but bare ones.
-    pub fn dimension(mut self, dimension: &Dimension) -> Self {
-        self.dimensions = format!("{} {}", self.dimensions, dimension.name());
-        self
-    }
-    /// Only in biomes with this tag (underground ones too: `cave`).
-    pub fn biome(mut self, tag: &str) -> Self {
-        self.biome = tag.to_string();
-        self
-    }
-    /// Heights the veins start at, inclusive, as many at each: `height(Height::uniform(..))`.
-    pub fn y(self, min: i32, max: i32) -> Self {
-        self.height(Height::uniform(min, max))
-    }
     /// How the veins spread over heights: `Height::triangle(-24, 56)` puts most in the middle,
     /// like modern vanilla's iron.
     pub fn height(mut self, h: Height) -> Self {
-        (self.desc.min_y, self.desc.max_y, self.desc.height, self.desc.plateau) = (h.min, h.max, h.curve, h.plateau);
+        self.at.y = Some([h.min, h.max]);
+        (self.desc.height, self.desc.plateau) = (h.curve, h.plateau);
         self
     }
     /// What a vein looks like (a random walk of `size` blocks unless this says otherwise).
@@ -3251,11 +3282,10 @@ impl Drop for OreBuilder<'_> {
             return;
         }
         let desc = abi::OreDesc {
-            dimensions: Str::new(&self.dimensions),
+            at: self.at.desc(),
             block: Str::new(&self.block),
             replace: Str::new(&self.replace),
             replace_with: Str::new(&self.replace_with),
-            biome: Str::new(&self.biome),
             ..self.desc
         };
         unsafe { (host().reg_ore)(self.raw, &desc) }

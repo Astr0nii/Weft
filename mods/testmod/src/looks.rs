@@ -83,7 +83,8 @@ pub fn register(r: &mut Registry) {
         obelisk = obelisk.layer(&["   ", " g ", "   "]);
     }
     drop(obelisk.key('s', "base:sandstone").key('g', "glow_crystal"));
-    r.structure(&crate::MARS, &OBELISK)
+    r.structure(&OBELISK)
+        .dimension(&crate::MARS)
         .spacing(128)
         .chance(0.5)
         .biome("#dry")

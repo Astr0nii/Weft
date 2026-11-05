@@ -435,6 +435,7 @@ pub fn structure_in(
     let col = def.column(seed, x + s.extent.x / 2, z + s.extent.z / 2)?;
     if s.biome
         .is_some_and(|t| !c.components.has(comps::BIOME, col.biome, t))
+        || !(s.y[0]..=s.y[1]).contains(&col.height)
     {
         return None;
     }
@@ -453,7 +454,12 @@ pub fn scatter_site(
     let h = hash(seed ^ s.salt, cell.0 as i64, 0, cell.1 as i64);
     let (x, z) = (cell.0 * s.cell + (h % s.cell as u64) as i32, cell.1 * s.cell + ((h >> 8) % s.cell as u64) as i32);
     let col = def.column(seed, x, z)?;
-    if col.height == i32::MIN || def.sea_level().is_some_and(|l| col.height < l) {
+    if col.height == i32::MIN
+        || def.sea_level().is_some_and(|l| col.height < l)
+        || !(s.y[0]..=s.y[1]).contains(&(col.height + 1))
+        || s.biome
+            .is_some_and(|t| !c.components.has(comps::BIOME, col.biome, t))
+    {
         return None;
     }
     if !s.ground.is_empty() {
@@ -2107,7 +2113,7 @@ impl Dim {
                         .map_or(0, |cube| cube.biome((x & 15) as usize, (z & 15) as usize)) as u32
                 };
                 let fits = |s: &crate::registry::SpawnRule| -> Option<i32> {
-                    if count[s.category as usize] >= cats[s.category as usize].cap || s.dimension.is_some_and(|d| d != self.id) {
+                    if count[s.category as usize] >= cats[s.category as usize].cap || !s.dims.is_empty() && !s.dims.contains(&self.id) {
                         return None;
                     }
                     let (y, rests_on) = spot_for(s)?;

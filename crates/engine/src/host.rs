@@ -330,10 +330,9 @@ unsafe extern "C" fn reg_structure(r: *mut abi::Registrar, d: *const abi::Struct
         let d = *d;
         reg(r).game.structures.push(registry::RawStructure {
             template: d.template.as_str().to_string(),
-            dimension: d.dimension.as_str().to_string(),
+            at: registry::RawWhere::copy(&d.at),
             spacing: d.spacing,
             chance: d.chance,
-            biome: d.biome.as_str().to_string(),
             sink: d.buried,
         });
     }
@@ -397,13 +396,9 @@ unsafe extern "C" fn reg_spawn(r: *mut abi::Registrar, d: *const abi::SpawnDesc)
         let tag = |s: Str| s.as_str().to_string();
         reg(r).game.spawns.push(registry::RawSpawn {
             entity: d.entity.as_str().to_string(),
-            biome: tag(d.biome),
+            at: registry::RawWhere::copy(&d.at),
             ground: tag(d.ground),
             place: d.place.min(abi::spawn_place::CEILING),
-            condition: d.condition.as_str().to_string(),
-            dimension: d.dimension.as_str().to_string(),
-            light: d.light,
-            y: d.y,
             group: [d.group[0].max(1), d.group[1].max(d.group[0]).max(1)],
             weight: d.weight,
             chance: d.chance,
@@ -2043,12 +2038,7 @@ unsafe extern "C" fn reg_scatter(r: *mut abi::Registrar, d: *const abi::ScatterD
         r.game.scatters.push(registry::RawScatter {
             owner: r.owner,
             name: d.name.as_str().to_string(),
-            dimensions: d
-                .dimensions
-                .as_str()
-                .split_whitespace()
-                .map(str::to_string)
-                .collect(),
+            at: registry::RawWhere::copy(&d.at),
             cell: d.cell,
             reach: d.reach,
             reach_y: [d.reach_down.clamp(0, 256), d.reach_up.clamp(0, 256)],
@@ -2064,18 +2054,12 @@ unsafe extern "C" fn reg_scatter(r: *mut abi::Registrar, d: *const abi::ScatterD
     }
 }
 
-unsafe extern "C" fn reg_decoration(r: *mut abi::Registrar, dimensions: Str, cb: Callback) {
+unsafe extern "C" fn reg_decoration(r: *mut abi::Registrar, at: *const abi::Where, cb: Callback) {
     unsafe {
         let r = reg(r);
-        r.game.decorations.push((
-            r.owner,
-            dimensions
-                .as_str()
-                .split_whitespace()
-                .map(str::to_string)
-                .collect(),
-            cb,
-        ));
+        r.game
+            .decorations
+            .push((r.owner, registry::RawWhere::copy(&*at), cb));
     }
 }
 
@@ -2120,12 +2104,7 @@ unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {
         let r = reg(r);
         let d = &*d;
         r.game.ores.push(registry::RawOre {
-            dimensions: d
-                .dimensions
-                .as_str()
-                .split_whitespace()
-                .map(str::to_string)
-                .collect(),
+            at: registry::RawWhere::copy(&d.at),
             block: d.block.as_str().to_string(),
             replace: d
                 .replace
@@ -2133,11 +2112,8 @@ unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {
                 .split_whitespace()
                 .map(str::to_string)
                 .collect(),
-            min_y: d.min_y,
-            max_y: d.max_y,
             veins: d.veins,
             size: d.blocks,
-            biome: d.biome.as_str().to_string(),
             shape: d.shape,
             shape_size: d
                 .shape_size

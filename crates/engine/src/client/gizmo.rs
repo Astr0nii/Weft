@@ -124,7 +124,7 @@ impl Gizmos {
             // monsters may spawn now, yellow where they may at night, green where never.
             let dim = client.world.dim;
             let hostile = |s: &&crate::registry::SpawnRule| {
-                c.game.categories[s.category as usize].name == "core:hostile" && s.dimension.is_none_or(|d| d == dim)
+                c.game.categories[s.category as usize].name == "core:hostile" && (s.dims.is_empty() || s.dims.contains(&dim))
             };
             let rules: Vec<[u32; 2]> = c
                 .game

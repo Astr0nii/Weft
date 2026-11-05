@@ -45,7 +45,7 @@ r.template(&OBELISK)
     .layer(&["sss", "sss", "sss"])
     .layer(&["   ", " g ", "   "])
     .key('s', "base:sandstone").key('g', "glow_crystal");
-r.structure(&MARS, &OBELISK).spacing(128).chance(0.5).biome("#dry").buried(1);
+r.structure(&OBELISK).dimension(&MARS).spacing(128).chance(0.5).biome("#dry").buried(1);
 ```
 That's a sandstone obelisk with a glowing crystal inside, in every dry biome of Mars.
 

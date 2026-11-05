@@ -5,6 +5,8 @@ use std::sync::OnceLock;
 
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
+
+use crate::registry::RawWhere;
 use weft_abi::{self as abi, BlockModel, Callback, ModId, RenderLayer};
 
 use crate::components::{self as comps, Components, RawSet, RawValue, Target};
@@ -480,6 +482,9 @@ pub struct ScatterDef {
     pub reach_y: [i32; 2],
     /// Biome component (f32) with the chance of a site per cell.
     pub density: Option<u32>,
+    /// Biome tag and heights of the site, `abi::Where`.
+    pub biome: Option<u32>,
+    pub y: [i32; 2],
     /// Block definition IDs allowed beneath the site, sorted.
     pub ground: Vec<u32>,
     pub salt: u64,
@@ -667,6 +672,8 @@ pub struct StructureDef {
     pub spacing: i32,
     pub chance: f32,
     pub biome: Option<u32>,
+    /// Heights its ground may be at.
+    pub y: [i32; 2],
     pub sink: i32,
     pub salt: u64,
 }
@@ -3140,26 +3147,42 @@ fn tool_classes(components: &Components) -> Vec<(u32, Option<u32>)> {
         .collect()
 }
 
+/// The dimensions a `Where` names, or every one but bare ones.
+fn targets(
+    dim_defs: &[DimensionDef],
+    dim_names: &FxHashMap<String, u32>,
+    what: &str,
+    at: &RawWhere,
+    errors: &mut Vec<String>,
+) -> Vec<usize> {
+    if at.dims.is_empty() {
+        return (0..dim_defs.len()).filter(|&d| !dim_defs[d].bare).collect();
+    }
+    at.dims
+        .iter()
+        .filter_map(|n| {
+            let d = dim_names.get(n).map(|&d| d as usize);
+            if d.is_none() {
+                errors.push(format!("{what}: unknown dimension {n}"));
+            }
+            d
+        })
+        .collect()
+}
+
+/// The biome tag a `Where` names; `Err` (logged) for an unknown one.
+pub(crate) fn biome_tag(components: &Components, what: &str, at: &RawWhere, errors: &mut Vec<String>) -> Result<Option<u32>, ()> {
+    match at.biome.as_str() {
+        "" => Ok(None),
+        t => crate::refs::tag(components, t)
+            .map(Some)
+            .map_err(|e| errors.push(format!("{what}: biome: {e}"))),
+    }
+}
+
 /// Ores, scatters and decorations go into the dimensions they name, or every one but bare ones.
 fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [DimensionDef], look: Lookups, errors: &mut Vec<String>) {
     let Lookups { mods, block_defs, block_names, dim_names, components, state_count } = look;
-    // Ores, scatters and decorations go into the dimensions they name, or every one but bare ones.
-    let not_bare: Vec<usize> = (0..dim_defs.len()).filter(|&d| !dim_defs[d].bare).collect();
-    let targets = |what: &str, names: &[String], errors: &mut Vec<String>| -> Vec<usize> {
-        if names.is_empty() {
-            return not_bare.clone();
-        }
-        names
-            .iter()
-            .filter_map(|n| {
-                let d = dim_names.get(n).map(|&d| d as usize);
-                if d.is_none() {
-                    errors.push(format!("{what}: unknown dimension {n}"));
-                }
-                d
-            })
-            .collect()
-    };
     let mut raw_ores: Vec<crate::registry::RawOre> = games
         .iter_mut()
         .flat_map(|g| std::mem::take(&mut g.ores))
@@ -3190,7 +3213,8 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
             errors.push(format!("ore {}: unknown block", o.block));
             continue;
         };
-        let dims = targets(&format!("ore {}", o.block), &o.dimensions, errors);
+        let what = format!("ore {}", o.block);
+        let dims = targets(dim_defs, dim_names, &what, &o.at, errors);
         let mut replace: Vec<u32> = Vec::new();
         for r in &o.replace {
             match crate::refs::Ref::parse(r).and_then(|r| crate::refs::blocks(&r, block_names, block_defs, components, state_count)) {
@@ -3219,23 +3243,14 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
         replace.sort_unstable();
         replace.dedup();
         let salt = crate::registry::name_hash(&o.block);
-        let biome = match o.biome.as_str() {
-            "" => None,
-            t => match crate::refs::tag(components, t) {
-                Ok(t) => Some(t),
-                Err(e) => {
-                    errors.push(format!("ore {}: biome: {e}", o.block));
-                    continue;
-                }
-            },
-        };
+        let Ok(biome) = biome_tag(components, &what, &o.at, errors) else { continue };
         ore_defs.push((
             dims,
             OreDef {
                 state: block_defs[b as usize].first_state,
                 replace,
-                min_y: o.min_y,
-                max_y: o.max_y,
+                min_y: o.at.y[0],
+                max_y: o.at.y[1],
                 veins: o.veins,
                 size: o.size,
                 salt,
@@ -3280,26 +3295,33 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
             errors.push(format!("{what}: cell {} and reach {} (cell at least 1)", s.cell, s.reach));
             continue;
         }
-        for d in targets(&what, &s.dimensions, errors) {
+        let Ok(biome) = biome_tag(components, &what, &s.at, errors) else { continue };
+        for d in targets(dim_defs, dim_names, &what, &s.at, errors) {
             dim_defs[d].scatters.push(ScatterDef {
                 owner: s.owner,
                 cell: s.cell,
                 reach: s.reach,
                 reach_y: s.reach_y,
                 density,
+                biome,
+                y: s.at.y,
                 ground: ground.clone(),
                 salt: crate::registry::name_hash(&s.name),
                 shape: s.shape,
             });
         }
     }
-    let mut raw_decorations: Vec<(ModId, Vec<String>, Callback)> = games
+    let mut raw_decorations: Vec<(ModId, RawWhere, Callback)> = games
         .iter_mut()
         .flat_map(|g| std::mem::take(&mut g.decorations))
         .collect();
     raw_decorations.sort_by_key(|d| mods[d.0.0 as usize].order);
-    for (owner, dims, cb) in raw_decorations {
-        for d in targets(&format!("decoration of {}", mods[owner.0 as usize].id), &dims, errors) {
+    for (owner, at, cb) in raw_decorations {
+        let what = format!("decoration of {}", mods[owner.0 as usize].id);
+        if !at.biome.is_empty() || at.y != weft_abi::Where::DEFAULT.y {
+            errors.push(format!("{what}: only its dimensions limit it, it decides the rest"));
+        }
+        for d in targets(dim_defs, dim_names, &what, &at, errors) {
             dim_defs[d].decorations.push((owner, cb));
         }
     }
@@ -3360,41 +3382,32 @@ fn place_structures(
         .iter_mut()
         .flat_map(|g| std::mem::take(&mut g.structures))
         .collect();
-    raw_structures.sort_by(|a, b| (&a.template, &a.dimension).cmp(&(&b.template, &b.dimension)));
+    raw_structures.sort_by(|a, b| a.template.cmp(&b.template));
     for s in raw_structures {
-        let Some(&d) = dim_names.get(&s.dimension) else {
-            errors.push(format!("structure {}: unknown dimension {}", s.template, s.dimension));
-            continue;
-        };
+        let what = format!("structure {}", s.template);
         let Some(&t) = template_names.get(&s.template) else {
-            errors.push(format!("structure in {}: no template {}", s.dimension, s.template));
+            errors.push(format!("{what}: no such template"));
             continue;
         };
         let blocks = templates[t as usize].blocks.clone();
-        let biome = match s.biome.as_str() {
-            "" => None,
-            t => match crate::refs::tag(components, t) {
-                Ok(t) => Some(t),
-                Err(e) => {
-                    errors.push(format!("structure {}: biome: {e}", s.template));
-                    continue;
-                }
-            },
-        };
+        let Ok(biome) = biome_tag(components, &what, &s.at, errors) else { continue };
         let extent = blocks
             .iter()
             .fold(glam::IVec3::ZERO, |m, (p, _)| m.max(*p + glam::IVec3::ONE));
         let salt = crate::registry::name_hash(&s.template);
-        dim_defs[d as usize].structures.push(StructureDef {
-            name: s.template,
-            blocks,
-            extent,
-            spacing: s.spacing.max(1) as i32,
-            chance: s.chance,
-            biome,
-            sink: s.sink,
-            salt,
-        });
+        for d in targets(dim_defs, dim_names, &what, &s.at, errors) {
+            dim_defs[d].structures.push(StructureDef {
+                name: s.template.clone(),
+                blocks: blocks.clone(),
+                extent,
+                spacing: s.spacing.max(1) as i32,
+                chance: s.chance,
+                biome,
+                y: s.at.y,
+                sink: s.sink,
+                salt,
+            });
+        }
     }
 }
 

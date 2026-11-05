@@ -785,7 +785,7 @@ pub struct RawGame {
     pub ores: Vec<RawOre>,
     pub scatters: Vec<RawScatter>,
     /// (owner, dimensions (empty: every dimension but bare ones), callback).
-    pub decorations: Vec<(ModId, Vec<String>, Callback)>,
+    pub decorations: Vec<(ModId, RawWhere, Callback)>,
     pub terrain: Vec<crate::server::terrain::RawTerrain>,
     pub structures: Vec<RawStructure>,
     pub templates: Vec<RawTemplate>,
@@ -842,13 +842,9 @@ pub struct RawGame {
 /// A spawning rule as registered (names).
 pub struct RawSpawn {
     pub entity: String,
-    pub biome: String,
+    pub at: RawWhere,
     pub ground: String,
     pub place: u32,
-    pub condition: String,
-    pub dimension: String,
-    pub light: [u32; 2],
-    pub y: [i32; 2],
     pub group: [u32; 2],
     pub weight: u32,
     pub chance: f32,
@@ -866,7 +862,8 @@ pub struct SpawnRule {
     pub condition: Option<u32>,
     /// Blocks of room the mob needs up.
     pub height: i32,
-    pub dimension: Option<u32>,
+    /// Dimensions it spawns in, empty: any.
+    pub dims: Vec<u32>,
     pub light: [u32; 2],
     pub y: [i32; 2],
     pub group: [u32; 2],
@@ -1289,14 +1286,11 @@ pub fn name_hash(s: &str) -> u64 {
 
 pub struct RawOre {
     /// Empty: every dimension but bare ones.
-    pub dimensions: Vec<String>,
+    pub at: RawWhere,
     pub block: String,
     pub replace: Vec<String>,
-    pub min_y: i32,
-    pub max_y: i32,
     pub veins: u32,
     pub size: u32,
-    pub biome: String,
     pub shape: u32,
     pub shape_size: [f32; 2],
     pub height: u32,
@@ -1310,7 +1304,7 @@ pub struct RawOre {
 pub struct RawScatter {
     pub owner: ModId,
     pub name: String,
-    pub dimensions: Vec<String>,
+    pub at: RawWhere,
     pub cell: i32,
     pub reach: i32,
     /// Down and up.
@@ -1327,11 +1321,39 @@ pub struct RawTemplate {
 
 pub struct RawStructure {
     pub template: String,
-    pub dimension: String,
+    pub at: RawWhere,
     pub spacing: u32,
     pub chance: f32,
-    pub biome: String,
     pub sink: i32,
+}
+
+/// `abi::Where` as registered (names).
+#[derive(Clone)]
+pub struct RawWhere {
+    pub dims: Vec<String>,
+    pub biome: String,
+    pub y: [i32; 2],
+    pub light: [u32; 2],
+    pub condition: String,
+}
+
+impl RawWhere {
+    pub unsafe fn copy(w: &abi::Where) -> RawWhere {
+        unsafe {
+            RawWhere {
+                dims: w
+                    .dimensions
+                    .as_str()
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect(),
+                biome: w.biome.as_str().to_string(),
+                y: w.y,
+                light: w.light,
+                condition: w.condition.as_str().to_string(),
+            }
+        }
+    }
 }
 
 fn opt(c: Callback) -> Option<Callback> {
@@ -2056,20 +2078,22 @@ pub fn freeze(
                 .map(Some)
                 .map_err(|e| errors.push(format!("spawn rule for {}: {what}: {e}", s.entity)))
         };
-        let (Ok(biome), Ok(ground)) = (tag(&s.biome, "biome", errors), tag(&s.ground, "block", errors)) else { continue };
-        let dimension = match s.dimension.as_str() {
-            "" => None,
-            d => match dim_names.get(d) {
-                Some(&id) => Some(id),
-                None => {
-                    errors.push(format!("spawn rule for {}: unknown dimension {d}", s.entity));
-                    continue;
-                }
-            },
+        let what = format!("spawn rule for {}", s.entity);
+        let (Ok(biome), Ok(ground)) = (crate::content::biome_tag(c, &what, &s.at, errors), tag(&s.ground, "block", errors)) else {
+            continue;
         };
+        let dims: Vec<u32> =
+            s.at.dims
+                .iter()
+                .filter_map(|d| dim_names.get(d).copied())
+                .collect();
+        if dims.len() != s.at.dims.len() {
+            errors.push(format!("{what}: unknown dimension in {:?}", s.at.dims));
+            continue;
+        }
         let category = g.entities[entity as usize].category;
         let height = (g.entities[entity as usize].height.ceil() as i32).max(1);
-        let condition = match s.condition.as_str() {
+        let condition = match s.at.condition.as_str() {
             "" => None,
             n => match g.condition_names.get(n) {
                 Some(&id) => Some(id),
@@ -2087,9 +2111,9 @@ pub fn freeze(
             place: s.place,
             height,
             condition,
-            dimension,
-            light: s.light,
-            y: s.y,
+            dims,
+            light: s.at.light,
+            y: s.at.y,
             group: s.group,
             weight: s.weight,
             chance: s.chance,

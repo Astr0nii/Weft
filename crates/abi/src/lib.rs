@@ -1015,6 +1015,26 @@ pub struct GenArgs {
     pub columns: *const TerrainColumn,
 }
 
+/// Where something may go (ores, structures, scatters, decorations, natural spawns); what is
+/// left empty doesn't limit it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Where {
+    /// Space separated full dimension names, empty: every dimension (`dim_flags::BARE` ones only
+    /// when named).
+    pub dimensions: Str,
+    /// Tag the biome must carry (`forest`, `cave`).
+    pub biome: Str,
+    /// Inclusive heights: the vein's start, the site, the structure's ground, the spawn spot.
+    pub y: [i32; 2],
+    /// Natural spawns: inclusive range of light at the spot, the brighter of sky light times
+    /// daylight and block light.
+    pub light: [u32; 2],
+    /// Natural spawns: a condition (name) the spot has to meet too.
+    pub condition: Str,
+}
+defaults!(Where { dimensions: Str::EMPTY, biome: Str::EMPTY, y: [i32::MIN, i32::MAX], light: [0, 15], condition: Str::EMPTY });
+
 /// Something scattered over the ground on a grid (trees), in every dimension where its
 /// biomes stand. One site per `cell` x `cell` square at a seeded spot, kept with the chance
 /// the biome's `density` component gives; not under the terrain's sea, not where caves took
@@ -1022,9 +1042,7 @@ pub struct GenArgs {
 #[repr(C)]
 pub struct ScatterDesc {
     pub name: Str,
-    /// Space separated full dimension names, empty: every dimension (`dim_flags::BARE` ones
-    /// only when named).
-    pub dimensions: Str,
+    pub at: Where,
     pub cell: i32,
     /// How far blocks reach sideways from the site, so cubes next to it get their part.
     pub reach: i32,
@@ -1040,7 +1058,7 @@ pub struct ScatterDesc {
 }
 defaults!(ScatterDesc {
     name: Str::EMPTY,
-    dimensions: Str::EMPTY,
+    at: Where::DEFAULT,
     cell: 8,
     reach: 0,
     reach_up: 32,
@@ -1182,13 +1200,12 @@ pub struct StructureBlock {
 pub struct StructureDesc {
     /// The template (`Host::reg_template`) it places; the structure is called like it.
     pub template: Str,
-    pub dimension: Str,
+    pub at: Where,
     pub spacing: u32,
     pub chance: f32,
-    pub biome: Str,
     pub buried: i32,
 }
-defaults!(StructureDesc { template: Str::EMPTY, dimension: Str::EMPTY, spacing: 32, chance: 0.5, biome: Str::EMPTY, buried: 0 });
+defaults!(StructureDesc { template: Str::EMPTY, at: Where::DEFAULT, spacing: 32, chance: 0.5, buried: 0 });
 
 /// A fixed shape of blocks, checked when the game loads: world structures, moving bodies
 /// (`EntityDesc::template`) and `Host::place_template` take it.
@@ -2826,7 +2843,7 @@ pub struct Host {
     pub reg_scatter: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ScatterDesc),
     /// `cb` (`GenArgs`) runs after a cube was generated, in the dimensions named (space
     /// separated; empty: every dimension but `dim_flags::BARE` ones). Pure like a generator.
-    pub reg_decoration: unsafe extern "C" fn(reg: *mut Registrar, dimensions: Str, cb: Callback),
+    pub reg_decoration: unsafe extern "C" fn(reg: *mut Registrar, at: *const Where, cb: Callback),
     /// Creative inventory tab shown with `icon` (an item name); items join it with the tag
     /// `tab/<name>`. Tabs appear in mod load order, then registration order.
     pub reg_creative_tab: unsafe extern "C" fn(reg: *mut Registrar, name: Str, icon: Str),
@@ -3430,21 +3447,12 @@ pub struct Host {
 #[derive(Clone, Copy)]
 pub struct SpawnDesc {
     pub entity: Str,
-    /// Tag the spot's biome must carry (`forest`, `cave`), empty: any biome.
-    pub biome: Str,
+    pub at: Where,
     /// Tag the block the spot rests on must carry (under it, above it for `CEILING`, the
     /// liquid itself for `IN_LIQUID`), empty: any.
     pub ground: Str,
     /// `spawn_place`: what kind of spot it takes.
     pub place: u32,
-    /// A condition (name) the spot has to meet too, empty for none.
-    pub condition: Str,
-    /// Full dimension name, empty: any.
-    pub dimension: Str,
-    /// Inclusive range of light at the spot: the brighter of sky light times daylight and
-    /// block light.
-    pub light: [u32; 2],
-    pub y: [i32; 2],
     /// How many spawn together.
     pub group: [u32; 2],
     pub weight: u32,
@@ -3453,13 +3461,9 @@ pub struct SpawnDesc {
 }
 defaults!(SpawnDesc {
     entity: Str::EMPTY,
-    biome: Str::EMPTY,
+    at: Where::DEFAULT,
     ground: Str::EMPTY,
     place: spawn_place::GROUND,
-    condition: Str::EMPTY,
-    dimension: Str::EMPTY,
-    light: [0, 15],
-    y: [i32::MIN, i32::MAX],
     group: [1, 1],
     weight: 1,
     chance: 1.0,
@@ -4774,25 +4778,20 @@ pub mod client_text {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct OreDesc {
-    /// Space separated full dimension names, empty: every dimension whose blocks it may
-    /// replace (`dim_flags::BARE` ones only when named).
-    pub dimensions: Str,
+    /// Its `y` is where veins start (`height`).
+    pub at: Where,
     pub block: Str,
     /// Space separated block names or `#tags` the ore may replace.
     pub replace: Str,
-    pub min_y: i32,
-    pub max_y: i32,
     /// Veins started per cube.
     pub veins: u32,
     /// Blocks per vein.
     pub blocks: u32,
-    /// Only in biomes with this tag (the block's own column of its cube), empty: anywhere.
-    pub biome: Str,
     /// `vein_shape`: what a vein looks like.
     pub shape: u32,
     /// `SPHERE`: radius; `DISK`: radius and thickness.
     pub shape_size: [f32; 2],
-    /// `height_curve`: how the veins' starts spread between `min_y` and `max_y`.
+    /// `height_curve`: how the veins' starts spread over `at.y`.
     pub height: u32,
     /// `TRAPEZOID`: blocks in the middle where it is at its most.
     pub plateau: i32,
@@ -4807,14 +4806,11 @@ pub struct OreDesc {
     pub edit: u32,
 }
 defaults!(OreDesc {
-    dimensions: Str::EMPTY,
+    at: Where::DEFAULT,
     block: Str::EMPTY,
     replace: Str::EMPTY,
-    min_y: i32::MIN,
-    max_y: i32::MAX,
     veins: 4,
     blocks: 8,
-    biome: Str::EMPTY,
     shape: vein_shape::WALK,
     shape_size: [0.0; 2],
     height: height_curve::UNIFORM,

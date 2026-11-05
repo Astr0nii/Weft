@@ -754,7 +754,7 @@ impl Registry {
         ScatterBuilder {
             raw: self.raw,
             name: scatter.name().to_string(),
-            dimensions: String::new(),
+            at: crate::content::At::default(),
             density: String::new(),
             ground: String::new(),
             desc: abi::ScatterDesc::DEFAULT,
@@ -768,7 +768,7 @@ impl Registry {
     pub fn decoration<'a>(&'a mut self, f: impl Fn(&mut Gen) + Send + Sync + 'static) -> DecorationBuilder<'a> {
         DecorationBuilder {
             raw: self.raw,
-            dimensions: String::new(),
+            at: crate::content::At::default(),
             cb: callback(move |a: &mut abi::GenArgs| f(Gen::wrap(a))),
             _p: PhantomData,
         }
@@ -778,7 +778,7 @@ impl Registry {
 pub struct ScatterBuilder<'a> {
     raw: *mut abi::Registrar,
     name: String,
-    dimensions: String,
+    at: crate::content::At,
     density: String,
     ground: String,
     desc: abi::ScatterDesc,
@@ -816,11 +816,6 @@ impl ScatterBuilder<'_> {
         self.density = component.name().to_string();
         self
     }
-    /// Only in this dimension (call again for more).
-    pub fn dimension(mut self, dimension: &Dimension) -> Self {
-        self.dimensions = format!("{} {}", self.dimensions, dimension.name());
-        self
-    }
     /// The blocks of one site. Pure: it runs again for each cube the site reaches.
     pub fn shape(mut self, f: impl Fn(&mut Site) + Send + Sync + 'static) -> Self {
         self.desc.shape = callback(move |a: &mut abi::ScatterArgs| f(Site::wrap(a)));
@@ -835,7 +830,7 @@ impl Drop for ScatterBuilder<'_> {
         }
         let desc = abi::ScatterDesc {
             name: Str::new(&self.name),
-            dimensions: Str::new(&self.dimensions),
+            at: self.at.desc(),
             density: Str::new(&self.density),
             ground: Str::new(&self.ground),
             ..self.desc
@@ -890,16 +885,21 @@ impl Site {
 
 pub struct DecorationBuilder<'a> {
     raw: *mut abi::Registrar,
-    dimensions: String,
+    at: crate::content::At,
     cb: abi::Callback,
     _p: PhantomData<&'a mut Registry>,
 }
 
-impl DecorationBuilder<'_> {
-    /// Only in this dimension (call again for more).
-    pub fn dimension(mut self, dimension: &Dimension) -> Self {
-        self.dimensions = format!("{} {}", self.dimensions, dimension.name());
-        self
+impl crate::Placed for ScatterBuilder<'_> {
+    fn at(&mut self) -> &mut crate::content::At {
+        &mut self.at
+    }
+}
+
+/// Only `dimension` limits a decoration: it decides the rest itself.
+impl crate::Placed for DecorationBuilder<'_> {
+    fn at(&mut self) -> &mut crate::content::At {
+        &mut self.at
     }
 }
 
@@ -908,7 +908,7 @@ impl Drop for DecorationBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
-        unsafe { (host().reg_decoration)(self.raw, Str::new(&self.dimensions), self.cb) }
+        unsafe { (host().reg_decoration)(self.raw, &self.at.desc(), self.cb) }
     }
 }
 

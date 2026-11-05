@@ -2121,34 +2121,36 @@ impl SpawnPlace {
 /// `r.spawn("pig").biome("#animals").ground("#animal_spawn").light(9, 15).group(2, 3).chance(0.05)`.
 pub struct SpawnBuilder<'a> {
     raw: *mut abi::Registrar,
-    names: [String; 4],
-    condition: String,
+    entity: String,
+    ground: String,
+    at: crate::content::At,
     desc: abi::SpawnDesc,
     _p: std::marker::PhantomData<&'a mut Registry>,
 }
 
 impl Registry {
     pub fn natural_spawn<'a>(&'a mut self, entity: &EntityKind) -> SpawnBuilder<'a> {
-        let entity = entity.name().to_string();
         SpawnBuilder {
             raw: self.raw,
-            names: [entity, String::new(), String::new(), String::new()],
-            condition: String::new(),
+            entity: entity.name().to_string(),
+            ground: String::new(),
+            at: Default::default(),
             desc: abi::SpawnDesc::DEFAULT,
             _p: std::marker::PhantomData,
         }
     }
 }
 
-impl SpawnBuilder<'_> {
-    /// Only in biomes with this tag.
-    pub fn biome(mut self, tag: &str) -> Self {
-        self.names[1] = tag.to_string();
-        self
+impl crate::Placed for SpawnBuilder<'_> {
+    fn at(&mut self) -> &mut crate::content::At {
+        &mut self.at
     }
+}
+
+impl SpawnBuilder<'_> {
     /// Only on blocks with this tag (under the spot; what `place` says it rests on).
     pub fn ground(mut self, tag: &str) -> Self {
-        self.names[2] = tag.to_string();
+        self.ground = tag.to_string();
         self
     }
     /// What kind of spot it takes: on the ground (the default), in a liquid, under a ceiling.
@@ -2156,27 +2158,18 @@ impl SpawnBuilder<'_> {
     pub fn place(mut self, place: SpawnPlace) -> Self {
         self.desc.place = place.kind;
         if let Some(t) = place.tag {
-            self.names[2] = t.to_string();
+            self.ground = t.to_string();
         }
-        self
-    }
-    /// Full dimension name.
-    pub fn dimension(mut self, name: &str) -> Self {
-        self.names[3] = name.to_string();
         self
     }
     /// Only where this condition holds too.
     pub fn when(mut self, condition: &crate::Condition) -> Self {
-        self.condition = condition.name().to_string();
+        self.at.condition = condition.name().to_string();
         self
     }
     /// Light at the spot, inclusive (0..15).
     pub fn light(mut self, min: u32, max: u32) -> Self {
-        self.desc.light = [min, max];
-        self
-    }
-    pub fn y(mut self, min: i32, max: i32) -> Self {
-        self.desc.y = [min, max];
+        self.at.light = Some([min, max]);
         self
     }
     pub fn pack_size(mut self, min: u32, max: u32) -> Self {
@@ -2198,15 +2191,7 @@ impl Drop for SpawnBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
-        let [entity, biome, ground, dimension] = &self.names;
-        let desc = abi::SpawnDesc {
-            entity: Str::new(entity),
-            biome: Str::new(biome),
-            ground: Str::new(ground),
-            dimension: Str::new(dimension),
-            condition: Str::new(&self.condition),
-            ..self.desc
-        };
+        let desc = abi::SpawnDesc { entity: Str::new(&self.entity), at: self.at.desc(), ground: Str::new(&self.ground), ..self.desc };
         unsafe { (host().reg_spawn)(self.raw, &desc) }
     }
 }
