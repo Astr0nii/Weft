@@ -129,7 +129,7 @@ r.terrain(&MARS)
     .feature(preset::hills(8.0, 220.0))
     .feature(preset::craters(32.0, 16.0, 150.0))
     .feature(preset::dunes(3.0, 22.0).mask(Expr::noise(500.0).ramp(0.15, 0.45)))
-    .biome(BiomeRule::new("dust"));
+    .rule(BiomeRule::new("dust"));
 ```
 `stone` is the block the ground is made of and `base_height` the ground height when nothing is added. Blocks and biomes are given by name, like everywhere else: yours without a prefix, other mods' as `base:sand`.
 
@@ -177,7 +177,7 @@ A field is a named value over the whole terrain. `temperature`, `humidity` and `
 ```rust
 .field("base:mountains", Expr::fbm(0x44, 700.0, 3).ramp(-0.1, 0.3).and(Expr::continent().ramp(0.0, 0.2)))
 .feature(preset::mountains(150.0, 260.0).mask(Expr::field("base:mountains")).named("mountains"))
-.biome(BiomeRule::new("mountains").field("base:mountains", 0.45..))
+.rule(BiomeRule::new("mountains").field("base:mountains", 0.45..))
 ```
 The name is used as written, so give yours your mod's prefix. A field can only use fields declared before it. Declaring one that exists, `temperature` included, replaces it for everything that uses it, which is how a mod gives the whole overworld another climate.
 
@@ -232,17 +232,17 @@ for z in 0..16usize { for x in 0..16usize {
 
 ```rust
 r.terrain(&OVERWORLD)
-    .biome_before("base:desert", BiomeRule::new("scorched"))
+    .rule_before("base:desert", BiomeRule::new("scorched"))
     .feature(Feature::new(needle).named("needle"));
 r.decoration(boulders).dimension(&OVERWORLD);
 ```
-Because rules are tried in order, a new biome goes in next to the rule it takes space from: `biome_before` takes the place where both would fit, `biome_after` only what the other leaves. The rest of the edits:
+Because rules are tried in order, a new biome goes in next to the rule it takes space from: `rule_before` takes the place where both would fit, `rule_after` only what the other leaves. The rest of the edits:
 
 | call | what it does |
 |---|---|
-| `biome_before(rule, new)`, `biome_after(rule, new)` | adds a rule next to another |
-| `biome_replace(rule, new)`, `biome_remove(rule)` | swaps a rule for yours, or takes it out |
-| `biome_edit(rule, \|r\| r.temperature(0.5..))` | changes only what the closure sets, the rest of the rule stays |
+| `rule_before(rule, new)`, `rule_after(rule, new)` | adds a rule next to another |
+| `rule_replace(rule, new)`, `rule_remove(rule)` | swaps a rule for yours, or takes it out |
+| `rule_edit(rule, \|r\| r.temperature(0.5..))` | changes only what the closure sets, the rest of the rule stays |
 | `feature(f)`, `feature_remove(name)` | adds a feature or takes a named one out |
 | `feature_mask(name, mask)` | limits a named feature further, its mask is multiplied by yours |
 | `field(name, expr)` | adds a field, or replaces the one of that name |

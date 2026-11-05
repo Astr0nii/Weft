@@ -30,8 +30,7 @@ pub fn register(r: &mut Registry) {
                     if lit { s.light_rgb(13, 11, 8) } else { s }
                 })
                 .hardness(3.5)
-                .mineable("pickaxe")
-                .needs_tool_level(0)
+                .mined_by("pickaxe", 0)
                 .tab(&crate::tabs::FUNCTIONAL)
         })
         .group("input", Slots::single())
@@ -72,7 +71,7 @@ pub fn register(r: &mut Registry) {
                         .model_box([1.0, 0.0, 1.0], [15.0, 14.0, 15.0])
                 })
                 .hardness(2.5)
-                .mineable("axe")
+                .mined_by("axe", tool_tier::HAND)
                 .tab(&crate::tabs::FUNCTIONAL)
         })
         .group("chest", Slots::chest(3))

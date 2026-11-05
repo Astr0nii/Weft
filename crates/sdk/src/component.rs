@@ -433,7 +433,7 @@ fn storage_schema() -> String {
 
 /// An inventory a holder keeps besides its own, under a name: each player's ender chest, a
 /// second pocket of a backpack. Declared with `r.storage(&S, slots)`; entity kinds carry it with
-/// `.storage(&S)` (`r.attach_storage(&PLAYER, &S)` for another mod's kind), stacks always can.
+/// `.attach_storage(&S)` (`r.attach_storage(&PLAYER, &S)` for another mod's kind), stacks always can.
 /// `w.inventory(S.of(holder))` reaches it and `w.open_menu(player, &MENU, S.of(holder))` shows
 /// it, its `.machine()` groups being the storage's slots. Saved with its holder, and kept when a
 /// player respawns.

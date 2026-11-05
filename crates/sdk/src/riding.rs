@@ -240,15 +240,15 @@ pub(crate) fn register_rules(r: &mut crate::Registry, kind: &'static crate::Enti
         }
     };
     if rules.hits.is_some() {
-        r.intercept(&question::ATTACK, deny(rules.hits.clone()));
+        r.before_event(&question::ATTACK, deny(rules.hits.clone()));
     }
     if rules.builds.is_some() {
-        r.intercept(&actions::PLACE_BLOCK, deny(rules.builds.clone()));
-        r.intercept(&actions::BREAK_BLOCK, deny(rules.builds.clone()));
+        r.before_event(&actions::PLACE_BLOCK, deny(rules.builds.clone()));
+        r.before_event(&actions::BREAK_BLOCK, deny(rules.builds.clone()));
     }
     let share = rules.hurt_share;
     if share > 0.0 {
-        r.on(&actions::HURT, move |b| {
+        r.on_event(&actions::HURT, move |b| {
             let w = b.world();
             for h in b
                 .iter()

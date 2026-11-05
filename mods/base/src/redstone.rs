@@ -61,8 +61,7 @@ pub fn register(r: &mut Registry) {
     r.block(&REDSTONE_ORE)
         .sound_group("stone")
         .hardness(3.0)
-        .mineable("pickaxe")
-        .needs_tool_level(tool_tier::IRON)
+        .mined_by("pickaxe", tool_tier::IRON)
         .drops("redstone", 4)
         .tag("ores")
         .tag("ores/redstone")
@@ -72,8 +71,7 @@ pub fn register(r: &mut Registry) {
         .signal_constant()
         .sound_group("stone")
         .hardness(5.0)
-        .mineable("pickaxe")
-        .needs_tool_level(0)
+        .mined_by("pickaxe", 0)
         .tag("ore_blocks/redstone")
         .tab(&crate::tabs::REDSTONE);
 
@@ -222,7 +220,7 @@ pub fn register(r: &mut Registry) {
             })
             .sound_group("stone")
             .hardness(1.5)
-            .mineable("pickaxe")
+            .mined_by("pickaxe", tool_tier::HAND)
             .tab(&crate::tabs::REDSTONE);
         r.block(head)
             .facing(Facings::ALL, Toward::Player)
@@ -245,7 +243,7 @@ pub fn register(r: &mut Registry) {
             })
             .sound_group("stone")
             .hardness(1.5)
-            .mineable("pickaxe")
+            .mined_by("pickaxe", tool_tier::HAND)
             .drops_nothing()
             .no_item();
     }
@@ -267,8 +265,7 @@ pub fn register(r: &mut Registry) {
         .states(|p, s| if p.is("power", "on") { s.texture("anchor_on").immovable() } else { s.texture("anchor") })
         .sound_group("stone")
         .hardness(5.0)
-        .mineable("pickaxe")
-        .needs_tool_level(0)
+        .mined_by("pickaxe", 0)
         .tab(&crate::tabs::REDSTONE);
 
     r.block(&FLOATER)
@@ -301,7 +298,7 @@ pub fn register(r: &mut Registry) {
         })
         .sound_group("stone")
         .hardness(3.5)
-        .mineable("pickaxe")
+        .mined_by("pickaxe", tool_tier::HAND)
         .tab(&crate::tabs::REDSTONE);
 
     // Vanilla's copper bulb: each new pulse flips it, and a comparator reads which way it is.
@@ -330,7 +327,7 @@ pub fn register(r: &mut Registry) {
         .signal_read(|w, p| if w.prop(p, "lit") == Some("true") { 15 } else { 0 })
         .sound_group("stone")
         .hardness(3.0)
-        .mineable("pickaxe")
+        .mined_by("pickaxe", tool_tier::HAND)
         .tab(&crate::tabs::REDSTONE);
 
     r.block(&OBSERVER)
@@ -355,7 +352,7 @@ pub fn register(r: &mut Registry) {
         })
         .sound_group("stone")
         .hardness(3.0)
-        .mineable("pickaxe")
+        .mined_by("pickaxe", tool_tier::HAND)
         .tab(&crate::tabs::REDSTONE);
 
     r.machine(&DISPENSER, &DISPENSER_MENU)
@@ -401,7 +398,7 @@ pub fn register(r: &mut Registry) {
                     }
                 })
                 .hardness(3.5)
-                .mineable("pickaxe")
+                .mined_by("pickaxe", tool_tier::HAND)
                 .tab(&crate::tabs::REDSTONE)
         })
         .group("dispenser", Slots::chest(1))

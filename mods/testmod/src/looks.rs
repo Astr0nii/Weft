@@ -96,21 +96,23 @@ pub fn register(r: &mut Registry) {
         .replace("#stone_ore_replaceables")
         .biome("#cave");
     // A 64x64 texture among 16x16 ones: every texture keeps its own size.
-    r.block(&MOSAIC).hardness(1.5).mineable("pickaxe");
+    r.block(&MOSAIC)
+        .hardness(1.5)
+        .mined_by("pickaxe", tool_tier::HAND);
     // A tint kind of the mod's own: violet by default (and on the item), teal in plains.
     r.tint_kind(&GLOW, 0xc080ff);
     r.biome_tint(&Biome::named("base:plains"), &GLOW, 0x40e0c0);
     r.block(&GLOW_MOSS)
         .tint(&GLOW)
         .hardness(0.6)
-        .mineable("shovel");
+        .mined_by("shovel", tool_tier::HAND);
     // A glowing birch (a log's `tree` component grows it from a sapling or worldgen) and
     // flower; not generated in the world, only from the creative tabs.
     static TREE_LEAVES: Component<BlockRef> = Component::named("tree_leaves");
     r.block(&GLOW_LOG)
         .textures("glow_log_top", "glow_log", "glow_log_top")
         .hardness(2.0)
-        .mineable("axe")
+        .mined_by("axe", tool_tier::HAND)
         .tag("logs")
         .set_text(&TREE_LEAVES, "glow_leaves");
     r.block(&GLOW_LEAVES)
@@ -119,7 +121,7 @@ pub fn register(r: &mut Registry) {
         .tint(&GLOW)
         .hardness(0.2)
         .tag("leaves")
-        .mineable("shears");
+        .mined_by("shears", tool_tier::HAND);
     r.block(&SNOW_LAYER)
         .texture("base:snow")
         .model_box([0.0, 0.0, 0.0], [16.0, 2.0, 16.0])
@@ -133,7 +135,7 @@ pub fn register(r: &mut Registry) {
         .tint(&GLOW);
     r.block(&GLOW_CRYSTAL)
         .hardness(1.5)
-        .mineable("pickaxe")
+        .mined_by("pickaxe", tool_tier::HAND)
         // Sparks now and then, shown by the client near the player.
         .ambient_particles(&["spark", "core:smoke"]);
 
@@ -249,7 +251,7 @@ pub fn register(r: &mut Registry) {
             .is_some_and(|m| m.health < m.max_health)
     });
 
-    r.key(&DREAM_KEY, "N").on_press_client(|c| {
+    r.key(&DREAM_KEY, "N").on_client(|c| {
         let on = DREAM.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
         let effect = if DREAM_STYLE.get() == 1 { "dream_cold" } else { "dream" };
         c.post_effect("dream", 0.0);

@@ -892,7 +892,7 @@ impl EntityBuilder<'_> {
         self
     }
     /// Every entity of the kind carries `storage` (declared with `r.storage`), empty at first.
-    pub fn storage(mut self, storage: &'static Storage) -> Self {
+    pub fn attach_storage(mut self, storage: &'static Storage) -> Self {
         self.attached.push((storage.name(), Vec::new()));
         self
     }
@@ -1089,10 +1089,10 @@ impl EntityBuilder<'_> {
     }
     /// One of these was hurt: `actions::HURT` for this kind, after the damage, with the other
     /// events at the end of the tick. Changing the damage is `r.modify(&chain::DAMAGE, ..)`,
-    /// preventing it `r.intercept(&actions::HURT, ..)`.
+    /// preventing it `r.before_event(&actions::HURT, ..)`.
     pub fn on_hurt(self, f: impl Fn(&World, &crate::Hurt) + Send + Sync + 'static) -> Self {
         let Some(kind) = self.handle else { return self };
-        self.reg.on(&crate::actions::HURT, move |b| {
+        self.reg.on_event(&crate::actions::HURT, move |b| {
             let w = b.world();
             for h in b
                 .iter()
@@ -1106,7 +1106,7 @@ impl EntityBuilder<'_> {
     /// One of these died: `actions::DIE` for this kind.
     pub fn on_died(self, f: impl Fn(&World, &crate::Death) + Send + Sync + 'static) -> Self {
         let Some(kind) = self.handle else { return self };
-        self.reg.on(&crate::actions::DIE, move |b| {
+        self.reg.on_event(&crate::actions::DIE, move |b| {
             let w = b.world();
             for d in b.iter().filter(|d| d.kind == kind.id()) {
                 f(&w, d);
@@ -1593,7 +1593,7 @@ impl Registry {
 
     /// Logic that is nobody's own (players' hunger, a mod's weather): once per tick in every
     /// region of every dimension, where `w.players()` are the players in that region. Another
-    /// mod's entities are reached through events (`r.on(&actions::HURT, ..)`) and questions.
+    /// mod's entities are reached through events (`r.on_event(&actions::HURT, ..)`) and questions.
     pub fn world_tick(&mut self, f: impl Fn(&World) + Send + Sync + 'static) {
         let cb = crate::callback(move |a: &mut abi::WorldTickArgs| f(&World::from_raw(a.world)));
         unsafe { (host().reg_world_tick)(self.raw, cb) }
@@ -1612,11 +1612,11 @@ impl Registry {
     }
 
     /// The player inventory as named groups, one of them `.hotbar()`:
-    /// `r.player_inventory().group("hotbar", Slots::row(9).hotbar()).group("main", Slots::grid(9, 3))`.
+    /// `r.player_slots().group("hotbar", Slots::row(9).hotbar()).group("main", Slots::grid(9, 3))`.
     /// The engine lays them out, hotbar first, the equipment slots (`equipment_slot`) after
     /// everything; `w.inventory(player).group(name)` reads a group, `core:equipment` all of the
     /// equipment. The mod loaded last wins.
-    pub fn player_inventory(&mut self) -> PlayerInventoryBuilder<'_> {
+    pub fn player_slots(&mut self) -> PlayerInventoryBuilder<'_> {
         PlayerInventoryBuilder { raw: self.raw, groups: GroupList::new(), _p: std::marker::PhantomData }
     }
 

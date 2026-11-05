@@ -4,9 +4,9 @@
 //!
 //! ```ignore
 //! static JETPACK: Key = Key::named("jetpack");
-//! r.key(&JETPACK, "J").on_press_server(|p| { let w = p.world(); /* for p.player() */ });
+//! r.key(&JETPACK, "J").on_server(|p| { let w = p.world(); /* for p.player() */ });
 //! static SCAN: Key = Key::named("scan");
-//! r.key(&SCAN, "K").on_press_client(|c| { /* on this client */ });
+//! r.key(&SCAN, "K").on_client(|c| { /* on this client */ });
 //! ```
 
 use crate::abi::{self, ItemStack, Slice, Str, gizmo_kind as gk};
@@ -627,8 +627,8 @@ impl Registry {
     }
 
     /// Key binding with a default key (`J`, `KeyJ`, `F6`, `space`, `lshift`, `mouse3`), listed
-    /// in Controls as `key.<ns>.<name>`; what it does with `.on_press_client(..)` or
-    /// `.on_press_server(..)`, or read with `Client::key_pressed`/`key_held`. Keys only act while the
+    /// in Controls as `key.<ns>.<name>`; what it does with `.on_client(..)` or
+    /// `.on_server(..)`, or read with `Client::key_pressed`/`key_held`. Keys only act while the
     /// world has the input (not while typing in the chat or with a screen open).
     pub fn key<'a>(&'a mut self, key: &'static Key, default: &str) -> KeyBuilder<'a> {
         unsafe { (host().reg_key)(self.raw, abi_str(key.name()), abi_str(default)) }
@@ -643,7 +643,7 @@ pub struct KeyBuilder<'a> {
 
 impl KeyBuilder<'_> {
     /// On the client, every time the key goes down.
-    pub fn on_press_client(self, f: impl Fn(&Client) + Send + Sync + 'static) -> Self {
+    pub fn on_client(self, f: impl Fn(&Client) + Send + Sync + 'static) -> Self {
         let key = self.key;
         // By the edge of `held`, so a press is seen whichever frame hook made it.
         let was = std::sync::atomic::AtomicBool::new(false);
@@ -660,11 +660,11 @@ impl KeyBuilder<'_> {
 
     /// On the server, for the player who pressed it (`p.player()`, `p.world()`): the engine
     /// carries the press over, no channel of yours needed.
-    pub fn on_press_server(self, f: impl Fn(&Packet) + Send + Sync + 'static) -> Self {
+    pub fn on_server(self, f: impl Fn(&Packet) + Send + Sync + 'static) -> Self {
         let key = self.key;
         let channel: &'static Channel<()> = Channel::generated(format!("{}.pressed", key.name()));
         self.reg.packet(channel, move |p, ()| f(p));
-        KeyBuilder { reg: self.reg, key }.on_press_client(move |c| c.send(channel, &()))
+        KeyBuilder { reg: self.reg, key }.on_client(move |c| c.send(channel, &()))
     }
 }
 

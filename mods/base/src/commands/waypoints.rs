@@ -24,7 +24,7 @@ pub fn register(r: &mut Registry) {
     );
     r.attach(&PLAYER, &HOMES);
 
-    r.on(&actions::DIE, |b| {
+    r.on_event(&actions::DIE, |b| {
         let w = b.world();
         for d in b.iter() {
             // Only players have the component, so mobs are skipped.

@@ -602,6 +602,8 @@ pub mod tool_tier {
     pub const STONE: u32 = 100;
     pub const IRON: u32 = 200;
     pub const DIAMOND: u32 = 300;
+    /// `mined_by`: drops whatever mines it, by hand too.
+    pub const HAND: u32 = u32::MAX;
 }
 
 // ---------------------------------------------------------------- content descriptors

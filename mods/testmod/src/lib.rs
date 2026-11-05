@@ -194,8 +194,7 @@ fn init(r: &mut Registry) {
         .block(|b| {
             b.textures("machine_top", "generator", "machine_top")
                 .hardness(3.0)
-                .mineable("pickaxe")
-                .needs_tool_level(0)
+                .mined_by("pickaxe", 0)
         })
         // Only fuel goes in (the base game's `fuel` component), and stays in until burnt.
         .group(
@@ -230,8 +229,7 @@ fn init(r: &mut Registry) {
         .block(|b| {
             b.textures("machine_top", "electric_furnace", "machine_top")
                 .hardness(3.0)
-                .mineable("pickaxe")
-                .needs_tool_level(0)
+                .mined_by("pickaxe", 0)
         })
         // At most 16 to smelt at a time.
         .group("input", Slots::single().limit(16))
@@ -256,8 +254,7 @@ fn init(r: &mut Registry) {
         .block(|b| {
             b.textures("machine_top", "battery", "machine_top")
                 .hardness(3.0)
-                .mineable("pickaxe")
-                .needs_tool_level(0)
+                .mined_by("pickaxe", 0)
         })
         .attach_with(&ENERGY, Energy { stored: 0, capacity: 100_000, max_in: 400, max_out: 400 })
         .screen(|ui| machine_screen(ui, |_| {}));
@@ -269,27 +266,27 @@ fn init(r: &mut Registry) {
     r.shaped(&CRAFTING, "electric_furnace", 1, &["iii", "iFi", "ici"], &[('i', "#ingots/iron"), ('F', "#furnaces"), ('c', "#cables")]);
     r.shaped(&CRAFTING, "cable", 8, &["iii"], &[('i', "#ingots/iron")]);
 
-    r.block(&REGOLITH).hardness(0.5).mineable("shovel");
+    r.block(&REGOLITH)
+        .hardness(0.5)
+        .mined_by("shovel", tool_tier::HAND);
     // Only the common `sand` tag: cactus and sugar cane accept it without knowing it.
     r.block(&RED_SAND)
         .hardness(0.5)
-        .mineable("shovel")
+        .mined_by("shovel", tool_tier::HAND)
         .tag("sand");
     r.block(&BASALT)
         .hardness(1.5)
-        .mineable("pickaxe")
+        .mined_by("pickaxe", tool_tier::HAND)
         .tag("stone_ore_replaceables");
     // Only tags: the base game's `#ores/*` smelting recipe and tools pick these up.
     r.block(&TIN_ORE)
         .hardness(3.0)
-        .mineable("pickaxe")
-        .needs_tool_level(0)
+        .mined_by("pickaxe", 0)
         .tag("ores/tin");
     r.block(&BASALT_TIN_ORE)
         .texture("tin_ore")
         .hardness(3.5)
-        .mineable("pickaxe")
-        .needs_tool_level(0)
+        .mined_by("pickaxe", 0)
         .tag("ores/tin");
     r.item(&TIN_INGOT).tag("ingots/tin");
 
@@ -323,8 +320,7 @@ fn init(r: &mut Registry) {
     // A tier between vanilla's iron (200) and diamond (300): mines everything iron does plus
     // reinforced stone, which iron cannot.
     r.item(&STEEL_PICKAXE)
-        .tool("pickaxe")
-        .tool_level(250)
+        .tool("pickaxe", 250)
         .mining_speed(7.0)
         .durability(800)
         .attack_damage(4.0)
@@ -335,14 +331,13 @@ fn init(r: &mut Registry) {
         .facing(Facings::only(&[Dir::Up, Dir::North, Dir::East]), Toward::Player)
         .states(|p, s| s.front_faces(p.facing(), "vent_side", "vent_side", "vent_front"))
         .hardness(2.0)
-        .mineable("pickaxe")
+        .mined_by("pickaxe", tool_tier::HAND)
         .tab(&BASE_BUILDING);
     r.block(&REINFORCED_STONE)
         .tag("has_shapes")
         .shader("stripes")
         .hardness(4.0)
-        .mineable("pickaxe")
-        .needs_tool_level(250)
+        .mined_by("pickaxe", 250)
         .tab(&BASE_BUILDING);
     r.biome(&DUST)
         .surface("regolith", "regolith", 3)
@@ -387,17 +382,17 @@ fn init(r: &mut Registry) {
         .feature(preset::dunes(3.0, 22.0).mask(Expr::noise(500.0).ramp(0.15, 0.45)))
         // Base's forest in the cold parts of Mars (any humidity, unlike at home): it brings its
         // grass, and the engine grows its trees here like in base's overworld.
-        .biome(
+        .rule(
             BiomeRule::new("base:forest")
                 .temperature(..-0.3)
                 .humidity(..),
         )
-        .biome(BiomeRule::new("dust"))
+        .rule(BiomeRule::new("dust"))
         .cave_biome("crystal_caves", 24, 96.0, 0.0);
     // Mars edited as from outside: a biome tried before its dust, a rock needle from a feature
     // of this mod's own, and boulders on the new biome.
     r.terrain(&MARS)
-        .biome_before("testmod:dust", BiomeRule::new("scorched"))
+        .rule_before("testmod:dust", BiomeRule::new("scorched"))
         .feature(
             // 90 blocks up within 3 of the spot: a step where the distance passes 3.
             Feature::new(
@@ -448,7 +443,7 @@ fn init(r: &mut Registry) {
 
     // Healing food without touching the base game's eating code: any used item that heals (its
     // apple).
-    r.on(&actions::USE_ITEM, |b| {
+    r.on_event(&actions::USE_ITEM, |b| {
         let w = b.world();
         for e in b.iter() {
             if let Some(heal) = FOOD_HEAL.on_stack(&e.stack) {

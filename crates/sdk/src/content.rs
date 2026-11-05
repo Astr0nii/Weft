@@ -1829,19 +1829,15 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// Tools of this class (`tools/<class>` items) mine it at their speed: tags `mineable/<class>`.
-    pub fn mineable(mut self, class: &str) -> Self {
+    /// Tools of `class` (`tools/<class>` items) mine it at their speed (tag `mineable/<class>`),
+    /// and it drops nothing unless mined by one of at least `level` (`tool_tier`; `HAND`: drops
+    /// anyway). The level is the `harvest_level` component, checked by `Cond::Harvested`.
+    pub fn mined_by(mut self, class: &str, level: u32) -> Self {
         self.components
             .push(Pending::tag(&format!("mineable/{class}")));
-        self
-    }
-
-    /// Drops nothing unless mined with a fitting tool of at least this level (`abi::tool_tier`:
-    /// wood 0, stone 100, iron 200, diamond 300; any number between works), like vanilla's
-    /// "requires correct tool". It is the `harvest_level` component, checked by
-    /// `Cond::Harvested` on the block's loot.
-    pub fn needs_tool_level(mut self, level: u32) -> Self {
-        self.components.push(c::HARVEST_LEVEL.raw_value(&level));
+        if level != abi::tool_tier::HAND {
+            self.components.push(c::HARVEST_LEVEL.raw_value(&level));
+        }
         self
     }
 
@@ -1992,12 +1988,12 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// One of these was placed: `actions::PLACE_BLOCK` for this block, at the end of the tick.
-    pub fn on_placed(self, f: impl Fn(&World, &crate::BlockChange) + Send + Sync + 'static) -> Self {
+    pub fn on_place(self, f: impl Fn(&World, &crate::BlockChange) + Send + Sync + 'static) -> Self {
         self.on_own(&crate::actions::PLACE_BLOCK, f)
     }
 
     /// One of these was broken, by a player (`player`) or by losing its support (0).
-    pub fn on_broken(self, f: impl Fn(&World, &crate::BlockChange) + Send + Sync + 'static) -> Self {
+    pub fn on_break(self, f: impl Fn(&World, &crate::BlockChange) + Send + Sync + 'static) -> Self {
         self.on_own(&crate::actions::BREAK_BLOCK, f)
     }
 
@@ -2008,7 +2004,7 @@ impl<'a> BlockBuilder<'a> {
         f: impl Fn(&World, &crate::BlockChange) + Send + Sync + 'static,
     ) -> Self {
         let Some(block) = self.handle else { return self };
-        self.reg.on(action, move |b| {
+        self.reg.on_event(action, move |b| {
             let w = b.world();
             for p in b.iter().filter(|p| block.is(p.state)) {
                 f(&w, p);
@@ -2094,13 +2090,14 @@ impl<'a> BlockBuilder<'a> {
             return self;
         };
         let other = move |pos: BlockPos, state: u32| crate::other_part(pos, state, prop, parts[1], way);
-        self.reg.intercept(&crate::actions::PLACE_BLOCK, move |q| {
-            if !block.is(q.state()) {
-                return crate::Verdict::Abstain;
-            }
-            let there = q.world().block(other(q.pos(), q.state()));
-            if there == 0 || crate::state_flags(there) & bf::REPLACEABLE != 0 { crate::Verdict::Abstain } else { crate::Verdict::Deny }
-        });
+        self.reg
+            .before_event(&crate::actions::PLACE_BLOCK, move |q| {
+                if !block.is(q.state()) {
+                    return crate::Verdict::Abstain;
+                }
+                let there = q.world().block(other(q.pos(), q.state()));
+                if there == 0 || crate::state_flags(there) & bf::REPLACEABLE != 0 { crate::Verdict::Abstain } else { crate::Verdict::Deny }
+            });
         self.prop(prop, parts)
             .on_neighbor(|e| e.world().schedule_tick(e.pos(), 1))
             .on_scheduled(move |e| {
@@ -2109,12 +2106,12 @@ impl<'a> BlockBuilder<'a> {
                     w.set_block(e.pos(), 0);
                 }
             })
-            .on_placed(move |w, c| {
+            .on_place(move |w, c| {
                 if let Some(s) = crate::state_with(c.state, prop, parts[1]) {
                     w.set_block(other(c.pos, c.state), s);
                 }
             })
-            .on_broken(move |w, c| {
+            .on_break(move |w, c| {
                 let there = other(c.pos, c.state);
                 if block.is(w.block(there)) {
                     w.set_block(there, 0);
@@ -2214,7 +2211,7 @@ impl<'a> BlockBuilder<'a> {
     pub fn signal_constant(self) -> Self {
         self.signal_props(abi::signal_kind::SWITCH, 0, false, false)
     }
-    /// A lever or button: goes on the clicked face; its `power` property (`off`, `on`) gives full
+    /// A lever or button: goes on the clicked face; its `power` property (`off`, `on_event`) gives full
     /// power around it and strongly into the block it is on.
     pub fn signal_switch(self) -> Self {
         self.signal_props(abi::signal_kind::SWITCH, 2, true, true)
@@ -2602,20 +2599,16 @@ impl ItemBuilder<'_> {
     pub fn durability(self, d: u32) -> Self {
         self.set(&c::DURABILITY, d).set(&c::MAX_STACK, 1)
     }
-    /// A tool of `class` (tag `tools/<class>`): it mines blocks `mineable/<class>`, at its
-    /// `mining_speed`, those needing up to its `tool_level`. Held like one (`handheld`).
-    pub fn tool(self, class: &str) -> Self {
+    /// A tool of `class` (tag `tools/<class>`): it mines blocks `mined_by` that class, at its
+    /// `mining_speed`, harvesting those needing up to `level` (`tool_level`). Held like one.
+    pub fn tool(self, class: &str, level: u32) -> Self {
         let tag = format!("tools/{class}");
-        self.tag(&tag).handheld()
+        self.tag(&tag).set(&c::TOOL_LEVEL, level).handheld()
     }
     /// Held like a tool in third person, by its end and pointing ahead (tag `handheld`, vanilla's
     /// `item/handheld` model), instead of flat in the hand. Tools have it already.
     pub fn handheld(self) -> Self {
         self.tag("handheld")
-    }
-    /// The highest `needs_tool_level` it harvests (`abi::tool_tier`: wood 0 ... diamond 300).
-    pub fn tool_level(self, level: u32) -> Self {
-        self.set(&c::TOOL_LEVEL, level)
     }
     /// How fast it mines its class's blocks (vanilla wood 2 ... gold 12).
     pub fn mining_speed(self, speed: f32) -> Self {
@@ -3613,7 +3606,7 @@ impl LiquidBuilder<'_> {
         self
     }
     /// Roughly Kelvin; 1000 and more burns what touches it.
-    pub fn temperature(mut self, t: u32) -> Self {
+    pub fn heat(mut self, t: u32) -> Self {
         self.desc.temperature = t;
         self
     }

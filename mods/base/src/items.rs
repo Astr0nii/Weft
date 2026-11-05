@@ -109,8 +109,7 @@ pub fn register(r: &mut Registry) {
         let tool = |r: &mut Registry, kind: &str, damage: f32, speed: f32| {
             let b = r
                 .item(Item::generated(format!("{}_{kind}", m.name)))
-                .tool(kind)
-                .tool_level(m.level)
+                .tool(kind, m.level)
                 .mining_speed(m.speed)
                 .durability(m.durability)
                 .attack_damage(damage)

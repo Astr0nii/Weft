@@ -44,7 +44,7 @@ pub fn register(r: &mut Registry) {
         }
     });
     // The smash itself, once a hit landed.
-    r.on(&actions::HURT, |b| {
+    r.on_event(&actions::HURT, |b| {
         let w = b.world();
         for h in b.iter().filter(|h| h.cause == damage_cause::ATTACK) {
             let Some(me) = w.entity(h.source).filter(|_| holds_mace(&w, h.source)) else { continue };

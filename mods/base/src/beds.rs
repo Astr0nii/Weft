@@ -191,7 +191,7 @@ pub fn register(r: &mut Registry) {
             s
         })
         .hardness(0.2)
-        .mineable("axe")
+        .mined_by("axe", tool_tier::HAND)
         .drops(BED_ITEM.name(), 1)
         .set(&crate::items::FUEL, 300)
         .on_use(use_bed)
@@ -206,7 +206,7 @@ pub fn register(r: &mut Registry) {
     r.attach(&PLAYER, &SLEEP);
     r.entity_component(&ARRIVING, Arriving { from: [0.0; 3], dim: 0, on_way: 0 }, 0);
     r.attach(&PLAYER, &ARRIVING);
-    r.on(&PLAYER_RESPAWNED, |b| {
+    r.on_event(&PLAYER_RESPAWNED, |b| {
         let w = b.world();
         for e in b.iter() {
             let Some(spawn) = w.component_mut(e.player, &BED_SPAWN).filter(|s| s.set != 0) else { continue };
@@ -221,7 +221,7 @@ pub fn register(r: &mut Registry) {
             w.teleport(e.player, Some(Dimension::generated(dim.to_string())), on_bed(spawn.bed));
         }
     });
-    r.on(&actions::HURT, |b| {
+    r.on_event(&actions::HURT, |b| {
         let w = b.world();
         for e in b.iter() {
             get_up(&w, e.entity);

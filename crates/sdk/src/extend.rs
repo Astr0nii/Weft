@@ -3,10 +3,10 @@
 //! ```ignore
 //! // Notifications after the fact, batched once per tick:
 //! pub static EATEN: Event<Eaten> = Event::named("eaten");
-//! r.on(&EATEN, |b| for e in b.iter() { b.world().damage(..) });
+//! r.on_event(&EATEN, |b| for e in b.iter() { b.world().damage(..) });
 //! w.emit(&EATEN, Eaten { .. });
 //! // May it happen? Any deny wins:
-//! r.intercept(&actions::BREAK_BLOCK, |q| if q.pos()[1] < 0 { Verdict::Deny } else { Verdict::Abstain });
+//! r.before_event(&actions::BREAK_BLOCK, |q| if q.pos()[1] < 0 { Verdict::Deny } else { Verdict::Abstain });
 //! // Computed values in stages, explainable:
 //! r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.5);
 //! // Loot tables any mod can change:
@@ -139,14 +139,14 @@ pub static ENTITY_HEALED: Event<abi::Hurt> = Event::named(abi::event::ENTITY_HEA
 /// Every tick in each dimension with weather: which it is.
 pub static WEATHER_TICK: Event<abi::WeatherTick> = Event::named(abi::event::WEATHER_TICK);
 
-/// Something that happens, as one name: the question asked before it (`r.intercept(&A, ..)`,
-/// any deny wins) and the event after (`r.on(&A, ..)`). The engine's are in `actions`; a mod's
+/// Something that happens, as one name: the question asked before it (`r.before_event(&A, ..)`,
+/// any deny wins) and the event after (`r.on_event(&A, ..)`). The engine's are in `actions`; a mod's
 /// own goes through `w.act(&WRENCH, &mut query, value)`.
 ///
 /// ```ignore
 /// static WRENCH: Action<Wrenched> = Action::named("wrench");
-/// r.intercept(&actions::DIE, |a| if has_totem(a) { Verdict::Deny } else { Verdict::Abstain });
-/// r.on(&actions::BREAK_BLOCK, |b| for c in b.iter() { /* .. */ });
+/// r.before_event(&actions::DIE, |a| if has_totem(a) { Verdict::Deny } else { Verdict::Abstain });
+/// r.on_event(&actions::BREAK_BLOCK, |b| for c in b.iter() { /* .. */ });
 /// ```
 pub struct Action<T: Value> {
     ask: Question,
@@ -322,7 +322,7 @@ pub enum Cond {
     ToolLevel(u32),
     KilledByPlayer,
     OnFire,
-    /// The block was harvested: broken by the world, or mined with a tool its `needs_tool_level`
+    /// The block was harvested: broken by the world, or mined with a tool its `mined_by` level
     /// accepts. `drops(..)` tables have it; write it on pools of your own tables that should.
     Harvested,
     /// The block's state has this property at this value, written as in `w.prop`:
@@ -624,7 +624,7 @@ impl Registry {
     }
 
     /// Handles every value of `event` once per tick (and region), in one call.
-    pub fn on<T: Value>(&mut self, event: &impl AsRef<Event<T>>, f: impl Fn(&EventBatch<T>) + Send + Sync + 'static) {
+    pub fn on_event<T: Value>(&mut self, event: &impl AsRef<Event<T>>, f: impl Fn(&EventBatch<T>) + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::EventArgs| {
             let stride = a.stride as usize;
             if stride != size_of::<T>() {
@@ -639,7 +639,7 @@ impl Registry {
     }
 
     /// Answers `question` (`question::*` or a mod's own) before it happens.
-    pub fn intercept(&mut self, question: &impl AsRef<Question>, f: impl Fn(&Ask) -> Verdict + Send + Sync + 'static) {
+    pub fn before_event(&mut self, question: &impl AsRef<Question>, f: impl Fn(&Ask) -> Verdict + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::InterceptArgs| {
             let ask = Ask {
                 world: World::from_raw(a.world),

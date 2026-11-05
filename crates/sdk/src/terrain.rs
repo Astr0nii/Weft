@@ -11,10 +11,10 @@
 //!     .field("mars:peaks", Expr::noise(500.0).ramp(0.2, 0.5))
 //!     .feature(preset::hills(8.0, 220.0))
 //!     .feature(preset::mountains(60.0, 160.0).mask(Expr::field("mars:peaks")))
-//!     .biome(BiomeRule::new("peaks").field("mars:peaks", 0.5..))
-//!     .biome(BiomeRule::new("dust"));
+//!     .rule(BiomeRule::new("peaks").field("mars:peaks", 0.5..))
+//!     .rule(BiomeRule::new("dust"));
 //! // Another mod, whose savanna biome declares its climate and surface:
-//! r.terrain(&OVERWORLD).biome_before("base:desert", BiomeRule::new("savanna"));
+//! r.terrain(&OVERWORLD).rule_before("base:desert", BiomeRule::new("savanna"));
 //! ```
 
 use crate::abi::BlockPos;
@@ -689,25 +689,25 @@ impl TerrainBuilder<'_> {
         self.send(Op { anchor: name.to_string(), feature: Some(Feature::new(Expr::int(0)).mask(mask)), ..Op::new(op::FEATURE_MASK) })
     }
     /// A rule after all others.
-    pub fn biome(self, rule: BiomeRule) -> Self {
+    pub fn rule(self, rule: BiomeRule) -> Self {
         self.send(Op { rule: Some(rule), ..Op::new(op::BIOME) })
     }
     /// A rule tried right before the rule named `rule` (a biome's rule is named like the biome).
-    pub fn biome_before(self, rule: &str, new: BiomeRule) -> Self {
+    pub fn rule_before(self, rule: &str, new: BiomeRule) -> Self {
         self.send(Op { anchor: rule.to_string(), rule: Some(new), ..Op::new(op::BIOME_BEFORE) })
     }
-    pub fn biome_after(self, rule: &str, new: BiomeRule) -> Self {
+    pub fn rule_after(self, rule: &str, new: BiomeRule) -> Self {
         self.send(Op { anchor: rule.to_string(), rule: Some(new), ..Op::new(op::BIOME_AFTER) })
     }
-    pub fn biome_replace(self, rule: &str, new: BiomeRule) -> Self {
+    pub fn rule_replace(self, rule: &str, new: BiomeRule) -> Self {
         self.send(Op { anchor: rule.to_string(), rule: Some(new), ..Op::new(op::BIOME_REPLACE) })
     }
-    pub fn biome_remove(self, rule: &str) -> Self {
+    pub fn rule_remove(self, rule: &str) -> Self {
         self.send(Op { anchor: rule.to_string(), ..Op::new(op::BIOME_REMOVE) })
     }
     /// Changes what the closure sets on the rule and keeps the rest:
-    /// `biome_edit("base:desert", |r| r.temperature(0.5..))`.
-    pub fn biome_edit(self, rule: &str, edit: impl FnOnce(BiomeRule) -> BiomeRule) -> Self {
+    /// `rule_edit("base:desert", |r| r.temperature(0.5..))`.
+    pub fn rule_edit(self, rule: &str, edit: impl FnOnce(BiomeRule) -> BiomeRule) -> Self {
         self.send(Op { anchor: rule.to_string(), rule: Some(edit(BiomeRule::blank())), ..Op::new(op::BIOME_EDIT) })
     }
     /// A biome in 3D: whole cubes at least `depth` blocks under the surface where a 3D noise of

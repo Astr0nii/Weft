@@ -62,7 +62,7 @@ Say what a block is and the engine runs it. No ticking and no neighbor callbacks
 // Always on.
 r.block(&CRYSTAL).signal_constant();
 
-// Follows the power around it: a `power` property (`off`, `on`) changes by itself.
+// Follows the power around it: a `power` property (`off`, `on_event`) changes by itself.
 r.block(&LIGHT)
     .signal_sink()
     .prop("power", ["off", "on"])

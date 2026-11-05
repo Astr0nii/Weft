@@ -32,7 +32,7 @@ fn armor_of(w: &World, entity: u64) -> (u32, f32) {
 }
 
 pub fn register(r: &mut Registry) {
-    r.player_inventory()
+    r.player_slots()
         .group("hotbar", Slots::row(9).hotbar())
         .group("main", Slots::grid(9, 3));
     for (slot, covers, piece) in [
@@ -52,7 +52,7 @@ pub fn register(r: &mut Registry) {
     r.attach(&PLAYER, &HUNGER);
     r.world_tick(tick_players);
     // Not hungry, it doesn't start eating; the other way round it would only find out at the end.
-    r.intercept(&actions::USE_ITEM, |q| {
+    r.before_event(&actions::USE_ITEM, |q| {
         let full = FOOD.on_item(q.item()).is_some()
             && q.world()
                 .component(q.entity(), &HUNGER)
@@ -60,13 +60,13 @@ pub fn register(r: &mut Registry) {
         if full { Verdict::Deny } else { Verdict::Abstain }
     });
     // Modern's exhaustion, by what the player does.
-    r.on(&actions::BREAK_BLOCK, |b| {
+    r.on_event(&actions::BREAK_BLOCK, |b| {
         let w = b.world();
         for e in b.iter() {
             tire(&w, e.player, 0.005);
         }
     });
-    r.on(&actions::HURT, |b| {
+    r.on_event(&actions::HURT, |b| {
         let w = b.world();
         for e in b.iter() {
             tire(&w, e.source, 0.1);
@@ -88,7 +88,7 @@ pub fn register(r: &mut Registry) {
         let through = m.value / (2.0 + toughness as f64 / 4.0);
         m.value *= 1.0 - (points - through).clamp(points * 0.2, 20.0) / 25.0;
     });
-    r.on(&actions::HURT, |b| {
+    r.on_event(&actions::HURT, |b| {
         let w = b.world();
         for h in b.iter().filter(|h| armor_applies(h.cause)) {
             let Some(worn) = w.inventory(h.entity).find_group(EQUIPMENT_GROUP) else { continue };

@@ -110,25 +110,25 @@ pub fn register(r: &mut Registry) {
         .category(&sound_categories::UI);
 
     r.world_tick(check_players);
-    r.on(&actions::BREAK_BLOCK, |b| {
+    r.on_event(&actions::BREAK_BLOCK, |b| {
         let w = b.world();
         for c in b.iter() {
             grant_where(&w, c.player, |rule| matches!(rule, Rule::Break(t) if t.on_block(c.state)));
         }
     });
-    r.on(&actions::PLACE_BLOCK, |b| {
+    r.on_event(&actions::PLACE_BLOCK, |b| {
         let w = b.world();
         for c in b.iter() {
             grant_where(&w, c.player, |rule| matches!(rule, Rule::Place(t) if t.on_block(c.state)));
         }
     });
-    r.on(&actions::DIE, |b| {
+    r.on_event(&actions::DIE, |b| {
         let w = b.world();
         for d in b.iter() {
             grant_where(&w, d.source, |rule| matches!(rule, Rule::Kill(t) if t.on_entity(d.kind)));
         }
     });
-    r.on(&actions::USE_ITEM, |b| {
+    r.on_event(&actions::USE_ITEM, |b| {
         let w = b.world();
         for u in b.iter() {
             grant_where(&w, u.player, |rule| matches!(rule, Rule::Eat(t) if t.on_item(u.stack.item)));
@@ -287,7 +287,7 @@ fn client(r: &mut Registry) {
             });
         });
     });
-    r.key(&OPEN, "L").on_press_client(|c| {
+    r.key(&OPEN, "L").on_client(|c| {
         c.screen_open(&SCREEN);
     });
     // The pause menu stretches its mods' parts across the screen; sized and centered like its own

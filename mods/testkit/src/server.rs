@@ -100,7 +100,7 @@ pub fn register(r: &mut Registry) {
     // Switches for the tests of the extension mechanisms, off unless a test turns them on.
     r.config(&PROTECT_GOLD).bool(false).world();
     r.config(&PEACE).bool(false).world();
-    r.intercept(&question::ATTACK, |q| {
+    r.before_event(&question::ATTACK, |q| {
         let w = q.world();
         let mob = w
             .entity(q.entity())
@@ -110,38 +110,38 @@ pub fn register(r: &mut Registry) {
     r.config(&NO_HURT).bool(false).world();
     r.config(&NO_USE).bool(false).world();
     r.config(&CHAT_HOOKS).bool(false).world();
-    r.intercept(&actions::CHAT, |q| if CHAT_HOOKS.get() && q.text() == "forbidden" { Verdict::Deny } else { Verdict::Abstain });
+    r.before_event(&actions::CHAT, |q| if CHAT_HOOKS.get() && q.text() == "forbidden" { Verdict::Deny } else { Verdict::Abstain });
     r.chat_format(|f| {
         if CHAT_HOOKS.get() {
             f.set("{0} from a mod", &[Arg::Text(f.text())]);
         }
     });
-    r.on(&actions::CHAT, |b| {
+    r.on_event(&actions::CHAT, |b| {
         for m in b.iter() {
             *LAST_SAID.lock().unwrap() = m.text().to_string();
         }
     });
     let player = |w: &World, id: u64| w.players_iter().any(|p| p == id);
-    r.intercept(&actions::HURT, move |q| if player(&q.world(), q.entity()) && NO_HURT.get() { Verdict::Deny } else { Verdict::Abstain });
-    r.intercept(&actions::USE_ITEM, |_| if NO_USE.get() { Verdict::Deny } else { Verdict::Abstain });
-    r.on(&RANG, |b| {
+    r.before_event(&actions::HURT, move |q| if player(&q.world(), q.entity()) && NO_HURT.get() { Verdict::Deny } else { Verdict::Abstain });
+    r.before_event(&actions::USE_ITEM, |_| if NO_USE.get() { Verdict::Deny } else { Verdict::Abstain });
+    r.on_event(&RANG, |b| {
         RINGS.fetch_add(b.len() as u32, Ordering::Relaxed);
     });
     r.config(&HALF_DAMAGE).bool(false).world();
-    r.intercept(&actions::BREAK_BLOCK, |q| if GOLD.is(q.state()) && PROTECT_GOLD.get() { Verdict::Deny } else { Verdict::Abstain });
+    r.before_event(&actions::BREAK_BLOCK, |q| if GOLD.is(q.state()) && PROTECT_GOLD.get() { Verdict::Deny } else { Verdict::Abstain });
     r.modify(&chain::DAMAGE, stage::FINAL, |m| {
         if HALF_DAMAGE.get() {
             m.value *= 0.5;
         }
     });
-    r.on(&actions::BREAK_BLOCK, |b| count(0, b.len()));
-    r.on(&actions::PLACE_BLOCK, |b| count(1, b.len()));
-    r.on(&actions::PICKUP_ITEM, |b| count(2, b.len()));
-    r.on(&actions::DIE, |b| count(3, b.len()));
-    r.on(&actions::HURT, |b| count(4, b.len()));
-    r.on(&PLAYER_JOINED, |b| count(5, b.len()));
-    r.on(&actions::USE_ITEM, |b| count(6, b.len()));
-    r.on(&SMELTED, |b| count(7, b.len()));
+    r.on_event(&actions::BREAK_BLOCK, |b| count(0, b.len()));
+    r.on_event(&actions::PLACE_BLOCK, |b| count(1, b.len()));
+    r.on_event(&actions::PICKUP_ITEM, |b| count(2, b.len()));
+    r.on_event(&actions::DIE, |b| count(3, b.len()));
+    r.on_event(&actions::HURT, |b| count(4, b.len()));
+    r.on_event(&PLAYER_JOINED, |b| count(5, b.len()));
+    r.on_event(&actions::USE_ITEM, |b| count(6, b.len()));
+    r.on_event(&SMELTED, |b| count(7, b.len()));
     // A mob walks where a test says for a while, after its own AI had its say.
     r.world_tick(|w| {
         let mut driven = DRIVEN.lock().unwrap();

@@ -22,7 +22,7 @@ static SMELTING: Component<Smelting> = Component::named("base:smelting");
 
 r.entity_component(&SMELTING, Smelting { burn: 0, burn_max: 0, cook: 0, cook_max: 0 }, component_flags::SAVE | component_flags::SYNC_MENU);
 r.machine(&FURNACE, &FURNACE_MENU)
-    .block(|b| b.hardness(3.5).mineable("pickaxe").needs_tool_level(0).tab(&FUNCTIONAL))
+    .block(|b| b.hardness(3.5).mined_by("pickaxe", 0).tab(&FUNCTIONAL))
     .group("input", Slots::single())
     .group("fuel", Slots::single().accepts("fuel"))
     .group("output", Slots::single().output())
@@ -179,4 +179,4 @@ Machines have no built-in way to pass items to each other, so a pipe or a hopper
 
 A block that only stores things needs no machine: `r.block(&CRATE).inventory(27)` gives each placed crate a block entity with 27 slots, `w.inventory(pos)` reaches them and `w.open_menu(player, &CRATE_MENU, pos)` shows them. Entities take `.inventory(n)` the same way, and an item with `.inventory(n)` is a backpack: each stack keeps its own items, saved with it, and `w.open_menu(player, &BAG_MENU, Holder::held(player, slot))` opens it. While that menu is open its stack can't be moved, and the menu closes if the stack goes away.
 
-More inventories than its own go on a holder as storages: `static ENDER: Storage = Storage::named("ender");`, `r.storage(&ENDER, 27)` and `r.attach_storage(&PLAYER, &ENDER)` give every player 27 more slots, saved with them and kept on death. `w.inventory(ENDER.of(player))` reaches them, and an ender chest is a block whose use does `w.open_menu(player, &ENDER_MENU, ENDER.of(player))`, the menu's `.machine()` groups being the storage. Kinds of your own carry one with `.storage(&S)`; any stack can carry one, `S.of(Holder::held(player, slot))`.
+More inventories than its own go on a holder as storages: `static ENDER: Storage = Storage::named("ender");`, `r.storage(&ENDER, 27)` and `r.attach_storage(&PLAYER, &ENDER)` give every player 27 more slots, saved with them and kept on death. `w.inventory(ENDER.of(player))` reaches them, and an ender chest is a block whose use does `w.open_menu(player, &ENDER_MENU, ENDER.of(player))`, the menu's `.machine()` groups being the storage. Kinds of your own carry one with `.attach_storage(&S)`; any stack can carry one, `S.of(Holder::held(player, slot))`.
