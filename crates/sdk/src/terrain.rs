@@ -778,7 +778,7 @@ impl Registry {
 pub struct ScatterBuilder<'a> {
     raw: *mut abi::Registrar,
     name: String,
-    at: crate::content::At,
+    pub(crate) at: crate::content::At,
     density: String,
     ground: String,
     desc: abi::ScatterDesc,
@@ -885,22 +885,9 @@ impl Site {
 
 pub struct DecorationBuilder<'a> {
     raw: *mut abi::Registrar,
-    at: crate::content::At,
+    pub(crate) at: crate::content::At,
     cb: abi::Callback,
     _p: PhantomData<&'a mut Registry>,
-}
-
-impl crate::Placed for ScatterBuilder<'_> {
-    fn at(&mut self) -> &mut crate::content::At {
-        &mut self.at
-    }
-}
-
-/// Only `dimension` limits a decoration: it decides the rest itself.
-impl crate::Placed for DecorationBuilder<'_> {
-    fn at(&mut self) -> &mut crate::content::At {
-        &mut self.at
-    }
 }
 
 impl Drop for DecorationBuilder<'_> {

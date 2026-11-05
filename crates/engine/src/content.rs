@@ -1562,7 +1562,7 @@ pub(crate) unsafe fn copy_block(d: &abi::BlockDesc) -> RawBlock {
                 on_signal: cb(d.on_signal),
                 signal_gate: cb(d.signal_gate),
             },
-            replace: d.replacing != 0,
+            replace: d.edit != 0,
             own_states: d.own_states != 0,
             retexture: d
                 .retexture

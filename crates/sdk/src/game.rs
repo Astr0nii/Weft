@@ -946,7 +946,7 @@ impl EntityBuilder<'_> {
         self
     }
     /// The client makes no steps, idle noises or death smoke for it: `r.client_entity_frame`
-    /// does its cosmetics instead.
+    /// does its effects instead.
     pub fn own_effects(self) -> Self {
         self.with(entity_flags::OWN_EFFECTS)
     }
@@ -1225,7 +1225,6 @@ impl Drop for EntityBuilder<'_> {
             parts: Slice::new(&parts),
             on_tick: self.on_tick,
             on_interact: self.on_interact,
-            replacing: 0,
             components: Slice::new(&values),
             carry_height: self.carry_height,
             category_name: Str::new(&self.category_name),
@@ -2122,7 +2121,7 @@ pub struct SpawnBuilder<'a> {
     raw: *mut abi::Registrar,
     entity: String,
     ground: String,
-    at: crate::content::At,
+    pub(crate) at: crate::content::At,
     desc: abi::SpawnDesc,
     _p: std::marker::PhantomData<&'a mut Registry>,
 }
@@ -2137,12 +2136,6 @@ impl Registry {
             desc: abi::SpawnDesc::DEFAULT,
             _p: std::marker::PhantomData,
         }
-    }
-}
-
-impl crate::Placed for SpawnBuilder<'_> {
-    fn at(&mut self) -> &mut crate::content::At {
-        &mut self.at
     }
 }
 

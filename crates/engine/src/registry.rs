@@ -1401,7 +1401,7 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
         RawEntity {
             name: d.name.as_str().to_string(),
             cell: d.cell as usize,
-            replace: d.replacing != 0,
+            replace: false,
             components: RawValue::list(d.components),
             desc: EntityKind {
                 name: d.name.as_str().to_string(),

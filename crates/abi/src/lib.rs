@@ -450,8 +450,8 @@ pub struct ItemInfo {
 
 /// Component names the engine itself reads. Items: `max_stack: u32` (default 64), `durability: u32`,
 /// `attack_damage: f32` (default 1), `tool_level: u32` with a `tools/<class>` tag and
-/// `mining_speed: f32` (default 1). Blocks: `mineable/<class>` tags; `needs_tool_level` means nothing
-/// drops without a tool of a matching class and at least `harvest_level: u32`. Stacks: `damage: u32`.
+/// `mining_speed: f32` (default 1). Blocks: `mineable/<class>` tags, and with `harvest_level: u32`
+/// nothing drops without a tool of a matching class and at least that level (SDK `mined_by`). Stacks: `damage: u32`.
 pub mod comp {
     pub const MAX_STACK: &str = "max_stack";
     pub const DURABILITY: &str = "durability";
@@ -894,8 +894,8 @@ pub struct BlockDesc {
     pub on_carried: Callback,
     /// `PlaceArgs`: choose the state from the player's facing/hit face.
     pub placement: Callback,
-    /// Non-zero: replaces a block of the same name registered by a mod this one depends on.
-    pub replacing: u32,
+    /// Non-zero: `Registry::edit`, on top of the block of this name registered already.
+    pub edit: u32,
     /// `BlockEventArgs`, a growth step; without it a step moves to the next state and the last
     /// state stops growing.
     pub on_grow: Callback,
@@ -942,7 +942,7 @@ defaults!(BlockDesc {
     on_scheduled: Callback::NONE,
     on_carried: Callback::NONE,
     placement: Callback::NONE,
-    replacing: 0,
+    edit: 0,
     on_grow: Callback::NONE,
     own_states: 1,
     retexture: Slice::EMPTY,
@@ -1460,7 +1460,6 @@ pub struct EntityDesc {
     /// `handled = 1` swings the player's arm.
     pub on_interact: Callback,
     /// Non-zero: replaces an entity kind of the same name from a mod this one depends on.
-    pub replacing: u32,
     pub components: Slice<CompValue>,
     /// Solid bodies: how far above it a rider may be (jumping) and still move with it, keeping
     /// its own motion relative to the body; 0 = only while standing on it.
@@ -1733,7 +1732,6 @@ defaults!(EntityDesc {
     parts: Slice::EMPTY,
     on_tick: Callback::NONE,
     on_interact: Callback::NONE,
-    replacing: 0,
     components: Slice::EMPTY,
     carry_height: 0.0,
     template: Str::EMPTY,
@@ -3066,7 +3064,7 @@ pub struct Host {
     pub reg_bone_model: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, model: Str, bone: Str),
     /// A bone of `model` hangs and swings by itself.
     pub reg_bone_motion: unsafe extern "C" fn(reg: *mut Registrar, model: Str, bone: Str, gravity: f32, spring: f32, drag: f32),
-    pub reg_item_model_for_stack: unsafe extern "C" fn(reg: *mut Registrar, item: Str, cb: Callback),
+    pub reg_item_looks: unsafe extern "C" fn(reg: *mut Registrar, item: Str, cb: Callback),
     /// Moves a bone of what `entity` is or has on, for the next frame: radians about x, y, z, pixels, scale.
     pub client_pose_bone:
         unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, bone: Str, turn: *const [f32; 3], by: *const [f32; 3], scale: *const [f32; 3]),
@@ -4493,7 +4491,7 @@ pub struct ClientFrameArgs {
     pub client: *mut ClientCtx,
 }
 
-/// `Host::reg_item_model_for_stack`: the model and the texture `stack` shows as, each left
+/// `Host::reg_item_looks`: the model and the texture `stack` shows as, each left
 /// empty for its usual.
 #[repr(C)]
 pub struct ItemModelArgs {

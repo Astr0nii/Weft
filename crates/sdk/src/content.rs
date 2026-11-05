@@ -1883,7 +1883,8 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// Shades its textures with `shaders/block/<name>.wgsl`: the shader goes
+    /// Shades its textures with a shader handle (`Shader::named("stripes")`, the file
+    /// `shaders/block/stripes.wgsl`): the shader goes
     /// with the textures, so blocks sharing one share it.
     pub fn shader(mut self, shader: &crate::Shader) -> Self {
         self.components
@@ -2542,7 +2543,7 @@ impl Drop for BlockBuilder<'_> {
             model_file: Str::new(&self.model_file),
             model_textures: Slice::new(&model_textures),
             placement: cb.placement,
-            replacing: self.replace as u32,
+            edit: self.replace as u32,
             on_grow: cb.on_grow,
             on_signal: cb.on_signal,
             signal_gate: cb.signal_gate,
@@ -2760,7 +2761,7 @@ impl Drop for ItemBuilder<'_> {
         };
         unsafe { (host().reg_item)(self.raw, &desc) }
         if self.condition.is_some() {
-            unsafe { (host().reg_item_model_for_stack)(self.raw, Str::new(&self.name), self.condition) }
+            unsafe { (host().reg_item_looks)(self.raw, Str::new(&self.name), self.condition) }
         }
     }
 }
@@ -3052,15 +3053,21 @@ pub trait Placed: Sized {
 }
 
 macro_rules! placed {
-    ($($t:ident),*) => {
-        $(impl Placed for $t<'_> {
-            fn at(&mut self) -> &mut At {
+    ($($t:ty),*) => {
+        $(impl $crate::Placed for $t {
+            fn at(&mut self) -> &mut $crate::content::At {
                 &mut self.at
             }
         })*
     };
 }
-placed!(StructureBuilder, OreBuilder);
+placed!(
+    StructureBuilder<'_>,
+    OreBuilder<'_>,
+    crate::terrain::ScatterBuilder<'_>,
+    crate::terrain::DecorationBuilder<'_>,
+    crate::game::SpawnBuilder<'_>
+);
 
 pub struct StructureBuilder<'a> {
     raw: *mut abi::Registrar,

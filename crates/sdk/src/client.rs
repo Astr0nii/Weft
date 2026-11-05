@@ -585,7 +585,7 @@ impl Registry {
         unsafe { (host().reg_client_hook)(self.raw, abi::client_hook::FRAME, cb) }
     }
 
-    /// Every frame on the client for each entity of `kind`, the local player too: its cosmetics
+    /// Every frame on the client for each entity of `kind`, the local player too: its effects
     /// (wing flaps, sparks, purring), any number of mods on one kind. The engine's steps, idle
     /// noises and death smoke go on unless the kind has `.own_effects()`.
     pub fn client_entity_frame(&mut self, kind: &crate::EntityKind, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
