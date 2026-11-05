@@ -62,7 +62,7 @@ fn config(r: &mut Registry) {
 
 /// Your blocks, texture is `block/<name>.png`, translation is `block.examplemod.<name>`.
 /// More at `mods/base/src/blocks.rs` (support rules, plants, falling sand, torches, axis, etc.)
-/// And `mods/testmod/src/lib.rs` (machines, facing, replacing another mod's block etc.)
+/// And `mods/testmod/src/lib.rs` (block entities, facing, editing a block etc.)
 fn blocks(_r: &mut Registry) {
     // static RUBY_ORE: Block = Block::named("ruby_ore");
     // static NATURAL: CreativeTab = CreativeTab::named("base:natural");
@@ -186,7 +186,7 @@ fn commands(_r: &mut Registry) {
 /// Client side: screens, HUD, key bindings, packets.
 /// More at:
 /// `mods/base/src/player.rs` (HUD),
-/// `mods/testmod/src/lib.rs` (screens, machine panels),
+/// `mods/testmod/src/lib.rs` (screens, block entity panels),
 /// `mods/testmod/src/looks.rs` (particles, shaders, sounds).
 fn client(_r: &mut Registry) {
     // static DASH: Key = Key::named("dash");

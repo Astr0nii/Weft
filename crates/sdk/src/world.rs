@@ -422,21 +422,21 @@ pub fn item_name(item: u32) -> &'static str {
 /// How cubes kept loaded go on with no player near (`World::keep_loaded`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Loading {
-    /// Machines: block entities, systems, scheduled ticks and redstone; mobs stand still and
+    /// Block entities, systems, scheduled ticks and redstone; mobs stand still and
     /// nothing grows.
-    Machines,
+    BlockEntities,
     /// All of it, as near a player.
     All,
 }
 
 impl World {
     /// Keeps the cubes from block `from` to `to` loaded for `ticks` more under ticket `key` (a
-    /// machine's entity id, say): call again before it runs out to keep them, with other blocks
+    /// block entity's id, say): call again before it runs out to keep them, with other blocks
     /// to move it. Kept across restarts. False when a mod refused (`question::FORCE_LOAD`); one
     /// past `core:max_forced_cubes` in all is dropped.
     pub fn keep_loaded(&self, key: u64, from: impl Into<BlockPos>, to: impl Into<BlockPos>, loading: Loading, ticks: u32) -> bool {
         let mode = match loading {
-            Loading::Machines => abi::force_load::MACHINES,
+            Loading::BlockEntities => abi::force_load::BLOCK_ENTITIES,
             Loading::All => abi::force_load::ALL,
         };
         let (a, b) = (from.into(), to.into());

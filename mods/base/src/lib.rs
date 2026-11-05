@@ -3,10 +3,10 @@
 
 mod advancements;
 mod beds;
+mod block_entities;
 mod blocks;
 mod commands;
 mod items;
-mod machines;
 mod mobs;
 mod player;
 mod recipes;
@@ -39,7 +39,7 @@ fn init(r: &mut Registry) {
     commands::register(r);
     items::register(r);
     player::register(r);
-    machines::register(r);
+    block_entities::register(r);
     recipes::register(r);
     sounds::register(r);
     mobs::register(r);

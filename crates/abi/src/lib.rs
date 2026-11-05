@@ -1650,9 +1650,9 @@ pub mod camera_flags {
 pub mod force_load {
     /// Let go.
     pub const OFF: u32 = 0;
-    /// Machines: block entities, systems, scheduled ticks and redstone; mobs stand still and
+    /// Block entities, systems, scheduled ticks and redstone; mobs stand still and
     /// nothing grows (vanilla's lazy chunks).
-    pub const MACHINES: u32 = 1;
+    pub const BLOCK_ENTITIES: u32 = 1;
     /// All of it, as near a player.
     pub const ALL: u32 = 2;
 }
@@ -2266,20 +2266,20 @@ pub mod component_flags {
     pub const SYNC_OWNER: u32 = 2;
     /// Sent to every player that sees the entity, when it changes.
     pub const SYNC_WATCHERS: u32 = 4;
-    /// Sent to players with a menu open on the entity (machine progress), when it changes; read
+    /// Sent to players with a menu open on the entity (a furnace's progress), when it changes; read
     /// on the client with `ClientView::menu_component`.
     pub const SYNC_MENU: u32 = 8;
     /// Kept when the player respawns (a bed, advancements, statistics); the others start over
     /// from their defaults.
     pub const KEEP_ON_RESPAWN: u32 = 16;
     /// Goes from a block entity onto its block's item when the block breaks, and back onto the
-    /// block entity when that item is placed (a machine's charge, a renamed chest's name).
+    /// block entity when that item is placed (a battery's charge, a renamed chest's name).
     pub const CARRIED: u32 = 32;
     /// An inventory (`reg_storage`), its value one `ItemStack` per slot.
     pub const STORAGE: u32 = 64;
 }
 
-/// Per-entity data storage (hunger, machine state): created with `default` on spawn of the kinds
+/// Per-entity data storage (hunger, a furnace's state): created with `default` on spawn of the kinds
 /// it is attached to (`Host::reg_attach`). The name lives in the same namespace as content
 /// components.
 #[repr(C)]
@@ -2981,8 +2981,8 @@ pub struct Host {
     /// Group `name` of an open menu: its first menu slot and how many slots it has. 0 if none.
     /// Group `name` of an open menu: its first slot, slot count and columns.
     pub menu_group: unsafe extern "C" fn(menu: *mut MenuCtx, name: Str, out: *mut SlotGroup) -> u32,
-    /// Group `name` of a machine (`MenuDesc::entity`) in `holder`'s inventory: first index and
-    /// count. 0 if it has no such group.
+    /// Group `name` of `holder`'s inventory (a block entity's: the `holder` groups of the menu its
+    /// block opens; a player's: its layout): first index and count. 0 if it has no such group.
     pub inventory_group: unsafe extern "C" fn(world: *mut WorldCtx, holder: *const Holder, name: Str, out: *mut SlotGroup) -> u32,
     pub menu_get: unsafe extern "C" fn(menu: *mut MenuCtx, slot: u32) -> ItemStack,
     pub menu_set: unsafe extern "C" fn(menu: *mut MenuCtx, slot: u32, stack: ItemStack),
@@ -3237,7 +3237,7 @@ pub struct Host {
     /// `Holder::storage`. Entity kinds carry it like a component (`reg_attach`), stacks always
     /// can. Saved, and kept when a player respawns.
     pub reg_storage: unsafe extern "C" fn(reg: *mut Registrar, name: Str, slots: u32),
-    /// Client: the entity the open menu belongs to (a machine), 0 if none.
+    /// Client: the entity the open menu is on (a block entity, a mob), 0 if none.
     pub client_menu_owner: unsafe extern "C" fn(client: *mut ClientCtx) -> u64,
     /// A system: once per tick and region `cb` gets `SystemArgs` with every entity that has the
     /// per-entity component `name` and their values side by side, to change in place.

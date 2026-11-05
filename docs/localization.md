@@ -128,7 +128,7 @@ Another mod adds its line to the same tag without replacing it, as with tooltips
   server overrides or that need a restart get a note added by the engine.
 - **Creative tabs:** show their name from `tab.<mod>.<name>`, or the mod's display name when there is no key.
 - **Your own screens:** any part with a style takes one, `S::column().tooltip("examplemod.hint")`.
-- **Slots:** a slot group's `tooltip(key)` shows over its empty slots ([machines guide](machines.md#creating-a-machine)).
+- **Slots:** a slot group's `tooltip(key)` shows over its empty slots ([block entities guide](block_entities.md#creating-one)).
 
 ## Adding from outside
 Translations are one shared table: every `lang/<code>.lang` of every mod and pack is read into it, so the

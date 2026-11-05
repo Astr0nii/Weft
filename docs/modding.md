@@ -8,7 +8,7 @@
    - [Names](#names), [References](#references), [Handles](#handles), [Textures](#textures-and-other-assets), [Translations](#translations)
 5. [Components and tags as inter-mod communication](#components-and-tags-as-inter-mod-communication)
 6. [Content builders](#content-builders)
-   - [Blocks](#blocks), [Items](#items), [Entities](#entities), [Machines](#machines), [Liquids](#liquids), [World](#world), [Recipes](#recipes), [Loot](#loot), [Replacing something of another mod](#replacing-something-of-another-mod)
+   - [Blocks](#blocks), [Items](#items), [Entities](#entities), [Block entities](#block-entities), [Liquids](#liquids), [World](#world), [Recipes](#recipes), [Loot](#loot), [Replacing something of another mod](#replacing-something-of-another-mod)
 7. [Hooking into the game](#hooking-into-the-game)
    - [Built-in events](#built-in-events), [Systems and energy](#systems-and-energy)
 8. [Text on the screen](#text-on-the-screen)
@@ -189,15 +189,15 @@ Your own data structures:
 ```rust
 value! {
     #[derive(Default)]
-    struct Machine { burn: u32, burn_max: u32 }
+    struct Burner { burn: u32, burn_max: u32 }
 }
-static MACHINE: Component<Machine> = Component::named("mymod:machine");
+static BURNER: Component<Burner> = Component::named("mymod:burner");
 ```
 
 A value that names blocks is a reference, not text: `Component<BlockRef>` for one block (or state) and `Component<BlockList>` for blocks with weights, set with `.set_text(&C, "oak_leaves")` or `.set_text(&C, "birch_log:1 oak_log:4")`. The engine turns the names into ids when the game loads, so a typo is a load error instead of a tree that never grows; reading gives `BlockRef(state)` or a `BlockList` with `pick(random)`. Base's trees work this way (`tree_leaves` on logs, `tree_kinds` and `flowers` on biomes).
 
-Per-entity components like a state of a machine, hunger or anything else that changes in time go through
-`r.entity_component(&COMP, default, flags)`, declared once, and then carried by the kinds that need it: `.attach(&COMP)` on an entity or machine builder, `r.attach(&PLAYER, &COMP)` for someone else's kind, `.attach_with(&COMP, value)` to start from another value.\
+Per-entity components like a furnace's state, hunger or anything else that changes in time go through
+`r.entity_component(&COMP, default, flags)`, declared once, and then carried by the kinds that need it: `.attach(&COMP)` on an entity builder (a block entity's too), `r.attach(&PLAYER, &COMP)` for someone else's kind, `.attach_with(&COMP, value)` to start from another value.\
 `.set(&C, v)` is different: one value of the kind itself (like a mob's attack damage), while `.attach` gives every entity its own value that changes.\
 Flags from `component_flags` are `SAVE`, `SYNC_OWNER`, `SYNC_WATCHERS`, `SYNC_MENU`, `KEEP_ON_RESPAWN` (kept when a player respawns; everything else starts over from its default).\
 You can change them through `w.component_mut(id, &COMP)` and the engine will figure out what to send.\
@@ -294,7 +294,7 @@ let plain = stack.without(&QUALITY);
 ```
 A stack's own value wins over its item's for everything the engine reads too: give one stack its own `DURABILITY`, `MINING_SPEED`, `TOOL_LEVEL`, `ATTACK_DAMAGE`, `ATTACK_SPEED`, `USE_TICKS` or a `tools/<class>` tag and it digs, wears and hits by those. Anything about a stack can be changed from outside: its item, count and any value, with `inventory.set(slot, ..)` and `.with(..)`.
 
-A tool made of parts keeps them in a storage (`r.storage(&PARTS, 3)`, see [machines](machines.md)): `stack.stacks(&PARTS)` and `stack.with_stacks(&PARTS, &[handle, head, binding])` read and write them right on the stack, no slot needed, and each part is a stack with its own values and parts, as deep as you go. Add the parts' values up when you make it and write the result onto the stack. `stack.with_layers(&[("rod", None), ("pick_head", Some(0xB0B0B0))])` makes it show its parts' pictures one over the other, tinted, in slots, in the hand and on the ground.
+A tool made of parts keeps them in a storage (`r.storage(&PARTS, 3)`, see [block entities](block_entities.md)): `stack.stacks(&PARTS)` and `stack.with_stacks(&PARTS, &[handle, head, binding])` read and write them right on the stack, no slot needed, and each part is a stack with its own values and parts, as deep as you go. Add the parts' values up when you make it and write the result onto the stack. `stack.with_layers(&[("rod", None), ("pick_head", Some(0xB0B0B0))])` makes it show its parts' pictures one over the other, tinted, in slots, in the hand and on the ground.
 
 Stacks with different data don't merge. `r.stack_component` says a component exists for stacks, its flags are `abi::stack_flags`: `SERVER_ONLY` (clients get the stack without it), `NO_SAVE`, or 0 for neither. `.with` on a component nobody declared does nothing and says so in the log. Ids in a value shift when a mod comes or goes, the same as in a `SAVE` component (see [components](#components-and-tags-as-inter-mod-communication)).
 
@@ -319,8 +319,8 @@ Stacks with different data don't merge. `r.stack_component` says a component exi
 Moving platforms: `solid()`, `kinematic()`, `carry_height(..)`, and
 `blocks(&DECK)` with a template (`r.template(&DECK).fill("base:oak_planks", from, to)`) makes a flying structure players can build on; its box is what the blocks fill, no `size` needed. `EntityState.size` is an entity's box and eye height as they are now (crouching and `w.set_size` included), so `st.pos.y + st.size.eye` is where its eyes are (or just `st.eye()`).
 
-### Machines
-A block with `.entity(|e| e.attach(..))` (data, a tick), `.inventory(n)` (slots) and `.opens(&MENU)` (a window on use), each on its own; see the [machines guide](machines.md).\
+### Block entities
+A block with `.entity(|e| e.attach(..).inventory(n))` (data, a tick, slots) and `.opens(&MENU)` (a window on use), each on its own; see the [block entities guide](block_entities.md).\
 Look at testmod's generator for an example.
 
 ### Liquids
@@ -336,7 +336,7 @@ Look at testmod's generator for an example.
 Another mod's liquid: `r.edit(WATER.liquid()).fog(0x204020, 12.0)`, any of the above; what you don't set stays.
 
 Reactions: `r.liquid_reaction("#hot", "#water").source_turns_into("obsidian")`.\
-Every liquid is also an item of its name and tags, its count in millibuckets: what liquid slots (`Slots::liquid(capacity)`) hold and recipes count, see the [machines guide](machines.md).
+Every liquid is also an item of its name and tags, its count in millibuckets: what liquid slots (`Slots::liquid(capacity)`) hold and recipes count, see the [block entities guide](block_entities.md).
 
 ### World
 - `r.biome(..)` with its climate, surface and tints (`.temperature(0.35..).surface(..).tint(&tints::GRASS, ..)`); terrain rules inherit them
@@ -402,8 +402,8 @@ Actions, each a question and an event under one name (`r.before_event(&actions::
 base adds `base:smelted`.
 
 ### Systems and energy
-Systems run over every entity with a component all at once, and that is how machines tick:
-`r.system(&BURNER, |batch| for (id, m, ticks) in batch.iter_mut() { .. })`. `ticks` is 1 unless the machine is catching up on time it missed (unloaded, the time jumped): then it should do that many ticks of work at once, see [machines](machines.md#catching-up).
+Systems run over every entity with a component all at once, and that is how block entities tick:
+`r.system(&BURNER, |batch| for (id, m, ticks) in batch.iter_mut() { .. })`. `ticks` is 1 unless it is catching up on time it missed (unloaded, the time jumped): then it should do that many ticks of work at once, see [machines](machines.md#catching-up).
 
 Energy is a built-in engine contract, you can give a block entity the `core:energy` component, tag
 cables with `conductor`, and every mod's generators and machines will work together.\
@@ -460,7 +460,7 @@ Inside any callback you get a `World` (`w`):
 - conditions are one predicate for music, text, loot and spawning: `r.condition(&BLOOD_MOON, |c| ..)` answers on whichever side asks (`c.world()` on the server, `c.client()` on the client, with `c.pos()` and `c.entity()`), and then `.when(&BLOOD_MOON)` on music or a spawn rule, `Cond::Condition(&BLOOD_MOON)` in a loot pool and `{if:mymod:blood_moon}` in text all use it. The engine's are in `conditions` (`DAY`, `NIGHT`, `UNDERGROUND`, `SURFACE`), and every game mode is one by its name (`Condition::named("core:creative")`, `{if:creative}`)
 - poses are values too: `r.pose(&SIT).height(0.7).eye(0.62).speed(0.0).action("sit")` registers one (`tilt(pose_tilt::FACE_DOWN)` lays the model down), and `w.set_pose(id, Some(&SIT), None)` holds a mob or a player in it until `None` (with a facing in degrees it also stays still and turned so, the way a bed lays a player down). The engine still picks standing, crouching, swimming and crawling (`keys::CRAWL` held, or no room for more) by itself while nothing holds the pose
 - game modes are values with abilities, the engine's three as well as yours: `r.game_mode(&ADVENTURE).breaks(Breaking::None).no_placing()` is an adventure mode, with `no_costs`, `invulnerable`, `flight(Flight::Allowed)`, `noclip`, `hidden`, `no_interacting`, `no_hud`, `creative_inventory`, `with(flags)` and `.modifier(&attribute, op, amount)` for the rest. `/gamemode mymod:adventure` and `{if:mymod:adventure}` know it at once, and it is saved by name
-- for stacks, `s.add_wear(1)` wears one down, and in a machine's tick `output.room_for(result)` and `output.merged(result, n)` are what an output slot takes
+- for stacks, `s.add_wear(1)` wears one down, and in a block entity's tick `output.room_for(result)` and `output.merged(result, n)` are what an output slot takes
 - inventories (`inventory(h).get/set/insert`, `inventory(h).group("fuel")`), where `h` is an entity id, a block position or `Holder::held(player, slot)` for a backpack, or `STORAGE.of(h)` for a storage it carries (`r.storage(&S, slots)`, an ender chest's slots in every player); a player's by the groups its inventory was declared with (`r.player_slots().group("hotbar", Slots::row(9).hotbar())..`), `core:equipment` for all equipment slots
 - components, energy, menus
 - particles (`w.spawn_particles(&SPARK, pos).count(20).speed(2.0).color(0xFF4020)`, from the client too). Particles live on the GPU, so what happens to one is data on its kind, not code: `on_land`, `on_wall`, `on_ceiling`, `on_enter_liquid`, `on_leave_liquid` and `on_expire` each take `When::any()`, `When::liquid()` or `When::tag("water")` and `Then::die()`, `stop()`, `slide()`, `bounce(0.4)` or `turn_into(&OTHER)` / `turn_into_still(&OTHER)`; the first rule that holds wins. Rain that rings on water and is gone elsewhere is `.on_enter_liquid(When::tag("water"), Then::turn_into_still(&RIPPLE)).on_land(When::any(), Then::die())`, an ember that bounces and dies into smoke `.on_land(When::any(), Then::bounce(0.4)).on_expire(When::any(), Then::turn_into(&SMOKE))`. At most 5 different tags over all particle rules of the game
@@ -520,6 +520,6 @@ You can contact me on Discord: `@vortex_so`
 - [Sky](sky.md): suns, moons, stars and skyboxes in any dimension, changing or removing the ones there
 - [Models and animations](models.md): mob models in code or Blockbench, keyframes and actions, items in the hands, armor
 - [UI](ui.md): screens, HUD, menus, looks, GUI textures
-- [Machines](machines.md): blocks with inventories, recipes, energy
+- [Block entities](block_entities.md): blocks with data, inventories, menus, recipes, energy
 - [Shaders](shaders.md): text effects, panels, mobs, particles, screen effects, shader packs
 - [Resource packs](resourcepacks.md): what a pack can replace and how it is laid out

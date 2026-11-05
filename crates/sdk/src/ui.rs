@@ -95,12 +95,12 @@ impl ClientView {
         let p = unsafe { (host().client_component)(self.raw, entity, c.id()) };
         (!p.is_null()).then(|| unsafe { std::ptr::read_unaligned(p as *const T) })
     }
-    /// The entity whose menu is open (a machine), if any.
+    /// The entity the open menu is on (a block entity, a mob), if any.
     pub fn menu_owner(&self) -> Option<u64> {
         let o = unsafe { (host().client_menu_owner)(self.raw) };
         (o != 0).then_some(o)
     }
-    /// A component of the open menu's machine, synced with `SYNC_MENU`, for screens to bind to.
+    /// A component of what the open menu is on, synced with `SYNC_MENU`, for screens to bind to.
     pub fn menu_component<T: Value>(&self, c: &Component<T>) -> Option<T> {
         self.component_of(self.menu_owner()?, c)
     }
@@ -530,7 +530,7 @@ impl Ui {
         });
     }
 
-    /// The open menu's title: what a player named the machine or chest, else the name of the
+    /// The open menu's title: what a player named the furnace or chest, else the name of the
     /// block it was opened on, else the translation `menu.<ns>.<name>`.
     pub fn title(&mut self) {
         self.leaf(node(k::TITLE, S::default()))

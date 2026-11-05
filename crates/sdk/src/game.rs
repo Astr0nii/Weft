@@ -1246,7 +1246,7 @@ impl MenuCtx {
     pub fn player(&self) -> u64 {
         self.args.player
     }
-    /// What the menu was opened on (a machine's block entity, a pouch in a slot); `None` for
+    /// What the menu was opened on (a block entity, a mob, a pouch in a slot); `None` for
     /// the player's own and a crafting table's.
     pub fn owner(&self) -> Option<Holder> {
         (self.args.owner.kind != abi::holder::NONE).then_some(self.args.owner)
@@ -1610,7 +1610,7 @@ impl Registry {
 
     /// Declares `comp` for anything that holds a value of its own: entities (as
     /// `entity_component` does) and stacks (as `stack_component`). With
-    /// `component_flags::CARRIED` the value goes from a broken machine onto its item and back
+    /// `component_flags::CARRIED` the value goes from a broken block onto its item and back
     /// when placed, as a renamed chest's name does.
     pub fn instance_component<T: Value>(&mut self, comp: &Component<T>, default: T, flags: u32) {
         self.entity_component(comp, default, flags);
@@ -1777,7 +1777,7 @@ impl Registry {
     }
 
     /// Shaped recipe: `pattern` rows use the characters in `keys`; ingredients are item names or `#tag`.
-    /// The recipe viewer shows `item` (a machine or workstation) next to recipes of type `kind`.
+    /// The recipe viewer shows `item` (a furnace or workstation) next to recipes of type `kind`.
     /// A tint kind: blocks with `.tint(&KIND)` take its color from the biome they stand in
     /// (`biome_tint`), `default` (0xRRGGBB) elsewhere and on items.
     pub fn tint_kind(&mut self, kind: &TintKind, default: u32) {
@@ -1895,7 +1895,7 @@ impl RecipeBuilder<'_> {
         self.outputs.push((item, count, chance));
         self
     }
-    /// Data the recipe carries for the machine making it (energy per tick); the recipe
+    /// Data the recipe carries for what makes it (energy per tick); the recipe
     /// viewer can show it in the kind's info line.
     pub fn value<T: Value>(mut self, comp: &Component<T>, v: T) -> Self {
         self.values.push(comp.raw_value(&v));
