@@ -179,11 +179,7 @@ pub fn mesh(c: &Content, key: TileKey, words: &[u32]) -> (Vec<[u32; 4]>, (i32, i
                 // where this one's sample says: the wall goes on down below it (a skirt), or
                 // the sky shows through the crack.
                 let (ni, nj) = (i + di, j + dj);
-                let ny = if (-1..=CELLS).contains(&ni) && (-1..=CELLS).contains(&nj) {
-                    column(&h, ni, nj)
-                } else {
-                    y.min(y - 1) - 2 * s
-                };
+                let ny = if (-1..=CELLS).contains(&ni) && (-1..=CELLS).contains(&nj) { column(&h, ni, nj) } else { y.min(y - 1) - 2 * s };
                 // Past a neighbor as high, real cubes may stand in for it lower than its sample
                 // says (it is interpolated): a skirt down below that, or the sky shows through
                 // between them.
