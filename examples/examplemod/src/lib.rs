@@ -68,8 +68,7 @@ fn blocks(_r: &mut Registry) {
     // static NATURAL: CreativeTab = CreativeTab::named("base:natural");
     // r.block(&RUBY_ORE)
     //     .hardness(3.0)
-    //     .mineable("pickaxe")
-    //     .needs_tool_level(tool_tier::IRON)      // drops nothing without at least an iron pickaxe
+    //     .mined_by("pickaxe", tool_tier::IRON)   // drops nothing without at least an iron pickaxe
     //     .drops("ruby", 1)
     //     .tab(&NATURAL);
     //
@@ -107,7 +106,7 @@ fn items(r: &mut Registry) {
     r.item(&EXAMPLE_ITEM).tab(&INGREDIENTS).tag("gems/example");
     // Tools, weapons, food, fuel are all components or tags, so other mods can use them:
     // static RUBY_PICKAXE: Item = Item::named("ruby_pickaxe");
-    // r.item(&RUBY_PICKAXE).tool("pickaxe").tool_level(tool_tier::DIAMOND).mining_speed(8.0).durability(1200).attack_damage(4.0);
+    // r.item(&RUBY_PICKAXE).tool("pickaxe", tool_tier::DIAMOND).mining_speed(8.0).durability(1200).attack_damage(4.0);
     // r.item(&RUBY_APPLE).set(&FOOD, ...)     // see `mods/base/src/items.rs` for food and armor
     // static FUEL: Component<u32> = Component::named("fuel");   // the common burn time, in ticks
     // r.set("examplemod:example_item", &FUEL, 1600);
@@ -153,7 +152,7 @@ fn entities(_r: &mut Registry) {
 /// For more info check "Hooking into the game" in `docs/modding.md`
 fn events(r: &mut Registry) {
     // Players joining get an example item if the setting allows it.
-    r.on(&PLAYER_JOINED, |batch| {
+    r.on_event(&PLAYER_JOINED, |batch| {
         if !GIFT_ON_JOIN.get() {
             return;
         }
@@ -164,8 +163,8 @@ fn events(r: &mut Registry) {
             info!("gave player {} an example item", joined.player);
         }
     });
-    // r.on(&actions::BREAK_BLOCK, |b| for e in b.iter() { /* e.player, e.pos, e.state */ });
-    // r.intercept(&actions::BREAK_BLOCK, |q| if q.pos().y < -60 { Verdict::Deny } else { Verdict::Abstain });
+    // r.on_event(&actions::BREAK_BLOCK, |b| for e in b.iter() { /* e.player, e.pos, e.state */ });
+    // r.before_event(&actions::BREAK_BLOCK, |q| if q.pos().y < -60 { Verdict::Deny } else { Verdict::Abstain });
     // r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.9);
 }
 
@@ -174,7 +173,7 @@ fn events(r: &mut Registry) {
 /// you only read the values by name.
 fn commands(_r: &mut Registry) {
     // Text on a player's screen, all one call with different defaults (docs: Text on the screen).
-    // r.on(&PLAYER_JOINED, |b| for e in b.iter() {
+    // r.on_event(&PLAYER_JOINED, |b| for e in b.iter() {
     //     b.world().hint(e.player, "examplemod.hello", &[]);
     //     b.world().show(e.player, "examplemod.hello", &[]).at(0.5, 0.1).scale(2.0).times(0.5, 2.0, 0.5);
     // });
@@ -191,10 +190,10 @@ fn commands(_r: &mut Registry) {
 /// `mods/testmod/src/looks.rs` (particles, shaders, sounds).
 fn client(_r: &mut Registry) {
     // static DASH: Key = Key::named("dash");
-    // static ABOUT: Screen = Screen::named("about");
+    // static ABOUT: Menu = Menu::named("about");
     // static MANA: HudElement = HudElement::named("mana");
-    // r.key(&DASH, "R").on_press_server(|p| { let w = p.world(); info!("{} dashes", p.player()); w.game_time(); });
-    // r.screen(&ABOUT, |ui| ui.panel("background", S::column().pad(8.0), |ui| ui.text("examplemod.about")));
+    // r.key(&DASH, "R").on_server(|p| { let w = p.world(); info!("{} dashes", p.player()); w.game_time(); });
+    // r.menu(&ABOUT).screen(|ui| ui.panel("background", S::column().pad(8.0), |ui| ui.text("examplemod.about")));
     // r.hud_element(&MANA, hud_anchor::HOTBAR_RIGHT, 2, |ui| ui.text_bind(|c, out| { /* ... */ }));
     //
     // In the hands: both or none, one with its own action, first on a right click. An item's clips
@@ -230,13 +229,13 @@ fn client(_r: &mut Registry) {
     // r.stack_component(&GRADE, 0);
     // fn made(grade: u32) -> ItemStack { CHISEL.stack(1).with(&GRADE, grade).with_wear(5) }
     //
-    // Sparks around a mob while it lives, the engine's steps and idle noises kept:
+    // Sparks around a mob while it lives, the engine's steps and idle noises kept (`.own_effects()`
+    // on the kind would turn those off):
     // static WISP: EntityKind = EntityKind::named("wisp");
     // static SPARK: Particle = Particle::named("spark");
-    // r.client_entity_cosmetics(&WISP, |c, e| {
+    // r.client_entity_frame(&WISP, |c, e| {
     //     if e.dying().is_none() {
     //         c.spawn_particles(&SPARK, e.pos());
     //     }
-    //     e.run_engine_effects();
     // });
 }
