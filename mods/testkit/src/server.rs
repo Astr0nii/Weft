@@ -889,7 +889,7 @@ const OPS: &[(&str, &str, Run)] = &[
     // A melee hit's damage with what `item` makes of the player having fallen `fall` blocks.
     ("attack_damage", "<item:item> <fall:float>", |w, cmd, player, _| {
         let fall = cmd.float("fall").ok_or("missing fall")?;
-        w.entity_edit(player).fall_distance(fall as f32);
+        w.entity_modify(player).fall_distance(fall as f32);
         let base = 6.0;
         let q = abi::Query { entity: player, item: id(cmd, "item")?, amount: base, ..query() };
         let fell = w.entity(player).map_or(-1.0, |s| s.fall_distance);
@@ -897,7 +897,7 @@ const OPS: &[(&str, &str, Run)] = &[
     }),
     // The player hits `id` as if having fallen `fall` blocks first.
     ("hit_falling", "<id:int> <fall:float>", |w, cmd, player, _| {
-        w.entity_edit(player)
+        w.entity_modify(player)
             .fall_distance(cmd.float("fall").unwrap_or(0.0) as f32);
         w.damage(int(cmd, "id")?, 1.0, player, damage_cause::ATTACK);
         Ok(String::new())
@@ -909,7 +909,7 @@ const OPS: &[(&str, &str, Run)] = &[
             .ok_or("no player")?
             .pos
             .offset(0.0, 3.0, 0.0);
-        w.entity_edit(player)
+        w.entity_modify(player)
             .pos(up)
             .yaw(cmd.float("yaw").unwrap_or(0.0) as f32)
             .selected(int(cmd, "slot")?)

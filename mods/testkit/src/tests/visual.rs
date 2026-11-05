@@ -91,7 +91,7 @@ pub async fn tooltips(t: T) -> R {
             t.probe("diamond block icon in the tooltip", block, block > 0.0008);
         }
     }
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await
 }
 
@@ -313,7 +313,7 @@ pub async fn client_hooks(t: T) -> R {
     t.c().input_key("F9", 0.0);
     t.until("probe key seen", Duration::from_secs(3), |_| crate::runner::PROBES.with(|p| p.get()) > before)
         .await?;
-    t.c().screen_open(&screens::CONTROLS);
+    t.c().menu_open(&screens::CONTROLS);
     t.screen("core:controls").await?;
     for _ in 0..40 {
         if t.c().ui_rect("text:test probe").is_some() {
@@ -324,7 +324,7 @@ pub async fn client_hooks(t: T) -> R {
         t.frames(2).await?;
     }
     t.check(t.c().ui_rect("text:test probe").is_some(), "Controls does not list the mod's key");
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await?;
     let f = t.feet();
     let b = [f[0] as f64 + 2.0, f[1] as f64, f[2] as f64 - 4.0];

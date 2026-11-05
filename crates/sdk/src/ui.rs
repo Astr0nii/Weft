@@ -16,7 +16,7 @@ impl ClientView {
     pub(crate) fn from_raw(raw: *mut abi::ClientCtx) -> ClientView {
         ClientView { raw }
     }
-    /// The client's actions (`screen_open`, `world_open`, `quit`..), for a button's callback:
+    /// The client's actions (`menu_open`, `world_open`, `quit`..), for a button's callback:
     /// a button may drive the client, a binding that only shows a value may not.
     pub fn client(&self) -> crate::Client {
         crate::Client::from_raw(self.raw)

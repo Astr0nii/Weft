@@ -138,9 +138,9 @@ impl World {
         unsafe { (host().place_template)(self.raw(), Str::new(template.name()), &pos) != 0 }
     }
     /// Changes what the entity is now, only what is named, when the edit is dropped:
-    /// `w.entity_edit(id).velocity(v).yaw(y);`. Players' own clients follow.
-    pub fn entity_edit(&self, id: u64) -> EntityEdit {
-        EntityEdit { world: *self, id, set: 0, state: EntityState::DEFAULT }
+    /// `w.entity_modify(id).velocity(v).yaw(y);`. Players' own clients follow.
+    pub fn entity_modify(&self, id: u64) -> EntityModify {
+        EntityModify { world: *self, id, set: 0, state: EntityState::DEFAULT }
     }
     /// Adds `v` (blocks per second) to its velocity, players included: a trampoline, a blast.
     pub fn push(&self, id: u64, v: impl Into<Vec3>) {
@@ -431,15 +431,15 @@ impl World {
     }
 }
 
-/// What `World::entity_edit` changes, sent when dropped.
-pub struct EntityEdit {
+/// What `World::entity_modify` changes, sent when dropped.
+pub struct EntityModify {
     world: World,
     id: u64,
     set: u32,
     state: EntityState,
 }
 
-impl EntityEdit {
+impl EntityModify {
     fn with(mut self, field: u32, f: impl FnOnce(&mut EntityState)) -> Self {
         self.set |= field;
         f(&mut self.state);
@@ -485,7 +485,7 @@ impl EntityEdit {
     }
 }
 
-impl Drop for EntityEdit {
+impl Drop for EntityModify {
     fn drop(&mut self) {
         if self.set != 0 && !std::thread::panicking() {
             unsafe { (host().entity_set)(self.world.raw(), self.id, self.set, &self.state) }

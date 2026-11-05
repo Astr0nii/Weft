@@ -15,7 +15,7 @@ pub async fn missing_dimension(t: T) -> R {
     t.op("put me 3 diamond 5").await?;
     t.op("stash base:chest stick 7").await?;
     t.screen("core:menu").await?;
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await?;
     let flat = Dimension::lookup("base:flatlands").ok_or("no flatlands")?;
     t.cmd("/dim base:flatlands").await?;
@@ -36,7 +36,7 @@ pub async fn missing_dimension(t: T) -> R {
         std::fs::write(f.path(), src.replace("dim = base:flatlands", "dim = ghost:gone")).map_err(|e| e.to_string())?;
     }
     // Opened from the list like a player would: the missing mod is named first.
-    t.c().screen_open(&screens::WORLDS);
+    t.c().menu_open(&screens::WORLDS);
     t.screen("core:worlds").await?;
     t.frames(2).await?;
     // A click lasts 50 ms; buttons act on release.
@@ -231,7 +231,7 @@ pub async fn camera(t: T) -> R {
 
 /// Mods change a player's state from the server, and its client follows: a mace's smash by the
 /// fall it reads, then the look, the hand, flight and fire set from outside.
-pub async fn entity_edit(t: T) -> R {
+pub async fn entity_modify(t: T) -> R {
     t.flat().await?;
     let (dmg, fell) = {
         let s = t.op("attack_damage testmod:mace 5").await?;
@@ -291,7 +291,7 @@ pub async fn virtual_menus(t: T) -> R {
         .await?;
     t.check_eq(t.c().menu_slot(1).count, 10, "second stash slot");
     t.shot("virtual_chest").await?;
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await?;
 
     // On a held stack: what goes in stays in that stack, and the menu closes when it goes.
@@ -308,7 +308,7 @@ pub async fn virtual_menus(t: T) -> R {
     t.op("hmenu testmod:pouch 8").await?;
     t.frames(10).await?;
     t.check(t.c().menu_slot(2).is_empty(), "a new pouch shows the old one's items");
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await?;
 
     let f = t.feet();
@@ -341,7 +341,7 @@ pub async fn virtual_menus(t: T) -> R {
             .await?;
         t.screen("core:menu").await?;
     }
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await
 }
 

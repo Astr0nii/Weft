@@ -135,7 +135,7 @@ pub fn register(r: &mut Registry) {
             .y(i32::MIN, max_y)
             .veins(veins)
             .vein_size(size)
-            .replace("#stone_ore_replaceables")
+            .replaces("#stone_ore_replaceables")
             .exposed(exposed);
     }
 

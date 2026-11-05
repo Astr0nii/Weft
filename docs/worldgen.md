@@ -26,7 +26,7 @@ Cube coordinates are block coordinates divided by 16, so cube `y = 4` holds the 
 
 ```rust
 static TIN_ORE: Block = Block::named("tin_ore");
-r.ore(&TIN_ORE).y(-64, 90).veins(5).vein_size(8).replace("#stone_ore_replaceables");
+r.ore(&TIN_ORE).y(-64, 90).veins(5).vein_size(8).replaces("#stone_ore_replaceables");
 ```
 - `y(min, max)`: the heights veins can start at, as many at each; `height(Height::triangle(-24, 56))` puts most in the middle like modern vanilla's iron, `Height::trapezoid(min, max, plateau)` keeps a flat top
 - `shape(Vein::blob(9))`: what a vein looks like, a random walk of `vein_size` blocks unless you say otherwise. `Vein::sphere(r)` and `Vein::disk(r, thickness)` (clay and gravel under water, with `replace("#dirt")`) are the others; none goes further than 16 blocks from its start

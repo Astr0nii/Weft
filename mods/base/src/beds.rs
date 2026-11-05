@@ -375,11 +375,11 @@ fn client(r: &mut Registry) {
     r.client_packet(&LYING, |c, lying| {
         if lying != 0 {
             *LYING_SINCE.lock().unwrap() = Some(Instant::now());
-            c.screen_open(&SLEEP_SCREEN);
+            c.menu_open(&SLEEP_SCREEN);
         } else if LYING_SINCE.lock().unwrap().take().is_some() {
             c.post_effect(&SLEEP_EFFECT, 0.0);
             if c.screen() == SLEEP_SCREEN.name() {
-                c.screen_close();
+                c.menu_close();
             }
         }
     });
@@ -409,7 +409,7 @@ fn client(r: &mut Registry) {
                     &[],
                 );
                 ui.button("bed.base.leave", S::column().min_w(200.0).self_align(abi::ui_align::CENTER), |c| {
-                    c.client().screen_close();
+                    c.client().menu_close();
                 });
             });
         })

@@ -19,7 +19,7 @@ pub async fn sprint_and_sneak_modes(t: T) -> R {
     t.flat().await?;
     // Switching a binding between held and toggled.
     let toggle = async |action: &str| -> R {
-        t.c().screen_open(&screens::CONTROLS);
+        t.c().menu_open(&screens::CONTROLS);
         t.screen("core:controls").await?;
         t.frames(3).await?;
         t.c().input_key("ShiftLeft", 0.2);
@@ -27,7 +27,7 @@ pub async fn sprint_and_sneak_modes(t: T) -> R {
         t.click_ui(&format!("id:bind:{action}:0"), 1);
         // Shift let go again, or the walks after start sneaking.
         t.secs(0.3).await?;
-        t.c().screen_close();
+        t.c().menu_close();
         t.no_screen().await?;
         // Toggles and double taps switch only once the game has the mouse again.
         t.frames(3).await?;
@@ -35,11 +35,11 @@ pub async fn sprint_and_sneak_modes(t: T) -> R {
     };
     toggle("core:sneak").await?;
     t.check_eq(SNEAK.get(), "toggle ShiftLeft".to_string(), "Shift + right click makes sneak a toggle");
-    t.c().screen_open(&screens::CONTROLS);
+    t.c().menu_open(&screens::CONTROLS);
     t.screen("core:controls").await?;
     t.frames(3).await?;
     t.shot("controls").await?;
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await?;
     t.c().set_look(0.0, 0.0);
 
@@ -160,7 +160,7 @@ pub async fn armor(t: T) -> R {
     t.check_eq(t.op("group me base:head").await?, "1 1".to_string(), "the head slot");
     t.check_eq(t.op("group me hotbar").await?, "9 0".to_string(), "hotbar group");
     t.shot("worn").await?;
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await?;
     let f = t.feet();
     t.op(&format!("spawn zombie {}", at(add(f, [1, 0, 1]))))
@@ -207,7 +207,7 @@ pub async fn slot_limit(t: T) -> R {
     t.frames(4).await?;
     t.check_eq(t.c().menu_slot(0).count, 16, "the input slot holds 16");
     t.check_eq(t.c().menu_slot(29).count, 16, "the rest stays in the hotbar");
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await
 }
 
@@ -245,7 +245,7 @@ pub async fn slot_accepts(t: T) -> R {
     t.click_ui("slot:0", 0);
     t.frames(4).await?;
     t.check(t.c().menu_slot(0).count + 1 >= before, "a shift-click doesn't take it out either");
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await
 }
 
@@ -291,7 +291,7 @@ pub async fn liquid_slot(t: T) -> R {
     click(0)?;
     t.secs(0.4).await?;
     t.check(t.slot(&at, 0).await?.1 == 0, "dirt stays out");
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await
 }
 
@@ -359,19 +359,19 @@ pub async fn advancements(t: T) -> R {
         t.frames(5).await?;
         t.shot("tooltip").await?;
     }
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await?;
     // The pause menu's button, as wide as the engine's own, opens the list too.
-    t.c().screen_open(&screens::PAUSE);
+    t.c().menu_open(&screens::PAUSE);
     t.screen("core:pause").await?;
     t.frames(3).await?;
     t.shot("pause").await?;
     t.check(t.click_ui("text:Advancements", 0), "the pause menu's advancements button");
     t.screen("base:advancements").await?;
     // It opened on top of the pause menu, which is back once it closes.
-    t.c().screen_close();
+    t.c().menu_close();
     t.screen("core:pause").await?;
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await?;
     // Dying takes none of them.
     t.cmd("/clear @s").await?;
@@ -1519,7 +1519,7 @@ pub async fn cell_parts(t: T) -> R {
     let name = format!("test-{}", t.name());
     t.c().world_leave();
     t.screen("core:title").await?;
-    t.c().screen_open(&screens::WORLDS);
+    t.c().menu_open(&screens::WORLDS);
     t.screen("core:worlds").await?;
     t.frames(2).await?;
     t.click_ui(&format!("text:{name} |"), 0);
@@ -2013,6 +2013,6 @@ pub async fn dedicated_server(t: T) -> R {
     t.c().world_join(&format!("127.0.0.1:{port}"));
     t.screen("core:message").await?;
     t.check(!t.flag(client::client_flags::IN_WORLD), "not on the whitelist, not in");
-    t.c().screen_close();
+    t.c().menu_close();
     Ok(())
 }

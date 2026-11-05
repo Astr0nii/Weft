@@ -1051,7 +1051,7 @@ impl Registry {
     }
 
     /// An ore, in every dimension whose ground it may `replace` (`.dimension(..)` limits it):
-    /// `r.ore(&TIN_ORE).y(0, 64).veins(6).vein_size(8).replace("#stone")`.
+    /// `r.ore(&TIN_ORE).y(0, 64).veins(6).vein_size(8).replaces("#stone")`.
     pub fn ore<'a>(&'a mut self, block: &Block) -> OreBuilder<'a> {
         OreBuilder {
             raw: self.raw,
@@ -1066,7 +1066,7 @@ impl Registry {
     }
 
     /// Adds to an ore registered already, another mod's: what `replace`, `replace_with` and
-    /// `exposed` give goes onto it, the rest stays (`r.ore_edit(&IRON_ORE).replace_with("#granite",
+    /// `exposed` give goes onto it, the rest stays (`r.ore_edit(&IRON_ORE).replaces_with("#granite",
     /// &GRANITE_IRON_ORE)`).
     pub fn ore_edit<'a>(&'a mut self, block: &Block) -> OreBuilder<'a> {
         let mut b = self.ore(block);
@@ -3263,7 +3263,7 @@ impl OreBuilder<'_> {
         self
     }
     /// Blocks or `#tags` the ore may replace, space separated; again for more.
-    pub fn replace(mut self, blocks: &str) -> Self {
+    pub fn replaces(mut self, blocks: &str) -> Self {
         for b in blocks.split_whitespace() {
             let name = if b.starts_with('#') { b.to_string() } else { qualify(self.ns, b) };
             self.replace = format!("{} {name}", self.replace);
@@ -3272,7 +3272,7 @@ impl OreBuilder<'_> {
     }
     /// Where the vein meets `blocks` (names or `#tags`), `ore` goes there instead: one vein
     /// through stone and granite, iron ore in one and granite iron ore in the other.
-    pub fn replace_with(mut self, blocks: &str, ore: &Block) -> Self {
+    pub fn replaces_with(mut self, blocks: &str, ore: &Block) -> Self {
         for b in blocks.split_whitespace() {
             let name = if b.starts_with('#') { b.to_string() } else { qualify(self.ns, b) };
             self.replace_with = format!("{} {name}>{}", self.replace_with, ore.name());

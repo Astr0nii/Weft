@@ -77,7 +77,7 @@ r.hud_element(&HEALTH, hud_anchor::HOTBAR_LEFT, 0, |ui| {
 The `class` ("heart", "arrow", "flame") names the textures, see [looks](#looks).
 
 ## Screens
-A screen is a menu: `r.menu(&ABOUT).screen(|ui| ..)`. With no slots and nothing synced it stays on the client, opened by `screen_open`; with slots it is what `w.open_menu` opens from the server. What it does besides showing parts is declared on it, the same properties the engine's screens have:
+A screen is a menu: `r.menu(&ABOUT).screen(|ui| ..)`. With no slots and nothing synced it stays on the client, opened by `menu_open`; with slots it is what `w.open_menu` opens from the server. What it does besides showing parts is declared on it, the same properties the engine's screens have:
 - `.pauses()`: single player stops while it is open
 - `.keep_on_escape()`: Escape doesn't close it (the death screen)
 - `.closes_on_respawn()`
@@ -91,9 +91,9 @@ r.menu(&ABOUT).screen(|ui| {
         ui.text("examplemod.about.title");
     });
 });
-r.client_command("about", "", |c| { c.client().screen_open(&ABOUT); });
+r.client_command("about", "", |c| { c.client().menu_open(&ABOUT); });
 ```
-`screen_open(&ABOUT)` works from a client command, a key or a button, and the command line takes it too as `--screen examplemod:about`.
+`menu_open(&ABOUT)` works from a client command, a key or a button, and the command line takes it too as `--screen examplemod:about`.
 
 Registering an engine screen's handle replaces that screen, so `r.menu(&screens::PAUSE).screen(..).pauses()` is your own pause screen. The engine's are in `screens::*`: `TITLE`, `PAUSE`, `SETTINGS`, `LANGUAGE`, `CONTROLS`, `SOUND`, `MOD_SETTINGS`, `MODS`, `PROFILE`, `WORLDS`, `CREATE_WORLD`, `MULTIPLAYER`, `RESOURCE_PACKS`, `SHADER_PACKS`, `CHAT` and `DEATH`. The engine's own screens open each other through the same names, so a replaced settings screen is the one the main menu's button opens.
 
@@ -101,7 +101,7 @@ Most of the time a whole new screen is more than you need. A screen part adds to
 ```rust
 r.screen_part(&screens::TITLE, "buttons", 0, |ui| {
     ui.button("examplemod.guide", S::default(), |c| {
-        c.client().screen_open(&GUIDE);
+        c.client().menu_open(&GUIDE);
     });
 });
 ```

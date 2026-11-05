@@ -480,7 +480,7 @@ pub fn watch_player(range: f64) -> impl Goal {
             if let Some((_, ps)) = nearest_player(w, st, range) {
                 let (dx, dz) = (ps.pos.x - st.pos.x, ps.pos.z - st.pos.z);
                 let dy = ps.eye().y - st.eye().y;
-                w.entity_edit(id)
+                w.entity_modify(id)
                     .yaw(crate::yaw_toward(st.pos, ps.pos))
                     .pitch(dy.atan2((dx * dx + dz * dz).sqrt()) as f32);
             }

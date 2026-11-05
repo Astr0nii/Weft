@@ -380,8 +380,8 @@ fn init(r: &mut Registry) {
         .y(-64, 90)
         .veins(5)
         .vein_size(8)
-        .replace("#stone_ore_replaceables")
-        .replace_with("basalt", &BASALT_TIN_ORE)
+        .replaces("#stone_ore_replaceables")
+        .replaces_with("basalt", &BASALT_TIN_ORE)
         .exposed(0.5);
     r.terrain(&MARS)
         .stone("basalt")
@@ -548,11 +548,11 @@ fn about_screen(r: &mut Registry) {
     // A button of its own in the main menu, next to the engine's and other mods'.
     r.screen_part(&screens::TITLE, "buttons", 0, |ui| {
         ui.button("testmod.about.button", S::default(), |c| {
-            c.client().screen_open(&ABOUT);
+            c.client().menu_open(&ABOUT);
         });
     });
     r.client_command("about", "", |c| {
-        c.client().screen_open(&ABOUT);
+        c.client().menu_open(&ABOUT);
     });
 }
 

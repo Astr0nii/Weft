@@ -51,7 +51,7 @@ pub fn register(r: &mut Registry) {
             if (me.fall_distance as f64) <= SMASH_FROM {
                 continue;
             }
-            w.entity_edit(h.source)
+            w.entity_modify(h.source)
                 .fall_distance(0.0)
                 .velocity(Vec3 { y: 0.0, ..me.vel });
             let Some(target) = w.entity(h.entity) else { continue };

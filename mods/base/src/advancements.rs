@@ -288,13 +288,13 @@ fn client(r: &mut Registry) {
         });
     });
     r.key(&OPEN, "L").on_client(|c| {
-        c.screen_open(&SCREEN);
+        c.menu_open(&SCREEN);
     });
     // The pause menu stretches its mods' parts across the screen; sized and centered like its own
     // buttons (200 wide) instead.
     r.screen_part(&screens::PAUSE, "buttons", 0, |ui| {
         ui.button("advancements.base.button", S::column().min_w(200.0).self_align(abi::ui_align::CENTER), |c| {
-            c.client().screen_open(&SCREEN);
+            c.client().menu_open(&SCREEN);
         });
     });
 }

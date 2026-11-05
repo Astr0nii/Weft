@@ -48,7 +48,7 @@ pub fn all() -> Vec<TestDef> {
         world::riding,
         world::camera,
         world::lod_columns,
-        world::entity_edit,
+        world::entity_modify,
         world::virtual_menus,
         world::worldgen,
         world::plants_on_cube_tops,

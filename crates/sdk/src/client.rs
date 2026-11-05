@@ -234,11 +234,11 @@ impl Client {
     }
 
     /// A mod's screen or one of the engine's (`screens::*`).
-    pub fn screen_open(&self, screen: &Menu) -> bool {
+    pub fn menu_open(&self, screen: &Menu) -> bool {
         self.op(abi::client_op::OPEN_SCREEN, screen.name(), 0.0) != 0
     }
 
-    pub fn screen_close(&self) {
+    pub fn menu_close(&self) {
         self.op(abi::client_op::CLOSE_SCREEN, "", 0.0);
     }
 

@@ -128,7 +128,7 @@ fn recipes(_r: &mut Registry) {
 fn worldgen(_r: &mut Registry) {
     // static OVERWORLD: Dimension = Dimension::named("base:overworld");
     // static RUBY_ORE: Block = Block::named("ruby_ore");
-    // r.ore(&RUBY_ORE).y(-64, 16).veins(2).vein_size(5).replace("#stone_ore_replaceables");
+    // r.ore(&RUBY_ORE).y(-64, 16).veins(2).vein_size(5).replaces("#stone_ore_replaceables");
     // static SHRINE: Template = Template::named("shrine");
     // r.template(&SHRINE).layer(&["ccc", "c c", "ccc"]).key('c', "base:cobblestone");
     // r.structure(&SHRINE).dimension(&OVERWORLD).spacing(256).chance(0.3);

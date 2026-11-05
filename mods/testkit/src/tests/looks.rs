@@ -140,21 +140,21 @@ pub async fn pack_lang(t: T) -> R {
     weft_sdk::settings::RESOURCE_PACKS.set("testkit_lang");
     t.c().reload_assets();
     t.frames(2).await?;
-    t.c().screen_open(&screens::SETTINGS);
+    t.c().menu_open(&screens::SETTINGS);
     t.screen("core:settings").await?;
     t.frames(2).await?;
     t.laid_out(&["text:Pack Done", "text:View distance", "text:Language"]);
-    t.c().screen_close();
+    t.c().menu_close();
     weft_sdk::settings::RESOURCE_PACKS.set("");
     drop(std::fs::remove_dir_all(&pack));
     t.c().reload_assets();
     t.frames(2).await?;
-    t.c().screen_open(&screens::SETTINGS);
+    t.c().menu_open(&screens::SETTINGS);
     t.screen("core:settings").await?;
     t.frames(2).await?;
     t.check(t.c().ui_rect("text:Pack Done").is_none(), "without the pack the key is the mod's again");
     t.laid_out(&["text:Done"]);
-    t.c().screen_close();
+    t.c().menu_close();
     Ok(())
 }
 
@@ -348,7 +348,7 @@ pub async fn rich_text(t: T) -> R {
     let d = T::differ(&rune.px, &sneak.px) as f32;
     t.probe("sneaking changes the tooltip ({on_key})", d, d > 0.002);
     t.c().input_release_all();
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await
 }
 
@@ -448,11 +448,11 @@ pub async fn clouds(t: T) -> R {
     let wall = t.shot("wall").await?.share(0.2, 0.3, 0.8, 0.7, white);
     t.check(wall < 0.005, format!("clouds through a wall: {wall:.3}"));
     // Its slider is among the others.
-    t.c().screen_open(&screens::SETTINGS);
+    t.c().menu_open(&screens::SETTINGS);
     t.screen("core:settings").await?;
     t.frames(3).await?;
     t.shot("settings").await?;
-    t.c().screen_close();
+    t.c().menu_close();
     t.no_screen().await?;
     Ok(())
 }
