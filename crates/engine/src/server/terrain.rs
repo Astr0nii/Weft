@@ -77,7 +77,7 @@ pub struct RawRule {
 
 impl RawRule {
     /// The fields of `edit` named in its `fields` replace this rule's.
-    fn apply(&mut self, edit: &RawRule) {
+    pub(crate) fn apply(&mut self, edit: &RawRule) {
         let has = |f: u32| edit.fields & f != 0;
         if has(rf::BIOME) {
             self.biome = edit.biome.clone();
@@ -480,10 +480,6 @@ pub fn build(
             },
             op::BIOME_REMOVE => match rule_at(&d.rules) {
                 Some(i) => drop(d.rules.remove(i)),
-                None => missing("biome rule"),
-            },
-            op::BIOME_EDIT => match rule_at(&d.rules) {
-                Some(i) => d.rules[i].apply(&o.rule),
                 None => missing("biome rule"),
             },
             op::CAVE_BIOME => d.cave_biomes.push((o.rule.biome, o.level, o.size, o.value)),
@@ -1283,16 +1279,6 @@ mod tests {
         let mut ops = base();
         ops.push(raw(1, op::BIOME_BEFORE, "a:jungle", Some(("", "b:savanna"))));
         assert_eq!(built(ops), (vec![1, 0], vec![]));
-
-        // Only the given fields change.
-        let mut ops = base();
-        let mut edit = raw(1, op::BIOME_EDIT, "a:desert", None);
-        edit.rule.fields = rf::HEIGHT;
-        edit.rule.height = (0, 10);
-        ops.push(edit);
-        let names = Names { block: &|_| Some(1), biome: &|_| Some(0), biome_rule: &|_| None };
-        let t = build("a:dim", &|_| String::new(), ops, &names, &mut Vec::new());
-        assert_eq!((t.rules[0].height, t.rules.len()), ((0, 10), 2));
     }
 
     /// A rule starts from its biome's climate and surface and overrides only what it sets.

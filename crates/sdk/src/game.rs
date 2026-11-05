@@ -1480,14 +1480,15 @@ impl MenuBuilder<'_> {
         self.groups.player_inventory();
         self
     }
-    /// The player's equipment slots, here among the groups, each named like its slot
-    /// (`ui.equipment()` draws them).
+    /// The equipment slots, here among the groups, each named like its slot: of the entity the
+    /// menu is open on when it wears (`EntityBuilder::equipment`, a mob's), else the player's.
+    /// Only the slots: `ui.equipment()` draws them where the screen wants.
     pub fn equipment(mut self) -> Self {
         self.groups.push(
             "",
             EQUIPMENT_GROUP,
-            Slots { owner: Some(abi::slot_owner::PLAYER_EQUIPMENT), ..Slots::single() },
-            abi::slot_owner::PLAYER_EQUIPMENT,
+            Slots { owner: Some(abi::slot_owner::EQUIPMENT), ..Slots::single() },
+            abi::slot_owner::EQUIPMENT,
         );
         self
     }

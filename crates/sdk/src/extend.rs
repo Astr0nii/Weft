@@ -11,7 +11,7 @@
 //! r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.5);
 //! // Loot tables any mod can change:
 //! r.loot(&OAK_LEAVES).pool(Pool::new().when(Cond::Chance(0.05)).item("sapling"));
-//! r.loot_edit(&ZOMBIE).add_pool(Pool::new().item("mymod:brain"));
+//! r.edit(&LootTable::named("base:zombie")).add_pool(Pool::new().item("mymod:brain"));
 //! ```
 
 use crate::abi::BlockPos;
@@ -533,6 +533,9 @@ pub struct LootModBuilder<'a> {
 }
 
 impl LootModBuilder<'_> {
+    pub(crate) fn new<'a>(reg: &'a mut Registry, table: &str) -> LootModBuilder<'a> {
+        LootModBuilder { reg, table: table.to_string() }
+    }
     fn send(&mut self, op: u32, pool: Option<&Pool>, from: &str, to: &str) {
         let pools: Vec<Pool> = pool.into_iter().cloned().collect();
         let raw = raw_pools(self.reg.ns, &pools);
@@ -676,10 +679,6 @@ impl Registry {
     /// A loot table: a block's or entity kind's is what it drops, a `LootTable` is one of its own.
     pub fn loot<'a>(&'a mut self, table: &dyn LootSource) -> LootBuilder<'a> {
         LootBuilder { reg: self, name: table.table_name().to_string(), pools: Vec::new() }
-    }
-
-    pub fn loot_edit<'a>(&'a mut self, table: &dyn LootSource) -> LootModBuilder<'a> {
-        LootModBuilder { reg: self, table: table.table_name().to_string() }
     }
 
     /// Declares a component stacks carry a value of (`stack.with(&COMP, v)`), with its flags

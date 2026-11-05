@@ -1144,7 +1144,7 @@ pub struct RawRegistrar {
     pub owner: ModId,
     pub blocks: Vec<RawBlock>,
     pub items: Vec<RawItem>,
-    pub biomes: Vec<(BiomeDef, usize, Vec<RawValue>, crate::server::terrain::RawRule)>,
+    pub biomes: Vec<RawBiome>,
     pub dims: Vec<(DimensionDef, usize, Vec<RawValue>)>,
     pub tint_kinds: Vec<(String, u32)>,
     /// Biome, tint kind, color.
@@ -1220,6 +1220,8 @@ pub struct RawItem {
     pub block: String,
     pub components: Vec<RawValue>,
     pub on_use: Option<Callback>,
+    /// `Registry::edit`: goes onto the item of this name.
+    pub edit: bool,
 }
 
 impl RawRegistrar {
@@ -1414,6 +1416,7 @@ fn expand_templates(
                         block: name.clone(),
                         components: i.components.clone(),
                         on_use: i.on_use,
+                        edit: false,
                     },
                 ));
             }
@@ -1593,6 +1596,7 @@ pub(crate) unsafe fn copy_item(d: &abi::ItemDesc) -> RawItem {
             block: d.block.as_str().to_string(),
             components: RawValue::list(d.components),
             on_use: cb(d.on_use),
+            edit: d.edit != 0,
         }
     }
 }
@@ -1880,7 +1884,8 @@ impl TextureList {
     }
 }
 
-type RawBiome = (BiomeDef, usize, Vec<RawValue>, crate::server::terrain::RawRule);
+/// (biome, handle cell, components, its own rule, `Registry::edit` of another's).
+type RawBiome = (BiomeDef, usize, Vec<RawValue>, crate::server::terrain::RawRule, bool);
 type RawDim = (DimensionDef, usize, Vec<RawValue>);
 
 /// What the registrars brought, put together.
@@ -2191,9 +2196,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
 
 fn merge_registrars(mods: &[ModMeta], mut regs: Vec<RawRegistrar>, errors: &mut Vec<String>) -> Merged {
     drop_overridden(mods, &mut regs);
+    // Everything below goes in load order: of two mods' say on one thing the later one's wins.
+    regs.sort_by_key(|r| mods[r.owner.0 as usize].order);
     let mut blocks: Vec<(ModId, RawBlock)> = Vec::new();
     let mut items: Vec<(ModId, RawItem)> = Vec::new();
-    let mut biomes: Vec<(BiomeDef, usize, Vec<RawValue>, crate::server::terrain::RawRule)> = Vec::new();
+    let mut biomes: Vec<RawBiome> = Vec::new();
     let mut dims: Vec<(DimensionDef, usize, Vec<RawValue>)> = Vec::new();
     let mut tint_kinds: Vec<(String, u32)> =
         vec![("core:grass".into(), 0x8db360), ("core:foliage".into(), 0x77ab2f), ("core:water".into(), 0x3f76e4)];
@@ -2328,7 +2335,7 @@ fn model_file(mods: &[ModMeta], name: &str) -> Option<String> {
 fn freeze_tints(
     mut tint_kinds: Vec<(String, u32)>,
     mut biome_tints: Vec<(u32, (String, String, u32))>,
-    biomes: &mut [RawBiome],
+    biomes: &mut Vec<RawBiome>,
     errors: &mut Vec<String>,
 ) -> Vec<(String, u32)> {
     if tint_kinds.len() > abi::tint::MAX_KINDS as usize {
@@ -2365,23 +2372,54 @@ fn check_unique(
     mods: &[ModMeta],
     blocks: &[(ModId, RawBlock)],
     items: &mut Vec<(ModId, RawItem)>,
-    biomes: &mut [RawBiome],
+    biomes: &mut Vec<RawBiome>,
     dims: &mut [RawDim],
     errors: &mut Vec<String>,
 ) {
-    let mut seen = rustc_hash::FxHashSet::default();
-    items.retain(|(_, i)| seen.insert(i.name.clone()));
-    biomes.sort_by(|a, b| a.0.name.cmp(&b.0.name));
-    dims.sort_by(|a, b| a.0.name.cmp(&b.0.name));
     let mod_name = |m: ModId| mods[m.0 as usize].id.clone();
+    // Edits (`Registry::edit`) go onto what is registered under the name, in load order.
+    let (edits, new): (Vec<_>, Vec<_>) = std::mem::take(items).into_iter().partition(|(_, i)| i.edit);
+    for (owner, i) in new {
+        match items.last() {
+            Some((o, last)) if last.name == i.name => {
+                errors.push(format!("item {} registered by both {} and {}", i.name, mod_name(*o), mod_name(owner)))
+            }
+            _ => items.push((owner, i)),
+        }
+    }
+    for (owner, e) in edits {
+        let Ok(at) = items.binary_search_by(|(_, i)| i.name.cmp(&e.name)) else {
+            errors.push(format!("{}: edit of item {}: no such item", mod_name(owner), e.name));
+            continue;
+        };
+        let i = &mut items[at].1;
+        if !e.texture.is_empty() {
+            i.texture = e.texture;
+        }
+        if !e.block.is_empty() {
+            i.block = e.block;
+        }
+        i.on_use = e.on_use.or(i.on_use);
+        i.components.extend(e.components);
+    }
+    biomes.sort_by(|a, b| a.0.name.cmp(&b.0.name).then(a.4.cmp(&b.4)));
+    let mut kept: Vec<RawBiome> = Vec::with_capacity(biomes.len());
+    for b in std::mem::take(biomes) {
+        match kept.last_mut() {
+            Some(k) if k.0.name == b.0.name && b.4 => {
+                k.3.apply(&b.3);
+                k.2.extend(b.2);
+            }
+            Some(k) if k.0.name == b.0.name => errors.push(format!("biome {} registered twice", b.0.name)),
+            _ if b.4 => errors.push(format!("edit of biome {}: no such biome", b.0.name)),
+            _ => kept.push(b),
+        }
+    }
+    *biomes = kept;
+    dims.sort_by(|a, b| a.0.name.cmp(&b.0.name));
     for w in blocks.windows(2) {
         if w[0].1.name == w[1].1.name {
             errors.push(format!("block {} registered by both {} and {}", w[0].1.name, mod_name(w[0].0), mod_name(w[1].0)));
-        }
-    }
-    for w in items.windows(2) {
-        if w[0].1.name == w[1].1.name {
-            errors.push(format!("item {} registered by both {} and {}", w[0].1.name, mod_name(w[0].0), mod_name(w[1].0)));
         }
     }
     // Cubes and face records keep 16 bits; the top one stays free.
@@ -2683,7 +2721,7 @@ fn number_biomes(biomes: Vec<RawBiome>) -> BiomeTables {
     let biome_defs: Vec<BiomeDef> = biomes
         .into_iter()
         .enumerate()
-        .map(|(i, (b, cell, v, rule))| {
+        .map(|(i, (b, cell, v, rule, _))| {
             write_cell(cell, i as u32);
             biome_values.push(v);
             biome_rules.push(rule);
@@ -3188,22 +3226,38 @@ fn place_features(games: &mut [crate::registry::RawGame], dim_defs: &mut [Dimens
         .flat_map(|g| std::mem::take(&mut g.ores))
         .collect();
     raw_ores.sort_by(|a, b| a.block.cmp(&b.block));
-    // Edits go onto the ore they name, in mod order.
-    let mut merged: Vec<crate::registry::RawOre> = Vec::new();
-    for o in raw_ores {
-        if o.edit {
-            match merged.iter_mut().find(|m| m.block == o.block) {
-                Some(m) => {
-                    m.replace.extend(o.replace);
-                    m.replace_with.extend(o.replace_with);
-                    if o.exposed.is_finite() {
-                        m.exposed = o.exposed;
-                    }
+    // Edits go onto the ore they name, in load order.
+    let (edits, mut merged): (Vec<_>, Vec<_>) = raw_ores.into_iter().partition(|o| o.edit);
+    use weft_abi::ore_set as os;
+    for o in edits {
+        match merged.iter_mut().find(|m| m.block == o.block) {
+            Some(m) => {
+                m.replace.extend(o.replace);
+                m.replace_with.extend(o.replace_with);
+                if o.exposed.is_finite() {
+                    m.exposed = o.exposed;
                 }
-                None => errors.push(format!("ore edit {}: no such ore", o.block)),
+                if !o.at.dims.is_empty() {
+                    m.at.dims = o.at.dims;
+                }
+                if !o.at.biome.is_empty() {
+                    m.at.biome = o.at.biome;
+                }
+                let has = |f: u32| o.set & f != 0;
+                if has(os::VEINS) {
+                    m.veins = o.veins;
+                }
+                if has(os::BLOCKS) {
+                    m.size = o.size;
+                }
+                if has(os::SHAPE) {
+                    (m.shape, m.shape_size) = (o.shape, o.shape_size);
+                }
+                if has(os::HEIGHT) {
+                    (m.height, m.plateau, m.at.y) = (o.height, o.plateau, o.at.y);
+                }
             }
-        } else {
-            merged.push(o);
+            None => errors.push(format!("ore edit {}: no such ore", o.block)),
         }
     }
     let raw_ores = merged;
@@ -3852,11 +3906,47 @@ fn freeze_liquids(
     let mut raw: Vec<abi::LiquidDesc> = Vec::new();
     let mut names: Vec<String> = Vec::new();
     let mut overlays: Vec<String> = Vec::new();
-    for g in games.iter_mut() {
-        for (name, overlay, d) in std::mem::take(&mut g.liquids) {
-            names.push(name);
-            overlays.push(overlay);
-            raw.push(d);
+    let all: Vec<_> = games
+        .iter_mut()
+        .flat_map(|g| std::mem::take(&mut g.liquids))
+        .collect();
+    let (edits, new): (Vec<_>, Vec<_>) = all.into_iter().partition(|l| l.2.edit != 0);
+    for (name, overlay, d) in new {
+        names.push(name);
+        overlays.push(overlay);
+        raw.push(d);
+    }
+    // Edits (`Registry::edit`) go onto the liquid they name, in load order.
+    for (name, overlay, e) in edits {
+        use abi::liquid_set as ls;
+        let Some(i) = names.iter().position(|n| *n == name) else {
+            errors.push(format!("edit of liquid {name}: no such liquid"));
+            continue;
+        };
+        let (d, has) = (&mut raw[i], |f: u32| e.set & f != 0);
+        if has(ls::DELAY) {
+            d.delay = e.delay;
+        }
+        if has(ls::DROP_OFF) {
+            d.drop_off = e.drop_off;
+        }
+        if has(ls::SLOPE_FIND) {
+            d.slope_find = e.slope_find;
+        }
+        if has(ls::RENEWABLE) {
+            d.renewable = e.renewable;
+        }
+        if has(ls::DENSITY) {
+            d.density = e.density;
+        }
+        if has(ls::TEMPERATURE) {
+            d.temperature = e.temperature;
+        }
+        if has(ls::FOG) {
+            (d.fog_color, d.fog_distance) = (e.fog_color, e.fog_distance);
+        }
+        if has(ls::OVERLAY) {
+            (overlays[i], d.overlay_opacity) = (overlay, e.overlay_opacity);
         }
     }
     let mut order: Vec<usize> = (0..raw.len()).collect();
@@ -3897,27 +3987,6 @@ fn freeze_liquids(
             overlay: overlays[i].clone(),
             overlay_opacity: d.overlay_opacity.clamp(0.0, 1.0),
         });
-    }
-    // Later mods' say on how any of them looks and whether it can be swum in.
-    for g in games.iter_mut() {
-        for (name, overlay, d) in std::mem::take(&mut g.liquid_changes) {
-            let Some(l) = liquids.iter_mut().find(|l| l.name == name) else {
-                errors.push(format!("change of liquid {name}: no such liquid"));
-                continue;
-            };
-            if d.fog_color != u32::MAX {
-                l.fog_color = Some(d.fog_color);
-            }
-            if !d.fog_distance.is_nan() {
-                l.fog_distance = d.fog_distance.max(0.1);
-            }
-            if !overlay.is_empty() {
-                l.overlay = overlay;
-            }
-            if !d.overlay_opacity.is_nan() {
-                l.overlay_opacity = d.overlay_opacity.clamp(0.0, 1.0);
-            }
-        }
     }
     let matcher = |s: &str, errors: &mut Vec<String>| -> Option<Match> {
         match crate::refs::Ref::parse(s)

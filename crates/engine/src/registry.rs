@@ -807,8 +807,6 @@ pub struct RawGame {
     pub keys: Vec<(String, String)>,
     /// (block name, flow rules).
     pub liquids: Vec<(String, String, weft_abi::LiquidDesc)>,
-    /// (liquid, overlay, change), in mod order.
-    pub liquid_changes: Vec<(String, String, weft_abi::LiquidEdit)>,
     /// (command, level), mods' say on what their commands ask for.
     pub command_permissions: Vec<(String, u32)>,
     /// liquid, touching, source result, flowing result, falls-into result.
@@ -1299,6 +1297,8 @@ pub struct RawOre {
     pub replace_with: Vec<(String, String)>,
     pub exposed: f32,
     pub edit: bool,
+    /// `abi::ore_set`: what an edit gives.
+    pub set: u32,
 }
 
 pub struct RawScatter {
@@ -2357,13 +2357,14 @@ pub fn freeze(
             k.slots = k.worn.end;
         }
     }
-    // Menus showing the player's equipment get a group per slot, taking what is worn there.
+    // Menus showing equipment get a group per slot: what the entity the menu is on wears, or the
+    // player (`menu::slots`). The other hand is always the player's.
     let layout = g.player_layout.clone();
     for m in &mut g.menus {
         let Some(at) = m
             .groups
             .iter()
-            .position(|g| g.owner == weft_abi::slot_owner::PLAYER_EQUIPMENT)
+            .position(|g| g.owner == weft_abi::slot_owner::EQUIPMENT)
         else {
             continue;
         };
@@ -2376,8 +2377,8 @@ pub fn freeze(
                 at,
                 GroupDef {
                     name: e.name.clone(),
-                    owner: weft_abi::slot_owner::PLAYER,
-                    start: layout.worn.start + i as u32,
+                    owner: if off { weft_abi::slot_owner::PLAYER } else { weft_abi::slot_owner::WORN },
+                    start: if off { layout.worn.start + i as u32 } else { i as u32 },
                     cols: 1,
                     rows: 1,
                     flags: if off { weft_abi::slot_flags::OFF_HAND } else { 0 },

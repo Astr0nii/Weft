@@ -333,7 +333,7 @@ Look at testmod's generator for an example.
 - `fog(rgb, blocks)` and `overlay(texture, opacity)` or `no_overlay()`: what you see from inside. By default both come from its texture; set them when the inside should look different from the surface: `r.liquid(&TAR).fog(0x1A1408, 6.0).overlay("tar_inside", 0.4)`
 - `bucket(..)`
 
-Another mod's liquid: `r.liquid_edit(&WATER).fog(0x204020, 12.0)`, also `overlay`, `no_overlay` and `block(|b| ..)`. What you don't set stays, how it flows is the owner's.
+Another mod's liquid: `r.edit(WATER.liquid()).fog(0x204020, 12.0)`, any of the above; what you don't set stays.
 
 Reactions: `r.liquid_reaction("#hot", "#water").source_turns_into("obsidian")`.\
 Every liquid is also an item of its name and tags, its count in millibuckets: what liquid slots (`Slots::liquid(capacity)`) hold and recipes count, see the [machines guide](machines.md).
@@ -344,7 +344,7 @@ Every liquid is also an item of its name and tags, its count in millibuckets: wh
 - weather is a value too: `r.weather(&ACID_RAIN).darkness(0.5).gray(0.8, 0.6, 0.9).sound("mymod:weather.acid").duration(2400, 6000).weight(1)` (`falls`, `lightning`, `shelters_from_sun`, or the whole `look`), and a dimension lists what comes there after clear weather, `.weathers(&[&weathers::RAIN, &weathers::THUNDER, &ACID_RAIN])`. `w.weather()` is the id now (`w.raining()`, `w.thundering()` read its flags), `w.set_weather(&weathers::THUNDER, ticks)` changes it, and `r.on_event(&WEATHER_TICK, ..)` hears every tick of it for acid on whoever stands outside. What falls is the biome's: `.precipitation(&ASH)` after `r.precipitation(&ASH)`, `.snows()` for snow
 - `r.sky_body(&DIM, &OBJECT)`, `r.sky_stars`, `r.sky_dome`, `r.sky_remove` for what is in its sky, the sun and the moon included
 - `r.terrain(dim)` for its terrain, yours or another mod's
-- `r.ore(block)`, in every dimension whose stone it replaces (`.dimension(..)` limits it). `.replaces_with("#granite", &GRANITE_IRON_ORE)` makes the same vein go on as another block where it meets granite, so veins don't stop at stone borders; `.exposed(0.5)` leaves out half of what would touch a cave, as vanilla's gold and diamonds. `r.ore_edit(&IRON_ORE)` adds those to another mod's ore
+- `r.ore(block)`, in every dimension whose stone it replaces (`.dimension(..)` limits it). `.replaces_with("#granite", &GRANITE_IRON_ORE)` makes the same vein go on as another block where it meets granite, so veins don't stop at stone borders; `.exposed(0.5)` leaves out half of what would touch a cave, as vanilla's gold and diamonds. `r.edit(IRON_ORE.ore())` changes another mod's ore: what you set, its `replaces` and `replaces_with` added to its own
 - `r.scatter(&TREES)` for trees and the like, `r.decoration(f)` for plants, in every dimension
 - `r.template(&T)` (layers and keys, or `fill` boxes) for a shape of blocks, then `r.structure(dim, &T)`, `.body(&T)` on an entity or `w.place_template(&T, pos)`
 - `r.natural_spawn(entity).biome("#animals").light(7, 15)`
@@ -363,14 +363,14 @@ Recipe kinds are registered too (`r.recipe_kind`), a furnace is just a kind with
 ### Loot
 `r.loot(&RUBY_ORE).pool(Pool::new().when(Cond::Harvested).rolls(1, 2).item("ruby"))` (a block's or entity's table is what it drops, `LootTable::named(..)` is a table of its own)\
 A block's table is all it drops, there is no tool check in front of it: put `Cond::Harvested` on the pools that need the right tool (broken by the world, like a torch losing its wall, always counts as harvested).\
-and other mods' tables without replacing them: `r.loot_edit(&ZOMBIE).add_pool(..)` with `ZOMBIE = EntityKind::named("base:zombie")`.
+and other mods' tables without replacing them: `r.edit(ZOMBIE.loot()).add_pool(..)` with `ZOMBIE = EntityKind::named("base:zombie")`.
 
 ### Changing something of another mod
-- `r.edit(&base::TORCH).light(5)`: only what you set changes, the rest of the block stays (testmod edits its own torch this way).
+- `r.edit(&base::TORCH).light(5)`: only what you set changes, the rest stays (testmod edits its own torch this way). Blocks, items and biomes by their handle, and the parts of a block by its: `IRON_ORE.ore()`, `WATER.liquid()`, `ZOMBIE.loot()`. A block's edit says of its item only what it sets (`item_texture`, `no_item()`).
 - `r.replace(&base::TORCH)...`: registers it from scratch, nothing of theirs stays; for every kind with a builder (blocks, items, entities, biomes, dimensions, menus, particles, sounds, poses, game modes, weathers, damage causes, text places).
 - `r.remove(&base::RUBY_ORE)`: as if nobody had registered it.
 
-Their handle, item and recipes point at yours. Parts of a block have their own edits: `ore_edit`, `loot_edit`, `liquid_edit`.
+Their handle, item and recipes point at yours.
 
 ## Hooking into the game
 There are four mechanisms, try them in this order:

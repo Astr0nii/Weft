@@ -705,11 +705,6 @@ impl TerrainBuilder<'_> {
     pub fn rule_remove(self, rule: &str) -> Self {
         self.send(Op { anchor: rule.to_string(), ..Op::new(op::BIOME_REMOVE) })
     }
-    /// Changes what the closure sets on the rule and keeps the rest:
-    /// `rule_edit("base:desert", |r| r.temperature(0.5..))`.
-    pub fn rule_edit(self, rule: &str, edit: impl FnOnce(BiomeRule) -> BiomeRule) -> Self {
-        self.send(Op { anchor: rule.to_string(), rule: Some(edit(BiomeRule::blank())), ..Op::new(op::BIOME_EDIT) })
-    }
     /// A biome in 3D: whole cubes at least `depth` blocks under the surface where a 3D noise of
     /// patches about `size` blocks across is above `threshold` (-1..1). Biomes are kept per
     /// column of each cube, so underground ones change every 16 blocks of height at most.

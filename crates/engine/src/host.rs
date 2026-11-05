@@ -174,7 +174,6 @@ pub static HOST: Host = Host {
     image_unload: crate::app::api::image_free,
     name_of,
     reg_liquid,
-    reg_liquid_edit,
     reg_liquid_reaction,
     liquid_of,
     use_container,
@@ -1881,6 +1880,7 @@ unsafe extern "C" fn reg_biome(r: *mut abi::Registrar, d: *const abi::BiomeDesc)
             d.cell as usize,
             crate::components::RawValue::list(d.components),
             crate::server::terrain::copy_rule(&d.rule),
+            d.edit != 0,
         ));
     }
 }
@@ -2128,6 +2128,7 @@ unsafe extern "C" fn reg_ore(r: *mut abi::Registrar, d: *const abi::OreDesc) {
                 .collect(),
             exposed: d.exposed,
             edit: d.edit != 0,
+            set: d.set,
             plateau: d.plateau.max(0),
         });
     }
@@ -2302,17 +2303,6 @@ unsafe extern "C" fn reg_liquid(r: *mut abi::Registrar, d: *const abi::LiquidDes
             d.name.as_str().to_string(),
             d.overlay.as_str().to_string(),
             abi::LiquidDesc { overlay: Str::EMPTY, ..d },
-        ));
-    }
-}
-
-unsafe extern "C" fn reg_liquid_edit(r: *mut abi::Registrar, d: *const abi::LiquidEdit) {
-    unsafe {
-        let d = *d;
-        reg(r).game.liquid_changes.push((
-            d.name.as_str().to_string(),
-            d.overlay.as_str().to_string(),
-            abi::LiquidEdit { name: Str::EMPTY, overlay: Str::EMPTY, ..d },
         ));
     }
 }

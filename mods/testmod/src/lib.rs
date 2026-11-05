@@ -462,7 +462,7 @@ fn init(r: &mut Registry) {
             }
         }
     });
-    r.loot_edit(&crate::riding::STEED)
+    r.edit(crate::riding::STEED.loot())
         .add_pool(Pool::new().when(Cond::Chance(0.05)).item("tin_ingot"));
 
     r.command("tagbench", "[millions:int]", tag_bench);

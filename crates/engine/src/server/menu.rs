@@ -136,8 +136,9 @@ fn call(
     host::invoke(def.owner, cb, &mut args);
 }
 
-/// The slots of menu `kind` opened on `on`, from its groups.
-pub fn slots(c: &Content, kind: u32, on: Option<Inv>, player: u64) -> Vec<SlotRef> {
+/// The slots of menu `kind` opened on `on`, from its groups. `worn`: the equipment slots of the
+/// entity it is on, if that wears.
+pub fn slots(c: &Content, kind: u32, on: Option<Inv>, worn: Option<u32>, player: u64) -> Vec<SlotRef> {
     use abi::slot_owner as so;
     let def = &c.game.menus[kind as usize];
     let layout = &c.game.player_layout;
@@ -150,13 +151,15 @@ pub fn slots(c: &Content, kind: u32, on: Option<Inv>, player: u64) -> Vec<SlotRe
                 u32::MAX - 1
             }),
         };
-        let o = match g.owner {
-            so::MENU => Owner::Temp,
-            so::HOLDER => Owner::On(on.unwrap_or(Inv::own(At::Entity(0)))),
-            _ => Owner::Player,
+        let (o, first) = match (g.owner, worn) {
+            (so::MENU, _) => (Owner::Temp, None),
+            (so::HOLDER, _) => (Owner::On(on.unwrap_or(Inv::own(At::Entity(0)))), None),
+            (so::WORN, Some(w)) => (Owner::On(on.unwrap_or(Inv::own(At::Entity(0)))), Some(w + g.start)),
+            (so::WORN, None) => (Owner::Player, Some(layout.worn.start + g.start)),
+            _ => (Owner::Player, None),
         };
         for i in 0..n {
-            let index = g.index(layout, i);
+            let index = first.map_or_else(|| g.index(layout, i), |f| f + i);
             // The stack the menu is open on can't be moved while it is.
             let locked = o == Owner::Player && on.is_some_and(|inv| inv.at == At::Stack { entity: player, slot: index });
             let flags = if locked { g.flags | sf::LOCKED } else { g.flags };
@@ -164,6 +167,13 @@ pub fn slots(c: &Content, kind: u32, on: Option<Inv>, player: u64) -> Vec<SlotRe
         }
     }
     out
+}
+
+/// Where the equipment of the entity `on` is starts in its inventory, if it wears.
+fn worn_on(dim: &Dim, c: &Content, on: Option<Inv>) -> Option<u32> {
+    let Some(Inv { at: At::Entity(id), storage: 0 }) = on else { return None };
+    let w = &c.game.entities[dim.entities.get(id)?.kind as usize].worn;
+    (!w.is_empty()).then_some(w.start)
 }
 
 pub fn open(dim: &mut Dim, c: &Content, player: u64, kind: u32, on: Option<Inv>) -> OpenMenu {
@@ -177,7 +187,7 @@ pub fn open(dim: &mut Dim, c: &Content, player: u64, kind: u32, on: Option<Inv>)
         kind,
         on,
         held_item,
-        slots: slots(c, kind, on, player),
+        slots: slots(c, kind, on, worn_on(dim, c, on), player),
         temp: vec![ItemStack::EMPTY; def.temp_slots as usize],
         cursor: ItemStack::EMPTY,
         sent_slots: Vec::new(),

@@ -185,6 +185,14 @@ pub async fn armor(t: T) -> R {
     t.c().set_look((-3f32).atan2(2.0).to_degrees(), -10.0);
     t.secs(0.5).await?;
     t.shot("zombie_helmet").await?;
+    // A menu's equipment groups are those of the entity it is open on.
+    t.op(&format!("emenu testkit:gear {z}")).await?;
+    t.until("the zombie's helmet in the menu", Duration::from_secs(5), |t| {
+        t.c().menu_slot(0).item == Item::named("base:diamond_helmet").id()
+    })
+    .await?;
+    t.check(t.c().menu_slot(1).is_empty(), "nothing on its chest");
+    t.shot("zombie_gear").await?;
     Ok(())
 }
 

@@ -978,6 +978,9 @@ pub struct ItemDesc {
     pub components: Slice<CompValue>,
     /// `ItemUseArgs`.
     pub on_use: Callback,
+    /// Non-zero: `Registry::edit`, onto the item of this name: a texture, block or `on_use` given
+    /// replace its own, the components go on top.
+    pub edit: u32,
 }
 defaults!(ItemDesc {
     name: Str::EMPTY,
@@ -985,7 +988,8 @@ defaults!(ItemDesc {
     texture: Str::EMPTY,
     block: Str::EMPTY,
     components: Slice::EMPTY,
-    on_use: Callback::NONE
+    on_use: Callback::NONE,
+    edit: 0,
 });
 
 #[repr(C)]
@@ -997,8 +1001,11 @@ pub struct BiomeDesc {
     /// rule placing it starts from these, and sets only what differs there.
     pub rule: BiomeRuleDesc,
     pub components: Slice<CompValue>,
+    /// Non-zero: `Registry::edit`, onto the biome of this name: what `rule.fields` sets, and the
+    /// components on top.
+    pub edit: u32,
 }
-defaults!(BiomeDesc { name: Str::EMPTY, cell: core::ptr::null(), rule: BiomeRuleDesc::DEFAULT, components: Slice::EMPTY });
+defaults!(BiomeDesc { name: Str::EMPTY, cell: core::ptr::null(), rule: BiomeRuleDesc::DEFAULT, components: Slice::EMPTY, edit: 0 });
 
 #[repr(C)]
 pub struct GenArgs {
@@ -2424,9 +2431,12 @@ pub mod slot_owner {
     /// The player's main inventory, laid out like `Registry::player_inventory` says.
     pub const PLAYER_MAIN: u32 = 3;
     pub const PLAYER_HOTBAR: u32 = 4;
-    /// Stands for one group per equipment slot of the player, named like the slots, where it
-    /// is in the list (`ui_kind::EQUIPMENT` draws them).
-    pub const PLAYER_EQUIPMENT: u32 = 5;
+    /// Stands for one group per equipment slot, named like the slots, where it is in the list:
+    /// of the entity the menu is open on when it wears (`entity_flags::WEARS`), else the
+    /// player's. Only data: `ui_kind::EQUIPMENT` (`ui.equipment()`) draws them where a screen says.
+    pub const EQUIPMENT: u32 = 5;
+    /// One of those slots, `start` its place among them (what `EQUIPMENT` becomes).
+    pub const WORN: u32 = 6;
 }
 
 /// Slots shown and handled together: a grid of one owner's inventory with the same rules.
@@ -2570,7 +2580,7 @@ pub mod ui_kind {
     pub const RECIPE_SLOT: u32 = 10;
     /// What mods add to place `text` of screen `class` (`Host::reg_screen_part`).
     pub const SCREEN_PARTS: u32 = 11;
-    /// The player's equipment slots of the open menu (`slot_owner::PLAYER_EQUIPMENT`), a column.
+    /// The player's equipment slots of the open menu (`slot_owner::EQUIPMENT`), a column.
     pub const EQUIPMENT: u32 = 13;
     /// The open menu's title: the own name of what it belongs to (a renamed chest), else the
     /// name of the block it was opened on, else the translation `menu.<ns>.<name>`.
@@ -3095,8 +3105,6 @@ pub struct Host {
     pub set_day_time: unsafe extern "C" fn(world: *mut WorldCtx, time: u64),
     /// The time of day's clock, which `set_day_time` sets (0 sunrise, 6000 noon, then on past a day).
     pub day_time: unsafe extern "C" fn(world: *mut WorldCtx) -> u64,
-    /// Changes what a liquid shows and allows, a later mod's say on any mod's liquid.
-    pub reg_liquid_edit: unsafe extern "C" fn(reg: *mut Registrar, desc: *const LiquidEdit),
     /// As if `ticks` passed at once: the day moves on, and growth, machines and timers catch up.
     pub skip_ticks: unsafe extern "C" fn(world: *mut WorldCtx, ticks: u64),
     /// Fills a shape with one block at the end of the tick, the whole dimension at once: loaded
@@ -4432,6 +4440,23 @@ pub struct LiquidDesc {
     /// how much of it shows.
     pub overlay: Str,
     pub overlay_opacity: f32,
+    /// Non-zero: `Registry::edit`, onto the liquid of this name: what `set` says.
+    pub edit: u32,
+    /// `liquid_set`: which fields an edit gives.
+    pub set: u32,
+}
+
+pub mod liquid_set {
+    pub const DELAY: u32 = 1;
+    pub const DROP_OFF: u32 = 2;
+    pub const SLOPE_FIND: u32 = 4;
+    pub const RENEWABLE: u32 = 8;
+    pub const DENSITY: u32 = 16;
+    pub const TEMPERATURE: u32 = 32;
+    /// `fog_color` and `fog_distance`.
+    pub const FOG: u32 = 64;
+    /// `overlay` and `overlay_opacity`.
+    pub const OVERLAY: u32 = 128;
 }
 defaults!(LiquidDesc {
     name: Str::EMPTY,
@@ -4444,21 +4469,10 @@ defaults!(LiquidDesc {
     fog_color: u32::MAX,
     fog_distance: 96.0,
     overlay: Str::EMPTY,
-    overlay_opacity: 0.1
+    overlay_opacity: 0.1,
+    edit: 0,
+    set: 0,
 });
-
-/// What another mod's liquid should change, without touching its flow. Everything starts out "not
-/// set": `u32::MAX`, NaN, empty.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LiquidEdit {
-    pub name: Str,
-    pub fog_color: u32,
-    pub fog_distance: f32,
-    pub overlay: Str,
-    pub overlay_opacity: f32,
-}
-defaults!(LiquidEdit { name: Str::EMPTY, fog_color: u32::MAX, fog_distance: f32::NAN, overlay: Str::EMPTY, overlay_opacity: f32::NAN });
 
 /// What happens where two liquids meet. `liquid` and `touching` are block names or `#tags` of
 /// liquid blocks. When `liquid` has `touching` beside or above it, it turns into `source` (if
@@ -4796,9 +4810,21 @@ pub struct OreDesc {
     /// Share of its blocks left out where they would touch air (vanilla's ores in caves); NaN:
     /// as it was (0 for a new ore).
     pub exposed: f32,
-    /// 1: adds to the ore of `block` registered already (another mod's) instead of a new one:
-    /// `replace`, `replace_with` and `exposed` given here go onto it.
+    /// Non-zero: `Registry::edit`, onto the ore of `block` registered already: `replace` and
+    /// `replace_with` add to its, `exposed` if not NaN, `at` where it names something, and the
+    /// numbers `set` says.
     pub edit: u32,
+    /// `ore_set`: which numbers an edit gives.
+    pub set: u32,
+}
+
+pub mod ore_set {
+    pub const VEINS: u32 = 1;
+    pub const BLOCKS: u32 = 2;
+    /// `shape` and `shape_size`.
+    pub const SHAPE: u32 = 4;
+    /// `height`, `plateau` and `at.y`.
+    pub const HEIGHT: u32 = 8;
 }
 defaults!(OreDesc {
     at: Where::DEFAULT,
@@ -4813,6 +4839,7 @@ defaults!(OreDesc {
     replace_with: Str::EMPTY,
     exposed: f32::NAN,
     edit: 0,
+    set: 0,
 });
 
 pub mod vein_shape {
@@ -5002,8 +5029,6 @@ pub mod terrain_op {
     pub const BIOME_AFTER: u32 = 9;
     pub const BIOME_REPLACE: u32 = 10;
     pub const BIOME_REMOVE: u32 = 11;
-    /// The given fields of `rule` replace those of the rule named `anchor`.
-    pub const BIOME_EDIT: u32 = 12;
     /// `rule.biome` in whole cubes at least `level` blocks under the surface, where a 3D noise
     /// of patches `size` across is above `value`.
     pub const CAVE_BIOME: u32 = 13;

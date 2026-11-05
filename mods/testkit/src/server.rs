@@ -26,6 +26,14 @@ pub static HALF_DAMAGE: Config<bool> = Config::named("half_damage");
 /// Mobs may not attack while it is on.
 pub static PEACE: Config<bool> = Config::named("peace");
 static DRILL: Block = Block::named("drill");
+/// Registered, then changed by `r.edit` (the `edits` test).
+static EDITED: Item = Item::named("edited");
+static EDITED_BIOME: Biome = Biome::named("edited");
+static WARMTH: Component<f32> = Component::named("testkit:warmth");
+static TIN_ORE: Block = Block::named("testmod:tin_ore");
+static OIL: Block = Block::named("testmod:oil");
+/// Only the equipment of what it opens on (the `armor` test opens it on a zombie).
+static GEAR: Menu = Menu::named("gear");
 /// How many cells of the world a drill on a moving body has come to.
 static PASSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Players can't be hurt (`actions::HURT`) or use items (`actions::USE_ITEM`) while on.
@@ -83,6 +91,21 @@ pub fn register(r: &mut Registry) {
     r.set_text_on(Target::Name("base:diamond_chestplate"), &SWIMS_IN, "#lava");
     r.attach(&PIG, &MARK);
     r.storage(&STASH, 54);
+    // What an edit sets wins, the rest stays; the testmod ones load after or before this mod
+    // depending on order, which edits don't care about.
+    r.item(&EDITED).max_stack(16).attack_damage(3.0);
+    r.edit(&EDITED).max_stack(8);
+    r.biome(&EDITED_BIOME).set(&WARMTH, 1.0).tag("edited_a");
+    r.edit(&EDITED_BIOME).set(&WARMTH, 2.0);
+    r.edit(TIN_ORE.ore()).veins(7);
+    r.edit(OIL.liquid()).flow_delay(12);
+    r.menu(&GEAR).equipment().player_inventory().screen(|ui| {
+        ui.panel("panel", S::column().pad(7.0).gap(4.0), |ui| {
+            ui.title();
+            ui.equipment();
+            ui.player_inventory(true);
+        });
+    });
     r.attach_storage(&PLAYER, &STASH);
     r.config(&COUNT_MARKS).bool(false).world();
     // While the rule is on, every marked pig counts up once a tick.
@@ -674,6 +697,17 @@ const OPS: &[(&str, &str, Run)] = &[
         Ok(String::new())
     }),
     ("rings", "", |_, _, _, _| Ok(RINGS.load(Ordering::Relaxed).to_string())),
+    ("edited", "", |_, _, _, _| {
+        let i = EDITED.id();
+        let b = EDITED_BIOME.id();
+        Ok(format!(
+            "{} {} {} {}",
+            MAX_STACK.on_item(i).unwrap_or(0),
+            ATTACK_DAMAGE.on_item(i).unwrap_or(0.0),
+            WARMTH.on_biome(b).unwrap_or(0.0),
+            Tag::named("edited_a").on_biome(b)
+        ))
+    }),
     ("look", "", |w, _, player, _| {
         Ok(w.target_block(player, 5.0, false)
             .map_or("none".into(), |l| format!("{} {} {} {} {}", l.body, l.pos.x, l.pos.y, l.pos.z, block_name(l.state))))
@@ -721,6 +755,15 @@ const OPS: &[(&str, &str, Run)] = &[
         let p = pos(cmd, "pos")?;
         if !w.open_menu(player, m, p) {
             return Err(format!("no block entity at {p:?} ({})", block_name(w.block(p))));
+        }
+        Ok(String::new())
+    }),
+    ("emenu", "<which:word> <id:int>", |w, cmd, player, _| {
+        let name = word(cmd, "which")?;
+        let m = Menu::lookup(name).ok_or_else(|| format!("no menu {name}"))?;
+        let id: u64 = int(cmd, "id")?;
+        if !w.open_menu(player, m, id) {
+            return Err(format!("can't open {name} on {id}"));
         }
         Ok(String::new())
     }),
