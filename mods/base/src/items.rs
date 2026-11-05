@@ -8,6 +8,8 @@ pub static DIAMOND: Item = Item::named("diamond");
 pub static WHEAT_SEEDS: Item = Item::named("wheat_seeds");
 pub static WHEAT: Item = Item::named("wheat");
 pub static BUCKET: Item = Item::named("bucket");
+pub static FLINT: Item = Item::named("flint");
+pub static CLAY: Item = Item::named("clay");
 
 pub use base_api::{ARMOR, Armor, FLAMMABLE, FOOD, FUEL, Food};
 /// Tags of armor pieces, head to feet; `<tag>/<material>` picks the recipe (see recipes.rs).
@@ -63,6 +65,13 @@ pub fn register(r: &mut Registry) {
         .tab(&crate::tabs::NATURAL);
     r.item(&WHEAT)
         .tag("crops/wheat")
+        .tab(&crate::tabs::INGREDIENTS);
+    // Other block drops; clay and flint for now
+    r.item(&FLINT)
+        .tag("materials/flint")
+        .tab(&crate::tabs::INGREDIENTS);
+    r.item(&CLAY)
+        .tag("materials/clay")
         .tab(&crate::tabs::INGREDIENTS);
     // Filled buckets come with their liquids (blocks.rs); the engine fills and pours them.
     r.item(&BUCKET).max_stack(16).tab(&crate::tabs::TOOLS);

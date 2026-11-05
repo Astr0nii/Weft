@@ -11,7 +11,7 @@ pub static GRASS: Block = Block::named("grass");
 pub static SNOWY_GRASS: Block = Block::named("snowy_grass");
 pub static SAND: Block = Block::named("sand");
 pub static GRAVEL: Block = Block::named("gravel");
-pub static CLAY: Block = Block::named("clay");
+pub static CLAYBLOCK: Block = Block::named("clayblock");
 pub static SANDSTONE: Block = Block::named("sandstone");
 pub static SNOW: Block = Block::named("snow");
 pub static ICE: Block = Block::named("ice");
@@ -206,11 +206,18 @@ pub fn register(r: &mut Registry) {
         .mineable("shovel")
         .falling()
         .tab(&crate::tabs::NATURAL);
-    r.block(&CLAY)
+    r.loot(&GRAVEL).pool(
+        Pool::new()
+            .when(Cond::Harvested)
+            .entry(Entry::item("flint").count(1, 1).weight(1))
+            .entry(Entry::item("gravel").count(1, 1).weight(9)),
+    );
+    r.block(&CLAYBLOCK)
         .sound_group("gravel")
         .hardness(0.6)
         .mineable("shovel")
         .tag("clay")
+        .drops("clay", 4)
         .tab(&crate::tabs::NATURAL);
     r.block(&SANDSTONE)
         .sound_group("stone")

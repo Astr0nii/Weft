@@ -356,10 +356,8 @@ fn decorate(g: &mut Gen) {
             // Threshold for clay generation
             if clay > ONE / 4 {
                 let surface = g.get(x, y, z);
-                if SAND.is(surface)
-                    || GRAVEL.is(surface)
-                {
-                    g.set(x, y, z, CLAY.id());
+                if SAND.is(surface) || GRAVEL.is(surface) {
+                    g.set(x, y, z, CLAYBLOCK.id());
                 }
             }
         }
