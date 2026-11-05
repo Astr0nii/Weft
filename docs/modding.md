@@ -366,9 +366,12 @@ Recipe kinds are registered too (`r.recipe_kind`), a furnace is just a kind with
 A block's table is all it drops, there is no tool check in front of it: put `Cond::Harvested` on the pools that need the right tool (broken by the world, like a torch losing its wall, always counts as harvested).\
 and other mods' tables without replacing them: `r.loot_edit(&ZOMBIE).add_pool(..)` with `ZOMBIE = EntityKind::named("base:zombie")`.
 
-### Replacing something of another mod
-Register their handle (`Block::named("base:torch")`) with `.replacing()`.\
-Their handle, item and recipes now point at yours. A mod may also replace its own block (testmod does it with its torch). Only for a different shape: to change a property (hardness, light ...) `r.set` it.
+### Changing something of another mod
+- `r.edit(&base::TORCH).light(5)`: only what you set changes, the rest of the block stays (testmod edits its own torch this way).
+- `r.replace(&base::TORCH)...`: registers it from scratch, nothing of theirs stays; for every kind with a builder (blocks, items, entities, biomes, dimensions, menus, particles, sounds, poses, game modes, weathers, damage causes, text places).
+- `r.remove(&base::RUBY_ORE)`: as if nobody had registered it.
+
+Their handle, item and recipes point at yours. Parts of a block have their own edits: `ore_edit`, `loot_edit`, `liquid_edit`.
 
 ## Hooking into the game
 There are four mechanisms, try them in this order:

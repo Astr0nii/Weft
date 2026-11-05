@@ -857,7 +857,6 @@ pub struct EntityBuilder<'a> {
     parts: Vec<ModelPart>,
     on_tick: abi::Callback,
     on_interact: abi::Callback,
-    replace: bool,
     carry_height: f32,
     category_name: String,
     template: String,
@@ -927,11 +926,6 @@ impl EntityBuilder<'_> {
     /// it and their own motion stays relative to it, so a jump on a fast ship lands on the ship.
     pub fn carry_height(mut self, blocks: f32) -> Self {
         self.carry_height = blocks;
-        self
-    }
-    /// Replaces the entity kind with this name from a mod listed in `deps`.
-    pub fn replacing(mut self) -> Self {
-        self.replace = true;
         self
     }
     pub fn size(mut self, width: f32, height: f32) -> Self {
@@ -1179,7 +1173,7 @@ impl Drop for EntityBuilder<'_> {
         if std::thread::panicking() {
             return;
         }
-        if !self.no_egg && !self.replace {
+        if !self.no_egg {
             let mob = EntityKind::generated(self.name.clone());
             self.reg
                 .item(crate::Item::generated(format!("{}_spawn_egg", self.name)))
@@ -1220,7 +1214,7 @@ impl Drop for EntityBuilder<'_> {
             parts: Slice::new(&parts),
             on_tick: self.on_tick,
             on_interact: self.on_interact,
-            replacing: self.replace as u32,
+            replacing: 0,
             components: Slice::new(&values),
             carry_height: self.carry_height,
             category_name: Str::new(&self.category_name),
@@ -1551,7 +1545,6 @@ impl Registry {
             parts: Vec::new(),
             on_tick: abi::Callback::NONE,
             on_interact: abi::Callback::NONE,
-            replace: false,
             carry_height: 0.0,
             category_name: String::new(),
             template: String::new(),

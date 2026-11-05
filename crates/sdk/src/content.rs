@@ -14,6 +14,13 @@ pub mod kind {
     }
     /// Kinds the engine numbers (blocks, items...): their handles give ids.
     pub trait HasId: Kind {}
+    /// Kinds registered with a builder, which `Registry::replace` starts again.
+    pub trait Builds: Kind + Sized {
+        type Builder<'a>
+        where
+            Self: 'a;
+        fn builder<'a>(r: &'a mut crate::Registry, h: &'static super::Handle<Self>) -> Self::Builder<'a>;
+    }
     macro_rules! kinds {
         ($($n:ident = $v:expr),*) => {
             $(pub struct $n;
@@ -900,9 +907,58 @@ pub struct Registry {
     pub(crate) ns: &'static str,
 }
 
+macro_rules! builds {
+    ($($k:ident => $b:ty, $f:ident;)*) => {
+        $(impl kind::Builds for kind::$k {
+            type Builder<'a> = $b;
+            fn builder<'a>(r: &'a mut Registry, h: &'static Handle<Self>) -> $b {
+                r.$f(h)
+            }
+        })*
+    };
+}
+builds!(
+    Block => BlockBuilder<'a>, block;
+    Item => ItemBuilder<'a>, item;
+    Entity => crate::game::EntityBuilder<'a>, entity;
+    Biome => BiomeBuilder<'a>, biome;
+    Dimension => DimensionBuilder<'a>, dimension;
+    Menu => crate::game::MenuBuilder<'a>, menu;
+    Particle => crate::effects::ParticleBuilder<'a>, particle;
+    Sound => crate::effects::SoundBuilder<'a>, sound;
+    DamageCause => DamageCauseBuilder<'a>, damage_cause;
+    TextPlace => crate::show::TextPlaceBuilder<'a>, text_place;
+    GameMode => GameModeBuilder<'a>, game_mode;
+    Pose => PoseBuilder<'a>, pose;
+    Weather => WeatherBuilder<'a>, weather;
+);
+
 impl Registry {
     pub fn namespace(&self) -> &'static str {
         self.ns
+    }
+
+    /// Changes only what the builder sets of a block registered already, another mod's or this
+    /// one's: `r.edit(&base::CACTUS).light(5)`. Without `.states(...)` its states stay (shapes,
+    /// textures, support, placement, callbacks it doesn't set), the components set go on top.
+    pub fn edit<'a>(&'a mut self, block: &'static Block) -> BlockBuilder<'a> {
+        let mut b = self.block(block);
+        b.replace = true;
+        b.item = false;
+        b
+    }
+
+    /// Registers `handle` from scratch over what other mods registered as it, nothing of theirs
+    /// staying: `r.replace(&base::TORCH).texture("blue_torch")`. Of several mods replacing one
+    /// thing, the last in load order wins.
+    pub fn replace<K: kind::Builds>(&mut self, handle: &'static Handle<K>) -> K::Builder<'_> {
+        unsafe { (host().reg_override)(self.raw, K::KIND, Str::new(handle.name()), 0) };
+        K::builder(self, handle)
+    }
+
+    /// As if nobody had registered `handle` (a block takes its item along).
+    pub fn remove<K: kind::Kind>(&mut self, handle: &Handle<K>) {
+        unsafe { (host().reg_override)(self.raw, K::KIND, Str::new(handle.name()), 1) };
     }
 
     /// Registers a block and, unless `.no_item()` is called, an item that places it (and carries
@@ -1888,17 +1944,7 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// Replaces the block of this name registered by a mod this one depends on, or by this mod
-    /// itself (one part of a mod reworking another's block, a config's version). Without
-    /// `.states(...)` it keeps that block's states (shapes, textures, support, placement and other
-    /// callbacks it does not set itself), with the components this builder sets on top.
-    pub fn replacing(mut self) -> Self {
-        self.replace = true;
-        self.item = false;
-        self
-    }
-
-    /// On a replacement keeping the replaced block's states: block texture `from` (another
+    /// On an edit (`Registry::edit`) keeping the block's states: block texture `from` (another
     /// mod's, `base:torch`) becomes `to` there, and the item texture of that name too.
     pub fn retexture(mut self, from: &str, to: &str) -> Self {
         self.retexture

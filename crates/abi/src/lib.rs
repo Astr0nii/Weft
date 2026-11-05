@@ -3213,6 +3213,9 @@ pub struct Host {
     pub attribute_explain: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str) -> f64,
     pub reg_loot: unsafe extern "C" fn(reg: *mut Registrar, desc: *const LootDesc),
     pub reg_loot_edit: unsafe extern "C" fn(reg: *mut Registrar, desc: *const LootEditDesc),
+    /// What other mods register as `name` of `kind` (`entry_kind`) is dropped: this mod's own
+    /// registration of it replaces theirs, or with `removed` nobody's stays.
+    pub reg_override: unsafe extern "C" fn(reg: *mut Registrar, kind: u32, name: Str, removed: u32),
     /// Rolls table `name`; writes at most `max` stacks to `out` and returns how many it made.
     pub roll_loot: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, ctx: *const LootCtx, out: *mut ItemStack, max: usize) -> usize,
     /// Breaks a block as if mined with `tool` (by `player`, 0 for none): asks `break_block`,

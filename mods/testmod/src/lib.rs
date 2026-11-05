@@ -171,8 +171,7 @@ fn init(r: &mut Registry) {
         .light_rgb(15, 13, 10)
         .hardness(0.0)
         .tab(&BASE_BUILDING);
-    r.block(&TORCH)
-        .replacing()
+    r.edit(&TORCH)
         .retexture("base:torch", "soul_torch")
         .light_rgb(3, 9, 35)
         .hardness(0.0);

@@ -1143,6 +1143,8 @@ pub struct RawRegistrar {
     /// Biome, tint kind, color.
     pub biome_tints: Vec<(String, String, u32)>,
     pub game: crate::registry::RawGame,
+    /// `Host::reg_override`: (kind, name, removed) another mod's registration of it gives way to.
+    pub overrides: Vec<(u32, String, bool)>,
     pub errors: Vec<String>,
 }
 
@@ -1224,6 +1226,7 @@ impl RawRegistrar {
             biome_tints: Vec::new(),
             dims: Vec::new(),
             game: Default::default(),
+            overrides: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -2179,7 +2182,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     })
 }
 
-fn merge_registrars(mods: &[ModMeta], regs: Vec<RawRegistrar>, errors: &mut Vec<String>) -> Merged {
+fn merge_registrars(mods: &[ModMeta], mut regs: Vec<RawRegistrar>, errors: &mut Vec<String>) -> Merged {
+    drop_overridden(mods, &mut regs);
     let mut blocks: Vec<(ModId, RawBlock)> = Vec::new();
     let mut items: Vec<(ModId, RawItem)> = Vec::new();
     let mut biomes: Vec<(BiomeDef, usize, Vec<RawValue>, crate::server::terrain::RawRule)> = Vec::new();
@@ -2207,6 +2211,56 @@ fn merge_registrars(mods: &[ModMeta], regs: Vec<RawRegistrar>, errors: &mut Vec<
         dims.extend(r.dims);
     }
     Merged { blocks, items, biomes, dims, tint_kinds, biome_tints, games }
+}
+
+/// `Registry::replace` and `remove`: what other mods registered under a name replaced, or anyone
+/// under a name removed, is dropped. Of several mods replacing one thing the last in load order wins.
+fn drop_overridden(mods: &[ModMeta], regs: &mut [RawRegistrar]) {
+    use weft_abi::entry_kind as ek;
+    let mut by: Vec<FxHashMap<String, (ModId, bool)>> = vec![FxHashMap::default(); ek::NAMES.len()];
+    for r in regs.iter() {
+        for (kind, name, removed) in &r.overrides {
+            let Some(map) = by.get_mut(*kind as usize) else { continue };
+            let e = map.entry(name.clone()).or_insert((r.owner, *removed));
+            if mods[r.owner.0 as usize].order >= mods[e.0.0 as usize].order {
+                *e = (r.owner, *removed);
+            }
+        }
+    }
+    for r in regs.iter_mut() {
+        let owner = r.owner;
+        let gone = |kind: u32, name: &str| {
+            by[kind as usize]
+                .get(name)
+                .is_some_and(|&(m, removed)| removed || m != owner)
+        };
+        let g = &mut r.game;
+        r.blocks.retain(|b| !gone(ek::BLOCK, &b.name));
+        r.items
+            .retain(|i| !gone(ek::ITEM, &i.name) && !gone(ek::BLOCK, &i.block));
+        r.biomes.retain(|b| !gone(ek::BIOME, &b.0.name));
+        r.dims.retain(|d| !gone(ek::DIMENSION, &d.0.name));
+        g.entities.retain(|e| !gone(ek::ENTITY, &e.name));
+        // Replaces the engine's own kinds too (`core:player`).
+        for e in &mut g.entities {
+            e.replace |= by[ek::ENTITY as usize].contains_key(&e.name);
+        }
+        g.particles.retain(|p| !gone(ek::PARTICLE, &p.name));
+        g.menus.retain(|m| !gone(ek::MENU, &m.1.name));
+        g.configs.retain(|c| !gone(ek::CONFIG, &c.1.name));
+        g.sounds.retain(|s| !gone(ek::SOUND, &s.1.name));
+        g.damage_causes
+            .retain(|d| !gone(ek::DAMAGE_CAUSE, &d.1.name));
+        g.entity_effects
+            .retain(|e| !gone(ek::ENTITY_EFFECT, &e.1.name));
+        g.text_places.retain(|t| !gone(ek::TEXT_PLACE, &t.1.name));
+        g.game_modes.retain(|m| !gone(ek::GAME_MODE, &m.1.name));
+        g.poses.retain(|p| !gone(ek::POSE, &p.1.name));
+        g.weathers.retain(|w| !gone(ek::WEATHER, &w.1.name));
+        g.precipitations
+            .retain(|p| !gone(ek::PRECIPITATION, &p.1.name));
+        g.conditions.retain(|c| !gone(ek::CONDITION, &c.1.name));
+    }
 }
 
 fn apply_replacements(mods: &[ModMeta], mut blocks: Vec<(ModId, RawBlock)>, items: &mut Vec<(ModId, RawItem)>) -> Vec<(ModId, RawBlock)> {
