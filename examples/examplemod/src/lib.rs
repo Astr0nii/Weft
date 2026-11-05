@@ -120,6 +120,8 @@ fn recipes(_r: &mut Registry) {
     // r.shaped(&CRAFTING, "ruby_pickaxe", 1, &["rrr", " s ", " s "], &[('r', "#gems/ruby"), ('s', "#stick")]);
     // r.shapeless(&CRAFTING, "ruby", 9, &["ruby_block"], 0);
     // r.shapeless(&SMELTING, "ruby", 1, &["ruby_ore"], 200);    // 200 ticks in a furnace
+    // Each is named `<mod>:<kind>/<output>` (this one `examplemod:smelting/ruby`), so any is removed by it:
+    // r.remove(&Recipe::named("base:crafting/torch"));
 }
 
 /// Ores, biomes, structures and dimensions. Ores go into every dimension whose stone they replace.

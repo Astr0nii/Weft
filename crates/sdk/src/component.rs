@@ -376,6 +376,10 @@ impl<T: Data, K> Component<T, K> {
     pub fn name(&self) -> &'static str {
         self.name
     }
+    /// Its declaration, for `Registry::edit`: `r.edit(HUNGER.declaration())`.
+    pub fn declaration(&self) -> &'static crate::Declaration {
+        crate::Declaration::as_written(self.name)
+    }
     /// `u32::MAX` if nothing uses it (or before the registries are frozen).
     #[inline]
     pub fn id(&self) -> u32 {
@@ -451,6 +455,10 @@ impl Storage {
     }
     pub fn name(&self) -> &'static str {
         self.name
+    }
+    /// Its declaration, for `Registry::edit`.
+    pub fn declaration(&self) -> &'static crate::Declaration {
+        crate::Declaration::as_written(self.name)
     }
     /// `u32::MAX` before the registries are frozen or if nothing declared it.
     #[inline]

@@ -19,7 +19,12 @@ pub struct Entry {
 
 impl Entry {
     pub(crate) fn of<K: kind::Kind>(h: &Handle<K>) -> Entry {
-        Entry { kind: K::KIND, name: h.name().to_string(), cell: h.id_cell(), mode: em::NEW, ops: Vec::new(), parts: Vec::new() }
+        Entry { cell: h.id_cell(), ..Entry::new(K::KIND, h.name().to_string()) }
+    }
+
+    /// One no handle stands for (a sky object of a dimension, a block's loot).
+    pub(crate) fn new(kind: u32, name: String) -> Entry {
+        Entry { kind, name, cell: std::ptr::null(), mode: em::NEW, ops: Vec::new(), parts: Vec::new() }
     }
 
     /// What a part of the registration says about the states `key` picks.

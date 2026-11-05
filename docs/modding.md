@@ -197,7 +197,7 @@ static BURNER: Component<Burner> = Component::named("mymod:burner");
 A value that names blocks is a reference, not text: `Component<BlockRef>` for one block (or state) and `Component<BlockList>` for blocks with weights, set with `.set_text(&C, "oak_leaves")` or `.set_text(&C, "birch_log:1 oak_log:4")`. The engine turns the names into ids when the game loads, so a typo is a load error instead of a tree that never grows; reading gives `BlockRef(state)` or a `BlockList` with `pick(random)`. Base's trees work this way (`tree_leaves` on logs, `tree_kinds` and `flowers` on biomes).
 
 Per-entity components like a furnace's state, hunger or anything else that changes in time go through
-`r.entity_component(&COMP, default, flags)`, declared once, and then carried by the kinds that need it: `.attach(&COMP)` on an entity builder (a block entity's too), `r.attach(&PLAYER, &COMP)` for someone else's kind, `.attach_with(&COMP, value)` to start from another value.\
+`r.entity_component(&COMP, default, flags)`, declared once (`r.edit(COMP.declaration())` changes another mod's), and then carried by the kinds that need it: `.attach(&COMP)` on an entity builder (a block entity's too), `r.attach(&PLAYER, &COMP)` for someone else's kind, `.attach_with(&COMP, value)` to start from another value.\
 `.set(&C, v)` is different: one value of the kind itself (like a mob's attack damage), while `.attach` gives every entity its own value that changes.\
 Flags from `component_flags` are `SAVE`, `SYNC_OWNER`, `SYNC_WATCHERS`, `SYNC_MENU`, `KEEP_ON_RESPAWN` (kept when a player respawns; everything else starts over from its default).\
 You can change them through `w.component_mut(id, &COMP)` and the engine will figure out what to send.\
@@ -342,7 +342,7 @@ Every liquid is also an item of its name and tags, its count in millibuckets: wh
 - `r.biome(..)` with its climate, surface and tints (`.temperature(0.35..).surface(..).tint(&tints::GRASS, ..)`); terrain rules inherit them
 - `r.dimension(..)` (`spawn`, `height`, `gravity`, `fixed_time`, `sky`, `bare`, or `generator` + `column` to fill it in code)
 - weather is a value too: `r.weather(&ACID_RAIN).darkness(0.5).gray(0.8, 0.6, 0.9).sound("mymod:weather.acid").duration(2400, 6000).weight(1)` (`falls`, `lightning`, `shelters_from_sun`, or the whole `look`), and a dimension lists what comes there after clear weather, `.weathers(&[&weathers::RAIN, &weathers::THUNDER, &ACID_RAIN])`. `w.weather()` is the id now (`w.raining()`, `w.thundering()` read its flags), `w.set_weather(&weathers::THUNDER, ticks)` changes it, and `r.on_event(&WEATHER_TICK, ..)` hears every tick of it for acid on whoever stands outside. What falls is the biome's: `.precipitation(&ASH)` after `r.precipitation(&ASH)`, `.snows()` for snow
-- `r.sky_body(&DIM, &OBJECT)`, `r.sky_stars`, `r.sky_dome`, `r.sky_remove` for what is in its sky, the sun and the moon included
+- `r.sky_body(&DIM, &OBJECT)`, `r.sky_stars`, `r.sky_dome`, `r.sky_clouds` for what is in its sky, the sun and the moon included; `OVERWORLD.sky(&MOON)` is one of them for `r.edit` and `r.remove`
 - `r.terrain(dim)` for its terrain, yours or another mod's
 - `r.ore(block)`, in every dimension whose stone it replaces (`.dimension(..)` limits it). `.replaces_with("#granite", &GRANITE_IRON_ORE)` makes the same vein go on as another block where it meets granite, so veins don't stop at stone borders; `.exposed(0.5)` leaves out half of what would touch a cave, as vanilla's gold and diamonds. `r.edit(IRON_ORE.ore())` changes another mod's ore: what you set, its `replaces` and `replaces_with` added to its own
 - `r.scatter(&TREES)` for trees and the like, `r.decoration(f)` for plants, in every dimension
@@ -358,16 +358,17 @@ It works on other mods' dimensions too, so adding a biome to base's overworld is
 - `r.shaped(&KIND, out, count, &["iii", " s ", " s "], &[('i', "#ingots/iron"), ('s', "#stick")])`
 - `r.shapeless(..)`
 
-Recipe kinds are registered too (`r.recipe_kind`), a furnace is just a kind with stations.
+Recipe kinds are registered too (`r.recipe_kind`), a furnace is just a kind with stations.\
+A recipe is named after its kind and output in the namespace of the mod making it: base's crafting recipe for torches is `base:crafting/torch`, a second one of base's for torches `base:crafting/torch/2`, and so on in the order it makes them; `.named("torch_from_coal")` gives it one of your choice. By that name other mods change it like anything else: `r.remove(&Recipe::named("base:crafting/torch"))`, or `r.edit(&SMELTING_ALL).hidden()` with `static SMELTING_ALL: Recipe = Recipe::named("base:smelting/*")`.
 
 ### Loot
 `r.loot(&RUBY_ORE).pool(Pool::new().when(Cond::Harvested).rolls(1, 2).item("ruby"))` (a block's or entity's table is what it drops, `LootTable::named(..)` is a table of its own)\
 A block's table is all it drops, there is no tool check in front of it: put `Cond::Harvested` on the pools that need the right tool (broken by the world, like a torch losing its wall, always counts as harvested).\
-and other mods' tables without replacing them: `r.edit(ZOMBIE.loot()).add_pool(..)` with `ZOMBIE = EntityKind::named("base:zombie")`.
+and other mods' tables without replacing them: `r.edit(ZOMBIE.loot()).pool(..)` with `ZOMBIE = EntityKind::named("base:zombie")` adds a pool, `.replace_drop("rotten_flesh", "mymod:brain")` and `.remove_drop(..)` change what any pool of it gives, `.clear()` empties it, and the pools are a list like any (`.remove_item(&comps::loot::POOLS, "#0")` takes out the first).
 
 ### Changing something of another mod
 - `r.edit(&base::TORCH).light(5)`: only what you set changes, the rest stays (testmod edits its own torch this way). Blocks, items and biomes by their handle, and the parts of a block by its: `IRON_ORE.ore()`, `WATER.liquid()`, `ZOMBIE.loot()`. A block's edit says of its item only what it sets (`item_texture`, `no_item()`).
-- `r.replace(&base::TORCH)...`: registers it from scratch, nothing of theirs stays; for every kind with a builder (blocks, items, entities, biomes, dimensions, menus, particles, sounds, poses, game modes, weathers, damage causes, text places).
+- `r.replace(&base::TORCH)...`: registers it from scratch, nothing of theirs stays; for every kind with a builder (blocks, items, entities, biomes, dimensions, menus, particles, sounds, poses, game modes, weathers, damage causes, text places, sky objects, HUD elements, recipes, loot tables...).
 - `r.remove(&base::RUBY_ORE)`: as if nobody had registered it.
 
 Their handle, item and recipes point at yours.

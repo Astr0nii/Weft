@@ -143,7 +143,7 @@ pub unsafe fn __init(host: *const Host, me: ModId, reg: *mut abi::Registrar, id:
     ME.store(me.0, Ordering::Relaxed);
     let _ = MOD_ID.set(id);
     install_panic_hook();
-    let mut r = Registry { raw: reg, ns: id };
+    let mut r = Registry { raw: reg, ns: id, derived: Vec::new() };
     REGISTRAR.store(reg, Ordering::Relaxed);
     let result = guard(|| f(&mut r));
     REGISTRAR.store(std::ptr::null_mut(), Ordering::Relaxed);

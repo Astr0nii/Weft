@@ -76,16 +76,35 @@ pub mod kind {
         Attribute = crate::abi::entry_kind::ATTRIBUTE,
         Key = crate::abi::entry_kind::KEY
     );
+    /// Kinds without ids: entries of their own number, or things known only by name.
     macro_rules! named_kinds {
-        ($($n:ident),*) => {
+        ($($n:ident $(= $v:expr)?),*) => {
             $(pub struct $n;
             impl Kind for $n {
-                const KIND: u32 = u32::MAX;
+                const KIND: u32 = named_kinds!(@kind $($v)?);
             }
             impl On<$n> for $n {})*
         };
+        (@kind $v:expr) => { $v };
+        (@kind) => { u32::MAX };
     }
-    named_kinds!(SkyObject, HudElement, GizmoGroup, Shader, Ore, Liquid, Question, Chain, LootTable, Scatter, Template);
+    named_kinds!(
+        SkyObject = crate::abi::entry_kind::SKY,
+        HudElement = crate::abi::entry_kind::HUD_ELEMENT,
+        ScreenPart = crate::abi::entry_kind::SCREEN_PART,
+        WordSet = crate::abi::entry_kind::WORDS,
+        Declaration = crate::abi::entry_kind::COMPONENT,
+        Recipe = crate::abi::entry_kind::RECIPE,
+        LootTable = crate::abi::entry_kind::LOOT,
+        GizmoGroup,
+        Shader,
+        Ore,
+        Liquid,
+        Question,
+        Chain,
+        Scatter,
+        Template
+    );
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
@@ -121,6 +140,13 @@ impl<K: kind::Kind> Handle<K> {
         Box::leak(Box::new(Self::named(Box::leak(name.into_boxed_str()))))
     }
 
+    /// `generated`, the name as written, even without a namespace (a component's).
+    pub(crate) fn as_written(name: &str) -> &'static Self {
+        let h = Self::generated(name.to_string());
+        let _ = h.full.set(name.to_string());
+        h
+    }
+
     /// Full name, `ns:name`.
     pub fn name(&self) -> &str {
         self.full.get_or_init(|| crate::full_name(self.name))
@@ -146,14 +172,22 @@ impl Block {
     pub fn liquid(&self) -> &'static Liquid {
         Liquid::generated(self.name().to_string())
     }
-    /// What it drops, for `Registry::edit`: `r.edit(base::GRAVEL.loot()).add_pool(..)`.
+    /// What it drops, for `Registry::edit`: `r.edit(base::GRAVEL.loot()).pool(..)`.
     pub fn loot(&self) -> &'static LootTable {
         LootTable::generated(self.name().to_string())
     }
 }
 
+impl Dimension {
+    /// Its object `object` of the sky, for `Registry::edit` and `remove`:
+    /// `r.remove(OVERWORLD.sky(&base::STARS))`.
+    pub fn sky(&self, object: &SkyObject) -> &'static SkyObject {
+        SkyObject::generated(format!("{}/{}", self.name(), object.name()))
+    }
+}
+
 impl EntityKind {
-    /// What it drops, for `Registry::edit`: `r.edit(base::ZOMBIE.loot()).add_pool(..)`.
+    /// What it drops, for `Registry::edit`: `r.edit(base::ZOMBIE.loot()).pool(..)`.
     pub fn loot(&self) -> &'static LootTable {
         LootTable::generated(self.name().to_string())
     }
@@ -266,6 +300,24 @@ pub type Key = Handle<kind::Key>;
 pub type CameraMode = Handle<kind::CameraMode>;
 
 pub type HudElement = Handle<kind::HudElement>;
+/// Something a mod adds to a place of a screen (`Registry::screen_part`), named
+/// `<mod>:<screen>/<area>`.
+pub type ScreenPart = Handle<kind::ScreenPart>;
+/// Words command parameters `word(#set)` complete from (`Registry::word_set`); the engine's are
+/// in `word_sets`.
+pub type WordSet = Handle<kind::WordSet>;
+/// A component's declaration (`Registry::entity_component`, `stack_component`, `storage`),
+/// named like the component: `HUNGER.declaration()`.
+pub type Declaration = Handle<kind::Declaration>;
+/// A recipe (`Registry::shaped`, `shapeless`), for `Registry::edit` and `remove`.
+pub type Recipe = Handle<kind::Recipe>;
+
+/// The engine's word sets.
+pub mod word_sets {
+    use super::WordSet;
+    /// `/gizmo`'s groups (`Registry::gizmo_group`).
+    pub static GIZMOS: WordSet = WordSet::named("core:gizmos");
+}
 pub type GizmoGroup = Handle<kind::GizmoGroup>;
 /// A shader file of a mod, by its name: `shaders/<block|entity|particle|sky|post>/<name>.wgsl`,
 /// the folder by what uses it. Nothing to register, the file is it.
@@ -966,6 +1018,8 @@ pub enum Target<'a> {
 pub struct Registry {
     pub(crate) raw: *mut abi::Registrar,
     pub(crate) ns: &'static str,
+    /// Names given to what has none of its own (recipes, screen parts), each once.
+    pub(crate) derived: Vec<String>,
 }
 
 impl kind::Edits for kind::Block {
@@ -1008,12 +1062,6 @@ impl kind::Edits for kind::Liquid {
         b
     }
 }
-impl kind::Edits for kind::LootTable {
-    type Builder<'a> = crate::extend::LootModBuilder<'a>;
-    fn edit<'a>(r: &'a mut Registry, h: &'static LootTable) -> crate::extend::LootModBuilder<'a> {
-        crate::extend::LootModBuilder::new(r, h.name())
-    }
-}
 
 macro_rules! builds {
     ($($k:ident => $b:ty, $f:ident;)*) => {
@@ -1032,12 +1080,22 @@ builds!(
     Biome => BiomeBuilder<'a>, biome;
     Dimension => DimensionBuilder<'a>, dimension;
     Menu => crate::game::MenuBuilder<'a>, menu;
-    Particle => crate::effects::ParticleBuilder<'a>, particle;
 );
 
 impl Registry {
     pub fn namespace(&self) -> &'static str {
         self.ns
+    }
+
+    /// `<this mod>:<path>`, numbered `/2`, `/3`.. when this mod gave it already.
+    pub(crate) fn derive_name(&mut self, path: &str) -> String {
+        let base = format!("{}:{path}", self.ns);
+        let name = (1..)
+            .map(|n| if n == 1 { base.clone() } else { format!("{base}/{n}") })
+            .find(|n| !self.derived.contains(n))
+            .unwrap_or_default();
+        self.derived.push(name.clone());
+        name
     }
 
     /// Changes only what the builder sets of something registered already, another mod's or
@@ -2664,18 +2722,19 @@ impl Drop for BlockBuilder<'_> {
             (false, false) => {}
         }
         if let Some((item, count)) = self.drops.take() {
-            let pools = if item.is_empty() {
-                vec![]
-            } else {
-                vec![
-                    crate::extend::Pool::new()
-                        .when(crate::extend::Cond::Harvested)
-                        .items(&item, count, count),
-                ]
-            };
-            let raw = crate::extend::raw_pools(self.reg.ns, &pools);
-            let desc = abi::LootDesc { name: Str::new(&self.name), pools: Slice::new(&raw.pools), ..abi::LootDesc::DEFAULT };
-            unsafe { (host().reg_loot)(self.reg.raw, &desc) }
+            // An edit's drops are the block's table from now on.
+            let block = Block::generated(self.name.clone());
+            let table = if self.replace { self.reg.replace(block.loot()) } else { self.reg.loot(block) };
+            let table = table.set(&crate::comps::loot::POOLS, Vec::new());
+            if !item.is_empty() {
+                drop(
+                    table.pool(
+                        crate::extend::Pool::new()
+                            .when(crate::extend::Cond::Harvested)
+                            .items(&item, count, count),
+                    ),
+                );
+            }
         }
     }
 }

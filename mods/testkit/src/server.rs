@@ -29,6 +29,7 @@ static DRILL: Block = Block::named("drill");
 /// Registered, then changed by `r.edit` (the `edits` test).
 static EDITED: Item = Item::named("edited");
 static EDITED_BIOME: Biome = Biome::named("edited");
+static EDITED_LOOT: LootTable = LootTable::named("edited");
 static WARMTH: Component<f32> = Component::named("testkit:warmth");
 static STORM: Weather = Weather::named("storm");
 static GRIT: Attribute = Attribute::named("grit");
@@ -104,6 +105,16 @@ pub fn register(r: &mut Registry) {
     r.attribute(&GRIT, 1.0, 0.0, 10.0);
     r.edit(&GRIT).set(&comps::attribute::DEFAULT, 4.0);
     r.edit(TIN_ORE.ore()).veins(7);
+    r.shapeless(&base_api::SMELTING, "base:stick", 1, &["edited"], 200)
+        .named("smelt_edited");
+    r.remove(&Recipe::named("smelt_edited"));
+    r.loot(&EDITED_LOOT)
+        .pool(Pool::new().item("base:stick"))
+        .pool(Pool::new().item("base:dirt"));
+    r.edit(&EDITED_LOOT)
+        .remove_item(&comps::loot::POOLS, "#1")
+        .replace_drop("base:stick", "edited")
+        .pool(Pool::new().items("base:cobblestone", 2, 2));
     r.edit(OIL.liquid()).flow_delay(12);
     r.menu(&GEAR).equipment().player_inventory().screen(|ui| {
         ui.panel("panel", S::column().pad(7.0).gap(4.0), |ui| {
@@ -706,14 +717,22 @@ const OPS: &[(&str, &str, Run)] = &[
     ("edited", "", |w, _, player, _| {
         let i = EDITED.id();
         let b = EDITED_BIOME.id();
+        let mut drops: Vec<String> = w
+            .roll_loot(&EDITED_LOOT, &LootCtx::default())
+            .iter()
+            .map(|s| format!("{}x{}", item_name(s.item), s.count))
+            .collect();
+        drops.sort();
         Ok(format!(
-            "{} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {}",
             MAX_STACK.on_item(i).unwrap_or(0),
             ATTACK_DAMAGE.on_item(i).unwrap_or(0.0),
             WARMTH.on_biome(b).unwrap_or(0.0),
             Tag::named("edited_a").on_biome(b),
             Weather::flags_of(STORM.id()),
             w.attribute(player, &GRIT),
+            recipe_process(&base_api::SMELTING, i).is_none(),
+            drops.join(","),
         ))
     }),
     ("look", "", |w, _, player, _| {

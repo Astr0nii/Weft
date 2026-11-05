@@ -105,12 +105,12 @@ r.screen_part(&screens::TITLE, "buttons", 0, |ui| {
     });
 });
 ```
-The places are `buttons` and `side` (the space right of the menu) on `core:title`, and `buttons` on `core:pause` and `core:settings`; a lower order comes first. A mod that replaces one of these screens keeps the others' parts by building the place in its own: `ui.screen_parts("core:title", "buttons")`.
+The places are `buttons` and `side` (the space right of the menu) on `core:title`, and `buttons` on `core:pause` and `core:settings`; a lower order comes first. A mod that replaces one of these screens keeps the others' parts by building the place in its own: `ui.screen_parts("core:title", "buttons")`. A part is named `<mod>:<screen>/<area>` (base's on the pause screen is `base:pause/buttons`, a second one of the same mod there `/2`), and other mods move or take it out by that name: `r.remove(&ScreenPart::named("base:pause/buttons"))`.
 
 The main menu's logo is the GUI texture `logo` (drawn across the menu bar in whole multiples of its pixels) and `menu.news` shows beside it, so a pack or a mod puts its own picture there with one file. Its buttons have 9x9 icons of their own (`menu_singleplayer`, `menu_multiplayer`, `menu_mods`, `menu_settings`), Quit Game is the class `button_quit`, and the square beside Multiplayer shows the face of the player's skin.
 
 ## HUD
-`r.hud_element(name, anchor, order, |ui| ..)` puts a part on the in-game overlay. The anchor says where, and `order` 0 sits nearest the anchor's edge.
+`r.hud_element(name, anchor, order, |ui| ..)` puts a part on the in-game overlay. The anchor says where, and `order` 0 sits nearest the anchor's edge; `r.edit(&OTHER_ELEMENT).anchor(..).order(..)` moves another mod's.
 
 | anchor (`hud_anchor::..`) | where |
 |---|---|

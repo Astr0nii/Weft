@@ -396,10 +396,20 @@ pub mod entry_kind {
     pub const RECIPE_KIND: u32 = 24;
     pub const ATTRIBUTE: u32 = 25;
     pub const KEY: u32 = 26;
+    /// Named `<dimension>/<object>`, both full names.
+    pub const SKY: u32 = 27;
+    pub const HUD_ELEMENT: u32 = 28;
+    pub const SCREEN_PART: u32 = 29;
+    pub const WORDS: u32 = 30;
+    /// A component's declaration, by the component's name.
+    pub const COMPONENT: u32 = 31;
+    pub const RECIPE: u32 = 32;
+    /// Named like the block or entity kind that drops it, or a table of its own.
+    pub const LOOT: u32 = 33;
     /// Kinds that carry components (block to dimension).
     pub const COUNT: usize = 5;
     /// Each kind's name for messages, by value.
-    pub const NAMES: [&str; 27] = [
+    pub const NAMES: [&str; 34] = [
         "block",
         "item",
         "entity",
@@ -427,6 +437,13 @@ pub mod entry_kind {
         "recipe kind",
         "attribute",
         "key",
+        "sky object",
+        "HUD element",
+        "screen part",
+        "word set",
+        "component",
+        "recipe",
+        "loot table",
     ];
 }
 
@@ -741,6 +758,142 @@ pub mod comp {
     pub const SOUND_CATEGORY_WORLD: &str = "sound_category.world";
     pub const TINT_KIND_DEFAULT: &str = "tint_kind.default";
     pub const KEY_DEFAULT: &str = "key.default";
+
+    /// A particle kind's (particles live only on clients; the server and mods send bursts):
+    /// `TEXTURES` (`[str]`, frames over its life; none: a piece of the burst's block texture),
+    /// `LIFE` (`[f32;2]`, seconds picked between, 0.5..1), `SIZE` (`[f32;2]`, edge length in
+    /// blocks, 0.1..0.2), `GRAVITY` (`f32`, blocks per second squared pulling down, 0), `DRAG`
+    /// (`f32`, share of its speed kept per tick, 0.98), `COLOR` (`[u32;2]`, 0xRRGGBBAA at birth
+    /// and at the end of its life, white), `SHADER` (`str`, `shaders/particle/<name>.wgsl`),
+    /// `RULES` (`[ParticleRule]`), tags `COLLIDE`, `FULLBRIGHT`, `TRANSLUCENT`, `SHRINK` (as
+    /// `particle_flags`).
+    pub mod particle {
+        use crate::particle_flags as f;
+        pub const TEXTURES: &str = "particle.textures";
+        pub const LIFE: &str = "particle.life";
+        pub const SIZE: &str = "particle.size";
+        pub const GRAVITY: &str = "particle.gravity";
+        pub const DRAG: &str = "particle.drag";
+        pub const COLOR: &str = "particle.color";
+        pub const SHADER: &str = "particle.shader";
+        pub const RULES: &str = "particle.rules";
+        pub const COLLIDE: &str = "particle.collide";
+        pub const FULLBRIGHT: &str = "particle.fullbright";
+        pub const TRANSLUCENT: &str = "particle.translucent";
+        pub const SHRINK: &str = "particle.shrink";
+        pub const FLAGS: [(&str, u32); 4] =
+            [(COLLIDE, f::COLLIDE), (FULLBRIGHT, f::FULLBRIGHT), (TRANSLUCENT, f::TRANSLUCENT), (SHRINK, f::SHRINK)];
+    }
+
+    /// A thing in a dimension's sky (`entry_kind::SKY`): `KIND` (`u32`, `sky_kind`, `BODY`),
+    /// `TEXTURE` (`str`, under `textures/sky/`; a dome tells its layout by its shape), `SHADER`
+    /// (`str`, `shaders/sky/<name>.wgsl` instead of the plain picture), `PHASE` (`f32`, turns on
+    /// its orbit at time 0: 0 rising in the east, 0.25 overhead), `ORBIT` (`f32`, ticks per turn,
+    /// negative the other way, 0 still, infinite following the dimension's day; a dome's 0, the
+    /// others' infinite), `TILT` and `HEADING` (`f32`, degrees the orbit leans south of overhead
+    /// and turns around the vertical), `SIZE` (`f32`, degrees across, of each star for stars, 20
+    /// and 0.25), `SPIN` (`f32`, ticks per turn around its middle, 0 none), `OPACITY` (`[f32;2]`,
+    /// how much shows by full day and by deep night, 1 and 1, stars 0 and 0.22), `COLOR` (`u32`,
+    /// 0xRRGGBB multiplied in, white), `FRAMES` (`[u32;2]`, the picture's grid of frames, 1 by
+    /// 1), `FRAME_TICKS` (`u32`, ticks each lasts, 0 a day of the dimension), `GLOW` (`u32`,
+    /// 0xRRGGBB along the horizon while it rises and sets, 0 none), tag `ADDITIVE` (adds its light
+    /// to what is behind it, else covers it), stars' `COUNT` (`u32`, 1500) and `SEED` (`u32`),
+    /// clouds' `HEIGHT` (`f32`, of their underside, 224.33) and `DRIFT` (`f32`, blocks per tick
+    /// along x, 0.03), `ORDER` (`i32`, drawn low to high: bodies 0, stars -100, domes -200, clouds
+    /// 100).
+    pub mod sky {
+        pub const KIND: &str = "sky.kind";
+        pub const TEXTURE: &str = "sky.texture";
+        pub const SHADER: &str = "sky.shader";
+        pub const PHASE: &str = "sky.phase";
+        pub const ORBIT: &str = "sky.orbit";
+        pub const TILT: &str = "sky.tilt";
+        pub const HEADING: &str = "sky.heading";
+        pub const SIZE: &str = "sky.size";
+        pub const SPIN: &str = "sky.spin";
+        pub const OPACITY: &str = "sky.opacity";
+        pub const COLOR: &str = "sky.color";
+        pub const FRAMES: &str = "sky.frames";
+        pub const FRAME_TICKS: &str = "sky.frame_ticks";
+        pub const GLOW: &str = "sky.glow";
+        pub const ADDITIVE: &str = "sky.additive";
+        pub const COUNT: &str = "sky.count";
+        pub const SEED: &str = "sky.seed";
+        pub const HEIGHT: &str = "sky.height";
+        pub const DRIFT: &str = "sky.drift";
+        pub const ORDER: &str = "sky.order";
+    }
+
+    /// A HUD element's: `ANCHOR` (`str`, `hud_anchor`), `ORDER` (`i32`, 0 nearest the anchor's
+    /// edge), `CALL` (`callback`, `UiArgs`: builds it). Players can move any element to another
+    /// anchor in `config/hud.txt`.
+    pub mod hud_element {
+        pub const ANCHOR: &str = "hud_element.anchor";
+        pub const ORDER: &str = "hud_element.order";
+        pub const CALL: &str = "hud_element.call";
+    }
+
+    /// A screen part's, what a mod adds to place `AREA` (`str`) of screen `SCREEN` (`str`):
+    /// `ORDER` (`i32`, lower first), `CALL` (`callback`, `UiArgs`: builds it).
+    pub mod screen_part {
+        pub const SCREEN: &str = "screen_part.screen";
+        pub const AREA: &str = "screen_part.area";
+        pub const ORDER: &str = "screen_part.order";
+        pub const CALL: &str = "screen_part.call";
+    }
+
+    /// A word set's `WORDS` (`[str]`): command parameters `word(#set)` complete from them.
+    pub const WORDS: &str = "words.words";
+
+    /// A component's declaration (`entry_kind::COMPONENT`, named like it): `SCHEMA` (`str`) of its
+    /// value; `DEFAULT` (`[u8]`): entities carry it, starting with these bytes (its size), with a
+    /// tag per `component_flags` (`FLAGS`); `SLOTS` (`u32`): a storage, an inventory of so many
+    /// slots entities and stacks carry, saved and kept on respawn; tag `STACK`: stacks carry it,
+    /// with a tag per `stack_flags` (`STACK_FLAGS`).
+    pub mod component {
+        use crate::component_flags as f;
+        pub const SCHEMA: &str = "component.schema";
+        pub const DEFAULT: &str = "component.default";
+        pub const SLOTS: &str = "component.slots";
+        pub const STACK: &str = "component.stack";
+        pub const FLAGS: [(&str, u32); 6] = [
+            ("component.save", f::SAVE),
+            ("component.sync_owner", f::SYNC_OWNER),
+            ("component.sync_watchers", f::SYNC_WATCHERS),
+            ("component.sync_menu", f::SYNC_MENU),
+            ("component.keep_on_respawn", f::KEEP_ON_RESPAWN),
+            ("component.carried", f::CARRIED),
+        ];
+        pub const STACK_FLAGS: [(&str, u32); 2] =
+            [("component.server_only", crate::stack_flags::SERVER_ONLY), ("component.no_save", crate::stack_flags::NO_SAVE)];
+    }
+
+    /// A recipe's (`entry_kind::RECIPE`): `KIND` (`str`, a recipe kind), `PATTERN` (`[str]`, rows
+    /// of key characters of a shaped one) with `KEYS` (`[RecipeKey]`), `INPUTS` (`[str]`, of a
+    /// shapeless or processing one: item names or `#tags`, a liquid by its name) with `AMOUNTS`
+    /// (`[u32]`, of each, millibuckets for liquids, 1), `OUTPUT` (`str`) and `COUNT` (`u32`, 1),
+    /// `TIME` (`u32`, ticks, the kind says what they mean, 0), `OUTPUTS` (`[RecipeOutput]`, more
+    /// results), tag `HIDDEN` (works, the recipe viewer doesn't list it). Any other component is
+    /// data it carries for what makes it (energy per tick).
+    pub mod recipe {
+        pub const KIND: &str = "recipe.kind";
+        pub const PATTERN: &str = "recipe.pattern";
+        pub const KEYS: &str = "recipe.keys";
+        pub const INPUTS: &str = "recipe.inputs";
+        pub const AMOUNTS: &str = "recipe.amounts";
+        pub const OUTPUT: &str = "recipe.output";
+        pub const COUNT: &str = "recipe.count";
+        pub const TIME: &str = "recipe.time";
+        pub const OUTPUTS: &str = "recipe.outputs";
+        pub const HIDDEN: &str = "recipe.hidden";
+    }
+
+    /// A loot table's (`entry_kind::LOOT`): `POOLS` (`[LootPool]`), then `SWAPS` (`[LootSwap]`)
+    /// in order. Without a table a block drops its own item when harvested.
+    pub mod loot {
+        pub const POOLS: &str = "loot.pools";
+        pub const SWAPS: &str = "loot.swaps";
+    }
 
     /// A weather's (`entry_kind::WEATHER`). How it looks, each `f32` 0..1 (rain's unless set):
     /// `FALLS` how much of the precipitation falls, `SKY_GRAY`, `SKY_COVER` (sun, moon, stars),
@@ -1625,7 +1778,7 @@ impl ItemStack {
 /// What holds an inventory, energy or other per-instance data: an entity, the block entity at a
 /// block, or the stack in one slot of an entity's inventory (a backpack, a battery). The same
 /// calls take any of them. Inventory calls reach its own inventory, or with `storage` set one of
-/// the storages it carries (`reg_storage`: a player's ender chest).
+/// the storages it carries (`comp::component::SLOTS`: a player's ender chest).
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug, Hash)]
 pub struct Holder {
@@ -2445,84 +2598,24 @@ pub mod component_flags {
     /// Goes from a block entity onto its block's item when the block breaks, and back onto the
     /// block entity when that item is placed (a battery's charge, a renamed chest's name).
     pub const CARRIED: u32 = 32;
-    /// An inventory (`reg_storage`), its value one `ItemStack` per slot.
+    /// An inventory (`comp::component::SLOTS`), its value one `ItemStack` per slot.
     pub const STORAGE: u32 = 64;
 }
 
-/// Per-entity data storage (hunger, a furnace's state): created with `default` on spawn of the kinds
-/// it is attached to (`Host::reg_attach`). The name lives in the same namespace as content
-/// components.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct EntityComponentDesc {
-    pub name: Str,
-    pub schema: Str,
-    /// Value size in bytes.
-    pub value_size: u32,
-    pub flags: u32,
-    /// Initial bytes, `value_size` long.
-    pub default: Slice<u8>,
+crate::data! {
+    /// A key of a shaped recipe's pattern: the character, and an item name or `#tag`.
+    pub struct RecipeKey { pub name: alloc::string::String, pub item: alloc::string::String }
 }
-defaults!(EntityComponentDesc { name: Str::EMPTY, schema: Str::EMPTY, value_size: 0, flags: 0, default: Slice::EMPTY });
-
-/// Recipe ingredients are item names or `#tag`.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct RecipeKey {
-    pub ch: u32,
-    pub item: Str,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct RecipeDesc {
-    /// Recipe type, e.g. "base:crafting", "base:smelting". Any mod can add types.
-    pub kind: Str,
-    /// Shaped recipes: rows of key characters. Empty for shapeless/processing.
-    pub pattern: Slice<Str>,
-    pub keys: Slice<RecipeKey>,
-    /// Shapeless/processing inputs: item names or `#tags`; a liquid by its name (its item).
-    pub inputs: Slice<Str>,
-    /// How many of each input (millibuckets for liquids); empty: one each.
-    pub input_counts: Slice<u32>,
-    pub output: Str,
-    pub count: u32,
-    /// Processing time in ticks, meaning is up to the recipe type.
-    pub time: u32,
-    /// More results after `output` (byproducts, chances).
-    pub outputs: Slice<RecipeOutput>,
-    /// Data machines read from the recipe and the viewer shows (energy per tick).
-    pub values: Slice<CompValue>,
-    /// `recipe_flags`.
-    pub flags: u32,
-}
-defaults!(RecipeDesc {
-    kind: Str::EMPTY,
-    pattern: Slice::EMPTY,
-    keys: Slice::EMPTY,
-    inputs: Slice::EMPTY,
-    input_counts: Slice::EMPTY,
-    output: Str::EMPTY,
-    count: 1,
-    time: 0,
-    outputs: Slice::EMPTY,
-    values: Slice::EMPTY,
-    flags: 0
-});
 
 pub mod recipe_flags {
     /// Works, but the recipe viewer doesn't show it.
     pub const HIDDEN: u32 = 1;
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct RecipeOutput {
-    /// An item, or a liquid by its name.
-    pub item: Str,
-    pub count: u32,
-    /// 0..1, 1 for always.
-    pub chance: f32,
+crate::data! {
+    /// A result of a recipe after its output: an item, or a liquid by its name and millibuckets,
+    /// coming out with `chance` (0..1) each time.
+    pub struct RecipeOutput { pub item: alloc::string::String, pub count: u32, pub chance: f32 }
 }
 
 /// A recipe the viewer shows with a kind's own `display`.
@@ -2723,7 +2816,7 @@ pub mod ui_kind {
     /// In a recipe's `display`: its inputs (`data` 0) or outputs (1) as the kind's grid, or only
     /// number `slot` when it is not `u32::MAX`.
     pub const RECIPE_SLOT: u32 = 10;
-    /// What mods add to place `text` of screen `class` (`Host::reg_screen_part`).
+    /// What mods add to place `text` of screen `class` (`entry_kind::SCREEN_PART`).
     pub const SCREEN_PARTS: u32 = 11;
     /// The player's equipment slots of the open menu (`slot_owner::EQUIPMENT`), a column.
     pub const EQUIPMENT: u32 = 13;
@@ -2966,7 +3059,6 @@ pub struct Host {
     /// The model (parts on a skin of `uv_width` x `uv_height` texels) of a kind of any mod or the engine's
     /// (`core:player`); a later mod's wins.
     pub reg_entity_model: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, parts: Slice<ModelPart>, uv_width: u32, uv_height: u32),
-    pub reg_entity_component: unsafe extern "C" fn(reg: *mut Registrar, desc: *const EntityComponentDesc),
     /// `cb` (`WorldTickArgs`) once per tick in every region of every dimension, for logic that
     /// isn't one entity's or block's (a dimension's loaded parts are regions run in parallel).
     pub reg_world_tick: unsafe extern "C" fn(reg: *mut Registrar, cb: Callback),
@@ -2974,16 +3066,12 @@ pub struct Host {
     /// saved with `entity` until then. One per entity and event: a second call moves it. A
     /// timer of a gone entity never fires.
     pub emit_after: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, ticks: u32, event: u32, data: Slice<u8>),
-    pub reg_recipe: unsafe extern "C" fn(reg: *mut Registrar, desc: *const RecipeDesc),
     pub reg_menu: unsafe extern "C" fn(reg: *mut Registrar, desc: *const MenuDesc),
     /// Menu opened by the inventory key.
     pub set_player_menu: unsafe extern "C" fn(reg: *mut Registrar, menu: Str),
     /// Block entity kind created (with the inventory its `inventory` component says) when the block is placed, removed
     /// (dropping its items) when broken.
     pub set_block_entity: unsafe extern "C" fn(reg: *mut Registrar, block: Str, entity: Str),
-    /// HUD element `name` placed at `anchor` (see `hud_anchor`), `order` 0 nearest the anchor's
-    /// edge. Players can move any element to another anchor in `config/hud.txt`.
-    pub reg_hud_element: unsafe extern "C" fn(reg: *mut Registrar, name: Str, anchor: Str, order: i32, cb: Callback),
     /// Chat command `/name`, arguments described by `usage` (see the engine's command syntax);
     /// `cb` gets `CommandArgs` with one value per named parameter.
     /// `client` non-zero: it runs on the client that types it, never sent to the server, `cb` getting
@@ -3021,7 +3109,7 @@ pub struct Host {
     pub stack_get: unsafe extern "C" fn(data: u32, comp: u32, len: *mut usize) -> *const u8,
     /// Stack data with `comp` set to `value` (or removed when `remove` is non-zero).
     pub stack_with: unsafe extern "C" fn(data: u32, comp: u32, value: Slice<u8>, remove: u32) -> u32,
-    /// Slots of storage `comp` (`reg_storage`), 0 for what isn't one.
+    /// Slots of storage `comp` (`comp::component::SLOTS`), 0 for what isn't one.
     pub storage_slots: unsafe extern "C" fn(comp: u32) -> u32,
     /// Name and value schema of component `comp` (empty schema: a tag); 0 if there is none.
     pub component_info: unsafe extern "C" fn(comp: u32, name: *mut Str, schema: *mut Str) -> u32,
@@ -3360,8 +3448,6 @@ pub struct Host {
     pub attribute_remove_modifier: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str, id: Str),
     /// Fills `explanation` with how the value came about; returns the value.
     pub attribute_explain: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str) -> f64,
-    pub reg_loot: unsafe extern "C" fn(reg: *mut Registrar, desc: *const LootDesc),
-    pub reg_loot_edit: unsafe extern "C" fn(reg: *mut Registrar, desc: *const LootEditDesc),
     /// What other mods register as `name` of `kind` (`entry_kind`) is dropped: this mod's own
     /// registration of it replaces theirs, or with `removed` nobody's stays.
     pub reg_override: unsafe extern "C" fn(reg: *mut Registrar, kind: u32, name: Str, removed: u32),
@@ -3373,12 +3459,6 @@ pub struct Host {
     /// drops its loot when the tool may harvest it and `drops` is non-zero, fires `block_broken`.
     /// 0 if nothing was broken.
     pub break_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos, tool: ItemStack, player: u64, drops: u32) -> u32,
-    /// Declares a stack component's flags (`stack_flags`).
-    pub reg_stack_component: unsafe extern "C" fn(reg: *mut Registrar, name: Str, schema: Str, flags: u32),
-    /// A storage of `slots`: an inventory a holder keeps besides its own, reached with
-    /// `Holder::storage`. Entity kinds carry it like a component (`reg_attach`), stacks always
-    /// can. Saved, and kept when a player respawns.
-    pub reg_storage: unsafe extern "C" fn(reg: *mut Registrar, name: Str, slots: u32),
     /// Client: the entity the open menu is on (a block entity, a mob), 0 if none.
     pub client_menu_owner: unsafe extern "C" fn(client: *mut ClientCtx) -> u64,
     /// A system: once per tick and region `cb` gets `SystemArgs` with every entity that has the
@@ -3414,10 +3494,6 @@ pub struct Host {
     pub reg_command_branch: unsafe extern "C" fn(reg: *mut Registrar, command: Str, usage: Str, client: u32, cb: Callback),
 
     // ------------------------------------------------ text, shaders, particles
-    /// A particle kind, see `ParticleDesc`.
-    pub reg_particle: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ParticleDesc),
-    /// A thing in a dimension's sky, see `SkyDesc`.
-    pub reg_sky: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SkyDesc),
     /// Server: particles for every player that sees `burst.pos`.
     pub particle_burst: unsafe extern "C" fn(world: *mut WorldCtx, burst: *const ParticleBurst),
     /// The strongest redstone power coming into a cell.
@@ -3483,9 +3559,6 @@ pub struct Host {
     /// wins.
     pub reg_player_inventory: unsafe extern "C" fn(reg: *mut Registrar, groups: Slice<SlotGroupDesc>),
 
-    /// Adds comma separated words to a word set: command parameters `word(#set)` complete from
-    /// it (`core:rules`, `core:gizmos`, or any mod's).
-    pub reg_words: unsafe extern "C" fn(reg: *mut Registrar, set: Str, words: Str),
     /// An entity's own box (width, height, eye height) instead of its kind's; `width` <= 0 goes
     /// back to the kind's. Its pose (crouching, swimming) scales whichever applies.
     pub set_entity_size: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, size: EntitySize),
@@ -3513,9 +3586,6 @@ pub struct Host {
     pub body_move_to: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, pos: *const Vec3, ticks: u32),
     /// What a comparator would read of the block at `pos` may be different now.
     pub signal_read_changed: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos),
-    /// Adds `cb` (`UiArgs`) to place `area` of screen `screen` (`core:title` has `buttons` and
-    /// `side`), lowest `order` first. Engine screens and mods' own build these places.
-    pub reg_screen_part: unsafe extern "C" fn(reg: *mut Registrar, screen: Str, area: Str, order: i32, cb: Callback),
     /// Describes or edits the terrain of a dimension, see `TerrainDesc`.
     pub reg_terrain: unsafe extern "C" fn(reg: *mut Registrar, desc: *const TerrainDesc),
     /// Column (`x`, `z`) of dimension `dim` for `seed` (its terrain's or `DimensionDesc::column`),
@@ -3778,69 +3848,26 @@ pub mod particle_then {
     pub const BECOME_STILL: u32 = 5;
 }
 
-/// One way a particle kind answers an event: the first of its rules for that event whose `when`
-/// holds is what happens. Without one, a landing stops it, a wall makes it slide, the end of
-/// its life is the end of it, and going in or out of a liquid does nothing.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ParticleRule {
-    /// `particle_event`.
-    pub event: u32,
-    /// `particle_when`.
-    pub when: u32,
-    /// `particle_when::TAG`: the tag. At most 5 different ones over all kinds.
-    pub tag: Str,
-    /// `particle_then`.
-    pub then: u32,
-    /// `BOUNCE`: share of the speed kept.
-    pub amount: f32,
-    /// `BECOME`: the kind, by name; it must blend the same way (`TRANSLUCENT` or not).
-    pub into: Str,
+crate::data! {
+    /// One way a particle kind answers an event (`comp::particle::RULES`): the first of its rules
+    /// for that event whose `when` holds is what happens. Without one, a landing stops it, a wall
+    /// makes it slide, the end of its life is the end of it, and going in or out of a liquid does
+    /// nothing.
+    pub struct ParticleRule {
+        /// `particle_event`.
+        pub event: u32,
+        /// `particle_when`.
+        pub when: u32,
+        /// `particle_when::TAG`: the tag. At most 5 different ones over all kinds.
+        pub tag: alloc::string::String,
+        /// `particle_then`.
+        pub then: u32,
+        /// `BOUNCE`: share of the speed kept.
+        pub amount: f32,
+        /// `BECOME`: the kind, by name; it must blend the same way (`TRANSLUCENT` or not).
+        pub into: alloc::string::String,
+    }
 }
-
-/// A particle kind. Particles live only on clients; the server and mods send bursts.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ParticleDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    /// Frames shown in order over its life; empty: a random piece of the burst's block texture
-    /// (block dust).
-    pub textures: Slice<Str>,
-    /// Seconds, picked between the two.
-    pub life_min: f32,
-    pub life_max: f32,
-    /// Edge length in blocks, picked between the two.
-    pub size_min: f32,
-    pub size_max: f32,
-    /// Blocks per second squared, pulling down.
-    pub gravity: f32,
-    /// Fraction of its speed kept per tick (20 per second); vanilla's particles 0.98.
-    pub drag: f32,
-    /// 0xRRGGBBAA at birth and at the end of its life, blended in between.
-    pub color: u32,
-    pub color_end: u32,
-    pub flags: u32,
-    /// Fragment shader `shaders/particle/<name>.wgsl`, empty for the plain texture.
-    pub shader: Str,
-    pub rules: Slice<ParticleRule>,
-}
-defaults!(ParticleDesc {
-    name: Str::EMPTY,
-    cell: core::ptr::null(),
-    textures: Slice::EMPTY,
-    life_min: 0.5,
-    life_max: 1.0,
-    size_min: 0.1,
-    size_max: 0.2,
-    gravity: 0.0,
-    drag: 0.98,
-    color: 0xFFFFFFFF,
-    color_end: 0xFFFFFFFF,
-    flags: 0,
-    shader: Str::EMPTY,
-    rules: Slice::EMPTY,
-});
 
 /// How much a player may do, for commands and anything else that asks: modern's levels. A player
 /// may do what asks for its level or less.
@@ -3858,7 +3885,7 @@ pub mod permission {
     pub const OWNER: u32 = 4;
 }
 
-/// What a thing in the sky is (`SkyDesc`).
+/// What a thing in the sky is (`comp::sky::KIND`).
 pub mod sky_kind {
     /// A picture on an orbit: a sun, a moon.
     pub const BODY: u32 = 0;
@@ -3869,79 +3896,6 @@ pub mod sky_kind {
     /// A layer of boxes in the air, where a picture's pixels are filled.
     pub const CLOUDS: u32 = 3;
 }
-
-/// A thing in a dimension's sky, known by (`dimension`, `name`). Registered again by a later mod
-/// it changes only what that registration sets, so everything here starts out "not set": NaN,
-/// `u32::MAX`, `i32::MIN` or an empty name.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SkyDesc {
-    pub dimension: Str,
-    pub name: Str,
-    /// Non-zero: takes it out of the sky instead.
-    pub remove: u32,
-    /// `sky_kind`.
-    pub kind: u32,
-    /// Picture under `textures/sky/`. A dome tells its layout by its shape (see `SkyBuilder`).
-    pub texture: Str,
-    /// Colors it instead of the plain picture: `shaders/sky/<name>.wgsl`.
-    pub shader: Str,
-    /// Where on its orbit it is at time 0, in turns: 0 rising in the east, 0.25 overhead.
-    pub phase: f32,
-    /// Ticks per turn, negative the other way, 0 stands still, infinite follows the dimension's day.
-    pub orbit: f32,
-    /// Degrees the orbit leans south of overhead, and turns around the vertical.
-    pub tilt: f32,
-    pub heading: f32,
-    /// Degrees across the sky (of each star, for stars).
-    pub size: f32,
-    /// Ticks per turn around its own middle, 0 none.
-    pub spin: f32,
-    /// How much of it shows by full day and by deep night, 0..1.
-    pub opacity: [f32; 2],
-    /// 0xRRGGBB multiplied in.
-    pub color: u32,
-    /// Picture grid of frames, columns and rows, and the ticks each frame lasts.
-    pub frames: [u32; 2],
-    pub frame_ticks: u32,
-    /// 0xRRGGBB of the glow it casts along the horizon while rising and setting, 0 none.
-    pub glow: u32,
-    /// 1: adds its light over what is behind it; 0: covers it.
-    pub additive: u32,
-    /// Stars: how many, and what scatters them.
-    pub count: u32,
-    pub seed: u32,
-    /// Clouds: the height of their underside, and blocks per tick they drift along x.
-    pub height: f32,
-    pub drift: f32,
-    /// Drawn low to high, one over the other; registration order among equals.
-    pub order: i32,
-}
-defaults!(SkyDesc {
-    dimension: Str::EMPTY,
-    name: Str::EMPTY,
-    remove: 0,
-    kind: u32::MAX,
-    texture: Str::EMPTY,
-    shader: Str::EMPTY,
-    phase: f32::NAN,
-    orbit: f32::NAN,
-    tilt: f32::NAN,
-    heading: f32::NAN,
-    size: f32::NAN,
-    spin: f32::NAN,
-    opacity: [f32::NAN; 2],
-    color: u32::MAX,
-    frames: [u32::MAX; 2],
-    frame_ticks: u32::MAX,
-    glow: u32::MAX,
-    additive: u32::MAX,
-    count: u32::MAX,
-    seed: u32::MAX,
-    height: f32::NAN,
-    drift: f32::NAN,
-    order: i32::MIN,
-});
 
 /// Particles of one kind appearing together.
 #[repr(C)]
@@ -4339,74 +4293,40 @@ pub mod loot_cond {
     pub const CONDITION: u32 = 8;
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LootCond {
-    pub kind: u32,
-    pub value: f32,
-    pub text: Str,
-}
-defaults!(LootCond { kind: 0, value: 1.0, text: Str::EMPTY });
-
-/// One weighted choice of a pool: `item` (name, or `#tag` for the tag's first item; empty = no
-/// item), `min..=max` of it. A burning victim drops it cooked by recipe type `smelt` if set.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LootEntry {
-    pub item: Str,
-    pub weight: u32,
-    pub min: u32,
-    pub max: u32,
-    pub conditions: Slice<LootCond>,
-    pub smelt: Str,
-}
-defaults!(LootEntry { item: Str::EMPTY, weight: 1, min: 1, max: 1, conditions: Slice::EMPTY, smelt: Str::EMPTY });
-
-/// Rolls `rolls_min..=rolls_max` times if its conditions pass; each roll picks one entry by
-/// weight among those whose conditions pass.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LootPool {
-    pub rolls_min: u32,
-    pub rolls_max: u32,
-    pub conditions: Slice<LootCond>,
-    pub entries: Slice<LootEntry>,
-}
-defaults!(LootPool { rolls_min: 1, rolls_max: 1, conditions: Slice::EMPTY, entries: Slice::EMPTY });
-
-/// A loot table. Blocks and entities use the table named like them; mods may name any others
-/// (chests).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LootDesc {
-    pub name: Str,
-    pub pools: Slice<LootPool>,
-}
-defaults!(LootDesc { name: Str::EMPTY, pools: Slice::EMPTY });
-
-pub mod loot_op {
-    /// Adds `pool`.
-    pub const ADD_POOL: u32 = 0;
-    /// Every entry of item `from` gives `to` instead.
-    pub const REPLACE_ITEM: u32 = 1;
-    /// Drops entries of item `from`.
-    pub const REMOVE_ITEM: u32 = 2;
-    /// Empties the table (add pools after it).
-    pub const CLEAR: u32 = 3;
+crate::data! {
+    /// `loot_cond` `kind`, with its `value` or `text`.
+    pub struct LootCond { pub kind: u32, pub value: f32, pub text: alloc::string::String }
 }
 
-/// A change to tables any mod made, applied after all tables in mod load order. `table` may end
-/// in `*`.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct LootEditDesc {
-    pub table: Str,
-    pub op: u32,
-    pub pool: LootPool,
-    pub from: Str,
-    pub to: Str,
+crate::data! {
+    /// One weighted choice of a pool: `item` (name, or `#tag` for the tag's first item; empty = no
+    /// item), `min..=max` of it. A burning victim drops it cooked by recipe kind `smelt` if set.
+    pub struct LootEntry {
+        pub item: alloc::string::String,
+        pub weight: u32,
+        pub min: u32,
+        pub max: u32,
+        pub conditions: alloc::vec::Vec<LootCond>,
+        pub smelt: alloc::string::String,
+    }
 }
-defaults!(LootEditDesc { table: Str::EMPTY, op: 0, pool: LootPool::DEFAULT, from: Str::EMPTY, to: Str::EMPTY });
+
+crate::data! {
+    /// Rolls `rolls_min..=rolls_max` times if its conditions pass; each roll picks one entry by
+    /// weight among those whose conditions pass.
+    pub struct LootPool {
+        pub rolls_min: u32,
+        pub rolls_max: u32,
+        pub conditions: alloc::vec::Vec<LootCond>,
+        pub entries: alloc::vec::Vec<LootEntry>,
+    }
+}
+
+crate::data! {
+    /// Every entry of item `name` in a table's pools gives `to` instead; an empty `to` leaves them
+    /// out.
+    pub struct LootSwap { pub name: alloc::string::String, pub to: alloc::string::String }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -4420,7 +4340,7 @@ pub struct LootCtx {
 }
 defaults!(LootCtx { tool: ItemStack::EMPTY, killer: 0, by_player: 0, on_fire: 0, mined: 0 });
 
-/// Flags of stack components (`Host::reg_stack_component`).
+/// Flags of stack components (`comp::component::STACK_FLAGS`).
 pub mod stack_flags {
     /// Kept on the server: clients get the stack without it.
     pub const SERVER_ONLY: u32 = 1;

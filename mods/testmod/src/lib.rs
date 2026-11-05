@@ -463,7 +463,7 @@ fn init(r: &mut Registry) {
         }
     });
     r.edit(crate::riding::STEED.loot())
-        .add_pool(Pool::new().when(Cond::Chance(0.05)).item("tin_ingot"));
+        .pool(Pool::new().when(Cond::Chance(0.05)).item("tin_ingot"));
 
     r.command("tagbench", "[millions:int]", tag_bench);
     // The engine's /gizmo suggests this mod's group too.
@@ -781,7 +781,7 @@ fn recipe_showcase(r: &mut Registry) {
     r.shapeless(&ALLOYING, "tin_ingot", 2, &["#ingots/iron", "#gems/coal"], 100)
         .input_amounts(&[3, 1])
         .output_chance("base:diamond", 1, 0.05)
-        .value(&ENERGY_PER_TICK, 32);
+        .set(&ENERGY_PER_TICK, 32);
     r.recipe_kind(&INFUSING).layout(|ui, recipe| {
         ui.column(S::column().gap(2.0), |ui| {
             ui.row(S::row().gap(4.0).center(), |ui| {

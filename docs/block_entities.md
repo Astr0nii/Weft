@@ -136,7 +136,7 @@ A recipe can say more than one output and a time:
 r.shapeless(&ALLOYING, "tin_ingot", 2, &["base:iron_ingot", "base:coal"], 100)
     .input_amounts(&[3, 1])                              // 3 iron and 1 coal
     .output_chance("base:diamond", 1, 0.05)       // and a diamond now and then
-    .value(&ENERGY_PER_TICK, 32);                 // data its tick reads
+    .set(&ENERGY_PER_TICK, 32);                   // data its tick reads
 ```
 A liquid is an item too: every liquid has one named like it, counted in millibuckets, so `"base:water"` or `"#water"` (its tags are the liquid's) goes into a recipe with `input_amounts(&[1000])` like any stack, and `hidden()` keeps a recipe out of the viewer. One with several inputs finds its recipe with `recipe_find(&KIND, &stacks)`, which gives the `time()`, the `outputs()` with their chances (stacks, liquids among them), the `value(&COMPONENT)` and `consume(&mut stacks)` to take the inputs out. Liquids live in liquid slots, GregTech's way: `.group("water", Slots::single().liquid(16_000))` holds sixteen buckets of one liquid, a player pours a bucket in or fills one by clicking with it, and the tick reads and sets it like any slot (`w.inventory(pos).group("water").get(0)` is the water item with its millibuckets as the count). Nothing else goes into a liquid slot, and a liquid goes nowhere else.
 

@@ -88,7 +88,7 @@ pub static OVERWORLD: Dimension = Dimension::named("base:overworld");
 pub static FLATLANDS: Dimension = Dimension::named("base:flatlands");
 
 /// What is in the sky of the game's dimensions. Any of them can be changed or taken out by a mod:
-/// `r.sky_body(&OVERWORLD, &MOON).size(40.0)`, `r.sky_remove(&OVERWORLD, &STARS)`.
+/// `r.edit(OVERWORLD.sky(&MOON)).size(40.0)`, `r.remove(OVERWORLD.sky(&STARS))`.
 pub static SUN: SkyObject = SkyObject::named("base:sun");
 pub static MOON: SkyObject = SkyObject::named("base:moon");
 pub static STARS: SkyObject = SkyObject::named("base:stars");

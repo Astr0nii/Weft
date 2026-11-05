@@ -191,3 +191,107 @@ pub mod key {
     use crate::{Component, Text};
     pub static DEFAULT: Component<Text, Key> = Component::named(crate::abi::comp::KEY_DEFAULT);
 }
+
+/// What a particle kind is made of: tags for its flags (`abi::comp::particle`) and these.
+pub mod particle {
+    use crate::abi::comp::particle as p;
+    use crate::kind::Particle;
+    use crate::{Component, Text};
+    pub static TEXTURES: Component<Vec<String>, Particle> = Component::named(p::TEXTURES);
+    pub static LIFE: Component<[f32; 2], Particle> = Component::named(p::LIFE);
+    pub static SIZE: Component<[f32; 2], Particle> = Component::named(p::SIZE);
+    pub static GRAVITY: Component<f32, Particle> = Component::named(p::GRAVITY);
+    pub static DRAG: Component<f32, Particle> = Component::named(p::DRAG);
+    pub static COLOR: Component<[u32; 2], Particle> = Component::named(p::COLOR);
+    pub static SHADER: Component<Text, Particle> = Component::named(p::SHADER);
+    pub static RULES: Component<Vec<crate::abi::ParticleRule>, Particle> = Component::named(p::RULES);
+}
+
+/// What a thing in the sky is made of (`abi::comp::sky`).
+pub mod sky {
+    use crate::abi::comp::sky as s;
+    use crate::kind::SkyObject;
+    use crate::{Component, Text};
+    pub static KIND: Component<u32, SkyObject> = Component::named(s::KIND);
+    pub static TEXTURE: Component<Text, SkyObject> = Component::named(s::TEXTURE);
+    pub static SHADER: Component<Text, SkyObject> = Component::named(s::SHADER);
+    pub static PHASE: Component<f32, SkyObject> = Component::named(s::PHASE);
+    pub static ORBIT: Component<f32, SkyObject> = Component::named(s::ORBIT);
+    pub static TILT: Component<f32, SkyObject> = Component::named(s::TILT);
+    pub static HEADING: Component<f32, SkyObject> = Component::named(s::HEADING);
+    pub static SIZE: Component<f32, SkyObject> = Component::named(s::SIZE);
+    pub static SPIN: Component<f32, SkyObject> = Component::named(s::SPIN);
+    pub static OPACITY: Component<[f32; 2], SkyObject> = Component::named(s::OPACITY);
+    pub static COLOR: Component<u32, SkyObject> = Component::named(s::COLOR);
+    pub static FRAMES: Component<[u32; 2], SkyObject> = Component::named(s::FRAMES);
+    pub static FRAME_TICKS: Component<u32, SkyObject> = Component::named(s::FRAME_TICKS);
+    pub static GLOW: Component<u32, SkyObject> = Component::named(s::GLOW);
+    pub static COUNT: Component<u32, SkyObject> = Component::named(s::COUNT);
+    pub static SEED: Component<u32, SkyObject> = Component::named(s::SEED);
+    pub static HEIGHT: Component<f32, SkyObject> = Component::named(s::HEIGHT);
+    pub static DRIFT: Component<f32, SkyObject> = Component::named(s::DRIFT);
+    pub static ORDER: Component<i32, SkyObject> = Component::named(s::ORDER);
+}
+
+/// What a HUD element is made of.
+pub mod hud_element {
+    use crate::abi::comp::hud_element as h;
+    use crate::kind::HudElement;
+    use crate::{Component, Text};
+    pub static ANCHOR: Component<Text, HudElement> = Component::named(h::ANCHOR);
+    pub static ORDER: Component<i32, HudElement> = Component::named(h::ORDER);
+    pub static CALL: Component<crate::abi::Callback, HudElement> = Component::named(h::CALL);
+}
+
+/// What a screen part is made of.
+pub mod screen_part {
+    use crate::abi::comp::screen_part as s;
+    use crate::kind::ScreenPart;
+    use crate::{Component, Text};
+    pub static SCREEN: Component<Text, ScreenPart> = Component::named(s::SCREEN);
+    pub static AREA: Component<Text, ScreenPart> = Component::named(s::AREA);
+    pub static ORDER: Component<i32, ScreenPart> = Component::named(s::ORDER);
+    pub static CALL: Component<crate::abi::Callback, ScreenPart> = Component::named(s::CALL);
+}
+
+/// A word set's words.
+pub mod words {
+    use crate::Component;
+    use crate::kind::WordSet;
+    pub static WORDS: Component<Vec<String>, WordSet> = Component::named(crate::abi::comp::WORDS);
+}
+
+/// What a component's declaration is made of: tags for its flags (`abi::comp::component`) and
+/// these.
+pub mod component {
+    use crate::abi::comp::component as c;
+    use crate::kind::Declaration;
+    use crate::{Component, Text};
+    pub static SCHEMA: Component<Text, Declaration> = Component::named(c::SCHEMA);
+    pub static DEFAULT: Component<Vec<u8>, Declaration> = Component::named(c::DEFAULT);
+    pub static SLOTS: Component<u32, Declaration> = Component::named(c::SLOTS);
+}
+
+/// What a recipe is made of (`abi::comp::recipe`); any other component is data it carries.
+pub mod recipe {
+    use crate::abi::comp::recipe as r;
+    use crate::kind::Recipe;
+    use crate::{Component, Text};
+    pub static KIND: Component<Text, Recipe> = Component::named(r::KIND);
+    pub static PATTERN: Component<Vec<String>, Recipe> = Component::named(r::PATTERN);
+    pub static KEYS: Component<Vec<crate::abi::RecipeKey>, Recipe> = Component::named(r::KEYS);
+    pub static INPUTS: Component<Vec<String>, Recipe> = Component::named(r::INPUTS);
+    pub static AMOUNTS: Component<Vec<u32>, Recipe> = Component::named(r::AMOUNTS);
+    pub static OUTPUT: Component<Text, Recipe> = Component::named(r::OUTPUT);
+    pub static COUNT: Component<u32, Recipe> = Component::named(r::COUNT);
+    pub static TIME: Component<u32, Recipe> = Component::named(r::TIME);
+    pub static OUTPUTS: Component<Vec<crate::abi::RecipeOutput>, Recipe> = Component::named(r::OUTPUTS);
+}
+
+/// What a loot table is made of.
+pub mod loot {
+    use crate::Component;
+    use crate::kind::LootTable;
+    pub static POOLS: Component<Vec<crate::abi::LootPool>, LootTable> = Component::named(crate::abi::comp::loot::POOLS);
+    pub static SWAPS: Component<Vec<crate::abi::LootSwap>, LootTable> = Component::named(crate::abi::comp::loot::SWAPS);
+}

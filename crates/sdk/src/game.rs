@@ -2,10 +2,11 @@ use crate::abi::{self, Holder, ItemStack, Slice, Str};
 use crate::abi::{BlockPos, Vec3};
 use crate::component::{Component, Storage, Value};
 use crate::content::{
-    Biome, Block, EntityCategory, EntityKind, EquipmentSlot, GizmoGroup, HudElement, Menu, Pending, RecipeKind, TintKind,
+    Biome, Block, Declaration, EntityCategory, EntityKind, EquipmentSlot, GizmoGroup, HudElement, Menu, Pending, RecipeKind, TintKind,
+    WordSet,
 };
 use crate::ui::{Ui, ui_cb};
-use crate::{Id, Registry, WithComponents, World, callback, host, qualify};
+use crate::{Id, Registry, WithComponents, World, callback, comps, host, qualify};
 
 pub use abi::{EYE_SHARE, Energy, EntityState, component_flags, damage_cause, damage_flags, entity_flags, slot_flags};
 
@@ -1613,27 +1614,28 @@ impl Registry {
     /// `entity_component` does) and stacks (as `stack_component`). With
     /// `component_flags::CARRIED` the value goes from a broken block onto its item and back
     /// when placed, as a renamed chest's name does.
-    pub fn instance_component<T: Value>(&mut self, comp: &Component<T>, default: T, flags: u32) {
-        self.entity_component(comp, default, flags);
+    pub fn instance_component<T: Value>(&mut self, comp: &Component<T>, default: T, flags: u32) -> DeclarationBuilder<'_> {
         let no_save = if flags & component_flags::SAVE == 0 { abi::stack_flags::NO_SAVE } else { 0 };
-        self.stack_component(comp, no_save);
+        self.declare::<T>(comp.name())
+            .entity(&default, flags)
+            .stack(no_save)
     }
 
     /// Declares per-entity storage for `comp`: the value an entity starts with and the
     /// `component_flags` (saved, synced to whom). Kinds carry it with `.attach(&COMP)` (or
     /// `r.attach(&KIND, &COMP)` for another mod's kind).
-    pub fn entity_component<T: Value>(&mut self, comp: &Component<T>, default: T, flags: u32) {
-        let bytes = crate::component::value_bytes(&default);
-        let schema = T::schema();
-        let desc = abi::EntityComponentDesc {
-            name: Str::new(comp.name()),
-            schema: Str::new(&schema),
-            value_size: size_of::<T>() as u32,
-            flags,
-            default: Slice::new(&bytes),
-            ..abi::EntityComponentDesc::DEFAULT
-        };
-        unsafe { (host().reg_entity_component)(self.raw, &desc) }
+    pub fn entity_component<T: Value>(&mut self, comp: &Component<T>, default: T, flags: u32) -> DeclarationBuilder<'_> {
+        self.declare::<T>(comp.name()).entity(&default, flags)
+    }
+
+    /// A component's declaration with its schema, the rest up to the caller.
+    pub(crate) fn declare<T: crate::component::Data>(&mut self, name: &str) -> DeclarationBuilder<'_> {
+        let e = crate::entry::Entry::new(abi::entry_kind::COMPONENT, name.to_string());
+        DeclarationBuilder { reg: self, e }.set_text(&comps::component::SCHEMA, &T::schema())
+    }
+
+    fn declaration_entry(&mut self, declaration: &'static Declaration) -> DeclarationBuilder<'_> {
+        DeclarationBuilder { reg: self, e: crate::entry::Entry::of(declaration) }
     }
 
     /// Logic that is nobody's own (players' hunger, a mod's weather): once per tick in every
@@ -1709,8 +1711,9 @@ impl Registry {
     }
 
     /// An inventory of `slots` a holder can keep besides its own (`Storage`).
-    pub fn storage(&mut self, storage: &Storage, slots: u32) {
-        unsafe { (host().reg_storage)(self.raw, Str::new(storage.name()), slots) }
+    pub fn storage(&mut self, storage: &Storage, slots: u32) -> DeclarationBuilder<'_> {
+        let e = crate::entry::Entry::new(abi::entry_kind::COMPONENT, storage.name().to_string());
+        DeclarationBuilder { reg: self, e }.set(&comps::component::SLOTS, slots)
     }
 
     /// `attach` with another starting value (a battery's capacity).
@@ -1743,17 +1746,15 @@ impl Registry {
         unsafe { (host().reg_command)(self.raw, Str::new(name), Str::new(usage), 1, cb) }
     }
 
-    /// Adds words to a word set: command parameters `word(#set)` complete from it. The
-    /// engine's are `core:rules` and `core:gizmos` (or see `gizmo_group`); a mod's command can
-    /// declare its own set that other mods add to.
-    pub fn add_words(&mut self, set: &str, words: &[&str]) {
-        let words = words.join(",");
-        unsafe { (host().reg_words)(self.raw, Str::new(set), Str::new(&words)) }
+    /// A word set: command parameters `word(#set)` complete from its words, which other mods
+    /// add to with `r.edit(&SET).words(..)` (the engine's sets too, `word_sets::GIZMOS`).
+    pub fn word_set<'a>(&'a mut self, set: &'static WordSet) -> WordSetBuilder<'a> {
+        WordSetBuilder { reg: self, e: crate::entry::Entry::of(set) }
     }
 
     /// A gizmo group of this mod, offered by `/gizmo`'s completion.
     pub fn gizmo_group(&mut self, group: &GizmoGroup) {
-        self.add_words("core:gizmos", &[group.name()]);
+        drop(self.edit(&crate::word_sets::GIZMOS).words(&[group.name()]));
     }
 
     /// A new branch of an existing server command, handled here: `r.command_branch("time",
@@ -1772,19 +1773,46 @@ impl Registry {
 
     /// Adds to place `area` of `screen` without replacing the screen: a button in the main menu is
     /// `r.screen_part(&screens::TITLE, "buttons", 0, |ui| ..)`. Lower `order` comes first. The
-    /// engine's places: `TITLE` `buttons` and `side`, `PAUSE` `buttons`, `SETTINGS` `buttons`.
-    pub fn screen_part(&mut self, screen: &Menu, area: &str, order: i32, f: impl Fn(&mut Ui) + Send + Sync + 'static) {
-        let cb = crate::ui::ui_cb(f);
-        unsafe { (host().reg_screen_part)(self.raw, Str::new(screen.name()), Str::new(area), order, cb) }
+    /// engine's places: `TITLE` `buttons` and `side`, `PAUSE` `buttons`, `SETTINGS` `buttons`. Named
+    /// `<mod>:<screen>/<area>` (`base:pause/buttons`, the next `/2`..), other mods edit it by that.
+    pub fn screen_part(
+        &mut self,
+        screen: &Menu,
+        area: &str,
+        order: i32,
+        f: impl Fn(&mut Ui) + Send + Sync + 'static,
+    ) -> ScreenPartBuilder<'_> {
+        use comps::screen_part as s;
+        let name = self.derive_name(&format!("{}/{area}", screen.path()));
+        ScreenPartBuilder { reg: self, e: crate::entry::Entry::new(abi::entry_kind::SCREEN_PART, name) }
+            .set_text(&s::SCREEN, screen.name())
+            .set_text(&s::AREA, area)
+            .set(&s::ORDER, order)
+            .set(&s::CALL, ui_cb(f))
+    }
+
+    fn screen_part_entry(&mut self, part: &'static crate::ScreenPart) -> ScreenPartBuilder<'_> {
+        ScreenPartBuilder { reg: self, e: crate::entry::Entry::of(part) }
     }
 
     /// HUD element at `anchor` (`hud_anchor::*`); `order` 0 sits nearest the anchor's edge.
-    pub fn hud_element(&mut self, element: &HudElement, anchor: &str, order: i32, f: impl Fn(&mut Ui) + Send + Sync + 'static) {
-        unsafe { (host().reg_hud_element)(self.raw, Str::new(element.name()), Str::new(anchor), order, ui_cb(f)) }
+    pub fn hud_element(
+        &mut self,
+        element: &'static HudElement,
+        anchor: &str,
+        order: i32,
+        f: impl Fn(&mut Ui) + Send + Sync + 'static,
+    ) -> HudElementBuilder<'_> {
+        self.hud_element_entry(element)
+            .anchor(anchor)
+            .order(order)
+            .ui(f)
     }
 
-    /// Shaped recipe: `pattern` rows use the characters in `keys`; ingredients are item names or `#tag`.
-    /// The recipe viewer shows `item` (a furnace or workstation) next to recipes of type `kind`.
+    fn hud_element_entry(&mut self, element: &'static HudElement) -> HudElementBuilder<'_> {
+        HudElementBuilder { reg: self, e: crate::entry::Entry::of(element) }
+    }
+
     /// A tint kind: blocks with `.tint(&KIND)` take its color from the biome they stand in
     /// (`biome_tint`), `default` (0xRRGGBB) elsewhere and on items.
     pub fn tint_kind(&mut self, kind: &'static TintKind, default: u32) -> TintKindBuilder<'_> {
@@ -1819,7 +1847,7 @@ impl Registry {
     }
 
     /// Shaped recipe: `pattern` rows use the characters in `keys`; ingredients are item names or
-    /// `#tag`. More results and data with the builder it returns.
+    /// `#tag`. More results and data with the builder it returns, named as `RecipeBuilder` says.
     pub fn shaped<'a>(
         &'a mut self,
         kind: &RecipeKind,
@@ -1828,43 +1856,36 @@ impl Registry {
         pattern: &[&str],
         keys: &[(char, &str)],
     ) -> RecipeBuilder<'a> {
-        let keys = keys.iter().map(|(c, n)| (*c, self.ingredient(n))).collect();
-        let output = self.ingredient(output);
-        RecipeBuilder {
-            kind: kind.name().to_string(),
-            pattern: pattern.iter().map(|p| p.to_string()).collect(),
-            keys,
-            inputs: Vec::new(),
-            counts: Vec::new(),
-            output,
-            count,
-            time: 0,
-            outputs: Vec::new(),
-            values: Vec::new(),
-            flags: 0,
-            reg: self,
-        }
+        let keys = keys
+            .iter()
+            .map(|(c, n)| abi::RecipeKey { name: c.to_string(), item: self.ingredient(n) })
+            .collect();
+        let pattern = pattern.iter().map(|p| p.to_string()).collect();
+        self.recipe(kind, output, count)
+            .set(&comps::recipe::PATTERN, pattern)
+            .set(&comps::recipe::KEYS, keys)
     }
 
     /// Shapeless recipe or a processing recipe (inputs used up over `time` ticks). Inputs are
     /// items or `#tags`; a liquid is its item, named like it, counted in millibuckets.
     pub fn shapeless<'a>(&'a mut self, kind: &RecipeKind, output: &str, count: u32, inputs: &[&str], time: u32) -> RecipeBuilder<'a> {
         let inputs = inputs.iter().map(|n| self.ingredient(n)).collect();
+        self.recipe(kind, output, count)
+            .set(&comps::recipe::INPUTS, inputs)
+            .set(&comps::recipe::TIME, time)
+    }
+
+    fn recipe(&mut self, kind: &RecipeKind, output: &str, count: u32) -> RecipeBuilder<'_> {
         let output = self.ingredient(output);
-        RecipeBuilder {
-            kind: kind.name().to_string(),
-            pattern: Vec::new(),
-            keys: Vec::new(),
-            inputs,
-            counts: Vec::new(),
-            output,
-            count,
-            time,
-            outputs: Vec::new(),
-            values: Vec::new(),
-            flags: 0,
-            reg: self,
-        }
+        let name = self.derive_name(&format!("{}/{}", kind.path(), output.split_once(':').map_or(output.as_str(), |o| o.1)));
+        RecipeBuilder { reg: self, e: crate::entry::Entry::new(abi::entry_kind::RECIPE, name) }
+            .set_text(&comps::recipe::KIND, kind.name())
+            .set_text(&comps::recipe::OUTPUT, &output)
+            .set(&comps::recipe::COUNT, count)
+    }
+
+    fn recipe_entry(&mut self, recipe: &'static crate::Recipe) -> RecipeBuilder<'_> {
+        RecipeBuilder { reg: self, e: crate::entry::Entry::of(recipe) }
     }
 
     fn ingredient(&self, n: &str) -> String {
@@ -1872,84 +1893,39 @@ impl Registry {
     }
 }
 
-/// A recipe being registered; sent when dropped.
+/// A recipe being registered; sent when dropped. It is named `<mod>:<kind>/<output>`
+/// (`base:crafting/torch`), `/2`, `/3`.. after it for more of this mod's with that kind and output,
+/// unless `named`: other mods edit and remove it by that name (`r.remove(&Recipe::named(..))`).
+/// Any other component is data it carries for what makes it (`.set(&ENERGY_PER_TICK, 32)`), which
+/// the kind's info line can show.
 pub struct RecipeBuilder<'a> {
     reg: &'a mut Registry,
-    kind: String,
-    pattern: Vec<String>,
-    keys: Vec<(char, String)>,
-    inputs: Vec<String>,
-    counts: Vec<u32>,
-    output: String,
-    count: u32,
-    time: u32,
-    outputs: Vec<(String, u32, f32)>,
-    values: Vec<Pending>,
-    flags: u32,
+    e: crate::entry::Entry,
 }
 
 impl RecipeBuilder<'_> {
-    /// How many of each input it takes, in the order of the inputs (millibuckets for liquids).
-    pub fn input_amounts(mut self, counts: &[u32]) -> Self {
-        self.counts = counts.to_vec();
+    /// Its name instead of `<mod>:<kind>/<output>`.
+    pub fn named(mut self, name: &str) -> Self {
+        let derived = std::mem::replace(&mut self.e.name, qualify(self.reg.ns, name));
+        self.reg.derived.retain(|n| *n != derived);
         self
+    }
+    /// How many of each input it takes, in the order of the inputs (millibuckets for liquids).
+    pub fn input_amounts(self, counts: &[u32]) -> Self {
+        self.set(&comps::recipe::AMOUNTS, counts.to_vec())
     }
     /// Another result (an item, or a liquid by its name and millibuckets).
     pub fn output(self, item: &str, count: u32) -> Self {
         self.output_chance(item, count, 1.0)
     }
     /// A result that comes out with chance `chance` (0..1) each time.
-    pub fn output_chance(mut self, item: &str, count: u32, chance: f32) -> Self {
+    pub fn output_chance(self, item: &str, count: u32, chance: f32) -> Self {
         let item = self.reg.ingredient(item);
-        self.outputs.push((item, count, chance));
-        self
-    }
-    /// Data the recipe carries for what makes it (energy per tick); the recipe
-    /// viewer can show it in the kind's info line.
-    pub fn value<T: Value>(mut self, comp: &Component<T>, v: T) -> Self {
-        self.values.push(comp.raw_value(&v));
-        self
+        self.push(&comps::recipe::OUTPUTS, abi::RecipeOutput { item, count, chance })
     }
     /// Works, but the recipe viewer doesn't list it.
-    pub fn hidden(mut self) -> Self {
-        self.flags |= abi::recipe_flags::HIDDEN;
-        self
-    }
-}
-
-impl Drop for RecipeBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let pattern: Vec<Str> = self.pattern.iter().map(|p| Str::new(p)).collect();
-        let keys: Vec<abi::RecipeKey> = self
-            .keys
-            .iter()
-            .map(|(c, n)| abi::RecipeKey { ch: *c as u32, item: Str::new(n) })
-            .collect();
-        let inputs: Vec<Str> = self.inputs.iter().map(|n| Str::new(n)).collect();
-        let outputs: Vec<abi::RecipeOutput> = self
-            .outputs
-            .iter()
-            .map(|(n, c, ch)| abi::RecipeOutput { item: Str::new(n), count: *c, chance: *ch })
-            .collect();
-        let mut scratch = Vec::new();
-        let values = crate::content::raw_values(&self.values, &mut scratch);
-        let desc = abi::RecipeDesc {
-            kind: Str::new(&self.kind),
-            pattern: Slice::new(&pattern),
-            keys: Slice::new(&keys),
-            inputs: Slice::new(&inputs),
-            input_counts: Slice::new(&self.counts),
-            output: Str::new(&self.output),
-            count: self.count,
-            time: self.time,
-            outputs: Slice::new(&outputs),
-            values: Slice::new(&values),
-            flags: self.flags,
-        };
-        unsafe { (host().reg_recipe)(self.reg.raw, &desc) }
+    pub fn hidden(self) -> Self {
+        self.tag(abi::comp::recipe::HIDDEN)
     }
 }
 
@@ -1960,6 +1936,11 @@ pub struct RecipeKindBuilder<'a> {
 }
 
 crate::entry::entry_builder!(
+    Recipe => RecipeBuilder, recipe_entry;
+    HudElement => HudElementBuilder, hud_element_entry;
+    ScreenPart => ScreenPartBuilder, screen_part_entry;
+    WordSet => WordSetBuilder, word_set;
+    Declaration => DeclarationBuilder, declaration_entry;
     RecipeKind => RecipeKindBuilder, recipe_kind;
     EntityCategory => CategoryBuilder, entity_category_entry;
     EquipmentSlot => EquipmentSlotBuilder, equipment_slot_entry;
@@ -1984,10 +1965,10 @@ impl RecipeKindBuilder<'_> {
     }
     /// Builds each recipe yourself instead of the usual inputs, arrow, outputs:
     /// `ui.recipe_inputs()`, `ui.recipe_outputs()` and `ui.recipe_input(i)` place its slots.
-    pub fn layout(self, f: impl Fn(&mut Ui, &Recipe) + Send + Sync + 'static) -> Self {
+    pub fn layout(self, f: impl Fn(&mut Ui, &RecipeView) + Send + Sync + 'static) -> Self {
         let cb = callback(move |a: &mut abi::RecipeUiArgs| {
             let mut ui = Ui::from_raw(a.ui, a.client);
-            let r = Recipe { kind: unsafe { a.kind.as_str() }.to_string(), index: a.recipe };
+            let r = RecipeView { kind: unsafe { a.kind.as_str() }.to_string(), index: a.recipe };
             f(&mut ui, &r);
         });
         self.set(&crate::comps::recipe_kind::LAYOUT, cb)
@@ -2006,19 +1987,89 @@ pub struct TintKindBuilder<'a> {
     e: crate::entry::Entry,
 }
 
-/// One recipe of a kind, found by `recipe_find` (or shown by a kind's `display`).
-pub struct Recipe {
+/// A HUD element being registered (`Registry::hud_element`).
+pub struct HudElementBuilder<'a> {
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
+}
+
+impl HudElementBuilder<'_> {
+    /// Where it sits (`hud_anchor::*`).
+    pub fn anchor(self, anchor: &str) -> Self {
+        self.set_text(&comps::hud_element::ANCHOR, anchor)
+    }
+    /// 0 sits nearest the anchor's edge.
+    pub fn order(self, order: i32) -> Self {
+        self.set(&comps::hud_element::ORDER, order)
+    }
+    /// What it shows.
+    pub fn ui(self, f: impl Fn(&mut Ui) + Send + Sync + 'static) -> Self {
+        self.set(&comps::hud_element::CALL, ui_cb(f))
+    }
+}
+
+/// A screen part being registered (`Registry::screen_part`).
+pub struct ScreenPartBuilder<'a> {
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
+}
+
+/// A word set being registered or added to (`Registry::word_set`).
+pub struct WordSetBuilder<'a> {
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
+}
+
+impl WordSetBuilder<'_> {
+    pub fn words(self, words: &[&str]) -> Self {
+        words
+            .iter()
+            .fold(self, |b, w| b.push(&comps::words::WORDS, w.to_string()))
+    }
+    /// Takes a word out (another mod's, in an edit).
+    pub fn remove_word(self, word: &str) -> Self {
+        self.remove_item(&comps::words::WORDS, word)
+    }
+}
+
+/// A component's declaration being registered (`Registry::entity_component`, `stack_component`,
+/// `storage`); another mod's is `r.edit(COMP.declaration())`.
+pub struct DeclarationBuilder<'a> {
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
+}
+
+impl DeclarationBuilder<'_> {
+    fn flags(self, all: &[(&str, u32)], flags: u32) -> Self {
+        all.iter()
+            .filter(|f| flags & f.1 != 0)
+            .fold(self, |b, f| b.tag(f.0))
+    }
+    /// Entities carry it, starting at `default`, with `component_flags`.
+    fn entity<T: Value>(self, default: &T, flags: u32) -> Self {
+        self.set(&comps::component::DEFAULT, crate::component::value_bytes(default))
+            .flags(&abi::comp::component::FLAGS, flags)
+    }
+    /// Stacks carry it, with `stack_flags`.
+    pub(crate) fn stack(self, flags: u32) -> Self {
+        self.tag(abi::comp::component::STACK)
+            .flags(&abi::comp::component::STACK_FLAGS, flags)
+    }
+}
+
+/// One recipe of a kind, found by `recipe_find` (or shown by a kind's `layout`).
+pub struct RecipeView {
     kind: String,
     index: u32,
 }
 
 /// The first recipe of `kind` whose inputs, with their counts, are all among `stacks`.
-pub fn recipe_find(kind: &RecipeKind, stacks: &[ItemStack]) -> Option<Recipe> {
+pub fn recipe_find(kind: &RecipeKind, stacks: &[ItemStack]) -> Option<RecipeView> {
     let n = unsafe { (host().recipe_find)(Str::new(kind.name()), stacks.as_ptr(), stacks.len() as u32) };
-    (n > 0).then(|| Recipe { kind: kind.name().to_string(), index: n - 1 })
+    (n > 0).then(|| RecipeView { kind: kind.name().to_string(), index: n - 1 })
 }
 
-impl Recipe {
+impl RecipeView {
     fn info(&self) -> abi::RecipeInfo {
         let mut out = abi::RecipeInfo::default();
         unsafe { (host().recipe_info)(Str::new(&self.kind), self.index, &mut out) };
@@ -2038,7 +2089,7 @@ impl Recipe {
             })
             .collect()
     }
-    /// A value given with `RecipeBuilder::value`.
+    /// A value the recipe carries (`r.shaped(..).set(&COMP, v)`).
     pub fn value<T: Value>(&self, comp: &Component<T>) -> Option<T> {
         let mut buf = vec![0u8; std::mem::size_of::<T>()];
         let n =

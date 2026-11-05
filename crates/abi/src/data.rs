@@ -284,12 +284,14 @@ pub fn list(items: &[&[u8]]) -> Vec<u8> {
     out
 }
 
-/// The name of a list element whose first field is `name:str`, how list edits find it.
+/// The name of a list element, how list edits find it: a text element itself, else the first field
+/// when it is `name:str`.
 pub fn item_name<'a>(elem_schema: &str, item: &'a [u8]) -> Option<&'a str> {
-    let inner = elem_schema.trim().strip_prefix('<')?.strip_suffix('>')?;
-    let first = fields(inner)?.into_iter().next()?;
-    if first != ("name", "str") {
-        return None;
+    if !is_text(elem_schema.trim()) {
+        let inner = elem_schema.trim().strip_prefix('<')?.strip_suffix('>')?;
+        if fields(inner)?.into_iter().next()? != ("name", "str") {
+            return None;
+        }
     }
     let n = u32::from_le_bytes(item.get(..4)?.try_into().ok()?) as usize;
     core::str::from_utf8(item.get(4..4 + n)?).ok()

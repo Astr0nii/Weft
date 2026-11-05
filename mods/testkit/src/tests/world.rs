@@ -238,8 +238,8 @@ pub async fn edits(t: T) -> R {
     t.flat().await?;
     t.check_eq(
         t.op("edited").await?,
-        "8 3 2 true 7 4".to_string(),
-        "max stack, damage, warmth, tag, a weather's flags, an attribute's default after the edits",
+        "8 3 2 true 7 4 true base:cobblestonex2,testkit:editedx1".to_string(),
+        "max stack, damage, warmth, tag, a weather's flags, an attribute's default, a recipe removed, a loot table's pools after the edits",
     );
     Ok(())
 }

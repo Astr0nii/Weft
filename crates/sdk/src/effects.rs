@@ -13,21 +13,23 @@
 //! effects are assets: `shaders/fx|gui|particle|entity|block|sky|post/<name>.wgsl` in the mod's folder.
 
 use crate::abi::Vec3;
-use std::marker::PhantomData;
 
-use crate::abi::{self, Slice, Str, particle_flags as pf};
-use crate::{Client, ClientView, Dimension, Music, Particle, Registry, SkyObject, SoundCategory, WithComponents, World, callback, host};
+use crate::abi::{self, Str};
+use crate::{
+    Client, ClientView, Dimension, Music, Particle, Registry, SkyObject, SoundCategory, WithComponents, World, callback, comps, host,
+};
 
+/// A particle kind being registered (`Registry::particle`): half a second to a second, a tenth to
+/// a fifth of a block, white, without gravity, unless told otherwise.
 pub struct ParticleBuilder<'a> {
-    raw: *mut abi::Registrar,
-    name: String,
-    textures: Vec<String>,
-    shader: String,
-    handle: Option<&'static Particle>,
-    desc: abi::ParticleDesc,
-    rules: Vec<(u32, When, Then)>,
-    _p: PhantomData<&'a mut Registry>,
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
+
+crate::entry::entry_builder!(
+    Particle => ParticleBuilder, particle;
+    SkyObject => SkyBuilder, sky_entry;
+);
 
 /// Where a particle's rule holds: the block it hit, or the one it is in.
 pub struct When {
@@ -87,9 +89,9 @@ impl Then {
 }
 
 impl ParticleBuilder<'_> {
-    fn rule(mut self, event: u32, when: When, then: Then) -> Self {
-        self.rules.push((event, when, then));
-        self
+    fn rule(self, event: u32, when: When, then: Then) -> Self {
+        let rule = abi::ParticleRule { event, when: when.kind, tag: when.tag, then: then.kind, amount: then.amount, into: then.into };
+        self.push(&comps::particle::RULES, rule)
     }
     /// What landing on a block does where `when` holds; rules are tried in order, and without
     /// one that holds it lies there. Any landing or hitting rule makes it stop on blocks.
@@ -119,117 +121,73 @@ impl ParticleBuilder<'_> {
     }
     /// Frames over its life; relative names are under `particle/`. None: block dust (pieces of
     /// the burst's block).
-    pub fn textures(mut self, names: &[&str]) -> Self {
-        self.textures = names.iter().map(|t| crate::asset("particle", t)).collect();
-        self
+    pub fn textures(self, names: &[&str]) -> Self {
+        let textures = names.iter().map(|t| crate::asset("particle", t)).collect();
+        self.set(&comps::particle::TEXTURES, textures)
     }
     /// Seconds, picked between the two.
-    pub fn life(mut self, min: f32, max: f32) -> Self {
-        (self.desc.life_min, self.desc.life_max) = (min, max);
-        self
+    pub fn life(self, min: f32, max: f32) -> Self {
+        self.set(&comps::particle::LIFE, [min, max])
     }
     /// Edge length in blocks, picked between the two.
-    pub fn size(mut self, min: f32, max: f32) -> Self {
-        (self.desc.size_min, self.desc.size_max) = (min, max);
-        self
+    pub fn size(self, min: f32, max: f32) -> Self {
+        self.set(&comps::particle::SIZE, [min, max])
     }
     /// Blocks per second squared, pulling down (negative rises).
-    pub fn gravity(mut self, g: f32) -> Self {
-        self.desc.gravity = g;
-        self
+    pub fn gravity(self, g: f32) -> Self {
+        self.set(&comps::particle::GRAVITY, g)
     }
     /// Fraction of speed kept per tick (vanilla 0.98).
-    pub fn drag(mut self, d: f32) -> Self {
-        self.desc.drag = d;
-        self
+    pub fn drag(self, d: f32) -> Self {
+        self.set(&comps::particle::DRAG, d)
     }
     /// 0xRRGGBBAA at birth and at the end of its life.
-    pub fn color(mut self, start: u32, end: u32) -> Self {
-        (self.desc.color, self.desc.color_end) = (start, end);
-        self
+    pub fn color(self, start: u32, end: u32) -> Self {
+        self.set(&comps::particle::COLOR, [start, end])
     }
     /// Stops on blocks: lies where it lands, slides along walls.
-    pub fn colliding(mut self) -> Self {
-        self.desc.flags |= pf::COLLIDE;
-        self
+    pub fn colliding(self) -> Self {
+        self.tag(abi::comp::particle::COLLIDE)
     }
-    pub fn fullbright(mut self) -> Self {
-        self.desc.flags |= pf::FULLBRIGHT;
-        self
+    pub fn fullbright(self) -> Self {
+        self.tag(abi::comp::particle::FULLBRIGHT)
     }
-    pub fn translucent(mut self) -> Self {
-        self.desc.flags |= pf::TRANSLUCENT;
-        self
+    pub fn translucent(self) -> Self {
+        self.tag(abi::comp::particle::TRANSLUCENT)
     }
-    pub fn shrinking(mut self) -> Self {
-        self.desc.flags |= pf::SHRINK;
-        self
+    pub fn shrinking(self) -> Self {
+        self.tag(abi::comp::particle::SHRINK)
     }
     /// Colors it with `shaders/particle/<name>.wgsl` (`fn shade(p: ParticleFrag) -> vec4<f32>`).
-    pub fn shader(mut self, shader: &crate::Shader) -> Self {
-        self.shader = shader.name().to_string();
-        self
+    pub fn shader(self, shader: &crate::Shader) -> Self {
+        let name = shader.name().to_string();
+        self.set_text(&comps::particle::SHADER, &name)
     }
 }
 
-impl Drop for ParticleBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let textures: Vec<Str> = self.textures.iter().map(|t| Str::new(t)).collect();
-        let rules: Vec<abi::ParticleRule> = self
-            .rules
-            .iter()
-            .map(|(event, when, then)| abi::ParticleRule {
-                event: *event,
-                when: when.kind,
-                tag: Str::new(&when.tag),
-                then: then.kind,
-                amount: then.amount,
-                into: Str::new(&then.into),
-            })
-            .collect();
-        let desc = abi::ParticleDesc {
-            name: Str::new(&self.name),
-            cell: self.handle.map_or(std::ptr::null(), |h| h.id_cell()),
-            textures: Slice::new(&textures),
-            shader: Str::new(&self.shader),
-            rules: Slice::new(&rules),
-            ..self.desc
-        };
-        unsafe { (host().reg_particle)(self.raw, &desc) }
-    }
-}
-
-/// A thing in a dimension's sky, see `Registry::sky_body`, `sky_stars`, `sky_dome`.
+/// A thing in a dimension's sky (`Registry::sky_body`, `sky_stars`, `sky_dome`, `sky_clouds`),
+/// an entry named `<dimension>/<object>`: `r.edit(OVERWORLD.sky(&MOON))` changes another mod's.
 pub struct SkyBuilder<'a> {
-    raw: *mut abi::Registrar,
-    name: String,
-    dimension: String,
-    texture: String,
-    shader: String,
-    desc: abi::SkyDesc,
-    _p: PhantomData<&'a mut Registry>,
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
 
 impl SkyBuilder<'_> {
     /// Picture, relative names are under `textures/sky/`. A dome tells its layout by its shape:
     /// twice as wide as high is a panorama, three by two is the six faces of a box.
-    pub fn texture(mut self, name: &str) -> Self {
-        self.texture = crate::asset("sky", name);
-        self
+    pub fn texture(self, name: &str) -> Self {
+        let texture = crate::asset("sky", name);
+        self.set_text(&comps::sky::TEXTURE, &texture)
     }
     /// Colors it with `shaders/sky/<name>.wgsl` instead of the plain picture.
-    pub fn shader(mut self, shader: &crate::Shader) -> Self {
-        self.shader = shader.name().to_string();
-        self
+    pub fn shader(self, shader: &crate::Shader) -> Self {
+        let name = shader.name().to_string();
+        self.set_text(&comps::sky::SHADER, &name)
     }
     /// Ticks per turn around the sky, negative the other way. Without it, it follows the
     /// dimension's day like the sun does.
-    pub fn orbit(mut self, ticks: f32) -> Self {
-        self.desc.orbit = ticks;
-        self
+    pub fn orbit(self, ticks: f32) -> Self {
+        self.set(&comps::sky::ORBIT, ticks)
     }
     /// Stays where its phase, tilt and heading put it.
     pub fn orbit_still(self) -> Self {
@@ -241,121 +199,85 @@ impl SkyBuilder<'_> {
     }
     /// Where on its orbit it starts, in turns: 0 rising in the east, 0.25 overhead, 0.5 setting.
     /// A moon opposite the sun is 0.5.
-    pub fn phase(mut self, turns: f32) -> Self {
-        self.desc.phase = turns;
-        self
+    pub fn phase(self, turns: f32) -> Self {
+        self.set(&comps::sky::PHASE, turns)
     }
     /// Degrees its orbit leans away from overhead, to the south.
-    pub fn tilt(mut self, degrees: f32) -> Self {
-        self.desc.tilt = degrees;
-        self
+    pub fn tilt(self, degrees: f32) -> Self {
+        self.set(&comps::sky::TILT, degrees)
     }
     /// Degrees its orbit turns around the vertical: 90 rises in the north instead of the east.
-    pub fn heading(mut self, degrees: f32) -> Self {
-        self.desc.heading = degrees;
-        self
+    pub fn heading(self, degrees: f32) -> Self {
+        self.set(&comps::sky::HEADING, degrees)
     }
     /// Degrees across the sky (vanilla's sun 33, moon 23); of each star, for stars.
-    pub fn size(mut self, degrees: f32) -> Self {
-        self.desc.size = degrees;
-        self
+    pub fn size(self, degrees: f32) -> Self {
+        self.set(&comps::sky::SIZE, degrees)
     }
     /// Ticks per turn around its own middle.
-    pub fn spin(mut self, ticks: f32) -> Self {
-        self.desc.spin = ticks;
-        self
+    pub fn spin(self, ticks: f32) -> Self {
+        self.set(&comps::sky::SPIN, ticks)
     }
     /// How much of it shows by full day and by deep night, 0..1 (stars: 0 and 0.22).
-    pub fn opacity(mut self, day: f32, night: f32) -> Self {
-        self.desc.opacity = [day, night];
-        self
+    pub fn opacity(self, day: f32, night: f32) -> Self {
+        self.set(&comps::sky::OPACITY, [day, night])
     }
     /// 0xRRGGBB multiplied in.
-    pub fn color(mut self, rgb: u32) -> Self {
-        self.desc.color = rgb;
-        self
+    pub fn color(self, rgb: u32) -> Self {
+        self.set(&comps::sky::COLOR, rgb)
     }
     /// The picture is a grid of frames, shown one after another: a moon's phases.
-    pub fn frames(mut self, columns: u32, rows: u32) -> Self {
-        self.desc.frames = [columns, rows];
-        self
+    pub fn frames(self, columns: u32, rows: u32) -> Self {
+        self.set(&comps::sky::FRAMES, [columns, rows])
     }
     /// Ticks each frame lasts; by default a day of the dimension.
-    pub fn frame_ticks(mut self, ticks: u32) -> Self {
-        self.desc.frame_ticks = ticks;
-        self
+    pub fn frame_ticks(self, ticks: u32) -> Self {
+        self.set(&comps::sky::FRAME_TICKS, ticks)
     }
     /// Lights the horizon while rising and setting, a sunset in this color (0xRRGGBB).
-    pub fn glow(mut self, rgb: u32) -> Self {
-        self.desc.glow = rgb;
-        self
+    pub fn glow(self, rgb: u32) -> Self {
+        self.set(&comps::sky::GLOW, rgb)
     }
     /// Adds its light to what is behind it. Without it, it covers what is behind it, so a moon
     /// with an opaque picture hides any other that passes behind it.
-    pub fn blend_add(mut self) -> Self {
-        self.desc.additive = 1;
-        self
+    pub fn blend_add(self) -> Self {
+        self.tag(abi::comp::sky::ADDITIVE)
     }
     /// Covers what is behind it, for an object someone made `blend_add`.
-    pub fn blend_cover(mut self) -> Self {
-        self.desc.additive = 0;
-        self
+    pub fn blend_cover(self) -> Self {
+        self.untag(abi::comp::sky::ADDITIVE)
     }
     /// Drawn low to high, one over the other; registration order among equals. Bodies start at
     /// 0, stars at -100, domes at -200.
-    pub fn order(mut self, order: i32) -> Self {
-        self.desc.order = order;
-        self
+    pub fn order(self, order: i32) -> Self {
+        self.set(&comps::sky::ORDER, order)
     }
     /// The height of clouds' underside (only clouds use it, like `drift`).
-    pub fn height(mut self, y: f32) -> Self {
-        self.desc.height = y;
-        self
+    pub fn height(self, y: f32) -> Self {
+        self.set(&comps::sky::HEIGHT, y)
     }
     /// Blocks per tick clouds drift along x, negative the other way.
-    pub fn drift(mut self, blocks_per_tick: f32) -> Self {
-        self.desc.drift = blocks_per_tick;
-        self
+    pub fn drift(self, blocks_per_tick: f32) -> Self {
+        self.set(&comps::sky::DRIFT, blocks_per_tick)
     }
     /// How many stars (only stars use it, like `seed`).
-    pub fn count(mut self, n: u32) -> Self {
-        self.desc.count = n;
-        self
+    pub fn count(self, n: u32) -> Self {
+        self.set(&comps::sky::COUNT, n)
     }
     /// What scatters the stars: another seed, another sky.
-    pub fn seed(mut self, seed: u32) -> Self {
-        self.desc.seed = seed;
-        self
-    }
-}
-
-impl Drop for SkyBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let desc = abi::SkyDesc {
-            dimension: Str::new(&self.dimension),
-            name: Str::new(&self.name),
-            texture: Str::new(&self.texture),
-            shader: Str::new(&self.shader),
-            ..self.desc
-        };
-        unsafe { (host().reg_sky)(self.raw, &desc) }
+    pub fn seed(self, seed: u32) -> Self {
+        self.set(&comps::sky::SEED, seed)
     }
 }
 
 impl Registry {
     fn sky_object<'a>(&'a mut self, dimension: &Dimension, object: &SkyObject, kind: u32) -> SkyBuilder<'a> {
-        SkyBuilder {
-            raw: self.raw,
-            name: object.name().to_string(),
-            dimension: dimension.name().to_string(),
-            texture: String::new(),
-            shader: String::new(),
-            desc: abi::SkyDesc { kind, ..abi::SkyDesc::DEFAULT },
-            _p: PhantomData,
-        }
+        let e = crate::entry::Entry::new(abi::entry_kind::SKY, format!("{}/{}", dimension.name(), object.name()));
+        SkyBuilder { reg: self, e }.set(&comps::sky::KIND, kind)
+    }
+
+    fn sky_entry(&mut self, object: &'static SkyObject) -> SkyBuilder<'_> {
+        SkyBuilder { reg: self, e: crate::entry::Entry::of(object) }
     }
 
     /// A picture on an orbit, a sun or a moon, independent of everything else in the sky:
@@ -365,7 +287,8 @@ impl Registry {
     /// r.sky_body(&OVERWORLD, &PLANET).texture("planet").size(6.0).orbit(96000.0).phase(0.1).tilt(20.0);
     /// ```
     ///
-    /// Naming another mod's object changes only what you set: `r.sky_body(&OVERWORLD, &MOON).size(40.0)`.
+    /// Another mod's object, by its dimension: `r.edit(OVERWORLD.sky(&MOON)).size(40.0)` changes
+    /// only what it sets, `r.remove(OVERWORLD.sky(&STARS))` takes it out of that sky.
     pub fn sky_body<'a>(&'a mut self, dimension: &Dimension, object: &SkyObject) -> SkyBuilder<'a> {
         self.sky_object(dimension, object, abi::sky_kind::BODY)
     }
@@ -388,28 +311,11 @@ impl Registry {
         self.sky_object(dimension, object, abi::sky_kind::CLOUDS)
     }
 
-    /// Takes something out of one dimension's sky, your own or another mod's (that mod has to load
-    /// first: depend on it). The base game puts its sun, moon and stars in every dimension of its
-    /// own, each to be taken out separately.
-    pub fn sky_remove(&mut self, dimension: &Dimension, object: &SkyObject) {
-        let mut b = self.sky_object(dimension, object, u32::MAX);
-        b.desc.remove = 1;
-    }
-
-    /// A particle kind, see `ParticleBuilder`. Registering `core:block` or `core:poof` changes how
-    /// the engine's own block dust and smoke look.
+    /// A particle kind, see `ParticleBuilder`. Editing or replacing `core:poof`
+    /// (`Particle::named("core:poof")`) changes how the engine's own smoke looks, `core:block` its
+    /// block dust.
     pub fn particle<'a>(&'a mut self, particle: &'static Particle) -> ParticleBuilder<'a> {
-        ParticleBuilder {
-            raw: self.raw,
-
-            name: particle.name().to_string(),
-            textures: Vec::new(),
-            shader: String::new(),
-            handle: Some(particle),
-            desc: abi::ParticleDesc::DEFAULT,
-            rules: Vec::new(),
-            _p: PhantomData,
-        }
+        ParticleBuilder { reg: self, e: crate::entry::Entry::of(particle) }
     }
 
     /// A condition music (`.when`), text (`{if:<ns>:<name>}`), loot (`Cond::Condition`) and

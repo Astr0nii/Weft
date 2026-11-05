@@ -11,7 +11,7 @@
 //! r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.5);
 //! // Loot tables any mod can change:
 //! r.loot(&OAK_LEAVES).pool(Pool::new().when(Cond::Chance(0.05)).item("sapling"));
-//! r.edit(&LootTable::named("base:zombie")).add_pool(Pool::new().item("mymod:brain"));
+//! r.edit(base::ZOMBIE.loot()).pool(Pool::new().item("mymod:brain"));
 //! ```
 
 use crate::abi::BlockPos;
@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::abi::{self, ItemStack, Slice, Str};
 use crate::component::Value;
-use crate::{Attribute, Chain, LootSource, Question, Registry, WithComponents, World, callback, host, qualify};
+use crate::{Attribute, Chain, LootSource, LootTable, Question, Registry, WithComponents, World, callback, comps, host, qualify};
 
 pub use abi::{
     BlockChange, ChatMessage, Death, DimensionChange, Hurt, Interaction, ItemUsed, Pickup, PlayerEvent, attr_op, permission, stage,
@@ -419,151 +419,63 @@ impl Pool {
     pub fn items(self, name: &str, min: u32, max: u32) -> Pool {
         self.entry(Entry::item(name).count(min, max))
     }
-}
-
-/// The ABI view of pools, kept alive while a descriptor points into it.
-pub(crate) struct RawPools {
-    conds: Vec<Vec<abi::LootCond>>,
-    entries: Vec<Vec<abi::LootEntry>>,
-    pub(crate) pools: Vec<abi::LootPool>,
-    _names: Vec<String>,
-}
-
-pub(crate) fn raw_pools(ns: &str, pools: &[Pool]) -> RawPools {
-    let mut names: Vec<String> = Vec::new();
-    for p in pools {
-        for e in &p.entries {
-            names.push(if e.item.is_empty() || e.item.starts_with('#') { e.item.clone() } else { qualify(ns, &e.item) });
-        }
-    }
-    let mut out = RawPools { conds: Vec::new(), entries: Vec::new(), pools: Vec::new(), _names: Vec::new() };
-    let mut cond_index = Vec::new();
-    for p in pools {
-        let pc: Vec<abi::LootCond> = p
-            .when
-            .iter()
-            .map(|c| {
-                let (kind, value, text) = c.raw();
-                abi::LootCond { kind, value, text: Str::new(text), ..abi::LootCond::DEFAULT }
-            })
-            .collect();
-        cond_index.push(out.conds.len());
-        out.conds.push(pc);
-        for e in &p.entries {
-            out.conds.push(
-                e.when
-                    .iter()
-                    .map(|c| {
-                        let (kind, value, text) = c.raw();
-                        abi::LootCond { kind, value, text: Str::new(text), ..abi::LootCond::DEFAULT }
-                    })
-                    .collect(),
-            );
-        }
-    }
-    let mut n = 0;
-    for (pi, p) in pools.iter().enumerate() {
-        let first = cond_index[pi];
-        let entries: Vec<abi::LootEntry> = p
+    fn raw(&self, ns: &str) -> abi::LootPool {
+        let conds = |c: &[Cond]| {
+            c.iter()
+                .map(|c| {
+                    let (kind, value, text) = c.raw();
+                    abi::LootCond { kind, value, text: text.to_string() }
+                })
+                .collect()
+        };
+        let entries = self
             .entries
             .iter()
-            .enumerate()
-            .map(|(ei, e)| {
-                let name = Str::new(&names[n + ei]);
-                abi::LootEntry {
-                    item: name,
-                    weight: e.weight,
-                    min: e.min,
-                    max: e.max,
-                    conditions: Slice::new(&out.conds[first + 1 + ei]),
-                    smelt: Str::new(&e.smelt),
-                    ..abi::LootEntry::DEFAULT
-                }
+            .map(|e| abi::LootEntry {
+                item: loot_item(ns, &e.item),
+                weight: e.weight,
+                min: e.min,
+                max: e.max,
+                conditions: conds(&e.when),
+                smelt: e.smelt.clone(),
             })
             .collect();
-        n += p.entries.len();
-        out.entries.push(entries);
+        abi::LootPool { rolls_min: self.rolls.0, rolls_max: self.rolls.1, conditions: conds(&self.when), entries }
     }
-    for (pi, p) in pools.iter().enumerate() {
-        out.pools.push(abi::LootPool {
-            rolls_min: p.rolls.0,
-            rolls_max: p.rolls.1,
-            conditions: Slice::new(&out.conds[cond_index[pi]]),
-            entries: Slice::new(&out.entries[pi]),
-            ..abi::LootPool::DEFAULT
-        });
-    }
-    out._names = names;
-    out
 }
 
-/// A loot table being registered; sent when dropped.
+/// An item name in this mod's namespace by default; `#tag` and nothing stay as they are.
+fn loot_item(ns: &str, item: &str) -> String {
+    if item.is_empty() || item.starts_with('#') { item.to_string() } else { qualify(ns, item) }
+}
+
+/// A loot table being registered (`Registry::loot`) or changed (`r.edit(ZOMBIE.loot())`); sent
+/// when dropped.
 pub struct LootBuilder<'a> {
     reg: &'a mut Registry,
-    name: String,
-    pools: Vec<Pool>,
+    e: crate::entry::Entry,
 }
 
 impl LootBuilder<'_> {
-    pub fn pool(mut self, p: Pool) -> Self {
-        self.pools.push(p);
-        self
+    /// One more pool, after the table's.
+    pub fn pool(self, p: Pool) -> Self {
+        let pool = p.raw(self.reg.ns);
+        self.push(&comps::loot::POOLS, pool)
     }
-}
-
-impl Drop for LootBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let raw = raw_pools(self.reg.ns, &self.pools);
-        let desc = abi::LootDesc { name: Str::new(&self.name), pools: Slice::new(&raw.pools), ..abi::LootDesc::DEFAULT };
-        unsafe { (host().reg_loot)(self.reg.raw, &desc) }
+    /// Every entry of item `from` gives `to` instead, in whatever pools the table has in the end.
+    pub fn replace_drop(self, from: &str, to: &str) -> Self {
+        let swap = abi::LootSwap { name: loot_item(self.reg.ns, from), to: loot_item(self.reg.ns, to) };
+        self.push(&comps::loot::SWAPS, swap)
     }
-}
-
-/// Changes to tables of any mod (`table` may end in `*`).
-pub struct LootModBuilder<'a> {
-    reg: &'a mut Registry,
-    table: String,
-}
-
-impl LootModBuilder<'_> {
-    pub(crate) fn new<'a>(reg: &'a mut Registry, table: &str) -> LootModBuilder<'a> {
-        LootModBuilder { reg, table: table.to_string() }
+    /// Entries of `item` are left out, likewise.
+    pub fn remove_drop(self, item: &str) -> Self {
+        let swap = abi::LootSwap { name: loot_item(self.reg.ns, item), to: String::new() };
+        self.push(&comps::loot::SWAPS, swap)
     }
-    fn send(&mut self, op: u32, pool: Option<&Pool>, from: &str, to: &str) {
-        let pools: Vec<Pool> = pool.into_iter().cloned().collect();
-        let raw = raw_pools(self.reg.ns, &pools);
-        let (from, to) = (
-            if from.is_empty() { String::new() } else { qualify(self.reg.ns, from) },
-            if to.is_empty() { String::new() } else { qualify(self.reg.ns, to) },
-        );
-        let desc = abi::LootEditDesc {
-            table: Str::new(&self.table),
-            op,
-            pool: raw.pools.first().copied().unwrap_or(abi::LootPool::DEFAULT),
-            from: Str::new(&from),
-            to: Str::new(&to),
-            ..abi::LootEditDesc::DEFAULT
-        };
-        unsafe { (host().reg_loot_edit)(self.reg.raw, &desc) }
-    }
-    pub fn add_pool(mut self, p: Pool) -> Self {
-        self.send(abi::loot_op::ADD_POOL, Some(&p), "", "");
-        self
-    }
-    pub fn replace_item(mut self, from: &str, to: &str) -> Self {
-        self.send(abi::loot_op::REPLACE_ITEM, None, from, to);
-        self
-    }
-    pub fn remove_item(mut self, item: &str) -> Self {
-        self.send(abi::loot_op::REMOVE_ITEM, None, item, "");
-        self
-    }
-    pub fn clear(mut self) -> Self {
-        self.send(abi::loot_op::CLEAR, None, "", "");
-        self
+    /// Empties the table, its swaps too; pools added after it stay.
+    pub fn clear(self) -> Self {
+        self.set(&comps::loot::POOLS, Vec::new())
+            .unset(&comps::loot::SWAPS)
     }
 }
 
@@ -608,7 +520,10 @@ pub struct AttributeBuilder<'a> {
     e: crate::entry::Entry,
 }
 
-crate::entry::entry_builder!(Attribute => AttributeBuilder, attribute_entry;);
+crate::entry::entry_builder!(
+    Attribute => AttributeBuilder, attribute_entry;
+    LootTable => LootBuilder, loot_entry;
+);
 
 impl Registry {
     /// A system over a per-entity component (`Registry::entity_component`): once per tick and
@@ -688,13 +603,17 @@ impl Registry {
 
     /// A loot table: a block's or entity kind's is what it drops, a `LootTable` is one of its own.
     pub fn loot<'a>(&'a mut self, table: &dyn LootSource) -> LootBuilder<'a> {
-        LootBuilder { reg: self, name: table.table_name().to_string(), pools: Vec::new() }
+        LootBuilder { reg: self, e: crate::entry::Entry::new(abi::entry_kind::LOOT, table.table_name().to_string()) }
+    }
+
+    fn loot_entry(&mut self, table: &'static LootTable) -> LootBuilder<'_> {
+        LootBuilder { reg: self, e: crate::entry::Entry::of(table) }
     }
 
     /// Declares a component stacks carry a value of (`stack.with(&COMP, v)`), with its flags
     /// (`abi::stack_flags`: kept on the server, not saved), 0 for neither.
-    pub fn stack_component<T: Value>(&mut self, c: &crate::Component<T>, flags: u32) {
-        unsafe { (host().reg_stack_component)(self.raw, Str::new(c.name()), Str::new(&T::schema()), flags) }
+    pub fn stack_component<T: Value>(&mut self, c: &crate::Component<T>, flags: u32) -> crate::game::DeclarationBuilder<'_> {
+        self.declare::<T>(c.name()).stack(flags)
     }
 }
 

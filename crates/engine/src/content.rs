@@ -4,7 +4,7 @@ use glam::IVec3;
 use std::sync::OnceLock;
 
 use rayon::prelude::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::registry::RawWhere;
 use weft_abi::{self as abi, BlockModel, Callback, ModId, RenderLayer};
@@ -1990,7 +1990,9 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let entities = crate::registry::freeze_entities(&mut games, &mut errors);
 
     let sets = take_sets(&mods, &mut games);
-    let builder = declare_components(&mods, &games, &sets, &block_tables, &item_tables, &entities, &biome_tables, &dim_tables, &mut errors);
+    let decls = crate::registry::freeze_components(&mut games, &mod_name, &mut errors);
+    let builder =
+        declare_components(&mods, &games, &decls, &sets, &block_tables, &item_tables, &entities, &biome_tables, &dim_tables, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -2037,7 +2039,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     place_structures(&mut games, &mut dim_defs, &templates, &template_names, look, &mut errors);
     build_terrains(&mut games, &mut dim_defs, &biome_names, &biome_rules, look, &mut errors);
     let commands = freeze_commands(&mods, &mut games, &mut errors);
-    let mut word_sets = collect_word_sets(&mut games);
+    let mut word_sets = collect_word_sets(&mut games, &mod_name, &mut errors);
     let (liquids, reactions) = freeze_liquids(&mut games, &mut states, &block_defs, &block_names, &components, &mut errors);
     let mut shares_cell: FxHashMap<u32, Match> = FxHashMap::default();
     for (name, specs) in &shares_specs {
@@ -2062,8 +2064,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let mut ordered_items: Vec<u32> = (1..item_defs.len() as u32).collect();
     ordered_items.sort_by_key(|&i| item_defs[i as usize].order);
     let tag_items = crate::refs::tag_items(&components, &ordered_items);
-    let loot = freeze_loot(&mut games, &item_defs, &item_names, &tag_items, look, &mut errors);
-    let stack_flags = collect_stack_flags(&games, &components);
+    let loot = freeze_loot(&mut games, &item_defs, &item_names, &tag_items, look, &mod_name, &mut errors);
+    let stack_flags = collect_stack_flags(&decls, &components);
     let order_of = |m: ModId| mods.get(m.0 as usize).map_or(u32::MAX, |m| m.order);
     let mut game = crate::registry::freeze(
         games,
@@ -2073,6 +2075,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         &item_defs,
         &dim_names,
         &components,
+        &decls,
         &tag_items,
         &order_of,
         &mod_name,
@@ -2267,7 +2270,6 @@ fn drop_overridden(regs: &mut [RawRegistrar]) {
         for e in &mut g.entities {
             e.replace |= by[ek::ENTITY as usize].contains_key(&e.name);
         }
-        g.particles.retain(|p| !gone(ek::PARTICLE, &p.name));
         g.menus.retain(|m| !gone(ek::MENU, &m.1.name));
     }
 }
@@ -2789,6 +2791,7 @@ fn take_sets(mods: &[ModMeta], games: &mut [crate::registry::RawGame]) -> Vec<Ra
 fn declare_components(
     mods: &[ModMeta],
     games: &[crate::registry::RawGame],
+    decls: &[crate::registry::ComponentDecl],
     sets: &[RawSet],
     blocks: &BlockTables,
     items: &ItemTables,
@@ -2836,42 +2839,23 @@ fn declare_components(
             cb.declare_value(&s.value, &|| who(s.owner, &format!("set on {:?}", s.target)), errors);
         }
     }
-    for g in games {
-        // Values recipes carry may be on nothing else.
-        for v in g.recipes.iter().flat_map(|r| &r.values) {
-            cb.declare_value(v, &|| format!("a {} recipe", v.name), errors);
-        }
-        for rc in &g.components {
-            cb.declare(&rc.def.name, &rc.schema, Some(rc.def.size as usize), &|| who(rc.owner, "entity component"), errors);
+    // Values recipes carry may be on nothing else.
+    for e in games
+        .iter()
+        .flat_map(|g| &g.entries)
+        .filter(|e| e.kind == abi::entry_kind::RECIPE)
+    {
+        for o in e
+            .ops
+            .iter()
+            .filter(|o| o.op == abi::value_op::SET && !o.value.name.starts_with("recipe."))
+        {
+            cb.declare_value(&o.value, &|| who(e.owner, &format!("recipe {}", e.name)), errors);
         }
     }
-    cb.declare(crate::registry::MODIFIERS, "bytes", None, &|| "the engine".into(), errors);
-    cb.declare(crate::registry::TIMERS, "bytes", None, &|| "the engine".into(), errors);
-    cb.declare(abi::comp::NAME, "bytes", None, &|| "the engine".into(), errors);
-    cb.declare(abi::comp::CONTENTS, "bytes", None, &|| "the engine".into(), errors);
-    cb.declare(abi::comp::LAYERS, "bytes", None, &|| "the engine".into(), errors);
-    cb.declare(abi::comp::ENERGY, <abi::Energy as abi::Schema>::SCHEMA, None, &|| "the engine".into(), errors);
-    for (name, schema) in [
-        (crate::registry::HEALTH, "[f32;2]"),
-        (crate::registry::BURNING, "u8"),
-        (crate::registry::WORN, "bytes"),
-        (crate::registry::HELD, "u32"),
-        (crate::registry::OFF_HELD, "u32"),
-        (crate::registry::USING, "u32"),
-        (crate::registry::SWAPS, "bytes"),
-        (crate::registry::LOOPING_ACTION, "bytes"),
-        (crate::registry::EFFECT, "bytes"),
-        (crate::registry::FORCED_POSE, "bytes"),
-        (crate::registry::RIDING, "bytes"),
-        (crate::registry::SHAPE, "bytes"),
-        (crate::registry::SIMULATED, "u64"),
-    ] {
-        cb.declare(name, schema, None, &|| "the engine".into(), errors);
-    }
-    for g in games {
-        for (name, schema, _) in &g.stack_components {
-            cb.declare(name, schema, None, &|| format!("stack component {name}"), errors);
-        }
+    for d in decls {
+        let size = d.entity.as_ref().map(|c| c.size as usize);
+        cb.declare(&d.name, &d.schema, size, &|| who(d.owner, "component"), errors);
     }
     cb
 }
@@ -3529,36 +3513,36 @@ fn build_terrains(
     }
 }
 
-fn collect_word_sets(games: &mut [crate::registry::RawGame]) -> FxHashMap<String, Vec<String>> {
-    // Word sets for `word(#set)` parameters: the engine's, then what mods add in load order.
-    let mut word_sets: FxHashMap<String, Vec<String>> = FxHashMap::default();
-    word_sets.insert(
-        "core:gizmos".into(),
-        crate::client::gizmo::BUILTIN
-            .iter()
-            .map(|g| g.to_string())
-            .collect(),
-    );
-    let mut added: Vec<(u32, (String, Vec<String>))> = games
-        .iter_mut()
-        .zip(0u32..)
-        .flat_map(|(g, i)| {
-            std::mem::take(&mut g.words)
-                .into_iter()
-                .map(move |w| (i, w))
-        })
+/// Word sets for `word(#set)` parameters: the engine's, then mods'.
+fn collect_word_sets(
+    games: &mut [crate::registry::RawGame],
+    mod_name: &dyn Fn(ModId) -> String,
+    errors: &mut Vec<String>,
+) -> FxHashMap<String, Vec<String>> {
+    use abi::entry_kind::WORDS;
+    let gizmos: Vec<String> = crate::client::gizmo::BUILTIN
+        .iter()
+        .map(|g| g.to_string())
         .collect();
-    added.sort_by_key(|w| w.0);
-    for (_, (set, words)) in added {
-        let list = word_sets.entry(set).or_default();
-        list.extend(
-            words
-                .into_iter()
-                .filter(|w| !list.contains(w))
-                .collect::<Vec<_>>(),
-        );
-    }
-    word_sets
+    let mut all = vec![RawEntry::engine(WORDS, "core:gizmos").set(abi::comp::WORDS, gizmos)];
+    // Filled from the game's own lists, once it is frozen.
+    all.extend(
+        ["core:rules", "core:weathers", "core:game_modes"]
+            .iter()
+            .map(|n| RawEntry::engine(WORDS, n)),
+    );
+    all.extend(
+        games
+            .iter_mut()
+            .flat_map(|g| crate::registry::take_kind(&mut g.entries, WORDS)),
+    );
+    let (sets, _) = crate::entries::bake(all, WORDS, mod_name, errors, |e, _| {
+        let mut words: Vec<String> = e.or(abi::comp::WORDS, Vec::new());
+        let mut seen = FxHashSet::default();
+        words.retain(|w| seen.insert(w.clone()));
+        (e.name.clone(), words)
+    });
+    sets.into_iter().collect()
 }
 
 fn freeze_commands(mods: &[ModMeta], games: &mut [crate::registry::RawGame], errors: &mut Vec<String>) -> Vec<crate::commands::CommandDef> {
@@ -3699,43 +3683,43 @@ fn freeze_loot(
     item_names: &FxHashMap<String, u32>,
     tag_items: &FxHashMap<u32, Vec<u32>>,
     look: Lookups,
+    mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) -> FxHashMap<String, crate::loot::Table> {
-    let Lookups { mods, block_defs, components, .. } = look;
-    let mut defaults: FxHashMap<String, crate::loot::Table> = FxHashMap::default();
-    // A block without a table of its own drops its item when harvested.
-    for b in &block_defs[1..] {
-        if let Some(item) = item_defs
-            .iter()
-            .position(|i| i.block == Some(b.first_state))
-            .filter(|&i| i != 0)
-        {
-            defaults.insert(b.name.clone(), crate::loot::harvested(item as u32, 1));
-        }
-    }
-    let raw_loot: Vec<crate::loot::RawLoot> = games
+    let Lookups { block_defs, components, .. } = look;
+    let raw: Vec<RawEntry> = games
         .iter_mut()
-        .flat_map(|g| std::mem::take(&mut g.loot))
+        .flat_map(|g| crate::registry::take_kind(&mut g.entries, abi::entry_kind::LOOT))
         .collect();
-    let raw_mods: Vec<crate::loot::RawLootMod> = games
-        .iter_mut()
-        .flat_map(|g| std::mem::take(&mut g.loot_mods))
+    // A block without a table of its own drops its item when harvested: a table of the engine's,
+    // which mods edit like any.
+    let own: FxHashSet<&str> = raw
+        .iter()
+        .filter(|e| e.mode != abi::entry_mode::EDIT)
+        .map(|e| e.name.as_str())
         .collect();
+    let mut all: Vec<RawEntry> = block_defs[1..]
+        .iter()
+        .filter(|b| !own.contains(b.name.as_str()))
+        .filter_map(|b| {
+            let item = item_defs[1..]
+                .iter()
+                .find(|i| i.block == Some(b.first_state))?;
+            Some(RawEntry::engine(abi::entry_kind::LOOT, &b.name).set(abi::comp::loot::POOLS, vec![crate::loot::harvested(&item.name)]))
+        })
+        .collect();
+    all.extend(raw);
     let resolve = crate::loot::Resolve { items: item_names, tag_items, components };
-    let order_of = |m: ModId| mods.get(m.0 as usize).map_or(u32::MAX, |m| m.order);
-    crate::loot::freeze(raw_loot, raw_mods, &order_of, &resolve, defaults, errors)
+    let (tables, _) =
+        crate::entries::bake(all, abi::entry_kind::LOOT, mod_name, errors, |e, errors| (e.name.clone(), resolve.table(e, errors)));
+    tables.into_iter().collect()
 }
 
-fn collect_stack_flags(games: &[crate::registry::RawGame], components: &Components) -> FxHashMap<u32, u32> {
-    let mut stack_flags: FxHashMap<u32, u32> = FxHashMap::default();
-    for g in games {
-        for (name, _, flags) in &g.stack_components {
-            if let Some(id) = components.id(name) {
-                *stack_flags.entry(id).or_default() |= flags;
-            }
-        }
-    }
-    stack_flags
+fn collect_stack_flags(decls: &[crate::registry::ComponentDecl], components: &Components) -> FxHashMap<u32, u32> {
+    decls
+        .iter()
+        .filter_map(|d| Some((components.id(&d.name)?, d.stack?)))
+        .collect()
 }
 
 fn link_particles(game: &mut crate::registry::Game, textures: &mut TextureList) {

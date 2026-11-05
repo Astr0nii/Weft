@@ -21,7 +21,7 @@ The texture goes to `assets/textures/sky/planet.png` and can be any size, and ev
 | method | what it does |
 |---|---|
 | `orbit(ticks)` | ticks per turn around the sky, and a negative value makes it go the other way. Without it, the body follows the day of the dimension like the sun does, which means it slows down a little around noon and midnight |
-| `still()` | keeps the body where its phase, tilt and heading put it |
+| `orbit_still()` | keeps the body where its phase, tilt and heading put it |
 | `orbit_day()` | makes the body follow the day again, for example if it comes from another mod and you gave it an orbit |
 | `phase(turns)` | sets where the body starts: 0 is rising in the east, 0.25 is overhead, 0.5 is setting, and 0.75 is under your feet |
 | `tilt(degrees)` | leans the orbit to the south, away from overhead |
@@ -39,14 +39,14 @@ The texture goes to `assets/textures/sky/planet.png` and can be any size, and ev
 Daylight and the light on blocks come from the day of the dimension (`day_length`, `fixed_time`, `daylight` for its curve) and not from any body, which means that if you remove the sun, the day will still happen, and if you give the sun a different orbit, it will no longer match the light.
 
 ## Changing what is there
-When you use an object from another mod, only the fields you set are changed and the object stays the same type, so this example makes the moon bigger, while its texture, phases and orbit stay the same:
+An object of a dimension is `DIM.sky(&OBJECT)`, and it is edited and removed like anything else registered. An edit changes only the fields you set and the object stays the same type, so this example makes the moon bigger, while its texture, phases and orbit stay the same:
 ```rust
 use base_api::{MOON, OVERWORLD, STARS, SUN};
-r.sky_body(&OVERWORLD, &MOON).size(40.0);
-r.sky_body(&OVERWORLD, &SUN).texture("mymod:blue_sun").glow(0x80C0FF);
-r.sky_remove(&OVERWORLD, &STARS);
+r.edit(OVERWORLD.sky(&MOON)).size(40.0);
+r.edit(OVERWORLD.sky(&SUN)).texture("mymod:blue_sun").glow(0x80C0FF);
+r.remove(OVERWORLD.sky(&STARS));
 ```
-Mods run in dependency order, so your mod has to depend on base to change its objects, and if several mods change the same field, the last one wins. All of this works per dimension, and since base registers its three objects in both `OVERWORLD` and `FLATLANDS`, you have to change or remove them in each dimension separately. A resource pack can also replace the textures themselves, for example `textures/sky/sun.png`.
+If several mods change the same field, the one loaded last wins. `r.replace(OVERWORLD.sky(&MOON))` starts it again from nothing, a body unless you say otherwise with `.set(&comps::sky::KIND, abi::sky_kind::DOME)`. All of this works per dimension, and since base registers its three objects in both `OVERWORLD` and `FLATLANDS`, you have to change or remove them in each dimension separately. A resource pack can also replace the textures themselves, for example `textures/sky/sun.png`.
 
 ## Bodies in front of each other
 A body covers everything behind it wherever its texture is opaque, and the body that was registered later or has a higher `order` is drawn in front. Orbits of different lengths bring two bodies together from time to time, so one of them passes in front of the other, and for example orbits of 24000 and 22000 ticks meet about every 11 days.
