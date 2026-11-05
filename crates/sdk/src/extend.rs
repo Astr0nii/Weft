@@ -108,11 +108,7 @@ impl<T: Value> Event<T> {
 
 macro_rules! schema_values {
     ($($t:ty),*) => {$(
-        unsafe impl Value for $t {
-            fn schema() -> String {
-                <$t as abi::Schema>::SCHEMA.into()
-            }
-        }
+        unsafe impl Value for $t {}
     )*};
 }
 schema_values!(

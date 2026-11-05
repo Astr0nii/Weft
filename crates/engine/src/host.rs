@@ -193,6 +193,7 @@ pub static HOST: Host = Host {
     reg_loot,
     reg_loot_edit,
     reg_override,
+    reg_entry,
     roll_loot,
     break_block,
     reg_stack_component,
@@ -2450,6 +2451,14 @@ unsafe extern "C" fn reg_loot(r: *mut abi::Registrar, d: *const abi::LootDesc) {
         r.game
             .loot
             .push(crate::loot::RawLoot { owner: r.owner, name: d.name.as_str().to_string(), pools });
+    }
+}
+
+unsafe extern "C" fn reg_entry(r: *mut abi::Registrar, d: *const abi::EntryDesc) {
+    unsafe {
+        let r = reg(r);
+        let e = crate::entries::RawEntry::copy(r.owner, &*d);
+        r.game.entries.push(e);
     }
 }
 

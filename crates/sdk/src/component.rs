@@ -20,43 +20,53 @@ use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use crate::abi::{self, ItemStack, Str, entry_kind as ek};
 use crate::host;
 
-/// A type a component can hold: plain data with a schema string the engine compares between mods.
-/// Implemented for numbers, `bool`, `Text`, a few engine structs, and any struct declared with
-/// [`value!`](crate::value).
+pub use abi::data::Data;
+
+/// What a component of a registration can hold (`abi::data`): numbers, `bool`, text (`String`),
+/// lists (`Vec`), callbacks, engine structs, structs declared with [`value!`](crate::value)
+/// (plain) or [`abi::data!`] (with text and lists).
+///
+/// `Value` is the plain kind: `repr(C)` data an entity, a stack or an event carries and a system
+/// changes in place.
 ///
 /// # Safety
 /// The type must be `repr(C)` plain data valid for whatever bytes another mod wrote with the same
 /// schema.
-pub unsafe trait Value: Copy + 'static {
-    fn schema() -> String;
-}
+pub unsafe trait Value: Data + Copy {}
 
-macro_rules! primitive {
-    ($($t:ty => $s:literal),*) => {
-        $(unsafe impl Value for $t {
-            fn schema() -> String { $s.into() }
-        })*
+macro_rules! plain {
+    ($($t:ty),*) => {
+        $(unsafe impl Value for $t {})*
     };
 }
-primitive!(u8 => "u8", i8 => "i8", u16 => "u16", i16 => "i16", u32 => "u32", i32 => "i32", u64 => "u64", i64 => "i64", f32 => "f32", f64 => "f64", bool => "bool");
+plain!(u8, i8, u16, i16, u32, i32, u64, i64, f32, f64, bool);
 
-unsafe impl<T: Value, const N: usize> Value for [T; N] {
-    fn schema() -> String {
-        format!("[{};{N}]", T::schema())
-    }
+unsafe impl<T: Value, const N: usize> Value for [T; N] {}
+
+/// `Data` of a `repr(C)` value, its own bytes.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! raw_data {
+    ($t:ty, $schema:expr) => {
+        impl $crate::abi::data::Data for $t {
+            const FIXED: bool = true;
+            fn schema() -> String {
+                ($schema).into()
+            }
+            fn write(&self, out: &mut Vec<u8>) {
+                out.extend_from_slice(unsafe { std::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) });
+            }
+            fn read(r: &mut &[u8]) -> Option<Self> {
+                let b = r.get(..size_of::<Self>())?;
+                *r = &r[size_of::<Self>()..];
+                Some(unsafe { std::ptr::read_unaligned(b.as_ptr() as *const Self) })
+            }
+        }
+    };
 }
 
-unsafe impl Value for abi::Worn {
-    fn schema() -> String {
-        <abi::Worn as abi::Schema>::SCHEMA.into()
-    }
-}
-
-unsafe impl Value for abi::Energy {
-    fn schema() -> String {
-        <abi::Energy as abi::Schema>::SCHEMA.into()
-    }
-}
+unsafe impl Value for abi::Worn {}
+unsafe impl Value for abi::Energy {}
 
 /// Text owned by the engine (`str` schema). Set it with the builders' `set_text`.
 #[repr(transparent)]
@@ -74,11 +84,8 @@ impl Text {
     }
 }
 
-unsafe impl Value for Text {
-    fn schema() -> String {
-        "str".into()
-    }
-}
+unsafe impl Value for Text {}
+raw_data!(Text, "str");
 
 /// Values written as text and read as something else: `Text` stays text, `BlockRef`,
 /// `BlockList` and `ItemRef` name things that the engine resolves when the game loads (a typo is
@@ -96,22 +103,16 @@ impl TextValue for TintRef {}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TagRef(pub u32);
 
-unsafe impl Value for TagRef {
-    fn schema() -> String {
-        "tag".into()
-    }
-}
+unsafe impl Value for TagRef {}
+raw_data!(TagRef, "tag");
 
 /// A tint kind a component names (`core:grass`), read back as its number.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TintRef(pub u32);
 
-unsafe impl Value for TintRef {
-    fn schema() -> String {
-        "tint".into()
-    }
-}
+unsafe impl Value for TintRef {}
+raw_data!(TintRef, "tint");
 
 /// A block (or a state, `base:furnace[lit=true]`) a component names: `set_text(&TREE_LEAVES,
 /// "oak_leaves")`, read back as its state id.
@@ -119,22 +120,16 @@ unsafe impl Value for TintRef {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockRef(pub u32);
 
-unsafe impl Value for BlockRef {
-    fn schema() -> String {
-        "block".into()
-    }
-}
+unsafe impl Value for BlockRef {}
+raw_data!(BlockRef, "block");
 
 /// An item a component names (`set_text(&REMAINDER, "bucket")`), read back as its id.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ItemRef(pub u32);
 
-unsafe impl Value for ItemRef {
-    fn schema() -> String {
-        "item".into()
-    }
-}
+unsafe impl Value for ItemRef {}
+raw_data!(ItemRef, "item");
 
 /// Blocks with weights a component names: `set_text(&TREE_KINDS, "birch_log:1 oak_log:4")`
 /// (weight 1 when left out), resolved when the game loads.
@@ -142,11 +137,8 @@ unsafe impl Value for ItemRef {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockList(pub u32);
 
-unsafe impl Value for BlockList {
-    fn schema() -> String {
-        "blocks".into()
-    }
-}
+unsafe impl Value for BlockList {}
+raw_data!(BlockList, "blocks");
 
 impl BlockList {
     /// (state, weight) pairs.
@@ -186,12 +178,11 @@ macro_rules! value {
         #[repr(C)]
         #[derive(Clone, Copy, Debug, PartialEq)]
         $vis struct $name { $($(#[$fm])* $fvis $field: $ty),* }
-        unsafe impl $crate::Value for $name {
-            fn schema() -> String {
-                let fields: Vec<String> = vec![$(format!("{}:{}", stringify!($field), <$ty as $crate::Value>::schema())),*];
-                format!("{{{}}}", fields.join(","))
-            }
-        }
+        unsafe impl $crate::Value for $name {}
+        $crate::raw_data!($name, {
+            let fields: Vec<String> = vec![$(format!("{}:{}", stringify!($field), <$ty as $crate::abi::data::Data>::schema())),*];
+            format!("{{{}}}", fields.join(","))
+        });
     };
 }
 
@@ -322,19 +313,28 @@ impl Lookup {
     }
 
     #[inline]
-    fn read<T: Copy>(&self, kind: u32, entry: u32, name: &str, schema: &dyn Fn() -> String) -> Option<T> {
+    fn read<T: Data>(&self, kind: u32, entry: u32, name: &str, schema: &dyn Fn() -> String) -> Option<T> {
         if !self.has(kind, entry, name, schema) {
             return None;
         }
         let s = &self.slots[kind as usize];
-        let stride = s.stride.load(Ordering::Relaxed);
-        (stride as usize == size_of::<T>()).then(|| unsafe {
-            std::ptr::read_unaligned(
-                s.data
-                    .load(Ordering::Relaxed)
-                    .add((entry * stride) as usize) as *const T,
-            )
-        })
+        let stride = s.stride.load(Ordering::Relaxed) as usize;
+        let at = unsafe { s.data.load(Ordering::Relaxed).add(entry as usize * stride) };
+        let mut cell = unsafe { std::slice::from_raw_parts(at as *const u8, stride) };
+        if T::FIXED {
+            return (stride == size_of::<T>())
+                .then(|| T::read(&mut cell))
+                .flatten();
+        }
+        // Text is kept as a `Str`, other packed values as a `Slice` of their bytes.
+        let (ptr, len) = unsafe { std::ptr::read_unaligned(at as *const (*const u8, usize)) };
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        if abi::data::is_text(&T::schema()) {
+            let mut packed = (len as u32).to_le_bytes().to_vec();
+            packed.extend_from_slice(bytes);
+            return T::read(&mut packed.as_slice());
+        }
+        T::read(&mut &bytes[..])
     }
 
     #[cold]
@@ -361,14 +361,15 @@ impl Lookup {
 
 /// Typed handle to a component, found by name the first time it is used. Component and tag
 /// names are a vocabulary shared by all mods, not things a mod owns: `fuel` means the same
-/// to everyone and is used as written, a `modid:` prefix only keeps a term to one mod.
-pub struct Component<T: Value> {
+/// to everyone and is used as written, a `modid:` prefix only keeps a term to one mod. `K` is
+/// the kind whose registrations take it (`crate::kind`), any kind by default.
+pub struct Component<T: Data, K = crate::kind::Any> {
     name: &'static str,
     lookup: Lookup,
-    _p: PhantomData<fn() -> T>,
+    _p: PhantomData<fn() -> (T, K)>,
 }
 
-impl<T: Value> Component<T> {
+impl<T: Data, K> Component<T, K> {
     pub const fn named(name: &'static str) -> Self {
         Component { name, lookup: Lookup::new(), _p: PhantomData }
     }
@@ -416,10 +417,12 @@ impl<T: Value> Component<T> {
         }
         let mut len = 0usize;
         let p = unsafe { (host().stack_get)(stack.data, self.id(), &mut len) };
-        (!p.is_null() && len == size_of::<T>()).then(|| unsafe { std::ptr::read_unaligned(p as *const T) })
+        (!p.is_null())
+            .then(|| T::read(&mut unsafe { std::slice::from_raw_parts(p, len) }))
+            .flatten()
     }
     pub(crate) fn raw_value(&self, v: &T) -> crate::content::Pending {
-        crate::content::Pending::value(self.name, T::schema(), value_bytes(v))
+        crate::content::Pending::value(self.name, T::schema(), abi::data::bytes_of(v))
     }
 }
 

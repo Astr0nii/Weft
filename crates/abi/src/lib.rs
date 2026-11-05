@@ -6,12 +6,16 @@
 //! - Strings are UTF-8 `(ptr, len)`, never NUL terminated.
 #![no_std]
 
+extern crate alloc;
+
+pub mod data;
+
 use core::ffi::c_void;
 use core::sync::atomic::AtomicU32;
 
 /// FNV-1a of this file: any change to it (layouts included) makes mods built before it refuse
 /// to load instead of reading the wrong memory.
-pub const ABI_VERSION: u64 = fnv(include_str!("lib.rs").as_bytes());
+pub const ABI_VERSION: u64 = fnv(concat!(include_str!("lib.rs"), include_str!("data.rs")).as_bytes());
 /// Symbol every mod library exports: `extern "C" fn() -> *const ModDecl`.
 pub const ENTRY_SYMBOL: &[u8] = b"weft_mod\0";
 
@@ -258,7 +262,7 @@ impl Callback {
 }
 
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ModId(pub u32);
 
 /// Opaque per-mod registration container.
@@ -299,6 +303,68 @@ pub struct CompValue {
     pub name: Str,
     pub schema: Str,
     pub value: Slice<u8>,
+}
+
+/// What `Host::reg_entry` does with an entry of that kind and name.
+pub mod entry_mode {
+    /// A new one; a second of the same name is an error.
+    pub const NEW: u32 = 0;
+    /// Its operations go onto the one of that name, whoever registered it, in load order. The
+    /// name may be a pattern: `#tag` (every entry with the tag), `*` in it (any text there),
+    /// `name[prop=value]` (those states of a block).
+    pub const EDIT: u32 = 1;
+    /// Registered from scratch over what was there.
+    pub const REPLACE: u32 = 2;
+    /// As if nobody had registered it.
+    pub const REMOVE: u32 = 3;
+}
+
+/// What a `ValueOp` does with its component.
+pub mod value_op {
+    pub const SET: u32 = 0;
+    pub const UNSET: u32 = 1;
+    /// List components (`[T]`): the value is one element, added at the end.
+    pub const PUSH: u32 = 2;
+    /// Before or after the element `anchor` names: its `name` field, or `#index`.
+    pub const INSERT_BEFORE: u32 = 3;
+    pub const INSERT_AFTER: u32 = 4;
+    /// Takes out the element `anchor` names.
+    pub const REMOVE_ITEM: u32 = 5;
+    /// Swaps the element `anchor` names for the value.
+    pub const REPLACE_ITEM: u32 = 6;
+}
+
+/// One change to an entry's components (`data` encoding for the value).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ValueOp {
+    pub op: u32,
+    pub value: CompValue,
+    pub anchor: Str,
+}
+
+/// The operations on some states of a block: `key` is `prop=value,..` (every property not named
+/// matches anything), empty for every state.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PartDesc {
+    pub key: Str,
+    pub ops: Slice<ValueOp>,
+}
+
+/// Everything a mod registers: an entry of a kind (`entry_kind`), by name, made of components.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct EntryDesc {
+    pub kind: u32,
+    pub name: Str,
+    /// The handle's id cell, filled at freeze; null for none.
+    pub cell: *const AtomicU32,
+    /// `entry_mode`.
+    pub mode: u32,
+    pub ops: Slice<ValueOp>,
+    /// Blocks: operations on some of their states.
+    pub parts: Slice<PartDesc>,
 }
 
 /// Registry kinds for `Host::find`; the first `COUNT` also have component tables (blocks per state).
@@ -3225,6 +3291,8 @@ pub struct Host {
     /// What other mods register as `name` of `kind` (`entry_kind`) is dropped: this mod's own
     /// registration of it replaces theirs, or with `removed` nobody's stays.
     pub reg_override: unsafe extern "C" fn(reg: *mut Registrar, kind: u32, name: Str, removed: u32),
+    /// An entry: a new one, an edit, a replacement or a removal (`EntryDesc::mode`).
+    pub reg_entry: unsafe extern "C" fn(reg: *mut Registrar, entry: *const EntryDesc),
     /// Rolls table `name`; writes at most `max` stacks to `out` and returns how many it made.
     pub roll_loot: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, ctx: *const LootCtx, out: *mut ItemStack, max: usize) -> usize,
     /// Breaks a block as if mined with `tool` (by `player`, 0 for none): asks `break_block`,

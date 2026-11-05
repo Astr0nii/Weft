@@ -14,6 +14,11 @@ pub mod kind {
     }
     /// Kinds the engine numbers (blocks, items...): their handles give ids.
     pub trait HasId: Kind {}
+    /// A component of kind marker `Self` goes on registrations of kind `K`.
+    pub trait On<K> {}
+    /// Components of any kind: mods' own vocabulary.
+    pub struct Any;
+    impl<K> On<K> for Any {}
     /// Kinds `Registry::edit` changes, by the builder it gives.
     pub trait Edits: Kind + Sized {
         type Builder<'a>
@@ -34,7 +39,8 @@ pub mod kind {
             impl Kind for $n {
                 const KIND: u32 = $v;
             }
-            impl HasId for $n {})*
+            impl HasId for $n {}
+            impl On<$n> for $n {})*
         };
     }
     kinds!(
@@ -61,7 +67,8 @@ pub mod kind {
             $(pub struct $n;
             impl Kind for $n {
                 const KIND: u32 = u32::MAX;
-            })*
+            }
+            impl On<$n> for $n {})*
         };
     }
     named_kinds!(
@@ -934,7 +941,7 @@ pub(crate) fn raw_values(list: &[Pending], scratch: &mut Vec<Vec<u8>>) -> Vec<ab
     scratch.clear();
     for p in list {
         let bytes = match &p.text {
-            Some(t) => c::value_bytes(&Str::new(t)),
+            Some(t) => abi::data::bytes_of(t),
             None => p.bytes.clone(),
         };
         scratch.push(bytes);

@@ -746,6 +746,8 @@ pub struct RawRecipe {
 
 #[derive(Default)]
 pub struct RawGame {
+    /// `Host::reg_entry`, in the order the mod made them.
+    pub entries: Vec<crate::entries::RawEntry>,
     pub cameras: Vec<RawCamera>,
     pub entities: Vec<RawEntity>,
     pub components: Vec<RawComponent>,
@@ -1532,7 +1534,7 @@ pub(crate) unsafe fn copy_recipe(d: &abi::RecipeDesc) -> RawRecipe {
     }
 }
 
-fn write_cell(cell: usize, id: u32) {
+pub(crate) fn write_cell(cell: usize, id: u32) {
     if cell != 0 {
         unsafe { (*(cell as *const AtomicU32)).store(id, Ordering::Relaxed) }
     }

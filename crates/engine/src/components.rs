@@ -73,11 +73,10 @@ impl RawValue {
         unsafe {
             let schema = v.schema.as_str().to_string();
             let bytes = v.value.as_slice().to_vec();
-            let text = (written_as_text(&schema) && bytes.len() == size_of::<Str>()).then(|| {
-                std::ptr::read_unaligned(bytes.as_ptr() as *const Str)
-                    .as_str()
-                    .to_string()
-            });
+            // Text is packed (`abi::data`): its length, then the UTF-8.
+            let text = written_as_text(&schema)
+                .then(|| abi::data::from_bytes::<String>(&bytes))
+                .flatten();
             RawValue { name: v.name.as_str().to_string(), schema, bytes, text }
         }
     }
@@ -115,7 +114,7 @@ pub struct RawSet {
 /// `blocks`: a weighted list `name[:weight] ..`, `item`: an item, `tag`: `#name`, `tint`: a tint
 /// kind) are resolved into ids at freeze, with errors.
 pub fn written_as_text(schema: &str) -> bool {
-    matches!(schema, "str" | "block" | "blocks" | "item" | "tag" | "tint")
+    abi::data::is_text(schema)
 }
 
 /// Byte size a schema implies, if it is a primitive.
@@ -127,6 +126,9 @@ fn primitive_size(schema: &str) -> Option<usize> {
         "u32" | "i32" | "f32" | "block" | "blocks" | "item" | "tag" | "tint" => 4,
         "u64" | "i64" | "f64" => 8,
         "str" => size_of::<Str>(),
+        "callback" => 16,
+        // Packed values are kept as a `Slice` to their bytes.
+        s if s.starts_with('<') || abi::data::list_of(s).is_some() => size_of::<abi::Slice<u8>>(),
         _ => return None,
     })
 }
@@ -168,6 +170,7 @@ pub struct Components {
     tables: Vec<Table>,
     /// Strings `str` values point into; boxed so the pointers stay put.
     _texts: Vec<Box<str>>,
+    _blobs: Vec<Box<[u8]>>,
     _columns: Vec<Vec<abi::Column>>,
     abi: Box<abi::ComponentTable>,
 }
@@ -326,6 +329,8 @@ pub struct Builder {
     ids: FxHashMap<String, u32>,
     tables: Vec<Table>,
     texts: Vec<Box<str>>,
+    /// Bytes of packed values (lists, `<..>` structs) the tables point into.
+    blobs: Vec<Box<[u8]>>,
     /// Mod that last set a value through `r.set`, for override logs.
     setters: FxHashMap<(usize, u32, u32), String>,
     /// Values that could not be stored (freeze errors).
@@ -342,6 +347,7 @@ impl Default for Builder {
             ids: FxHashMap::default(),
             tables: Vec::new(),
             texts: Vec::new(),
+            blobs: Vec::new(),
             setters: FxHashMap::default(),
             errors: Vec::new(),
             refs: None,
@@ -455,6 +461,16 @@ impl Builder {
                         .into()
                 })
             }
+            None if v.schema.starts_with('<') || abi::data::list_of(&v.schema).is_some() => {
+                let boxed: Box<[u8]> = v.bytes.as_slice().into();
+                let s = abi::Slice { ptr: boxed.as_ptr(), len: boxed.len() };
+                self.blobs.push(boxed);
+                Ok(unsafe {
+                    std::slice::from_raw_parts(&s as *const abi::Slice<u8> as *const u8, size_of::<abi::Slice<u8>>())
+                        .to_vec()
+                        .into()
+                })
+            }
             None => Ok(v.bytes.as_slice().into()),
         }
     }
@@ -552,7 +568,7 @@ impl Builder {
     }
 
     pub fn finish(self) -> Components {
-        let Builder { decl, names, ids, tables, texts, .. } = self;
+        let Builder { decl, names, ids, tables, texts, blobs, .. } = self;
         let schemas: Vec<String> = names.iter().map(|n| decl[n].0.clone()).collect();
         let columns: Vec<Vec<abi::Column>> = tables
             .iter()
@@ -568,7 +584,7 @@ impl Builder {
             abi::KindTable { entries: t.entries, words: t.words, bits: t.bits.as_ptr(), columns: columns[k].as_ptr() }
         });
         let abi = Box::new(abi::ComponentTable { components: names.len() as u32, kinds });
-        Components { names, schemas, by_name: ids, tables, _texts: texts, _columns: columns, abi }
+        Components { names, schemas, by_name: ids, tables, _texts: texts, _blobs: blobs, _columns: columns, abi }
     }
 }
 
