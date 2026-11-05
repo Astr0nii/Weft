@@ -321,10 +321,9 @@ fn fs_translucent(in: VOut) -> @location(0) vec4<f32> {
     return shade(in, albedo);
 }
 
-// Distant terrain (`client::lod`): a record is the `dir` face of a box in its tile, drawn in the
-// average color of its texture (the smallest mip), full sky light. Its pixels in columns whose
-// cubes show their ground are dropped (`lod_mask`); it sits a little lower so the cubes win
-// along the edges.
+// Distant terrain (`client::lod`): a record is the `dir` face of a box in its tile, textured and
+// tinted like a near face, full sky light. Its pixels in columns whose cubes show their ground
+// are dropped (`lod_mask`); it sits a little lower so the cubes win along the edges.
 fn lod_uv(dir: u32, p: vec3<f32>) -> vec2<f32> {
     if dir == 2u || dir == 3u {
         return p.xz;

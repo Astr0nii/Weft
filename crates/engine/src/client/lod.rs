@@ -116,8 +116,7 @@ pub fn made(job: LodJob, mut words: Vec<u32>) {
 }
 
 /// A record of `world.wgsl`'s `vs_lod`: the `dir` face of a box at (x, y, z) in the tile, size
-/// (sx, sy, sz) blocks, drawn in the average color of texture `tex` (its smallest mip), tinted
-/// for `biome` when `tint`.
+/// (sx, sy, sz) blocks, drawn with texture `tex`, tinted for `biome` when `tint`, corners in `ao`.
 fn quad(dir: u32, x: i32, y: i32, z: i32, size: (i32, i32, i32), tex: u32, tint: u32, biome: u32, ao: u32) -> [u32; 4] {
     let mut r = crate::gpu_layout::lod_record(dir, [x, y, z], [size.0, size.1, size.2], tex, tint, biome);
     r[3] |= (ao & 0xFF) << 24;
@@ -141,9 +140,8 @@ fn sample_y(words: &[u32], gx: f32, gz: f32) -> i32 {
     (x(j0) * (1.0 - fz) + x(j0 + 1) * fz).round() as i32
 }
 
-/// The tile's top faces (runs along x merged) and the walls down to lower neighbors: the top
-/// block's top color for its own height (a grass side averages to the dirt under its rim, and
-/// every slope came out striped brown), then the block under it for the rest.
+/// The tile's top faces and the walls down to lower neighbors: the top block for its own
+/// height, then the block under it for the rest.
 pub fn mesh(c: &Content, key: TileKey, words: &[u32]) -> (Vec<[u32; 4]>, (i32, i32)) {
     let s = 1 << key.level;
     let at = |i: i32, j: i32| {
@@ -156,7 +154,6 @@ pub fn mesh(c: &Content, key: TileKey, words: &[u32]) -> (Vec<[u32; 4]>, (i32, i
     let ctm = super::ctm::current();
     let face_of = |state: u32, dir: usize| {
         let info = &c.states[state as usize];
-        // No overlays out there.
         let tex = looks.drawn(state, info).textures[dir] & face::TEX_MASK;
         let paint = crate::content::face_paint(info, dir, ctm.has_overlay(tex));
         let tint = if paint.base_tinted || paint.overlay_tinted { info.tint as u32 } else { 0 };

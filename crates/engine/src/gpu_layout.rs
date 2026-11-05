@@ -59,7 +59,7 @@ shared! {
     }
     /// Distant terrain record (`client::lod`), four words in the faces' pages: x, z in the tile
     /// (11 bits each), direction, tint kind; texture and biome like a face's; y (signed 16 bits)
-    /// and the box's height; its width and depth.
+    /// and the box's height; its width and depth, corner AO in the top byte.
     lod_face {
         POS_MASK = 2047,
         Z_SHIFT = 11,
