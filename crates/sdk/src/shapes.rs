@@ -193,14 +193,17 @@ pub fn stick_faces(t: &str) -> [(&str, [f32; 4]); 6] {
 /// it, by vanilla's numbers.
 pub fn torch_state<'a>(d: Dir, s: State<'a>, texture: &str) -> State<'a> {
     let faces = stick_faces(texture);
-    let s = s.texture(texture).needs(d.opposite(), "");
+    let s = s.texture(texture);
     if d.horizontal() {
-        s.oriented(crate::signal::Orientation::leaning(d.opposite()))
+        // Written against a wall to its west.
+        s.orientation(crate::Orientation::leaning(d.opposite()))
+            .needs(Dir::West, "")
             .model_box_faces([-1.0, 3.5, 7.0], [1.0, 13.5, 9.0], faces)
             .tilted([0.0, 3.5, 8.0], Dir::South, -22.5)
             .hitbox([0.0, 3.0, 5.5], [5.0, 13.0, 10.5])
     } else {
-        s.oriented(crate::signal::Orientation::new(d.opposite(), Dir::North))
+        s.orientation(crate::Orientation::new(d.opposite(), Dir::North))
+            .needs(Dir::Down, "")
             .model_box_faces([7.0, 0.0, 7.0], [9.0, 10.0, 9.0], faces)
             .hitbox([6.0, 0.0, 6.0], [10.0, 10.0, 10.0])
     }

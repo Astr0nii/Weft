@@ -54,18 +54,6 @@ pub static DIAMOND_BLOCK: Block = Block::named("diamond_block");
 pub static COAL_BLOCK: Block = Block::named("coal_block");
 pub static WOOL: Block = Block::named("wool");
 
-/// Log axis along the clicked face, like vanilla.
-fn axis_placement(p: &Place, props: &mut Props) {
-    props.set(
-        "axis",
-        match p.face() {
-            Dir::West | Dir::East => "x",
-            Dir::North | Dir::South => "z",
-            _ => "y",
-        },
-    );
-}
-
 /// A log that grows into a tree of `leaves` (a cone, like a spruce, when `cone`).
 fn log(r: &mut Registry, handle: &'static Block, wood: &str, leaves: &str, cone: bool) {
     let side = format!("log_{wood}");
@@ -81,18 +69,8 @@ fn log(r: &mut Registry, handle: &'static Block, wood: &str, leaves: &str, cone:
         .tag(&format!("logs/{wood}"))
         .set(&FLAMMABLE, 5)
         .set(&FUEL, 300)
-        .prop("axis", ["y", "x", "z"])
-        .states(move |p, s| match p.get("axis") {
-            "y" => s.textures(&top, &side, &top),
-            // The bark runs along the log.
-            "x" => s
-                .faces([&top, &top, &side, &side, &side, &side])
-                .face_turns([0, 0, 1, 1, 1, 1]),
-            _ => s
-                .faces([&side, &side, &side, &side, &top, &top])
-                .face_turns([1, 1, 0, 0, 0, 0]),
-        })
-        .placement(axis_placement)
+        .axis()
+        .textures(&top, &side, &top)
         .tab(&crate::tabs::NATURAL);
 }
 

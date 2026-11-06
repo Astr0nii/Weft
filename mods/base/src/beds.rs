@@ -181,7 +181,7 @@ pub fn register(r: &mut Registry) {
             // What the model file of a bed says for one facing south, turned to this one.
             let mut s = s
                 .cutout()
-                .oriented(signal::Orientation::new(Dir::Down, p.facing().opposite()))
+                .orientation(Orientation::new(Dir::Down, p.facing().opposite()))
                 .hitbox([0.0; 3], [16.0, 9.0, 16.0]);
             for b in if head { HEAD_BOXES } else { FOOT_BOXES } {
                 let mut faces = b.2;

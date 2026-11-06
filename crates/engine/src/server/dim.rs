@@ -2974,14 +2974,9 @@ impl Dim {
         if self.get(p).is_none() || self.space.signals.reserved(p) {
             return false;
         }
-        let is_wire = c.block_of(state).sides != 0;
-        let on_wire = if is_wire { self.sides_placed(c, p, face, look, state) } else { None };
-        if is_wire && (on_wire.is_none() || !self.space.extras(p).is_empty()) {
-            return false;
-        }
         let def = c.block_of(state);
-        let mut chosen = on_wire.unwrap_or(def.first_state);
-        if let (Some((owner, cb)), false) = (def.cb.placement, is_wire) {
+        let mut chosen = def.first_state;
+        if let Some((owner, cb)) = def.cb.placement {
             let mut args = abi::PlaceArgs {
                 pos: p.to_array().into(),
                 face: face as u32,
@@ -2996,6 +2991,13 @@ impl Dim {
                 chosen = args.state;
             } else {
                 host::misuse("placement", || format!("{} chose state {}, not one of its own", def.name, args.state));
+            }
+        }
+        let is_wire = def.sides != 0;
+        if is_wire {
+            match self.sides_placed(c, p, face, look, chosen) {
+                Some(s) if self.space.extras(p).is_empty() => chosen = s,
+                _ => return false,
             }
         }
         let parts = self.parts(p);

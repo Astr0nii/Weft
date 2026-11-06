@@ -1062,7 +1062,8 @@ impl Registry {
             reg: self,
             e: crate::entry::Entry::of(block),
             handle: block,
-            orientation: None,
+            turns: None,
+            axis: false,
             props: Vec::new(),
             looks: None,
             keyed: Vec::new(),
@@ -1333,8 +1334,6 @@ fn last_box(ops: &mut [Pending], f: impl FnOnce(&mut abi::ModelBox)) {
 /// Per-state settings, used directly and through `BlockBuilder::states`.
 pub struct State<'a> {
     ops: &'a mut Vec<Pending>,
-    /// What boxes, hitboxes and liquid walls from here on are turned by (`oriented`).
-    orientation: Option<crate::signal::Orientation>,
 }
 
 macro_rules! state_setters {
@@ -1371,6 +1370,11 @@ macro_rules! state_setters {
         /// Faces in -X, +X, -Y, +Y, -Z, +Z order.
         pub fn faces(self, f: [&str; 6]) -> Self {
             self.set(&bc::TEXTURES, std::array::from_fn(|i| crate::asset("block", f[i])))
+        }
+        /// `front` to the north (where `.facing(..)` turns it), `side` around it and `top` above
+        /// and below: a furnace.
+        pub fn front_faces(self, side: &str, top: &str, front: &str) -> Self {
+            self.faces([side, side, top, top, front, side])
         }
         /// Quarter turns of each face's picture, -X, +X, -Y, +Y, -Z, +Z: a log lying on its side
         /// turns its bark along it. For a cube; boxes have `turned`.
@@ -1465,35 +1469,22 @@ macro_rules! state_setters {
             let textures = std::array::from_fn(|i| crate::asset("block", faces[i].0));
             self.add_box(min, max, textures, faces.map(|f| f.1))
         }
-        /// One more box, turned by its orientation if it has one.
         fn add_box(self, min: [f32; 3], max: [f32; 3], textures: [String; 6], uv: [[f32; 4]; 6]) -> Self {
-            let b = match self.orientation {
-                None => abi::ModelBox { min, max, textures, uv, turn: [0; 6], tilt: abi::BoxTilt::NONE },
-                Some(o) => {
-                    // From where the box is on the floor, before it turns.
-                    let uv: [[f32; 4]; 6] =
-                        std::array::from_fn(|i| if uv[i] == abi::UV_FROM_BOX { abi::box_face_uv(i, min, max) } else { uv[i] });
-                    let (min, max, own, turn) = o.place(min, max, [0usize, 1, 2, 3, 4, 5]);
-                    let textures = std::array::from_fn(|i| textures[own[i]].clone());
-                    abi::ModelBox { min, max, textures, uv: own.map(|i| uv[i]), turn, tilt: abi::BoxTilt::NONE }
-                }
-            };
+            let b = abi::ModelBox { min, max, textures, uv, turn: [0; 6], tilt: abi::BoxTilt::NONE };
             self.push(&bc::BOXES, b)
                 .set(&bc::MODEL, BlockModel::Boxes as u32)
         }
-        /// `model_box`, `model_box_faces` and `hitbox` from here on are written for a floor with
-        /// the front to the north, and turned as `o` says (`Props::orientation`), pictures included.
-        pub fn oriented(mut self, o: crate::signal::Orientation) -> Self {
-            self.orientation = Some(o);
-            self
+        /// How its model is turned: everything here (boxes, a model file, hitboxes, faces, liquid
+        /// walls, support) is written facing north, its top up, and turned so. `.facing(..)`,
+        /// `.axis()` and redstone's `attach` and `front` set it by themselves.
+        pub fn orientation(self, o: crate::Orientation) -> Self {
+            self.set(&bc::TURN, o.turn().index())
         }
         /// The last box's pictures get quarter turns of their own, per face.
         pub fn turned(mut self, turns: [u8; 6]) -> Self {
-            let o = self.orientation;
             last_box(self.pending(), |last| {
-                for (own, t) in turns.iter().enumerate() {
-                    let to = o.map_or(own, |f| f.face(own));
-                    last.turn[to] = (last.turn[to] + t) % 4;
+                for (f, t) in turns.iter().enumerate() {
+                    last.turn[f] = (last.turn[f] + t) % 4;
                 }
             });
             self
@@ -1501,10 +1492,9 @@ macro_rules! state_setters {
         /// The last box is tilted: around a point (texels) about an axis (its own -X, +X ... as a
         /// `Dir`) by degrees, right-handed, like a model file's element.
         pub fn tilted(mut self, origin: [f32; 3], axis: crate::Dir, degrees: f32) -> Self {
-            let o = self
-                .orientation
-                .unwrap_or(crate::signal::Orientation::new(crate::Dir::Down, crate::Dir::North));
-            last_box(self.pending(), |last| last.tilt = abi::BoxTilt { origin: o.at(origin), axis: o.along(axis), degrees });
+            let o = axis.offset();
+            let axis = [o.x as f32, o.y as f32, o.z as f32];
+            last_box(self.pending(), |last| last.tilt = abi::BoxTilt { origin, axis, degrees });
             self
         }
         /// Doesn't carry redstone power, the way glass doesn't. Wire can still lie on it.
@@ -1525,28 +1515,18 @@ macro_rules! state_setters {
         /// isn't solid (`not_solid`, `plant`), only the outline. Without any, the model's boxes,
         /// else a plant's cross, else the whole block.
         pub fn hitbox(self, min: [f32; 3], max: [f32; 3]) -> Self {
-            let (a, b) = self.orientation.map_or((min, max), |f| f.corners(min, max));
-            self.push(&bc::HITBOX, [a[0], a[1], a[2], b[0], b[1], b[2]])
+            self.push(&bc::HITBOX, [min[0], min[1], min[2], max[0], max[1], max[2]])
         }
         /// What the crosshair outlines and cracks, one box a call, when it shouldn't be the
-        /// hitbox's: a hollow log stopped by its walls and outlined whole. Turned by `oriented`.
+        /// hitbox's: a hollow log stopped by its walls and outlined whole.
         pub fn outline(self, min: [f32; 3], max: [f32; 3]) -> Self {
-            let (a, b) = self.orientation.map_or((min, max), |f| f.corners(min, max));
-            self.push(&bc::OUTLINE, [a[0], a[1], a[2], b[0], b[1], b[2]])
+            self.push(&bc::OUTLINE, [min[0], min[1], min[2], max[0], max[1], max[2]])
         }
-        /// The sides a liquid in it can't pass (`.holds_liquid()`), turned by `oriented`: without
-        /// this, the ones its hitbox covers whole (a stair's back holds water, a hollow log's
-        /// open ends don't). `&[]` lets it out everywhere.
+        /// The sides a liquid in it can't pass (`.holds_liquid()`): without this, the ones its
+        /// hitbox covers whole (a stair's back holds water, a hollow log's open ends don't). `&[]`
+        /// lets it out everywhere.
         pub fn liquid_walls(self, sides: &[crate::Dir]) -> Self {
-            let mask = sides.iter().fold(0u8, |m, d| m | 1 << d.face());
-            let walls = match self.orientation {
-                Some(o) => {
-                    let (_, _, own, _) = o.place([0.0; 3], [16.0; 3], [0usize, 1, 2, 3, 4, 5]);
-                    (0..6).fold(0, |m, i| if mask & 1 << own[i] != 0 { m | 1 << i } else { m })
-                }
-                None => mask,
-            };
-            self.set(&bc::LIQUID_WALLS, walls)
+            self.set(&bc::LIQUID_WALLS, sides.iter().fold(0u8, |m, d| m | 1 << d.face()))
         }
         /// Air-like: invisible, no collision, not targetable.
         pub fn air(self) -> Self {
@@ -1571,13 +1551,14 @@ macro_rules! state_setters {
 
 impl<'a> State<'a> {
     state_setters!();
-    /// `front` toward `facing`, `side` around it and `top` above and below (a furnace).
-    pub fn front_faces(self, facing: crate::Dir, side: &str, top: &str, front: &str) -> Self {
-        let mut f = [side; 6];
-        f[2] = top;
-        f[3] = top;
-        f[facing.face() as usize] = front;
-        self.faces(f)
+    /// How it is turned so far (`orientation`).
+    fn turn(&self) -> crate::Orientation {
+        self.ops
+            .iter()
+            .rfind(|p| p.name == abi::comp::block::TURN)
+            .and_then(|p| p.bytes.first())
+            .and_then(|&i| abi::Turn::from_index(i))
+            .map_or(crate::Orientation::NONE, crate::Orientation::from)
     }
 }
 
@@ -1591,7 +1572,10 @@ pub struct BlockBuilder<'a> {
     reg: &'a mut Registry,
     e: crate::entry::Entry,
     handle: &'static Block,
-    orientation: Option<crate::signal::Orientation>,
+    /// How each state is turned by its properties (`facing`, `axis`, `attach` and `front`).
+    turns: Option<fn(&Props) -> crate::Orientation>,
+    /// `.axis()`: placed along the face clicked.
+    axis: bool,
     /// Its own properties (an edit's: those it adds), for `.states(..)` and placing.
     props: Vec<(String, Vec<String>)>,
     looks: Option<Box<dyn for<'s> Fn(&Props, State<'s>) -> State<'s>>>,
@@ -1683,30 +1667,6 @@ impl Props {
     /// The `facing` property.
     pub fn facing(&self) -> crate::Dir {
         crate::Dir::from_name(self.get("facing")).unwrap_or(crate::Dir::Up)
-    }
-    /// How the block is turned, from its `attach` and `front` or `facing` properties, for
-    /// `.oriented`.
-    pub fn orientation(&self) -> crate::signal::Orientation {
-        let attach = crate::Dir::from_name(self.get("attach")).unwrap_or(crate::Dir::Down);
-        let front = crate::Dir::from_name(self.get("front")).unwrap_or_else(|| self.facing());
-        crate::signal::Orientation::new(attach, front)
-    }
-    /// A block that faces along `facing`, with its top that way: for `.oriented`.
-    pub fn orientation_up(&self) -> crate::signal::Orientation {
-        let f = self.facing();
-        let north = if f.face() / 2 == 1 { crate::Dir::North } else { crate::Dir::Up };
-        crate::signal::Orientation::new(f.opposite(), north)
-    }
-    /// A block with its north to `facing`, the way vanilla turns one: its top stays up unless it
-    /// faces up or down.
-    pub fn orientation_front(&self) -> crate::signal::Orientation {
-        let f = self.facing();
-        let attach = match f {
-            crate::Dir::Up => crate::Dir::North,
-            crate::Dir::Down => crate::Dir::South,
-            _ => crate::Dir::Down,
-        };
-        crate::signal::Orientation::new(attach, f)
     }
     pub fn set(&mut self, name: &str, value: &str) {
         if let Some(v) = self.values.iter_mut().find(|v| v.0 == name) {
@@ -2051,9 +2011,11 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// A `facing` property with the directions in `allowed` (`p.facing()` in `.states`), set by
-    /// `toward` when placed: three allowed directions are three values.
+    /// `toward` when placed: three allowed directions are three values. Its model, written facing
+    /// north, turns to it (`Orientation::front`) unless a state says otherwise.
     pub fn facing(mut self, allowed: crate::Facings, toward: crate::Toward) -> Self {
         self.facing = Some((allowed, toward));
+        self.turns = Some(|p| crate::Orientation::front(p.facing()));
         self.prop(
             "facing",
             allowed
@@ -2062,6 +2024,14 @@ impl<'a> BlockBuilder<'a> {
                 .collect::<Vec<_>>()
                 .as_slice(),
         )
+    }
+
+    /// An `axis` property (`y`, `x`, `z`), set along the face clicked, its model written standing
+    /// up and laid that way (a log): `p.get("axis")` in `.states`.
+    pub fn axis(mut self) -> Self {
+        self.axis = true;
+        self.turns = Some(|p| crate::Orientation::axis(p.get("axis")));
+        self.prop("axis", ["y", "x", "z"])
     }
 
     /// Which way it faces as an item and by default (after `facing`).
@@ -2088,6 +2058,12 @@ impl<'a> BlockBuilder<'a> {
 
     fn signal_props(mut self, kind: u32, levels: u32, attach: bool, front: bool) -> Self {
         self.signal = Some(SignalBuild { kind, attaches: attach, ..self.signal.unwrap_or_default() });
+        if attach && front {
+            self.turns = Some(|p| {
+                let dir = |n: &str| crate::Dir::from_name(p.get(n));
+                crate::Orientation::new(dir("attach").unwrap_or(crate::Dir::Down), dir("front").unwrap_or(crate::Dir::North))
+            });
+        }
         if attach {
             self = self.prop("attach", ["down", "up", "north", "south", "west", "east"]);
         }
@@ -2232,11 +2208,17 @@ impl BlockBuilder<'_> {
         }
         // A part per combination of its own properties' values, from `.states(..)` and its signal.
         let looks = self.looks.take();
-        let signal = self.signal;
-        if looks.is_some() || signal.is_some() {
+        let (signal, turns) = (self.signal, self.turns);
+        if looks.is_some() || signal.is_some() || turns.is_some() {
             for p in state_combinations(&self.props) {
                 let mut ops = Vec::new();
-                let mut s = State { ops: &mut ops, orientation: self.orientation };
+                let mut s = State { ops: &mut ops };
+                if let Some(o) = turns
+                    .map(|f| f(&p))
+                    .filter(|o| *o != crate::Orientation::NONE)
+                {
+                    s = s.orientation(o);
+                }
                 if let Some(f) = &looks {
                     s = f(&p, s);
                 }
@@ -2250,13 +2232,13 @@ impl BlockBuilder<'_> {
         }
         for (key, f) in std::mem::take(&mut self.keyed) {
             let mut ops = Vec::new();
-            f(State { ops: &mut ops, orientation: self.orientation });
+            f(State { ops: &mut ops });
             self.e.parts.push((key, ops));
         }
         let attaches = signal.is_some_and(|b| b.attaches);
         let switch = signal.is_some_and(|b| b.kind == abi::signal_kind::SWITCH);
-        if self.facing.is_some() || self.placement.is_some() || attaches {
-            let (facing, user) = (self.facing, self.placement.take());
+        if self.facing.is_some() || self.placement.is_some() || attaches || self.axis {
+            let (facing, axis, user) = (self.facing, self.axis, self.placement.take());
             let defaults = Props {
                 values: self
                     .props
@@ -2269,12 +2251,15 @@ impl BlockBuilder<'_> {
                 if let Some((allowed, toward)) = facing {
                     p.set("facing", toward.choose(allowed, a.face, a.look).name());
                 }
+                if axis {
+                    p.set("axis", ["x", "y", "z"][a.face as usize / 2 % 3]);
+                }
                 if attaches {
                     let attach = crate::Dir::from_face(a.face).opposite();
                     p.set("attach", attach.name());
                     // A switch on a wall is always upright, as in vanilla; a gate goes with the look.
                     let front =
-                        if switch && attach.horizontal() { crate::Dir::Down } else { crate::signal::dir_along_face(attach, a.look) };
+                        if switch && attach.horizontal() { crate::Dir::Down } else { crate::facing::dir_along_face(attach, a.look) };
                     p.set("front", front.name());
                 }
                 if let Some(f) = &user {
@@ -2958,7 +2943,9 @@ impl SignalBuild {
         if let Some(a) = dir("attach") {
             sig.attach = a.face();
             if self.attaches {
-                s = s.needs(a, "");
+                // Written unturned, as the model is.
+                let own = s.turn().own(a);
+                s = s.needs(own, "");
             }
             // A torch powers the block on the far side of it, as high as it stands.
             if self.kind == abi::signal_kind::TORCH {
@@ -3441,18 +3428,13 @@ mod order_tests {
     use super::*;
 
     #[test]
-    fn a_frame_turns_boxes_and_hitboxes() {
-        let f = crate::signal::Orientation::new(crate::Dir::Down, crate::Dir::South);
+    fn a_state_knows_its_turn() {
+        let f = crate::Orientation::new(crate::Dir::Down, crate::Dir::South);
         let mut ops = Vec::new();
-        let _ = State { ops: &mut ops, orientation: None }
-            .oriented(f)
-            .model_box([0.0; 3], [16.0, 16.0, 1.0])
-            .hitbox([0.0; 3], [16.0, 16.0, 1.0]);
-        let value = |name: &str| &ops.iter().find(|p| p.name == name).unwrap().bytes;
-        let b: abi::ModelBox = abi::data::from_bytes(value(abi::comp::block::BOXES)).unwrap();
-        // Its north end comes to the south.
-        assert_eq!((b.min, b.max), ([0.0, 0.0, 15.0], [16.0, 16.0, 16.0]));
-        let h: [f32; 6] = abi::data::from_bytes(value(abi::comp::block::HITBOX)).unwrap();
-        assert_eq!(h, [0.0, 0.0, 15.0, 16.0, 16.0, 16.0]);
+        let s = State { ops: &mut ops }
+            .orientation(f)
+            .model_box([0.0; 3], [16.0, 16.0, 1.0]);
+        assert_eq!(s.turn(), f);
+        assert_eq!(s.turn().own(crate::Dir::South), crate::Dir::North);
     }
 }

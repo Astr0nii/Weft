@@ -25,6 +25,7 @@ pub static HOST: Host = Host {
     state_prop,
     state_with,
     state_cycle,
+    state_turned,
     state_flags,
     find_component,
     matcher_has,
@@ -1592,6 +1593,14 @@ unsafe extern "C" fn state_with(state: u32, name: Str, value: Str) -> u32 {
         return u32::MAX;
     }
     unsafe { c.state_with(state, name.as_str(), value.as_str()) }.unwrap_or(u32::MAX)
+}
+
+extern "C" fn state_turned(state: u32, turn: u8) -> u32 {
+    let c = content();
+    match weft_abi::Turn::from_index(turn) {
+        Some(t) if (state as usize) < c.states.len() => c.turned_state(state, t),
+        _ => u32::MAX,
+    }
 }
 
 unsafe extern "C" fn state_cycle(state: u32, name: Str) -> u32 {

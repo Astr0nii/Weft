@@ -1094,7 +1094,8 @@ pub mod comp {
     /// is solid and what the crosshair picks; none: the boxes, else a plant's cross, else the
     /// whole block) and `OUTLINE` (likewise, what is outlined and cracked when it isn't the
     /// hitbox), `SIGNAL` (`SignalDesc`), `LIQUID_WALLS` (`u8`, a bit per `FACE_DIRS` side a liquid
-    /// in its cell can't pass; none: the sides its hitbox covers whole). It is opaque (hides its
+    /// in its cell can't pass; none: the sides its hitbox covers whole), `TURN` (`u8`, `Turn::index`:
+    /// all of the above written facing north, turned so; none: as written). It is opaque (hides its
     /// neighbors' faces, gets ambient occlusion) as a cube on the opaque layer. Any other component
     /// goes in its component table, per state; its item gets the first state's unless it sets
     /// its own.
@@ -1124,6 +1125,7 @@ pub mod comp {
         pub const MODEL: &str = "block.model";
         pub const TEXTURES: &str = "block.textures";
         pub const TURNS: &str = "block.turns";
+        pub const TURN: &str = "block.turn";
         pub const BOXES: &str = "block.boxes";
         pub const HITBOX: &str = "block.hitbox";
         pub const OUTLINE: &str = "block.outline";
@@ -1645,6 +1647,103 @@ pub const FACE_CORNERS: [[[i32; 3]; 4]; 6] = [
     [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]],
     [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]],
 ];
+
+/// One of the 24 ways a block's model turns onto itself (`comp::block::TURN`): where its own east
+/// (+X) and its own up (+Y) end up, as `FACE_DIRS` indices. A model is written facing north (-Z),
+/// its top up; the engine turns all of it that way: boxes, model files, hitboxes, a cube's faces,
+/// liquid walls, support and tinted faces.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub struct Turn {
+    pub east: u8,
+    pub up: u8,
+}
+
+impl Turn {
+    pub const NONE: Turn = Turn { east: 1, up: 3 };
+
+    /// The value `comp::block::TURN` holds.
+    pub const fn index(self) -> u8 {
+        self.east * 6 + self.up
+    }
+
+    pub fn from_index(i: u8) -> Option<Turn> {
+        let t = Turn { east: i / 6, up: i % 6 };
+        (t.east < 6 && t.east / 2 != t.up / 2).then_some(t)
+    }
+
+    /// All 24.
+    pub fn all() -> impl Iterator<Item = Turn> {
+        (0..36).filter_map(Turn::from_index)
+    }
+
+    /// Where own +X, +Y and +Z go.
+    fn axes(self) -> [[i32; 3]; 3] {
+        let (e, u) = (FACE_DIRS[self.east as usize % 6], FACE_DIRS[self.up as usize % 6]);
+        [e, u, [e[1] * u[2] - e[2] * u[1], e[2] * u[0] - e[0] * u[2], e[0] * u[1] - e[1] * u[0]]]
+    }
+
+    pub fn vector(self, v: [i32; 3]) -> [i32; 3] {
+        let a = self.axes();
+        core::array::from_fn(|i| v[0] * a[0][i] + v[1] * a[1][i] + v[2] * a[2][i])
+    }
+
+    pub fn vector_f(self, v: [f32; 3]) -> [f32; 3] {
+        let a = self.axes();
+        core::array::from_fn(|i| v[0] * a[0][i] as f32 + v[1] * a[1][i] as f32 + v[2] * a[2][i] as f32)
+    }
+
+    /// A point of a block `size` units across (16 for texels, 1 for blocks), turned about its middle.
+    pub fn point(self, p: [f32; 3], size: f32) -> [f32; 3] {
+        let h = size / 2.0;
+        self.vector_f(p.map(|v| v - h)).map(|v| v + h)
+    }
+
+    /// The box between two corners, turned.
+    pub fn bounds(self, min: [f32; 3], max: [f32; 3], size: f32) -> ([f32; 3], [f32; 3]) {
+        let (a, b) = (self.point(min, size), self.point(max, size));
+        (core::array::from_fn(|i| a[i].min(b[i])), core::array::from_fn(|i| a[i].max(b[i])))
+    }
+
+    /// Which face its own face `f` becomes.
+    pub fn face(self, f: usize) -> usize {
+        let d = self.vector(FACE_DIRS[f % 6]);
+        FACE_DIRS.iter().position(|x| *x == d).unwrap_or(f)
+    }
+
+    /// Bits by own face (`1 << face`) as bits by face.
+    pub fn faces(self, mask: u8) -> u8 {
+        (0..6)
+            .filter(|&f| mask & 1 << f != 0)
+            .fold(0, |m, f| m | 1 << self.face(f))
+    }
+
+    /// Quarter turns the picture of its own face `f` takes, landing on `face(f)`.
+    pub fn picture(self, f: usize) -> u8 {
+        let c = FACE_CORNERS[f % 6][0];
+        let to = self.vector(c.map(|v| 2 * v - 1)).map(|v| (v + 1) / 2);
+        FACE_CORNERS[self.face(f)]
+            .iter()
+            .position(|x| *x == to)
+            .unwrap_or(0) as u8
+    }
+
+    /// This turn, then `after`.
+    pub fn then(self, after: Turn) -> Turn {
+        Turn { east: after.face(self.east as usize) as u8, up: after.face(self.up as usize) as u8 }
+    }
+
+    pub fn inverse(self) -> Turn {
+        Turn::all()
+            .find(|t| self.then(*t) == Turn::NONE)
+            .unwrap_or(Turn::NONE)
+    }
+}
+
+impl Default for Turn {
+    fn default() -> Turn {
+        Turn::NONE
+    }
+}
 
 /// What a block is to redstone.
 pub mod signal_kind {
@@ -3106,6 +3205,9 @@ pub struct Host {
     /// `state` with property `name` at its next value, the first after the last; `u32::MAX` if the
     /// block has no such property.
     pub state_cycle: unsafe extern "C" fn(state: u32, name: Str) -> u32,
+    /// `state` turned by `Turn` `turn` (its index) with the world around it: another facing, axis
+    /// or sides; itself where its block can't turn so, `u32::MAX` for no such state or turn.
+    pub state_turned: unsafe extern "C" fn(state: u32, turn: u8) -> u32,
     pub state_flags: unsafe extern "C" fn(state: u32) -> u32,
     /// Component id by name, `u32::MAX` if nothing uses it. A non-empty `schema` that differs from
     /// the registered one is an error (logged) and also gives `u32::MAX`.

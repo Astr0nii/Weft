@@ -613,10 +613,20 @@ fn bake_state(
     }
     let opacity = opacity.unwrap_or(if flags & bf::OPAQUE != 0 { 15 } else { 0 });
     let filter: [u8; 3] = s.or(b::LIGHT_FILTER, [0; 3]);
+    let turn = match s.get::<u8>(b::TURN) {
+        Some(i) => weft_abi::Turn::from_index(i).unwrap_or_else(|| {
+            errors.push(format!("{name}: turn {i} is none of the 24"));
+            weft_abi::Turn::NONE
+        }),
+        None => weft_abi::Turn::NONE,
+    };
     let sixteenths = |name: &str| -> Vec<[f32; 6]> {
         s.or::<Vec<[f32; 6]>>(name, Vec::new())
             .into_iter()
-            .map(|x| x.map(|v| v / 16.0))
+            .map(|x| {
+                let (a, b) = turn.bounds([x[0], x[1], x[2]], [x[3], x[4], x[5]], 16.0);
+                [a[0], a[1], a[2], b[0], b[1], b[2]].map(|v| v / 16.0)
+            })
             .collect()
     };
     let (hitbox, outline) = (sixteenths(b::HITBOX), sixteenths(b::OUTLINE));
@@ -631,6 +641,7 @@ fn bake_state(
             textures: std::array::from_fn(|i| tex(if x.textures[i].is_empty() { textures[i] } else { x.textures[i] })),
             uv: x.uv,
         })
+        .map(|b| if turn == weft_abi::Turn::NONE { b } else { b.turned(turn) })
         .collect();
     boxes.shrink_to_fit();
     let of_model = || -> Vec<[f32; 6]> {
@@ -668,9 +679,14 @@ fn bake_state(
     } else {
         vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
     };
+    let own: [u32; 6] = if model == BlockModel::None { [0; 6] } else { std::array::from_fn(|i| tex(textures[i])) };
     let info = StateInfo {
-        liquid_walls: s.or(b::LIQUID_WALLS, u8::MAX),
+        liquid_walls: match s.or(b::LIQUID_WALLS, u8::MAX) {
+            u8::MAX => u8::MAX,
+            walls => turn.faces(walls),
+        },
         block,
+        turn,
         sides: 0,
         flags,
         // Light, tint, hardness, friction, drag and support come from components.
@@ -693,8 +709,8 @@ fn bake_state(
             ..Signal::default()
         },
         // A box model's faces default to these (the particles of breaking it show them too).
-        textures: if model == BlockModel::None { [0; 6] } else { std::array::from_fn(|i| tex(textures[i])) },
-        turns: s.or(b::TURNS, [0u8; 6]).map(|t| t % 4),
+        textures: crate::content::turned_faces(turn, own),
+        turns: crate::content::turned_pictures(turn, s.or(b::TURNS, [0u8; 6]).map(|t| t % 4)),
         boxes,
         collision,
         selection,
@@ -714,6 +730,7 @@ fn bake_state(
 
 fn air() -> StateInfo {
     StateInfo {
+        turn: weft_abi::Turn::NONE,
         sides: 0,
         liquid_walls: u8::MAX,
         grow: None,
