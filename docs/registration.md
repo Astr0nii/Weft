@@ -78,7 +78,8 @@ Per-state components (`comps::block`):
 | `MODEL` | `u32` (`BlockModel`) | cube | `.plant`, `.air`, boxes |
 | `TEXTURES` | `[str;6]` | `<ns>:block/<name>` | `.texture`, `.textures`, `.faces`, `.front_faces` |
 | `TURNS` | `[u8;6]` | none | quarter turns of a cube's faces (`.face_turns`) |
-| `BOXES` | `[ModelBox]` | none | `.model_box`, `.model_box_faces`, turned by `.oriented` |
+| `BOXES` | `[ModelBox]` | none | `.model_box`, `.model_box_faces` |
+| `TURN` | `u8` (`abi::Turn`) | none | how all of its model is turned (`.orientation`, by itself with `.facing`, `.axis`, `attach` and `front`) |
 | `HITBOX`, `OUTLINE` | `[[f32;6]]` | the boxes | `.hitbox`, `.outline` |
 | `SIGNAL` | `SignalDesc` | none | set by the `signal_*` presets |
 | `LIQUID_WALLS` | `u8` | sides the hitbox covers | `.liquid_walls` |

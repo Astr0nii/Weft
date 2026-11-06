@@ -31,6 +31,38 @@ impl ModelBox {
     pub fn whole(textures: [u32; 6]) -> ModelBox {
         ModelBox { min: [0.0; 3], max: [1.0; 3], textures, uv: [weft_abi::UV_FROM_BOX; 6], turn: [0; 6], tilt: weft_abi::BoxTilt::NONE }
     }
+
+    /// Turned with its block (`abi::Turn`), pictures and all: a face taking its picture from where
+    /// the box is takes it from where it was written.
+    pub fn turned(&self, t: weft_abi::Turn) -> ModelBox {
+        let (min, max) = t.bounds(self.min, self.max, 1.0);
+        let uv = std::array::from_fn(|f| match self.uv[f] {
+            uv if uv == weft_abi::UV_FROM_BOX => weft_abi::box_face_uv(f, self.min.map(|v| v * 16.0), self.max.map(|v| v * 16.0)),
+            uv => uv,
+        });
+        let (textures, uv, turn) = (turned_faces(t, self.textures), turned_faces(t, uv), turned_pictures(t, self.turn));
+        let tilt =
+            weft_abi::BoxTilt { origin: t.point(self.tilt.origin, 1.0), axis: t.vector_f(self.tilt.axis), degrees: self.tilt.degrees };
+        ModelBox { min, max, textures, uv, turn, tilt }
+    }
+}
+
+/// Values by a block's own face, on the faces they become turned by `t`.
+pub fn turned_faces<A: Copy>(t: weft_abi::Turn, v: [A; 6]) -> [A; 6] {
+    let mut out = v;
+    for (f, x) in v.into_iter().enumerate() {
+        out[t.face(f)] = x;
+    }
+    out
+}
+
+/// Quarter turns of its faces' pictures, on the faces they become, with what the turn adds.
+pub fn turned_pictures(t: weft_abi::Turn, turns: [u8; 6]) -> [u8; 6] {
+    let mut out = [0; 6];
+    for (f, n) in turns.into_iter().enumerate() {
+        out[t.face(f)] = (n + t.picture(f)) % 4;
+    }
+    out
 }
 
 /// What a state is to redstone (`abi::SignalDesc`, worked out for quick reading).
@@ -55,6 +87,8 @@ pub struct Signal {
 
 pub struct StateInfo {
     pub block: u32,
+    /// How its model is turned (`abi::comp::block::TURN`): all below is already turned so.
+    pub turn: weft_abi::Turn,
     /// An `on_sides` block's sides it lies on, a bit per face.
     pub sides: u8,
     pub flags: u32,
@@ -925,6 +959,28 @@ impl Content {
 
     pub fn block_of(&self, state: u32) -> &BlockDef {
         &self.blocks[self.states[state as usize].block as usize]
+    }
+
+    /// `state` turned by `t` along with the world around it: the state of its block turned so,
+    /// the rest of its properties kept as far as they can be; itself where its block can't turn
+    /// that way.
+    pub fn turned_state(&self, state: u32, t: weft_abi::Turn) -> u32 {
+        let s = &self.states[state as usize];
+        let (want, sides) = (s.turn.then(t), t.faces(s.sides));
+        if want == s.turn && sides == s.sides {
+            return state;
+        }
+        let def = self.block_of(state);
+        let differ = |c: u32| {
+            def.prop_values(c - def.first_state)
+                .zip(def.prop_values(state - def.first_state))
+                .filter(|(a, b)| a.1 != b.1)
+                .count()
+        };
+        (def.first_state..def.first_state + def.states)
+            .filter(|&c| self.states[c as usize].turn == want && self.states[c as usize].sides == sides)
+            .min_by_key(|&c| differ(c))
+            .unwrap_or(state)
     }
 
     /// Whether a block in `state` has growth steps ahead of it: (mean ticks, light needed).
@@ -2266,7 +2322,7 @@ fn flatten_components(states: &mut [StateInfo], item_defs: &mut [ItemDef], compo
             s.tint = t as u8;
         }
         if let Some(f) = get(st, abi::comp::TINT_FACES) {
-            s.tint_faces = f[0];
+            s.tint_faces = s.turn.faces(f[0]);
         }
         if let Some(to) = u32_of(st, abi::comp::SPREADS_TO) {
             let secs = f32_of(st, abi::comp::SPREAD_TIME).unwrap_or(765.0);
@@ -2298,7 +2354,7 @@ fn flatten_components(states: &mut [StateInfo], item_defs: &mut [ItemDef], compo
             .map(|f| f[0])
             .filter(|&f| f < 6)
         {
-            s.support = Some((face, u32_of(st, abi::comp::SUPPORT)));
+            s.support = Some((s.turn.face(face as usize) as u8, u32_of(st, abi::comp::SUPPORT)));
             s.support_near = u32_of(st, abi::comp::SUPPORT_NEAR);
         }
     }

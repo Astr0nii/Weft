@@ -341,7 +341,7 @@ fn init(r: &mut Registry) {
     // May face up, north or east only: three states, not six.
     r.block(&VENT)
         .facing(Facings::only(&[Dir::Up, Dir::North, Dir::East]), Toward::Player)
-        .states(|p, s| s.front_faces(p.facing(), "vent_side", "vent_side", "vent_front"))
+        .states(|_, s| s.front_faces("vent_side", "vent_side", "vent_front"))
         .hardness(2.0)
         .mined_by("pickaxe", tool_tier::HAND)
         .tab(&BASE_BUILDING);

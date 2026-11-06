@@ -10,7 +10,7 @@ mod component;
 pub mod riding;
 pub mod shape;
 pub mod shapes;
-pub mod signal;
+
 pub use weft_noise as noise;
 mod command;
 pub mod comps;
@@ -37,7 +37,7 @@ pub use config::*;
 pub use content::*;
 pub use effects::*;
 pub use extend::*;
-pub use facing::{Dir, Facings, Toward};
+pub use facing::{Dir, Facings, Orientation, Toward};
 pub use game::*;
 pub use riding::{Exit, RiderRules, Seat, Steering, steer};
 pub use shape::{EntityFilter, Fill, Shape};

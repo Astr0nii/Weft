@@ -521,6 +521,7 @@ pub mod block {
     pub static MODEL: Component<u32, Block> = Component::named(b::MODEL);
     pub static TEXTURES: Component<[String; 6], Block> = Component::named(b::TEXTURES);
     pub static TURNS: Component<[u8; 6], Block> = Component::named(b::TURNS);
+    pub static TURN: Component<u8, Block> = Component::named(b::TURN);
     pub static BOXES: Component<Vec<abi::ModelBox>, Block> = Component::named(b::BOXES);
     pub static HITBOX: Component<Vec<[f32; 6]>, Block> = Component::named(b::HITBOX);
     pub static OUTLINE: Component<Vec<[f32; 6]>, Block> = Component::named(b::OUTLINE);
