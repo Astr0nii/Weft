@@ -509,7 +509,6 @@ pub fn register(r: &mut Registry) {
     r.edit_pattern::<kind::Block>("#tillable").on_use(till_soil);
 }
 
-
 fn till_soil(u: &mut Use) -> bool {
     let (w, pos, player) = (u.world(), u.pos(), u.player());
     let held = w.inventory(player).get(w.selected_slot(player));
@@ -520,7 +519,6 @@ fn till_soil(u: &mut Use) -> bool {
     }
     false
 }
-
 
 pub use weft_sdk::shapes::{TORCH_FACINGS, stick_faces, torch_state};
 
