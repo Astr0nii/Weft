@@ -137,7 +137,7 @@ impl ConfigBuilder<'_> {
             .set(&c::DEFAULT, default)
             .set(&c::RANGE, [min, max])
     }
-    /// Values the slider snaps to.
+    /// Values the slider snaps to, and how far the arrow keys move it (`int` has 1).
     pub fn step(self, step: f64) -> Self {
         self.set(&c::STEP, step)
     }

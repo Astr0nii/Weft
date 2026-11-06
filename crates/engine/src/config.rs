@@ -374,9 +374,9 @@ pub fn engine_configs(keys: &[(String, String)]) -> Vec<RawEntry> {
         number("core:gui_scale", ck::INT, 0.0, 0.0, 16.0, 1.0),
         number("core:view_distance", ck::INT, 12.0, 2.0, 64.0, 1.0),
         // Distant terrain beyond the view (`client::lod`), in cubes; 0 off.
-        number("core:lod_distance", ck::INT, 256.0, 0.0, 2048.0, 1.0),
+        number("core:lod_distance", ck::INT, 256.0, 0.0, 2048.0, 16.0),
         // Blocks clouds float above where their dimension puts them.
-        number("core:cloud_height", ck::INT, 0.0, 0.0, 512.0, 1.0),
+        number("core:cloud_height", ck::INT, 0.0, 0.0, 512.0, 16.0),
         // Vanilla's: in GUI pixels, and percent of the dark behind the text.
         number("core:chat_width", ck::INT, 320.0, 40.0, 1000.0, 1.0),
         number("core:chat_height", ck::INT, 180.0, 20.0, 1000.0, 1.0),
