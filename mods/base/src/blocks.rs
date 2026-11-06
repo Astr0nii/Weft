@@ -524,8 +524,6 @@ fn till_soil(u: &mut Use) -> bool {
 
 pub use weft_sdk::shapes::{TORCH_FACINGS, stick_faces, torch_state};
 
-
-
 /// Sugar cane and cacti grow a block on top, up to three high.
 fn grow_column(e: &mut BlockEvent, me: &'static Block) {
     let w = e.world();
