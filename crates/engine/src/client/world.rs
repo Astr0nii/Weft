@@ -995,7 +995,7 @@ fn neighborhood(around: &[Option<Arc<Cube>>; 27], hidden: u32, filler: u32, pos:
                     if face && hidden & (1 << (cy * 9 + cz * 3 + cx)) != 0 {
                         let pi = pidx(x, y, z);
                         states[pi] = filler;
-                        light[pi] = 0;
+                        light[pi] = super::mesher::ABSENT;
                     }
                     continue;
                 };
@@ -1117,7 +1117,9 @@ mod tests {
                             let i = crate::world::cube::index((x & 15) as usize, (y & 15) as usize, (z & 15) as usize);
                             (cube.get(i), cube.light(i))
                         }
-                        None if [c(x), c(y), c(z)].iter().filter(|&&v| v != 1).count() == 1 && hidden & (1 << k) != 0 => (9, 0),
+                        None if [c(x), c(y), c(z)].iter().filter(|&&v| v != 1).count() == 1 && hidden & (1 << k) != 0 => {
+                            (9, crate::client::mesher::ABSENT)
+                        }
                         None => (AIR, 15),
                     };
                     assert_eq!((n.states[pidx(x, y, z)], n.light[pidx(x, y, z)]), (s, l), "at {x} {y} {z}");

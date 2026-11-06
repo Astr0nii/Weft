@@ -26,6 +26,7 @@ pub const CELLS: i32 = 32;
 /// Columns a tile is made from: its cells and one around them (for the walls at its edges).
 pub const SAMPLES: usize = crate::gpu_layout::terrain::lod::SAMPLES as usize;
 const SIDE: i32 = crate::gpu_layout::terrain::lod::SIDE as i32;
+const GRID: usize = (CELLS + 2) as usize;
 /// Words per tile coming back from the GPU.
 pub const LOD_WORDS_PER_TILE: usize = SAMPLES * 2;
 pub const MAX_LEVEL: u32 = 5;
@@ -115,22 +116,23 @@ pub fn made(job: LodJob, mut words: Vec<u32>) {
 }
 
 /// A record of `world.wgsl`'s `vs_lod`: the `dir` face of a box at (x, y, z) in the tile, size
-/// (sx, sy, sz) blocks, drawn in the average color of texture `tex` (its smallest mip), tinted
-/// for `biome` when `tint`.
-fn quad(dir: u32, x: i32, y: i32, z: i32, size: (i32, i32, i32), tex: u32, tint: u32, biome: u32) -> [u32; 4] {
-    crate::gpu_layout::lod_record(dir, [x, y, z], [size.0, size.1, size.2], tex, tint, biome)
+/// (sx, sy, sz) blocks, drawn with texture `tex`, tinted for `biome` when `tint`, corners in `ao`.
+fn quad(dir: u32, x: i32, y: i32, z: i32, size: (i32, i32, i32), tex: u32, tint: u32, biome: u32, ao: u32) -> [u32; 4] {
+    let mut r = crate::gpu_layout::lod_record(dir, [x, y, z], [size.0, size.1, size.2], tex, tint, biome);
+    r[3] |= (ao & 0xFF) << 24;
+    r
 }
 
 fn corner_y(words: &[u32], gi: i32, gj: i32) -> i32 {
-    let gi = gi.clamp(0, CELLS);
-    let gj = gj.clamp(0, CELLS);
+    let gi = gi.clamp(-1, CELLS);
+    let gj = gj.clamp(-1, CELLS);
     let k = ((gj + 1) * SIDE + gi + 1) as usize * 2;
     (words[k] & 0xFFFF) as u16 as i16 as i32
 }
 
 fn sample_y(words: &[u32], gx: f32, gz: f32) -> i32 {
-    let i0 = gx.floor().clamp(0.0, (CELLS - 1) as f32) as i32;
-    let j0 = gz.floor().clamp(0.0, (CELLS - 1) as f32) as i32;
+    let i0 = gx.floor().clamp(-1.0, (CELLS - 1) as f32) as i32;
+    let j0 = gz.floor().clamp(-1.0, (CELLS - 1) as f32) as i32;
     let fx = gx - i0 as f32;
     let fz = gz - j0 as f32;
     let h = |x: i32, z: i32| corner_y(words, x, z) as f32;
@@ -138,9 +140,8 @@ fn sample_y(words: &[u32], gx: f32, gz: f32) -> i32 {
     (x(j0) * (1.0 - fz) + x(j0 + 1) * fz).round() as i32
 }
 
-/// The tile's top faces (runs along x merged) and the walls down to lower neighbors: the top
-/// block's top color for its own height (a grass side averages to the dirt under its rim, and
-/// every slope came out striped brown), then the block under it for the rest.
+/// The tile's top faces and the walls down to lower neighbors: the top block for its own
+/// height, then the block under it for the rest.
 pub fn mesh(c: &Content, key: TileKey, words: &[u32]) -> (Vec<[u32; 4]>, (i32, i32)) {
     let s = 1 << key.level;
     let at = |i: i32, j: i32| {
@@ -148,51 +149,37 @@ pub fn mesh(c: &Content, key: TileKey, words: &[u32]) -> (Vec<[u32; 4]>, (i32, i
         let (a, b) = (words[k], words[k + 1]);
         (a >> 16, b & 0xFFFF, b >> 16)
     };
-    let mut h = [[0i32; CELLS as usize]; CELLS as usize];
-    for j in 0..CELLS {
-        for i in 0..CELLS {
-            h[i as usize][j as usize] = sample_y(words, i as f32 + 0.5, j as f32 + 0.5);
-        }
-    }
-    let y_at = |i: i32, j: i32| h[i as usize][j as usize];
+    let h = height_grid(words);
     let looks = super::looks::current();
+    let ctm = super::ctm::current();
     let face_of = |state: u32, dir: usize| {
         let info = &c.states[state as usize];
-        // No overlays out there.
-        let tint = if crate::content::face_paint(info, dir, false).base_tinted { info.tint as u32 } else { 0 };
-        (looks.drawn(state, info).textures[dir] & face::TEX_MASK, tint)
+        let tex = looks.drawn(state, info).textures[dir] & face::TEX_MASK;
+        let paint = crate::content::face_paint(info, dir, ctm.has_overlay(tex));
+        let tint = if paint.base_tinted || paint.overlay_tinted { info.tint as u32 } else { 0 };
+        (tex, tint)
     };
     let mut out = Vec::new();
     let (mut lo, mut hi) = (i32::MAX, i32::MIN);
     for j in 0..CELLS {
-        let mut i = 0;
-        while i < CELLS {
-            let y = y_at(i, j);
+        for i in 0..CELLS {
+            let y = column(&h, i, j);
             let (top, biome, _) = at(i, j);
-            let mut end = i + 1;
-            while end < CELLS && y_at(end, j) == y && at(end, j).0 == top && at(end, j).1 == biome {
-                end += 1;
-            }
             let (tex, tint) = face_of(top, 3);
-            out.push(quad(3, i * s, y, j * s, ((end - i) * s, 1, s), tex, tint, biome));
+            out.push(quad(3, i * s, y, j * s, (s, 1, s), tex, tint, biome, ao_bits(&h, i, j, 3, y)));
             (lo, hi) = (lo.min(y), hi.max(y + 1));
-            i = end;
         }
     }
     for j in 0..CELLS {
         for i in 0..CELLS {
             let (top, biome, under) = at(i, j);
-            let y = y_at(i, j);
+            let y = column(&h, i, j);
             for (dir, (di, dj)) in [(0usize, (-1, 0)), (1, (1, 0)), (4, (0, -1)), (5, (0, 1))] {
                 // At the tile's edge the tile beside may be of another level, its ground not
                 // where this one's sample says: the wall goes on down below it (a skirt), or
                 // the sky shows through the crack.
                 let (ni, nj) = (i + di, j + dj);
-                let ny = if (-1..=CELLS).contains(&ni) && (-1..=CELLS).contains(&nj) {
-                    sample_y(words, ni as f32 + 0.5, nj as f32 + 0.5)
-                } else {
-                    y.min(y - 1) - 2 * s
-                };
+                let ny = if (-1..=CELLS).contains(&ni) && (-1..=CELLS).contains(&nj) { column(&h, ni, nj) } else { y.min(y - 1) - 2 * s };
                 // Past a neighbor as high, real cubes may stand in for it lower than its sample
                 // says (it is interpolated): a skirt down below that, or the sky shows through
                 // between them.
@@ -201,16 +188,81 @@ pub fn mesh(c: &Content, key: TileKey, words: &[u32]) -> (Vec<[u32; 4]>, (i32, i
                 }
                 let skirt = ny.min(y - 1) - s - 2;
                 if ny < y {
-                    let (tex, tint) = face_of(top, 3);
-                    out.push(quad(dir as u32, i * s, y, j * s, (s, 1, s), tex, tint, biome));
+                    let (tex, tint) = face_of(top, dir);
+                    out.push(quad(dir as u32, i * s, y, j * s, (s, 1, s), tex, tint, biome, ao_bits(&h, i, j, dir, y)));
                 }
                 let (tex, tint) = face_of(under, dir);
-                out.push(quad(dir as u32, i * s, skirt + 1, j * s, (s, y - 1 - skirt, s), tex, tint, biome));
+                let top_y = if ny < y { y - 1 } else { y };
+                let ao = ao_span(&h, i, j, dir, top_y, (ny + 1).min(top_y));
+                out.push(quad(dir as u32, i * s, skirt + 1, j * s, (s, y - 1 - skirt, s), tex, tint, biome, ao));
                 lo = lo.min(skirt + 1);
             }
         }
     }
     (out, (lo, hi))
+}
+
+fn height_grid(words: &[u32]) -> [[i32; GRID]; GRID] {
+    let mut h = [[0i32; GRID]; GRID];
+    for j in -1..=CELLS {
+        for i in -1..=CELLS {
+            let y = if i < CELLS && j < CELLS {
+                sample_y(words, i as f32 + 0.5, j as f32 + 0.5)
+            } else {
+                let (i0, fx) = if i < CELLS { (i, 0.5) } else { (CELLS, 0.0) };
+                let (j0, fz) = if j < CELLS { (j, 0.5) } else { (CELLS, 0.0) };
+                let s = |x: i32, z: i32| corner_y(words, x, z) as f32;
+                let a = s(i0, j0) * (1.0 - fx) + s((i0 + 1).min(CELLS), j0) * fx;
+                let b = s(i0, (j0 + 1).min(CELLS)) * (1.0 - fx) + s((i0 + 1).min(CELLS), (j0 + 1).min(CELLS)) * fx;
+                (a * (1.0 - fz) + b * fz).round() as i32
+            };
+            h[(i + 1) as usize][(j + 1) as usize] = y;
+        }
+    }
+    h
+}
+
+fn column(h: &[[i32; GRID]; GRID], i: i32, j: i32) -> i32 {
+    h[(i + 1).clamp(0, CELLS + 1) as usize][(j + 1).clamp(0, CELLS + 1) as usize]
+}
+
+fn ao_bits(h: &[[i32; GRID]; GRID], i: i32, j: i32, dir: usize, by: i32) -> u32 {
+    let nrm = weft_abi::FACE_DIRS[dir];
+    let axis = dir / 2;
+    let (ta, tb) = match axis {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    };
+    let base = [i + nrm[0], by + nrm[1], j + nrm[2]];
+    let mut bits = 0u32;
+    for (k, corner) in crate::gpu_layout::CORNERS[dir].iter().enumerate() {
+        let sa = corner[ta] * 2 - 1;
+        let sb = corner[tb] * 2 - 1;
+        let mut p1 = base;
+        let mut p2 = base;
+        let mut p3 = base;
+        p1[ta] += sa;
+        p2[tb] += sb;
+        p3[ta] += sa;
+        p3[tb] += sb;
+        let solid = |p: [i32; 3]| column(h, p[0], p[2]) >= p[1];
+        let (s1, s2, s3) = (solid(p1), solid(p2), solid(p3));
+        let ao = if s1 && s2 { 0 } else { 3 - u32::from(s1) - u32::from(s2) - u32::from(s3) };
+        bits |= ao << (2 * k);
+    }
+    bits
+}
+
+fn ao_span(h: &[[i32; GRID]; GRID], i: i32, j: i32, dir: usize, top: i32, bot: i32) -> u32 {
+    let hi = ao_bits(h, i, j, dir, top);
+    let lo = ao_bits(h, i, j, dir, bot);
+    let mut bits = 0u32;
+    for (k, c) in crate::gpu_layout::CORNERS[dir].iter().enumerate() {
+        let src = if c[1] == 1 { hi } else { lo };
+        bits |= ((src >> (2 * k)) & 3) << (2 * k);
+    }
+    bits
 }
 
 /// The client's distant terrain: which tiles to show, asking for missing ones, taking made ones.
