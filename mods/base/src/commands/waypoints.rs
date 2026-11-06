@@ -22,7 +22,7 @@ pub fn register(r: &mut Registry) {
         Waypoints { homes: [empty; MAX_HOMES], death: empty },
         component_flags::SAVE | component_flags::KEEP_ON_RESPAWN,
     );
-    r.attach(&PLAYER, &HOMES);
+    r.edit(&PLAYER).attach(&HOMES);
 
     r.on_event(&actions::DIE, |b| {
         let w = b.world();

@@ -105,6 +105,7 @@ pub mod kind {
         Template = crate::abi::entry_kind::TEMPLATE,
         SpawnRule = crate::abi::entry_kind::SPAWN,
         Terrain = crate::abi::entry_kind::TERRAIN,
+        BoneMotion = crate::abi::entry_kind::BONE_MOTION,
         GizmoGroup,
         Shader,
         Question,
@@ -1042,11 +1043,11 @@ pub(crate) fn raw_values(list: &[Pending], scratch: &mut Vec<Vec<u8>>) -> Vec<ab
         .collect()
 }
 
-/// What `Registry::set_on` applies to; names without a namespace are this mod's.
+/// What `Registry::set_on` applies to; names without a namespace are this mod's. An entity kind's
+/// components are set by editing it, `r.edit(&PLAYER).set(..)`.
 pub enum Target<'a> {
     /// The block and item of that name; `name[prop=value]` only the block's states with that value.
     Name(&'a str),
-    Entity(&'a str),
     Biome(&'a str),
     Dimension(&'a str),
 }
@@ -1079,12 +1080,6 @@ impl kind::Builds for kind::Block {
         b
     }
 }
-impl kind::Builds for kind::Entity {
-    type Builder<'a> = crate::game::EntityBuilder<'a>;
-    fn builder<'a>(r: &'a mut Registry, h: &'static crate::EntityKind) -> crate::game::EntityBuilder<'a> {
-        r.entity(h)
-    }
-}
 
 impl Registry {
     pub fn namespace(&self) -> &'static str {
@@ -1106,7 +1101,8 @@ impl Registry {
     /// this one's; the rest stays. Blocks (`r.edit(&base::CACTUS).light(5)`: without
     /// `.states(...)` its states stay, the components set go on top), items, biomes, dimensions,
     /// menus, ores (`IRON_ORE.ore()`), liquids (`WATER.liquid()`), terrains
-    /// (`OVERWORLD.terrain()`), loot tables (`ZOMBIE.loot()`) and the rest by their handles.
+    /// (`OVERWORLD.terrain()`), loot tables (`ZOMBIE.loot()`), entity kinds
+    /// (`r.edit(&PLAYER).attach(&MANA)`) and the rest by their handles.
     pub fn edit<K: kind::Edits>(&mut self, handle: &'static Handle<K>) -> K::Builder<'_> {
         K::edit(self, handle)
     }
@@ -1254,32 +1250,48 @@ impl Registry {
 
     /// What an item or an entity of any mod looks like. From a file, `models/<file>.geo.json` with
     /// its `textures/<file>.png`, shown everywhere the item shows, or from code:
-    /// `r.set_model("base:apple", "foodmod:apple")`, `r.set_model("core:player", biped(false))`.
+    /// `r.set_model("base:apple", "foodmod:apple")`, `r.set_model(&PLAYER, humanoid(false))`.
     /// A whole tag at once takes `{name}`; items without a file stay as they were:
-    /// `r.set_model("#food", "foodmod:food/{name}")`.
+    /// `r.set_model("#food", "foodmod:food/{name}")`. An entity kind's is an edit of it.
     pub fn set_model(&mut self, what: impl ModelTarget, model: impl ModelSource) {
-        model.set_on(self, what.target());
+        model.set_on(self, &what);
     }
 
-    /// The clips of an item or an entity of any mod: `r.set_animations("core:player",
-    /// "mymod:player")` plays `animations/player.animation.json` of `mymod` on every player.
+    /// The clips of an item or an entity of any mod: `r.set_animations(&PLAYER, "mymod:player")`
+    /// plays `animations/player.animation.json` of `mymod` on every player.
     pub fn set_animations(&mut self, what: impl ModelTarget, file: &str) {
         let file = crate::asset("", file);
-        self.set_text_on(what.target(), &c::ANIMATIONS, &file);
+        self.model_text(&what, &c::ANIMATIONS, &file);
+    }
+
+    /// A text component of what `set_model` reaches: an edit of an entity kind, or blocks and items.
+    fn model_text(&mut self, what: &dyn ModelTarget, comp: &Component<c::Text>, text: &str) {
+        if what.is_entity() {
+            drop(self.edit_entity(what.model_name()).set_text(comp, text));
+        } else {
+            self.set_text_on(Target::Name(what.model_name()), comp, text);
+        }
     }
 
     /// Every entity of `kind` has `model` on its bone `bone`, drawn in that model's own pixels, with
     /// the same origin as the kind's. What plays on the entity plays on it too, by the names of
     /// clips and bones: `r.bone_model(&PLAYER, "tailmod:tail", "body")`.
-    pub fn bone_model(&mut self, kind: impl ModelTarget, model: &str, bone: &str) {
-        let (model, kind) = (crate::asset("", model), qualify(self.ns, kind.target().name()));
-        unsafe { (host().reg_bone_model)(self.raw, Str::new(&kind), Str::new(&model), Str::new(bone)) }
+    pub fn bone_model(&mut self, kind: &crate::EntityKind, model: &str, bone: &str) {
+        let model = crate::asset("", model);
+        let place = abi::BoneModel { model, bone: bone.to_string() };
+        drop(
+            self.edit_entity(kind.name())
+                .push(&crate::comps::entity::BONE_MODELS, place),
+        );
     }
 
     /// `bone` of `model` moves by itself. A bone called `hanging` or `hanging_<anything>` does without this.
     pub fn bone_motion(&mut self, model: &str, bone: &str, motion: BoneMotion) {
-        let model = crate::asset("", model);
-        unsafe { (host().reg_bone_motion)(self.raw, Str::new(&model), Str::new(bone), motion.gravity, motion.spring, motion.drag) }
+        use crate::comps::bone_motion as m;
+        let name = format!("{}/{bone}", crate::asset("", model));
+        let mut e = crate::entry::Entry::new(abi::entry_kind::BONE_MOTION, name);
+        e.ops = vec![m::GRAVITY.raw_value(&motion.gravity), m::SPRING.raw_value(&motion.spring), m::DRAG.raw_value(&motion.drag)];
+        e.send(self);
     }
 
     /// A text component on entries of any mod.
@@ -1296,7 +1308,6 @@ impl Registry {
         use abi::set_target as st;
         let (kind, name) = match target {
             Target::Name(n) => (st::NAME, qualify(self.ns, n)),
-            Target::Entity(n) => (st::ENTITY, qualify(self.ns, n)),
             Target::Biome(n) => (st::BIOME, qualify(self.ns, n)),
             Target::Dimension(n) => (st::DIMENSION, qualify(self.ns, n)),
         };
@@ -1328,50 +1339,51 @@ impl BoneMotion {
 
 /// What `Registry::set_model` takes: a file's name, or a model made in code.
 pub trait ModelSource {
-    fn set_on(self, r: &mut Registry, what: Target<'_>);
+    fn set_on(self, r: &mut Registry, what: &dyn ModelTarget);
 }
 
 impl ModelSource for &str {
-    fn set_on(self, r: &mut Registry, what: Target<'_>) {
+    fn set_on(self, r: &mut Registry, what: &dyn ModelTarget) {
         let file = crate::asset("", self);
-        r.set_text_on(what, &c::MODEL, &file);
+        r.model_text(what, &c::MODEL, &file);
     }
 }
 
-/// What has a model: a name or `#tag` as text, or the handle of an item, a block or an entity.
+/// What has a model: a name or `#tag` of blocks and items as text, or the handle of an item, a
+/// block or an entity kind.
 pub trait ModelTarget {
-    fn target(&self) -> Target<'_>;
+    #[doc(hidden)]
+    fn model_name(&self) -> &str;
+    #[doc(hidden)]
+    fn is_entity(&self) -> bool {
+        false
+    }
 }
 
 impl ModelTarget for &str {
-    fn target(&self) -> Target<'_> {
-        Target::Name(self)
+    fn model_name(&self) -> &str {
+        self
     }
 }
 
 impl ModelTarget for &Item {
-    fn target(&self) -> Target<'_> {
-        Target::Name(self.name())
+    fn model_name(&self) -> &str {
+        self.name()
     }
 }
 
 impl ModelTarget for &Block {
-    fn target(&self) -> Target<'_> {
-        Target::Name(self.name())
+    fn model_name(&self) -> &str {
+        self.name()
     }
 }
 
 impl ModelTarget for &crate::EntityKind {
-    fn target(&self) -> Target<'_> {
-        Target::Entity(self.name())
+    fn model_name(&self) -> &str {
+        self.name()
     }
-}
-
-impl Target<'_> {
-    pub(crate) fn name(&self) -> &str {
-        match self {
-            Target::Name(n) | Target::Entity(n) | Target::Biome(n) | Target::Dimension(n) => n,
-        }
+    fn is_entity(&self) -> bool {
+        true
     }
 }
 
@@ -2666,8 +2678,14 @@ impl Drop for BlockBuilder<'_> {
         }
         unsafe { (host().reg_block)(self.reg.raw, &desc) };
         if let Some(f) = self.entity.take() {
+            // Its block entity is edited or replaced with it.
+            let mode = match (self.replace, self.replacing) {
+                (true, _) => abi::entry_mode::EDIT,
+                (_, true) => abi::entry_mode::REPLACE,
+                _ => abi::entry_mode::NEW,
+            };
             self.reg
-                .block_entity(Block::generated(self.name.clone()), f);
+                .block_entity(Block::generated(self.name.clone()), mode, f);
         }
 
         let texture = std::mem::take(&mut self.item_texture);

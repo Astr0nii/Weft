@@ -63,7 +63,7 @@ r.entity(&ORB).texture("orb").model(Model::from(vec![
 ```
 
 ## Model from Blockbench
-Make the model as a Bedrock Entity, export it as `<name>.geo.json` and drop it into `assets/models/`. A file named like the entity is picked up on its own (`idol.geo.json` for `idol`), and `r.set_model("idol", "other_name")` points at another one. Either way the file replaces any model written in code. Animations work the same way, from `animations/<name>.animation.json`.
+Make the model as a Bedrock Entity, export it as `<name>.geo.json` and drop it into `assets/models/`. A file named like the entity is picked up on its own (`idol.geo.json` for `idol`), and `r.set_model(&IDOL, "other_name")` points at another one. Either way the file replaces any model written in code. Animations work the same way, from `animations/<name>.animation.json`.
 
 The engine reads bones with their `pivot`, `parent` and resting `rotation`, boxes with `origin` (absolute, the way Blockbench writes it), `size`, `uv` (a pair or per face), `mirror` and `inflate`, and `poly_mesh` bones, triangles and quads alike, with normalized uvs if you use them. The geometry's `texture_width` and `texture_height` override the numbers you gave to `Model::uv`, so the skin can be any size.
 
@@ -86,7 +86,7 @@ A role tells the engine what a bone is: which stock clips move it, what armor co
 | a bone under `head` | stays with the head, and is gone with it from your own eyes |
 | anything else | stays still |
 
-The player's model is `humanoid(false)` set by base (`r.set_model("core:player", ..)` sets any kind's model, the engine's included); its sneaking pose comes from `body`, `head` and the arms and legs.
+The player's model is `humanoid(false)` set by base (`r.set_model(&PLAYER, ..)` sets any kind's model, the engine's included); its sneaking pose comes from `body`, `head` and the arms and legs.
 
 ## Animations
 One file holds any number of animations, and an animation's name is whatever follows the last dot, so `animation.idol.bow` is just `bow`:
@@ -142,7 +142,7 @@ The file is found by the entity's name, or by `.animations("name")` when it is c
 ### Animations for something that already exists
 A file can also be attached to an entity that belongs to someone else, the player for example:
 ```rust
-r.set_animations("core:player", "mymod:player");
+r.set_animations(&PLAYER, "mymod:player");
 ```
 After that the player has the animations of your `animations/player.animation.json`, and `action_play(player, "wave", false)` plays one.
 

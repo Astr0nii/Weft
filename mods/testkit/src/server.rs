@@ -31,6 +31,7 @@ static DRILL: Block = Block::named("drill");
 static EDITED: Item = Item::named("edited");
 static EDITED_BIOME: Biome = Biome::named("edited");
 static EDITED_LOOT: LootTable = LootTable::named("edited");
+static EDITED_KIND: EntityKind = EntityKind::named("edited");
 static WARMTH: Component<f32> = Component::named("testkit:warmth");
 static STORM: Weather = Weather::named("storm");
 static GRIT: Attribute = Attribute::named("grit");
@@ -97,7 +98,7 @@ pub fn register(r: &mut Registry) {
     r.entity_component(&MARK, 0, component_flags::SYNC_WATCHERS);
     // A suit to swim in lava with (`swimming`).
     r.set_text_on(Target::Name("base:diamond_chestplate"), &SWIMS_IN, "#lava");
-    r.attach(&PIG, &MARK);
+    r.edit(&PIG).attach(&MARK);
     r.storage(&STASH, 54);
     // What an edit sets wins, the rest stays; the testmod ones load after or before this mod
     // depending on order, which edits don't care about.
@@ -109,6 +110,15 @@ pub fn register(r: &mut Registry) {
     r.edit(&STORM).lightning().untag(abi::comp::weather::DRY);
     r.attribute(&GRIT, 1.0, 0.0, 10.0);
     r.edit(&GRIT).set(&comps::attribute::DEFAULT, 4.0);
+    r.entity(&EDITED_KIND)
+        .size(0.6, 1.8)
+        .eye_height(1.0)
+        .set(&WARMTH, 1.0)
+        .no_egg();
+    r.edit(&EDITED_KIND)
+        .size(0.9, 2.5)
+        .set(&WARMTH, 3.0)
+        .attach(&MARK);
     r.edit(TIN_ORE.ore()).veins(7);
     r.shapeless(&base_api::SMELTING, "base:stick", 1, &["edited"], 200)
         .named("smelt_edited");
@@ -147,7 +157,7 @@ pub fn register(r: &mut Registry) {
         });
     });
     r.edit(&GEAR).group("extra", Slots::row(2));
-    r.attach_storage(&PLAYER, &STASH);
+    r.edit(&PLAYER).attach_storage(&STASH);
     r.config(&COUNT_MARKS).bool(false).world();
     // While the rule is on, every marked pig counts up once a tick.
     r.system(&MARK, |b| {
@@ -749,8 +759,11 @@ const OPS: &[(&str, &str, Run)] = &[
         drops.sort();
         let oil = Tag::named("testkit:edited");
         let probe = |dx: i32| name_of(ek::BIOME, MARS.column(w.seed(), PROBE[0] + dx, PROBE[1]).biome) == "base:plains";
+        let size = w
+            .kind_size(EDITED_KIND.name())
+            .map_or([0.0; 3], |s| [s.width, s.height, s.eye]);
         Ok(format!(
-            "{} {} {} {} {} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {} {} {} {:?} {}",
             MAX_STACK.on_item(i).unwrap_or(0),
             ATTACK_DAMAGE.on_item(i).unwrap_or(0.0),
             WARMTH.on_biome(b).unwrap_or(0.0),
@@ -763,6 +776,8 @@ const OPS: &[(&str, &str, Run)] = &[
             oil.on_block(OIL.id()) && oil.on_item(Item::generated(OIL.name().to_string()).id()),
             (probe(0), probe(4)) == (true, false),
             oil.on_dimension(MARS.id()),
+            size,
+            WARMTH.on_entity(EDITED_KIND.id()).unwrap_or(0.0),
         ))
     }),
     ("look", "", |w, _, player, _| {

@@ -1186,13 +1186,7 @@ impl Running {
                     g.client.entity_effects(&a);
                 }
             }
-            for &(owner, cb) in c
-                .game
-                .client_entity_watchers
-                .get(&a.kind)
-                .into_iter()
-                .flatten()
-            {
+            for &(owner, cb) in &c.game.entities[a.kind as usize].frames {
                 let mut v = self.frame_view();
                 a.client = v.raw();
                 crate::host::invoke(owner, cb, &mut a);

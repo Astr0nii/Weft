@@ -300,7 +300,7 @@ pub fn register(r: &mut Registry) {
 
     // Vanilla numbers: water steps every 5 ticks and reaches 7 blocks, lava every 30 and 3.
     // Players swim in water; what they wear may add more (`SWIMS_IN` on an item).
-    r.set_text_on(Target::Entity("core:player"), &SWIMS_IN, "#water");
+    r.edit(&PLAYER).set_text(&SWIMS_IN, "#water");
     r.liquid(&WATER)
         .block(|b| {
             b.tint(&tints::WATER)

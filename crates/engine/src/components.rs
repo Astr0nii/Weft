@@ -98,7 +98,6 @@ pub enum Target {
     Name(String),
     /// Blocks and items with a tag matching the pattern (`*` matches any text).
     Tagged(String),
-    Entity(String),
     Biome(String),
     Dimension(String),
 }

@@ -99,9 +99,13 @@ pub struct EntityKind {
     pub texture: String,
     pub texture_size: [u32; 2],
     pub parts: Vec<Part>,
+    /// Model files on its bones: (model, bone).
+    pub bone_models: Vec<(String, String)>,
     /// The kind's own callbacks (empty or one).
     pub on_tick: Vec<(ModId, Callback)>,
     pub on_interact: Vec<(ModId, Callback)>,
+    /// Every frame on the client for each one, in order (`comp::entity::FRAMES`).
+    pub frames: Vec<(ModId, Callback)>,
     /// Components attached at spawn.
     pub components: Vec<u32>,
     /// Starting values of attached components for this kind, where they differ from the
@@ -119,7 +123,7 @@ pub struct EntityKind {
     /// A moving structure: its template (`Content::templates`), by name until the freeze.
     pub template_name: String,
     pub template: Option<u32>,
-    /// Where riders sit (`abi::SeatDesc`).
+    /// Where riders sit (`abi::Seat`).
     pub seats: Vec<Seat>,
     /// What the keys of a player steering it do (`abi::SteerArgs`), and where riders get off
     /// when a seat asks it (`abi::DismountArgs`).
@@ -367,11 +371,7 @@ pub struct Game {
     pub energy: u32,
     /// `Host::reg_client_frame`, in mod order.
     pub client_frames: Vec<(ModId, Callback)>,
-    /// Every frame on the client, for entities of a kind, as many as mods add.
-    pub client_entity_watchers: FxHashMap<u32, Vec<(ModId, Callback)>>,
-    /// (entity kind's name, model, bone it goes on).
-    pub attached_models: Vec<(String, String, String)>,
-    /// (model, bone, how it moves).
+    /// (model, bone, how it moves), from `entry_kind::BONE_MOTION`.
     pub bone_motions: Vec<(String, String, crate::model::BoneMotion)>,
     /// Who says which model a stack of an item shows as (`comp::item::CONDITION`).
     pub item_model_for_stack: FxHashMap<u32, (ModId, Callback)>,
@@ -611,14 +611,6 @@ pub struct PacketDef {
 
 // ---------------------------------------------------------------- raw registration
 
-pub struct RawEntity {
-    pub name: String,
-    pub cell: usize,
-    pub desc: EntityKind,
-    pub replace: bool,
-    pub components: Vec<RawValue>,
-}
-
 /// A component's declaration (`abi::comp::component`): its schema, and what entities and stacks
 /// carrying it hold.
 pub struct ComponentDecl {
@@ -726,8 +718,6 @@ pub struct RawRecipe {
 pub struct RawGame {
     /// `Host::reg_entry`, in the order the mod made them.
     pub entries: Vec<crate::entries::RawEntry>,
-    pub entities: Vec<RawEntity>,
-    /// (owner, kind, hook, callback); hook 0 is the tick.
     /// (owner, callback) run once per tick in every region (`Host::reg_world_tick`).
     pub world_ticks: Vec<(ModId, Callback)>,
     pub chat_format: Option<(ModId, Callback)>,
@@ -736,18 +726,9 @@ pub struct RawGame {
     /// Commands that run on the client: (owner, name, usage, callback).
     pub client_commands: Vec<(ModId, String, String, Callback)>,
     pub command_extensions: Vec<(ModId, CommandExtension)>,
-    pub block_entities: Vec<(String, String)>,
-    /// (kind, component, its starting value on that kind).
-    pub attach: Vec<(String, String, Option<Vec<u8>>)>,
     /// Components and tags set on other mods' entries.
     pub sets: Vec<RawSet>,
     pub client_frames: Vec<(ModId, Callback)>,
-    /// (owner, entity kind, callback).
-    pub client_entity_watchers: Vec<(ModId, String, Callback)>,
-    /// (entity kind, parts, skin size) set with `Host::reg_entity_model`.
-    pub entity_models: Vec<(String, Vec<Part>, [u32; 2])>,
-    pub attached_models: Vec<(String, String, String)>,
-    pub bone_motions: Vec<(String, String, crate::model::BoneMotion)>,
     /// (owner, name, side, callback).
     /// (owner, channel, schema, side, callback).
     pub packets: Vec<(ModId, String, String, u32, Callback)>,
@@ -1405,93 +1386,76 @@ fn bake_spawn(e: &Entry, g: &Game, c: &Components, dim_names: &FxHashMap<String,
     })
 }
 
-fn opt(c: Callback) -> Option<Callback> {
-    c.is_some().then_some(c)
-}
-
-/// # Safety
-/// The parts' pointers must be valid for this call.
-pub(crate) unsafe fn copy_parts(list: abi::Slice<abi::ModelPart>) -> Vec<Part> {
-    unsafe {
-        let mut parts = Vec::new();
-        list.as_slice().iter().copied().for_each(|p| {
-            let mut cuboids = Vec::new();
-            p.cuboids.as_slice().iter().copied().for_each(|c| {
-                cuboids.push(Cuboid {
-                    origin: c.origin,
-                    size: c.extent,
-                    uv: c.uv,
-                    inflate: c.inflate,
-                    mirror: c.mirror != 0,
-                    faces: (c.per_face != 0).then_some(c.faces),
-                })
-            });
-            let n = parts.len() as i32;
-            let parent = (p.parent >= 0 && p.parent < n).then_some(p.parent as u32);
-            parts.push(Part {
-                name: p.name.as_str().to_string(),
-                parent,
-                pivot: p.pivot,
-                role: 0,
-                rest: p.rest,
-                cuboids,
-                mesh: p.mesh.as_slice().to_vec(),
-            });
-        });
-        crate::model::assign_roles(&mut parts);
-        parts
+/// A model's parts as the engine draws them.
+fn parts_of(list: Vec<abi::ModelPart>) -> Vec<Part> {
+    let mut parts = Vec::new();
+    for p in list {
+        let cuboids = p
+            .cuboids
+            .iter()
+            .map(|c| Cuboid {
+                origin: c.origin,
+                size: c.extent,
+                uv: c.uv,
+                inflate: c.inflate,
+                mirror: c.mirror != 0,
+                faces: (c.per_face != 0).then_some(c.faces),
+            })
+            .collect();
+        let n = parts.len() as i32;
+        let parent = (p.parent >= 0 && p.parent < n).then_some(p.parent as u32);
+        parts.push(Part { name: p.name, parent, pivot: p.pivot, role: 0, rest: p.rest, cuboids, mesh: p.mesh });
     }
+    crate::model::assign_roles(&mut parts);
+    parts
 }
 
-pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity {
-    unsafe {
-        let parts = copy_parts(d.parts);
-        let one = |c: Callback| opt(c).map(|c| vec![(owner, c)]).unwrap_or_default();
-        RawEntity {
-            name: d.name.as_str().to_string(),
-            cell: d.cell as usize,
-            replace: false,
-            components: RawValue::list(d.components),
-            desc: EntityKind {
-                name: d.name.as_str().to_string(),
-                owner,
-                width: d.width,
-                height: d.height,
-                eye: d.eye,
-                speed: d.speed,
-                flags: d.flags,
-                category: 0,
-                category_name: d.category_name.as_str().to_string(),
-                texture: d.texture.as_str().to_string(),
-                texture_size: d.texture_size,
-                parts,
-                on_tick: one(d.on_tick),
-                on_interact: one(d.on_interact),
-                components: Vec::new(),
-                values: Vec::new(),
-                slots: 0,
-                worn: 0..0,
-                sounds: [u32::MAX; 4],
-                carry_height: d.carry_height,
-                template_name: d.template.as_str().to_string(),
-                template: None,
-                seats: d
-                    .seats
-                    .as_slice()
-                    .iter()
-                    .take(255)
-                    .map(|s| Seat {
-                        pos: crate::world::dvec(s.pos),
-                        steers: s.steers != 0,
-                        exit: s.exit,
-                        exit_at: crate::world::dvec(s.exit_at),
-                    })
-                    .collect(),
-                steer: opt(d.steer).map(|c| (owner, c)),
-                dismount: opt(d.dismount).map(|c| (owner, c)),
-                ride_camera: d.ride_camera,
-            },
-        }
+/// An entity kind as its entry says (`abi::comp::entity`).
+fn bake_entity(e: &Entry) -> EntityKind {
+    use abi::comp::entity as k;
+    let size = e.or(k::SIZE, abi::BodySize { width: 0.6, height: 1.8 });
+    let (ns, path) = e.name.split_once(':').unwrap_or(("core", &e.name));
+    let text = |name: &str| e.text(name).unwrap_or_default().to_string();
+    EntityKind {
+        name: e.name.clone(),
+        owner: e.owner,
+        width: size.width,
+        height: size.height,
+        eye: e.or(k::EYE, size.height * EYE),
+        speed: e.or(k::SPEED, 3.0),
+        flags: (ef::FALL_DAMAGE | ef::PUSHABLE | e.flags(&k::FLAGS)) & !e.flags(&k::OFF),
+        category: 0,
+        category_name: text(k::CATEGORY),
+        texture: e
+            .text(k::TEXTURE)
+            .map_or_else(|| format!("{ns}:entity/{path}"), str::to_string),
+        texture_size: e.or(k::TEXTURE_SIZE, [64, 32]),
+        parts: parts_of(e.or(k::PARTS, Vec::new())),
+        bone_models: e
+            .or::<Vec<abi::BoneModel>>(k::BONE_MODELS, Vec::new())
+            .into_iter()
+            .map(|b| (b.model, b.bone))
+            .collect(),
+        on_tick: e.callback(k::ON_TICK).into_iter().collect(),
+        on_interact: e.callback(k::ON_INTERACT).into_iter().collect(),
+        frames: e.callbacks(k::FRAMES),
+        components: Vec::new(),
+        values: Vec::new(),
+        slots: 0,
+        worn: 0..0,
+        sounds: [u32::MAX; 4],
+        carry_height: e.or(k::CARRY_HEIGHT, 0.0),
+        template_name: text(k::TEMPLATE),
+        template: None,
+        seats: e
+            .or::<Vec<abi::Seat>>(k::SEATS, Vec::new())
+            .into_iter()
+            .take(255)
+            .map(|s| Seat { pos: crate::world::dvec(s.pos), steers: s.steers, exit: s.exit, exit_at: crate::world::dvec(s.exit_at) })
+            .collect(),
+        steer: e.callback(k::STEER),
+        dismount: e.callback(k::DISMOUNT),
+        ride_camera: e.or(k::RIDE_CAMERA, f32::NAN),
     }
 }
 
@@ -1543,11 +1507,39 @@ fn bake_menu(e: &Entry) -> MenuDef {
     }
 }
 
-/// The engine's player kind as an entry, for what of it is one already (`abi::comp::entity`).
-fn engine_player() -> RawEntry {
+/// The engine's own entity kinds.
+fn engine_entities() -> Vec<RawEntry> {
+    use abi::comp::entity as k;
     let group = |name: &str, rows, flags| abi::SlotGroupDef { name: name.into(), cols: 9, rows, flags, ..Default::default() };
     let groups = vec![group("hotbar", 1, weft_abi::slot_flags::HOTBAR), group("main", 3, 0)];
-    RawEntry::engine(ek::ENTITY, PLAYER).set(abi::comp::entity::SLOT_GROUPS, groups)
+    let kind = |name: &str, width: f32, height: f32| {
+        RawEntry::engine(ek::ENTITY, name)
+            .set(k::SIZE, abi::BodySize { width, height })
+            .set(k::SPEED, 4.3f32)
+    };
+    // No skin, no falls, not pushed around.
+    let thing = |name: &str, width: f32, height: f32| {
+        kind(name, width, height)
+            .set(k::TEXTURE, String::new())
+            .tag(k::INVULNERABLE)
+            .tag(k::NO_FALL_DAMAGE)
+            .tag(k::UNPUSHABLE)
+    };
+    vec![
+        kind(PLAYER, 0.6, 1.8)
+            .set(k::EYE, 1.62f32)
+            .set(k::SLOT_GROUPS, groups),
+        thing(ITEM, 0.25, 0.25),
+        thing(FALLING, 0.98, 1.0).tag(k::SOLID),
+        thing(MOVING, 1.0, 1.0)
+            .tag(k::SOLID)
+            .tag(k::KINEMATIC)
+            .set(k::CARRY_HEIGHT, 1.0f32),
+        thing(PLATFORM, 1.0, 1.0)
+            .tag(k::SOLID)
+            .tag(k::KINEMATIC)
+            .set(k::CARRY_HEIGHT, 3.0f32),
+    ]
 }
 
 /// A recipe from its entry; the components that aren't `recipe.*` are values it carries.
@@ -1614,37 +1606,6 @@ pub mod entity_sound {
     pub const STEP: usize = 3;
 }
 
-fn builtin(name: &str, width: f32, height: f32, flags: u32) -> EntityKind {
-    EntityKind {
-        name: name.into(),
-        owner: ENGINE,
-        width,
-        height,
-        eye: height * EYE,
-        speed: 4.3,
-        flags,
-        category: 0,
-        category_name: String::new(),
-        texture: String::new(),
-        texture_size: [64, 32],
-        parts: Vec::new(),
-        on_tick: Vec::new(),
-        on_interact: Vec::new(),
-        components: Vec::new(),
-        values: Vec::new(),
-        slots: 0,
-        worn: 0..0,
-        sounds: [u32::MAX; 4],
-        carry_height: 0.0,
-        template_name: String::new(),
-        template: None,
-        seats: Vec::new(),
-        steer: None,
-        dismount: None,
-        ride_camera: f32::NAN,
-    }
-}
-
 /// Entity component with attribute modifiers.
 pub const MODIFIERS: &str = "core:modifiers";
 /// Timers set with `Host::entity_after`, saved with their entity.
@@ -1673,82 +1634,52 @@ pub const RIDING: &str = "core:riding";
 pub const SIMULATED: &str = "core:simulated";
 
 /// Entity kinds, frozen before components (which attach to them).
+#[derive(Default)]
 pub struct Entities {
     pub kinds: Vec<EntityKind>,
     pub names: FxHashMap<String, u32>,
     /// Each kind's own components and its owner.
     pub values: Vec<(ModId, Vec<RawValue>)>,
+    /// What each kind's entities carry, by component name until those are known.
+    pub attach: Vec<Vec<abi::Attach>>,
+    /// (block, kind) of block entities.
+    pub blocks: Vec<(String, u32)>,
+    /// The player's inventory groups, and the menu its key opens.
+    pub player_groups: Vec<abi::SlotGroupDef>,
+    pub player_menu: Option<String>,
 }
 
-pub fn freeze_entities(raws: &mut [RawGame], errors: &mut Vec<String>) -> Entities {
-    let mut entities: Vec<RawEntity> = raws
-        .iter_mut()
-        .flat_map(|r| std::mem::take(&mut r.entities))
-        .collect();
-    let models: Vec<(String, Vec<Part>, [u32; 2])> = raws
-        .iter_mut()
-        .flat_map(|r| std::mem::take(&mut r.entity_models))
-        .collect();
-    let mut player = builtin(PLAYER, 0.6, 1.8, ef::FALL_DAMAGE | ef::PUSHABLE);
-    player.eye = 1.62;
-    player.texture = "core:entity/player".into();
-    entities.push(RawEntity { name: PLAYER.into(), cell: 0, desc: player, replace: false, components: Vec::new() });
-    entities.push(RawEntity {
-        name: ITEM.into(),
-        cell: 0,
-        desc: builtin(ITEM, 0.25, 0.25, ef::INVULNERABLE),
-        replace: false,
-        components: Vec::new(),
-    });
-    entities.push(RawEntity {
-        name: FALLING.into(),
-        cell: 0,
-        desc: builtin(FALLING, 0.98, 1.0, ef::INVULNERABLE | ef::SOLID),
-        replace: false,
-        components: Vec::new(),
-    });
-    let mut moving = builtin(MOVING, 1.0, 1.0, ef::INVULNERABLE | ef::SOLID | ef::KINEMATIC);
-    moving.carry_height = 1.0;
-    entities.push(RawEntity { name: MOVING.into(), cell: 0, desc: moving, replace: false, components: Vec::new() });
-    let mut platform = builtin(PLATFORM, 1.0, 1.0, ef::INVULNERABLE | ef::SOLID | ef::KINEMATIC);
-    platform.carry_height = 3.0;
-    entities.push(RawEntity { name: PLATFORM.into(), cell: 0, desc: platform, replace: false, components: Vec::new() });
-    entities.sort_by(|a, b| a.name.cmp(&b.name).then(a.replace.cmp(&b.replace)));
-    let mut kept: Vec<RawEntity> = Vec::with_capacity(entities.len());
-    let mut replaced_cells: Vec<(usize, String)> = Vec::new();
-    for e in entities {
-        match kept.last() {
-            Some(prev) if prev.name == e.name && e.replace => {
-                // The replaced kind's handle must resolve to the replacement too.
-                if prev.cell != 0 {
-                    replaced_cells.push((prev.cell, e.name.clone()));
-                }
-                kept.pop();
-                kept.push(e);
+/// Every entity kind, the engine's among the mods', ids by name.
+pub fn freeze_entities(raw: Vec<RawEntry>, mod_name: &dyn Fn(ModId) -> String, errors: &mut Vec<String>) -> Entities {
+    use abi::comp::entity as k;
+    let mut all = engine_entities();
+    all.extend(raw);
+    let mut out = Entities::default();
+    let (made, names) = bake_by(
+        all,
+        ek::ENTITY,
+        mod_name,
+        errors,
+        |e| e.name.clone(),
+        |e, _| {
+            if e.name == PLAYER {
+                out.player_groups = e.or(k::SLOT_GROUPS, Vec::new());
+                out.player_menu = e.text(k::INVENTORY_MENU).map(str::to_string);
             }
-            Some(prev) if prev.name == e.name => {
-                errors.push(format!("entity {} registered twice", e.name));
-            }
-            _ => kept.push(e),
-        }
+            let block = e
+                .text(k::BLOCK)
+                .filter(|b| !b.is_empty())
+                .map(str::to_string);
+            (bake_entity(e), (e.owner, e.components("entity.")), e.or(k::ATTACH, Vec::new()), block)
+        },
+    );
+    for (i, (kind, values, attach, block)) in made.into_iter().enumerate() {
+        out.kinds.push(kind);
+        out.values.push(values);
+        out.attach.push(attach);
+        out.blocks.extend(block.map(|b| (b, i as u32)));
     }
-    let mut out = Entities { kinds: Vec::new(), names: FxHashMap::default(), values: Vec::new() };
-    for (i, e) in kept.into_iter().enumerate() {
-        write_cell(e.cell, i as u32);
-        out.names.insert(e.name.clone(), i as u32);
-        out.values.push((e.desc.owner, e.components));
-        out.kinds.push(e.desc);
-    }
-    for (cell, name) in replaced_cells {
-        write_cell(cell, out.names[&name]);
-    }
-    // Models set on kinds of others (the player's from base), in load order: the last wins.
-    for (kind, parts, uv) in models {
-        match out.names.get(&kind) {
-            Some(&k) => (out.kinds[k as usize].parts, out.kinds[k as usize].texture_size) = (parts, uv),
-            None => errors.push(format!("model for unknown entity {kind}")),
-        }
-    }
+    out.names = names;
     out
 }
 
@@ -1768,8 +1699,6 @@ pub fn freeze(
 ) -> Game {
     let mut g = Game::default();
     let mut world_ticks = Vec::new();
-    let mut block_entities = Vec::new();
-    let mut attach: Vec<(String, String, Option<Vec<u8>>)> = Vec::new();
     let mut packets: Vec<(ModId, String, String, u32, Callback)> = Vec::new();
     let mut event_handlers: Vec<(ModId, String, String, Callback)> = Vec::new();
     let mut systems: Vec<(ModId, String, String, Callback)> = Vec::new();
@@ -1779,12 +1708,7 @@ pub fn freeze(
         .iter_mut()
         .flat_map(|r| std::mem::take(&mut r.entries))
         .collect();
-    let mut entity_watchers: Vec<(ModId, String, Callback)> = Vec::new();
-    let mut attached_models: Vec<(String, String, String)> = Vec::new();
     for r in raws {
-        entity_watchers.extend(r.client_entity_watchers);
-        attached_models.extend(r.attached_models);
-        g.bone_motions.extend(r.bone_motions);
         g.client_frames.extend(r.client_frames);
         packets.extend(r.packets);
         event_handlers.extend(r.event_handlers);
@@ -1793,8 +1717,6 @@ pub fn freeze(
         modifiers.extend(r.modifiers);
         world_ticks.extend(r.world_ticks);
         g.chat_format = r.chat_format.or(g.chat_format);
-        block_entities.extend(r.block_entities);
-        attach.extend(r.attach);
     }
     g.entities = entities.kinds;
     g.entity_names = entities.names;
@@ -1804,24 +1726,6 @@ pub fn freeze(
     g.moving_kind = g.entity_names[MOVING];
     g.platform_kind = g.entity_names[PLATFORM];
     g.client_frames.sort_by_key(|h| order(h.0));
-    entity_watchers.sort_by_key(|t| order(t.0));
-    for (owner, kind, cb) in entity_watchers {
-        match g.entity_names.get(&kind) {
-            Some(&k) => g
-                .client_entity_watchers
-                .entry(k)
-                .or_default()
-                .push((owner, cb)),
-            None => errors.push(format!("on_entity_frame for unknown entity {kind}")),
-        }
-    }
-    for a in attached_models {
-        if g.entity_names.contains_key(&a.0) {
-            g.attached_models.push(a);
-        } else {
-            errors.push(format!("model {} attached to unknown entity {}", a.1, a.0));
-        }
-    }
     let configs = take_kind(&mut entries, ek::CONFIG);
     let builtin = |kind: u32| -> Vec<RawEntry> {
         match kind {
@@ -1837,7 +1741,6 @@ pub fn freeze(
             ek::PRECIPITATION => engine_precipitations(),
             ek::TEXT_PLACE => crate::hud::engine_places(),
             ek::WEATHER => engine_weathers(),
-            ek::ENTITY => vec![engine_player()],
             ek::ENTITY_EFFECT => abi::entity_effect::NAMES
                 .iter()
                 .map(|n| RawEntry::engine(kind, n))
@@ -1871,6 +1774,12 @@ pub fn freeze(
         let (owner, cb) = e.callback(h::CALL).unwrap_or((e.owner, Callback::NONE));
         let anchor = e.text(h::ANCHOR).unwrap_or_default().to_string();
         HudElement { name: e.name.clone(), title: crate::ui::text::dotted(&e.name), anchor, order: e.or(h::ORDER, 0), owner, cb }
+    });
+    (g.bone_motions, _) = bake(kind(ek::BONE_MOTION), ek::BONE_MOTION, mod_name, errors, |e, _| {
+        use abi::comp::bone_motion as b;
+        let (model, bone) = e.name.rsplit_once('/').unwrap_or((&e.name, ""));
+        let motion = crate::model::BoneMotion { gravity: e.or(b::GRAVITY, 0.0), spring: e.or(b::SPRING, 0.0), drag: e.or(b::DRAG, 0.0) };
+        (model.to_string(), bone.to_string(), motion)
     });
     (g.screen_parts, _) = bake(kind(ek::SCREEN_PART), ek::SCREEN_PART, mod_name, errors, |e, _| {
         use abi::comp::screen_part as s;
@@ -2150,22 +2059,25 @@ pub fn freeze(
             None => errors.push(format!("system over {name}: no entity component of that name")),
         }
     }
-    for (kind, comp, value) in attach {
-        match (g.entity_names.get(&kind), g.component_names.get(&comp)) {
-            (Some(&k), Some(&cid)) => {
-                let size = g.components[cid as usize].size as usize;
-                match value {
-                    Some(v) if v.len() != size => {
-                        errors.push(format!("attaching {comp} to {kind}: a value of {} bytes, the component has {size}", v.len()))
-                    }
-                    Some(v) => g.entities[k as usize]
-                        .values
-                        .push((cid, v.into_boxed_slice())),
-                    None => {}
-                }
-                g.entities[k as usize].components.push(cid);
+    for (k, list) in entities.attach.into_iter().enumerate() {
+        let kind = &mut g.entities[k];
+        for a in list {
+            let Some(&cid) = g.component_names.get(&a.name) else {
+                errors.push(format!("entity {}: attaches {}, which is no entity component", kind.name, a.name));
+                continue;
+            };
+            let size = g.components[cid as usize].size as usize;
+            if !a.start.is_empty() && a.start.len() != size {
+                errors.push(format!("entity {}: attaches {} with {} bytes, the component has {size}", kind.name, a.name, a.start.len()));
+                continue;
             }
-            _ => errors.push(format!("cannot attach {comp} to {kind}: unknown entity or component")),
+            // Attached again: the last start stands.
+            kind.values.retain(|v| v.0 != cid);
+            kind.components.retain(|&c| c != cid);
+            if !a.start.is_empty() {
+                kind.values.push((cid, a.start.into_boxed_slice()));
+            }
+            kind.components.push(cid);
         }
     }
 
@@ -2173,12 +2085,8 @@ pub fn freeze(
     g.world_ticks = world_ticks;
 
     (g.menus, g.menu_names) = bake_by(kind(ek::MENU), ek::MENU, mod_name, errors, |e| e.name.clone(), |e, _| bake_menu(e));
-    // Of the player's kind, only its inventory and menu are an entry yet.
-    let mut player = crate::entries::fold(ek::NAMES[ek::ENTITY as usize], kind(ek::ENTITY), mod_name, errors);
-    player.apply_patterns(errors);
-    let player = player.entries.iter().find(|e| e.name == PLAYER);
-    let groups: Vec<(String, u32, u32, u32)> = player
-        .map_or(Vec::new(), |p| p.or::<Vec<abi::SlotGroupDef>>(abi::comp::entity::SLOT_GROUPS, Vec::new()))
+    let groups: Vec<(String, u32, u32, u32)> = entities
+        .player_groups
         .into_iter()
         .map(|g| (g.name, g.cols.max(1), g.rows.max(1), g.flags))
         .collect();
@@ -2189,7 +2097,6 @@ pub fn freeze(
         errors.push("player inventory: no group is the hotbar (`.hotbar()`)".into());
     }
     g.player_layout = PlayerLayout::new(&groups, equipment);
-    let player_menu = player.and_then(|p| p.text(abi::comp::entity::INVENTORY_MENU));
     // Their `inventory` component is the slots each one carries; kinds that wear get the
     // equipment slots after those, the player where its layout says.
     let inventory = c.id(weft_abi::comp::INVENTORY);
@@ -2240,22 +2147,25 @@ pub fn freeze(
             );
         }
     }
-    g.player_menu = player_menu.and_then(|n| {
-        let m = g.menu_names.get(n).copied();
+    g.player_menu = entities.player_menu.and_then(|n| {
+        let m = g.menu_names.get(&n).copied();
         if m.is_none() {
             errors.push(format!("player menu {n} is not registered"));
         }
         m
     });
 
-    for (block, entity) in block_entities {
-        match (block_names.get(&block), g.entity_names.get(&entity)) {
-            (Some(&b), Some(&e)) => {
-                if g.block_entities.insert(b, e).is_some_and(|old| old != e) {
+    for (block, kind) in entities.blocks {
+        match block_names.get(&block) {
+            Some(&b) => {
+                if g.block_entities
+                    .insert(b, kind)
+                    .is_some_and(|old| old != kind)
+                {
                     errors.push(format!("block {block} has two block entities"));
                 }
             }
-            _ => errors.push(format!("block entity {block} -> {entity}: unknown block or entity")),
+            None => errors.push(format!("entity {}: the block entity of unknown block {block}", g.entities[kind as usize].name)),
         }
     }
 

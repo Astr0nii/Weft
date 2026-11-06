@@ -973,13 +973,14 @@ impl Models {
                 log::warn!("item {}: no entity has a bone {bone} to wear {file} on", c.items[i].name);
             }
         }
-        for (entity, file, bone) in &c.game.attached_models {
-            let Some(&holder) = c.game.entity_names.get(entity) else { continue };
-            let Some(kind) = self.load_file(assets, file, None) else {
-                log::error!("attached to {entity}: no model {file}");
-                continue;
-            };
-            self.carry(holder, kind, bone);
+        for (holder, entity) in c.game.entities.iter().enumerate() {
+            for (file, bone) in &entity.bone_models {
+                let Some(kind) = self.load_file(assets, file, None) else {
+                    log::error!("on a bone of {}: no model {file}", entity.name);
+                    continue;
+                };
+                self.carry(holder as u32, kind, bone);
+            }
         }
         for (file, bone, _) in &c.game.bone_motions {
             if self.files.get(file).is_none_or(Option::is_none) && !c.game.entity_names.contains_key(file) {
@@ -1089,10 +1090,7 @@ impl Models {
         said.truncate(AVATAR_BONES);
         let m = &mut self.kinds[k as usize];
         m.live = live_bones("of an avatar", &m.parts, &said);
-        for (entity, file, bone) in &c.game.attached_models {
-            if c.game.entity_names.get(entity) != Some(&c.game.player_kind) {
-                continue;
-            }
+        for (file, bone) in &c.game.entities[c.game.player_kind as usize].bone_models {
             if let (Some(Some(model)), true) =
                 (self.files.get(file).copied(), model::bone_named(&self.kinds[k as usize].parts, bone).is_some())
             {

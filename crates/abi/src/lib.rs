@@ -103,6 +103,10 @@ pub struct Vec3 {
     pub z: f64,
 }
 
+impl Schema for Vec3 {
+    const SCHEMA: &'static str = "{x:f64,y:f64,z:f64}";
+}
+
 impl Vec3 {
     pub const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
 
@@ -422,10 +426,12 @@ pub mod entry_kind {
     pub const SPAWN: u32 = 41;
     /// A dimension's terrain, named like the dimension.
     pub const TERRAIN: u32 = 42;
+    /// How a bone of a model file moves by itself, named `<model>/<bone>`.
+    pub const BONE_MOTION: u32 = 43;
     /// Kinds that carry components (block to dimension).
     pub const COUNT: usize = 5;
     /// Each kind's name for messages, by value.
-    pub const NAMES: [&str; 43] = [
+    pub const NAMES: [&str; 44] = [
         "block",
         "item",
         "entity",
@@ -469,6 +475,7 @@ pub mod entry_kind {
         "template",
         "spawn rule",
         "terrain",
+        "bone motion",
     ];
 }
 
@@ -478,7 +485,6 @@ pub mod set_target {
     pub const NAME: u32 = 0;
     /// Blocks and items carrying a tag; `*` in it matches any text (`ingots/*`).
     pub const TAGGED: u32 = 1;
-    pub const ENTITY: u32 = 2;
     pub const BIOME: u32 = 3;
     pub const DIMENSION: u32 = 4;
 }
@@ -1149,14 +1155,90 @@ pub mod comp {
         ];
     }
 
-    /// The player's, on its kind (`core:player`, an `entry_kind::ENTITY` entry the engine makes):
+    /// An entity kind's (`entry_kind::ENTITY`, the engine's `core:player`, `core:item`,
+    /// `core:falling_block`, `core:moving_blocks` and `core:platform` too). Its body: `SIZE`
+    /// (`BodySize`, 0.6 by 1.8), `EYE` (`f32` blocks, `EYE_SHARE` of its height), `SPEED` (`f32`,
+    /// walking, blocks per second, 3), `CARRY_HEIGHT` (`f32`, a solid body's riders up to this high
+    /// above it move with it, their own motion relative to it; 0: only standing on it),
+    /// `RIDE_CAMERA` (`f32`, blocks the third-person camera goes further back riding it; none: by
+    /// its size). Its look: `TEXTURE` (`str`, `<ns>:entity/<name>`), `TEXTURE_SIZE` (`[u32;2]`,
+    /// width and height of the skin `PARTS` are laid out on, 64 by 32), `PARTS` (`[ModelPart]`, its
+    /// model in code; a model file, `comp::MODEL`, wins), `BONE_MODELS` (`[BoneModel]`). `CATEGORY`
+    /// (`str`, an `entry_kind::ENTITY_CATEGORY`, `core:misc`), `TEMPLATE` (`str`, a moving body built
+    /// of that template, block (0, 0, 0) centered on it), `BLOCK` (`str`, the block it is the block
+    /// entity of: made with its inventory where one is placed, gone with its items when it breaks),
+    /// `SEATS` (`[Seat]`, where riders sit, numbered in this order), `ATTACH` (`[Attach]`, components
+    /// each one carries). Callbacks: `ON_TICK` (`EntityTickArgs`, every one of the kind in one
+    /// call), `ON_INTERACT` (`EntityEventArgs`, a player right clicked one and
+    /// `action::INTERACT_ENTITY` let it; `handled = 1` swings the player's arm), `STEER`
+    /// (`SteerArgs`, on the client of the player in a seat that steers: what the mount does with
+    /// its keys; without it that player rides along), `DISMOUNT` (`DismountArgs`, where a rider of a
+    /// `seat_exit::CALL` seat gets off), `FRAMES` (`[callback]`, `ClientEntityArgs` every frame on
+    /// the client for each one, in this order, each as the mod that added it). The player's own:
     /// `SLOT_GROUPS` (`[SlotGroupDef]`, its inventory as named groups, one `slot_flags::HOTBAR`;
     /// the engine lays them out, the hotbar first and the equipment slots last; a hotbar of 9 and 27
-    /// more), `INVENTORY_MENU` (`str`, the menu its inventory key opens). Edits in load order, so the
-    /// mod loaded last wins.
+    /// more), `INVENTORY_MENU` (`str`, the menu its inventory key opens). Tags: one per
+    /// `entity_flags` (`FLAGS`), and `NO_FALL_DAMAGE`, `UNPUSHABLE` turning off what every kind
+    /// does (`OFF`). Any other component goes in its component table.
     pub mod entity {
+        use crate::entity_flags as f;
+        pub const SIZE: &str = "entity.size";
+        pub const EYE: &str = "entity.eye";
+        pub const SPEED: &str = "entity.speed";
+        pub const CARRY_HEIGHT: &str = "entity.carry_height";
+        pub const RIDE_CAMERA: &str = "entity.ride_camera";
+        pub const TEXTURE: &str = "entity.texture";
+        pub const TEXTURE_SIZE: &str = "entity.texture_size";
+        pub const PARTS: &str = "entity.parts";
+        pub const BONE_MODELS: &str = "entity.bone_models";
+        pub const CATEGORY: &str = "entity.category";
+        pub const TEMPLATE: &str = "entity.template";
+        pub const BLOCK: &str = "entity.block";
+        pub const SEATS: &str = "entity.seats";
+        pub const ATTACH: &str = "entity.attach";
+        pub const ON_TICK: &str = "entity.on_tick";
+        pub const ON_INTERACT: &str = "entity.on_interact";
+        pub const STEER: &str = "entity.steer";
+        pub const DISMOUNT: &str = "entity.dismount";
+        pub const FRAMES: &str = "entity.frames";
         pub const SLOT_GROUPS: &str = "entity.slot_groups";
         pub const INVENTORY_MENU: &str = "entity.inventory_menu";
+        pub const NO_GRAVITY: &str = "entity.no_gravity";
+        pub const INVULNERABLE: &str = "entity.invulnerable";
+        pub const BURNS_IN_SUN: &str = "entity.burns_in_sun";
+        pub const SWIMS: &str = "entity.swims";
+        pub const SOLID: &str = "entity.solid";
+        pub const KINEMATIC: &str = "entity.kinematic";
+        pub const CRUSHES: &str = "entity.crushes";
+        pub const RIDERS_FALL: &str = "entity.riders_fall";
+        pub const WEARS: &str = "entity.wears";
+        pub const OWN_EFFECTS: &str = "entity.own_effects";
+        pub const NO_FALL_DAMAGE: &str = "entity.no_fall_damage";
+        pub const UNPUSHABLE: &str = "entity.unpushable";
+        /// The tags as `entity_flags`.
+        pub const FLAGS: [(&str, u32); 10] = [
+            (NO_GRAVITY, f::NO_GRAVITY),
+            (INVULNERABLE, f::INVULNERABLE),
+            (BURNS_IN_SUN, f::BURNS_IN_SUN),
+            (SWIMS, f::SWIMS),
+            (SOLID, f::SOLID),
+            (KINEMATIC, f::KINEMATIC),
+            (CRUSHES, f::CRUSHES),
+            (RIDERS_FALL, f::RIDERS_FALL),
+            (WEARS, f::WEARS),
+            (OWN_EFFECTS, f::OWN_EFFECTS),
+        ];
+        /// The tags taking away `entity_flags` every kind has.
+        pub const OFF: [(&str, u32); 2] = [(NO_FALL_DAMAGE, f::FALL_DAMAGE), (UNPUSHABLE, f::PUSHABLE)];
+    }
+
+    /// A bone motion's (`entry_kind::BONE_MOTION`): `GRAVITY`, the pull toward hanging straight
+    /// down, `SPRING`, the pull back to where the clips have it, `DRAG`, how fast a swing dies down
+    /// (`f32` each, 0).
+    pub mod bone_motion {
+        pub const GRAVITY: &str = "bone_motion.gravity";
+        pub const SPRING: &str = "bone_motion.spring";
+        pub const DRAG: &str = "bone_motion.drag";
     }
 
     /// A weather's (`entry_kind::WEATHER`). How it looks, each `f32` 0..1 (rain's unless set):
@@ -1933,11 +2015,11 @@ pub mod entity_flags {
     pub const BLOCKED: u32 = 1 << 31;
 }
 
-/// Which body part a model piece is, so the engine can animate it (walk cycle, head look).
-/// Box in model pixels (1/16 block) relative to the part pivot; `uv` is the top-left texel of the
-/// classic box unwrap, or with `per_face` set each face takes its own rectangle.
+/// A box of a model part (`ModelPart`) in model pixels (1/16 block) relative to the part pivot;
+/// `uv` is the top-left texel of the classic box unwrap, or with `per_face` set each face takes
+/// its own rectangle.
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelCuboid {
     pub origin: [f32; 3],
     pub extent: [f32; 3],
@@ -1951,6 +2033,9 @@ pub struct ModelCuboid {
     pub per_face: u32,
 }
 defaults!(ModelCuboid { origin: [0.0; 3], extent: [1.0; 3], uv: [0.0; 2], inflate: 0.0, mirror: 0, faces: [[0.0; 4]; 6], per_face: 0 });
+impl Schema for ModelCuboid {
+    const SCHEMA: &'static str = "{origin:[f32;3],extent:[f32;3],uv:[f32;2],inflate:f32,mirror:u32,faces:[[f32;4];6],per_face:u32}";
+}
 
 /// A corner of a model's free-form triangles (spheres, curved shapes): model pixels like the
 /// pivots, texels.
@@ -1960,85 +2045,62 @@ pub struct MeshVertex {
     pub pos: [f32; 3],
     pub uv: [f32; 2],
 }
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ModelPart {
-    /// Pivot in model pixels, y up from the feet.
-    pub pivot: [f32; 3],
-    pub cuboids: Slice<ModelCuboid>,
-    /// Resting rotation in radians about x, y, z, applied x first; walking and looking add to it.
-    pub rest: [f32; 3],
-    /// Bone name: what keyframe animations address, and what decides how it moves by itself
-    /// (`head` looks, `rightArm`/`leftArm`/`rightLeg`/`leftLeg` swing, `body` leans when
-    /// sneaking, `leg0`..`leg3` of a quadruped, `leg0`..`leg7` of a spider sweep).
-    pub name: Str,
-    /// Index of the part this one hangs from (it moves with it), -1 for none.
-    pub parent: i32,
-    /// Triangles, three corners each, besides the boxes.
-    pub mesh: Slice<MeshVertex>,
-}
-defaults!(ModelPart { pivot: [0.0; 3], cuboids: Slice::EMPTY, rest: [0.0; 3], name: Str::EMPTY, parent: -1, mesh: Slice::EMPTY });
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct EntityDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    pub width: f32,
-    pub height: f32,
-    pub eye: f32,
-    /// Walking speed in blocks per second.
-    pub speed: f32,
-    pub flags: u32,
-    pub texture: Str,
-    pub texture_size: [u32; 2],
-    pub parts: Slice<ModelPart>,
-    /// `EntityTickArgs`: every entity of this kind in one call.
-    pub on_tick: Callback,
-    /// `EntityEventArgs` when a player right clicks one and `action::INTERACT_ENTITY` let it;
-    /// `handled = 1` swings the player's arm.
-    pub on_interact: Callback,
-    /// Non-zero: replaces an entity kind of the same name from a mod this one depends on.
-    pub components: Slice<CompValue>,
-    /// Solid bodies: how far above it a rider may be (jumping) and still move with it, keeping
-    /// its own motion relative to the body; 0 = only while standing on it.
-    pub carry_height: f32,
-    /// A moving body built of this template (`entry_kind::TEMPLATE`), block (0, 0, 0)
-    /// centered on the entity; its box is what the blocks fill.
-    pub template: Str,
-    /// A category by name (`core:misc`, `core:hostile`, `core:passive`, or a mod's
-    /// `entry_kind::ENTITY_CATEGORY`); empty = `core:misc`.
-    pub category_name: Str,
-    /// Where riders sit on it (`Host::entity_mount`), in its own frame turned by its yaw.
-    pub seats: Slice<SeatDesc>,
-    /// `SteerArgs`, on the client of the player in a seat that `steers`: what the mount does
-    /// with that player's keys. Without one a player in that seat rides along, nothing more.
-    pub steer: Callback,
-    /// `DismountArgs`: where a rider gets off when its seat's `exit` doesn't say (`seat_exit::CALL`).
-    pub dismount: Callback,
-    /// Blocks the third-person camera goes further back while riding it; `f32::NAN`: worked
-    /// out from its size.
-    pub ride_camera: f32,
+impl Schema for MeshVertex {
+    const SCHEMA: &'static str = "{pos:[f32;3],uv:[f32;2]}";
 }
 
-/// A place on a mount (`EntityDesc::seats`).
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct SeatDesc {
-    /// Where a rider's feet go, in blocks from the mount's position, turned with it: +Z ahead.
-    pub pos: Vec3,
-    /// Who sits here steers it (a player with their keys and `EntityDesc::steer`, a mob with
-    /// its AI); nobody steering, its own AI moves it.
-    pub steers: u32,
-    /// `seat_exit`: where a rider of this seat gets off.
-    pub exit: u32,
-    /// `seat_exit::OFFSET`: from the mount, turned with it. `NEAREST`: x is how far to look.
-    pub exit_at: Vec3,
+crate::data! {
+    /// A bone of an entity kind's model in code (`comp::entity::PARTS`).
+    pub struct ModelPart {
+        /// What keyframe animations address, and what decides how it moves by itself (`head`
+        /// looks, `rightArm`/`leftArm`/`rightLeg`/`leftLeg` swing, `body` leans when sneaking,
+        /// `leg0`..`leg3` of a quadruped, `leg0`..`leg7` of a spider sweep).
+        pub name: alloc::string::String,
+        /// Index of the part this one hangs from (it moves with it), -1 for none.
+        pub parent: i32,
+        /// Pivot in model pixels, y up from the feet.
+        pub pivot: [f32; 3],
+        /// Resting rotation in radians about x, y, z, applied x first; walking and looking add to it.
+        pub rest: [f32; 3],
+        pub cuboids: alloc::vec::Vec<ModelCuboid>,
+        /// Triangles, three corners each, besides the boxes.
+        pub mesh: alloc::vec::Vec<MeshVertex>,
+    }
 }
-defaults!(SeatDesc { pos: Vec3::ZERO, steers: 0, exit: seat_exit::NEAREST, exit_at: Vec3 { x: 2.0, y: 0.0, z: 0.0 } });
 
-/// Where a rider gets off (`SeatDesc::exit`).
+crate::data! {
+    /// An entity kind's box standing (`comp::entity::SIZE`), in blocks.
+    pub struct BodySize { pub width: f32, pub height: f32 }
+}
+
+crate::data! {
+    /// A model file on a bone of every entity of a kind (`comp::entity::BONE_MODELS`), drawn in its
+    /// own pixels with the same origin as the kind's; what plays on the entity plays on it too.
+    pub struct BoneModel { pub model: alloc::string::String, pub bone: alloc::string::String }
+}
+
+crate::data! {
+    /// A component every entity of a kind carries (`comp::entity::ATTACH`, any mod's or the
+    /// engine's), starting as `start` (the component's size in bytes), empty: its default.
+    pub struct Attach { pub name: alloc::string::String, pub start: alloc::vec::Vec<u8> }
+}
+
+crate::data! {
+    /// A place on a mount (`comp::entity::SEATS`, `Host::entity_mount`).
+    pub struct Seat {
+        /// Where a rider's feet go, in blocks from the mount's position, turned with it: +Z ahead.
+        pub pos: Vec3,
+        /// Who sits here steers it (a player with their keys and the kind's `STEER`, a mob with
+        /// its AI); nobody steering, its own AI moves it.
+        pub steers: bool,
+        /// `seat_exit`: where a rider of this seat gets off.
+        pub exit: u32,
+        /// `seat_exit::OFFSET`: from the mount, turned with it. `NEAREST`: x is how far to look.
+        pub exit_at: Vec3,
+    }
+}
+
+/// Where a rider gets off (`Seat::exit`).
 pub mod seat_exit {
     /// The nearest place it fits beside the mount, within `exit_at.x` blocks; none: where it sat.
     pub const NEAREST: u32 = 0;
@@ -2046,7 +2108,7 @@ pub mod seat_exit {
     pub const OFFSET: u32 = 1;
     /// Right where it sat, in the air if that is where it was.
     pub const STAY: u32 = 2;
-    /// The kind's `EntityDesc::dismount` decides.
+    /// The kind's `comp::entity::DISMOUNT` decides.
     pub const CALL: u32 = 3;
 }
 
@@ -2213,7 +2275,7 @@ pub struct CameraArgs {
     pub eye_yaw: f32,
     pub eye_pitch: f32,
     /// What it rides, 0 for nothing, and how far back third person sits for that: 4 blocks
-    /// and the mount's `EntityDesc::ride_camera`.
+    /// and the mount's `comp::entity::RIDE_CAMERA`.
     pub vehicle: u64,
     pub back: f32,
     /// Seconds since the last frame, and since this mode came on.
@@ -2229,29 +2291,6 @@ pub struct CameraArgs {
 
 /// Eye height as a share of an entity's height unless it says otherwise (vanilla's default).
 pub const EYE_SHARE: f32 = 0.85;
-
-defaults!(EntityDesc {
-    name: Str::EMPTY,
-    cell: core::ptr::null(),
-    width: 0.6,
-    height: 1.8,
-    eye: 1.8 * EYE_SHARE,
-    speed: 3.0,
-    flags: entity_flags::FALL_DAMAGE | entity_flags::PUSHABLE,
-    texture: Str::EMPTY,
-    texture_size: [64, 32],
-    parts: Slice::EMPTY,
-    on_tick: Callback::NONE,
-    on_interact: Callback::NONE,
-    components: Slice::EMPTY,
-    carry_height: 0.0,
-    template: Str::EMPTY,
-    category_name: Str::EMPTY,
-    seats: Slice::EMPTY,
-    steer: Callback::NONE,
-    dismount: Callback::NONE,
-    ride_camera: f32::NAN,
-});
 
 #[repr(C)]
 pub struct EntityTickArgs {
@@ -3068,10 +3107,6 @@ pub struct Host {
     pub log_enabled: unsafe extern "C" fn(me: ModId, level: u32, target: Str) -> u32,
 
     pub reg_block: unsafe extern "C" fn(reg: *mut Registrar, desc: *const BlockDesc),
-    pub reg_entity: unsafe extern "C" fn(reg: *mut Registrar, desc: *const EntityDesc),
-    /// The model (parts on a skin of `uv_width` x `uv_height` texels) of a kind of any mod or the engine's
-    /// (`core:player`); a later mod's wins.
-    pub reg_entity_model: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, parts: Slice<ModelPart>, uv_width: u32, uv_height: u32),
     /// `cb` (`WorldTickArgs`) once per tick in every region of every dimension, for logic that
     /// isn't one entity's or block's (a dimension's loaded parts are regions run in parallel).
     pub reg_world_tick: unsafe extern "C" fn(reg: *mut Registrar, cb: Callback),
@@ -3079,9 +3114,6 @@ pub struct Host {
     /// saved with `entity` until then. One per entity and event: a second call moves it. A
     /// timer of a gone entity never fires.
     pub emit_after: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, ticks: u32, event: u32, data: Slice<u8>),
-    /// Block entity kind created (with the inventory its `inventory` component says) when the block is placed, removed
-    /// (dropping its items) when broken.
-    pub set_block_entity: unsafe extern "C" fn(reg: *mut Registrar, block: Str, entity: Str),
     /// Chat command `/name`, arguments described by `usage` (see the engine's command syntax);
     /// `cb` gets `CommandArgs` with one value per named parameter.
     /// `client` non-zero: it runs on the client that types it, never sent to the server, `cb` getting
@@ -3301,12 +3333,6 @@ pub struct Host {
     // ------------------------------------------------ client side and mod channels
     /// `ClientFrameArgs`, every frame on the client before input is handled; may drive the client.
     pub reg_client_frame: unsafe extern "C" fn(reg: *mut Registrar, cb: Callback),
-    /// Every frame for each entity of `kind`, alongside whatever else runs for it.
-    pub reg_client_entity_frame: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, cb: Callback),
-    /// Every entity of `kind` has `model` on its bone `bone`.
-    pub reg_bone_model: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, model: Str, bone: Str),
-    /// A bone of `model` hangs and swings by itself.
-    pub reg_bone_motion: unsafe extern "C" fn(reg: *mut Registrar, model: Str, bone: Str, gravity: f32, spring: f32, drag: f32),
     /// Moves a bone of what `entity` is or has on, for the next frame: radians about x, y, z, pixels, scale.
     pub client_pose_bone:
         unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, bone: Str, turn: *const [f32; 3], by: *const [f32; 3], scale: *const [f32; 3]),
@@ -3542,9 +3568,6 @@ pub struct Host {
     /// The block at `pos` falls as an entity and is placed again where it lands; returns the
     /// entity (0 if there was no block).
     pub fall_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos) -> u64,
-    /// Gives every entity of `kind` the component `component` (any mod's or the engine's) at
-    /// spawn, starting as `value` (the component's size in bytes), empty: the component's default.
-    pub reg_attach: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, component: Str, value: Slice<u8>),
 
     /// `damage_flags` of a cause, 0 for one that doesn't exist.
     pub damage_cause_flags: unsafe extern "C" fn(cause: u32) -> u32,
@@ -4334,7 +4357,7 @@ pub struct ItemModelArgs {
     pub texture: Str,
 }
 
-/// One entity on the client, for `Host::reg_client_entity_frame`.
+/// One entity on the client, for `comp::entity::FRAMES`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ClientEntityArgs {

@@ -589,7 +589,10 @@ impl Registry {
     /// (wing flaps, sparks, purring), any number of mods on one kind. The engine's steps, idle
     /// noises and death smoke go on unless the kind has `.own_effects()`.
     pub fn client_entity_frame(&mut self, kind: &crate::EntityKind, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
-        unsafe { (host().reg_client_entity_frame)(self.raw, abi_str(kind.name()), entity_callback(f)) }
+        drop(
+            self.edit_entity(kind.name())
+                .push(&crate::comps::entity::FRAMES, entity_callback(f)),
+        );
     }
 
     /// Server side of a channel: `f` gets every value a client sends on it, with who sent it.

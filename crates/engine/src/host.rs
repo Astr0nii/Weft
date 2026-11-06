@@ -18,11 +18,8 @@ pub static HOST: Host = Host {
     log_at,
     log_enabled,
     reg_block,
-    reg_entity,
-    reg_entity_model,
     reg_world_tick,
     emit_after,
-    set_block_entity,
     reg_command,
     reg_set,
     find,
@@ -116,9 +113,6 @@ pub static HOST: Host = Host {
     gizmo,
     gizmo_text,
     reg_client_frame,
-    reg_client_entity_frame,
-    reg_bone_model,
-    reg_bone_motion,
     client_pose_bone: crate::app::api::client_pose_bone,
     client_bone_position: crate::app::api::client_bone_position,
     client_action_current: crate::app::api::client_entity_action,
@@ -208,7 +202,6 @@ pub static HOST: Host = Host {
     world_seed,
     structure_near,
     fall_block,
-    reg_attach,
     damage_cause_flags,
     player_inventory_group,
     set_entity_size,
@@ -1685,24 +1678,6 @@ unsafe extern "C" fn reg_block(r: *mut abi::Registrar, d: *const abi::BlockDesc)
     }
 }
 
-unsafe extern "C" fn reg_entity(r: *mut abi::Registrar, d: *const abi::EntityDesc) {
-    unsafe {
-        let r = reg(r);
-        let owner = r.owner;
-        r.game.entities.push(registry::copy_entity(owner, &*d));
-    }
-}
-
-unsafe extern "C" fn reg_entity_model(r: *mut abi::Registrar, kind: Str, parts: abi::Slice<abi::ModelPart>, uv_width: u32, uv_height: u32) {
-    unsafe {
-        let parts = registry::copy_parts(parts);
-        reg(r)
-            .game
-            .entity_models
-            .push((kind.as_str().to_string(), parts, [uv_width, uv_height]));
-    }
-}
-
 unsafe extern "C" fn reg_world_tick(r: *mut abi::Registrar, cb: Callback) {
     unsafe {
         let r = reg(r);
@@ -1751,7 +1726,6 @@ unsafe extern "C" fn reg_set(r: *mut abi::Registrar, d: *const abi::SetDesc) {
             abi::set_target::NAME if name.starts_with('#') => Target::Tagged(name[1..].to_string()),
             abi::set_target::NAME => Target::Name(name),
             abi::set_target::TAGGED => Target::Tagged(name),
-            abi::set_target::ENTITY => Target::Entity(name),
             abi::set_target::BIOME => Target::Biome(name),
             abi::set_target::DIMENSION => Target::Dimension(name),
             k => {
@@ -1853,16 +1827,6 @@ unsafe extern "C" fn damage_cause_flags(cause: u32) -> u32 {
     try_content()
         .and_then(|c| c.game.damage_causes.get(cause as usize))
         .map_or(0, |d| d.flags)
-}
-
-unsafe extern "C" fn reg_attach(r: *mut abi::Registrar, kind: Str, component: Str, value: abi::Slice<u8>) {
-    let value = unsafe { value.as_slice() };
-    unsafe {
-        reg(r)
-            .game
-            .attach
-            .push((kind.as_str().to_string(), component.as_str().to_string(), (!value.is_empty()).then(|| value.to_vec())))
-    }
 }
 
 unsafe extern "C" fn liquid_of(state: u32) -> u32 {
@@ -2192,31 +2156,6 @@ unsafe extern "C" fn reg_client_frame(r: *mut abi::Registrar, cb: Callback) {
     }
 }
 
-unsafe extern "C" fn reg_client_entity_frame(r: *mut abi::Registrar, kind: Str, cb: Callback) {
-    unsafe {
-        let r = reg(r);
-        let owner = r.owner;
-        r.game
-            .client_entity_watchers
-            .push((owner, kind.as_str().to_string(), cb));
-    }
-}
-
-unsafe extern "C" fn reg_bone_model(r: *mut abi::Registrar, kind: Str, model: Str, bone: Str) {
-    unsafe {
-        let (kind, model, bone) = (kind.as_str().to_string(), model.as_str().to_string(), bone.as_str().to_string());
-        reg(r).game.attached_models.push((kind, model, bone));
-    }
-}
-
-unsafe extern "C" fn reg_bone_motion(r: *mut abi::Registrar, model: Str, bone: Str, gravity: f32, spring: f32, drag: f32) {
-    unsafe {
-        let d = crate::model::BoneMotion { gravity, spring, drag };
-        let (model, bone) = (model.as_str().to_string(), bone.as_str().to_string());
-        reg(r).game.bone_motions.push((model, bone, d));
-    }
-}
-
 unsafe extern "C" fn reg_packet(r: *mut abi::Registrar, name: Str, schema: Str, side: u32, cb: Callback) {
     unsafe {
         let r = reg(r);
@@ -2229,15 +2168,6 @@ unsafe extern "C" fn reg_packet(r: *mut abi::Registrar, name: Str, schema: Str, 
 
 unsafe extern "C" fn reg_mistake(r: *mut abi::Registrar, message: Str) {
     unsafe { reg(r).errors.push(message.as_str().to_string()) }
-}
-
-unsafe extern "C" fn set_block_entity(r: *mut abi::Registrar, block: Str, entity: Str) {
-    unsafe {
-        reg(r)
-            .game
-            .block_entities
-            .push((block.as_str().to_string(), entity.as_str().to_string()))
-    }
 }
 
 unsafe extern "C" fn particle_burst(w: *mut abi::WorldCtx, b: *const abi::ParticleBurst) {

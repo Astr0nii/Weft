@@ -91,8 +91,8 @@ pub struct Entry {
     /// Handle cells to fill with its id, every mod's.
     pub cells: Vec<usize>,
     pub values: Vec<RawValue>,
-    /// Who set each callback value: it runs as that mod.
-    pub callers: Vec<(String, ModId)>,
+    /// Who set each callback, by its bytes (alone or in a list): it runs as that mod.
+    pub callers: Vec<(Vec<u8>, ModId)>,
     /// Blocks: operations on some states, by key, in the order they came.
     pub parts: Vec<(String, Vec<RawOp>)>,
 }
@@ -139,11 +139,27 @@ impl Entry {
 
     /// A callback value and the mod it runs as.
     pub fn callback(&self, name: &str) -> Option<(ModId, abi::Callback)> {
-        let cb = self.get::<abi::Callback>(name).filter(|c| c.is_some())?;
+        self.value(name)
+            .filter(|v| v.schema == "callback")
+            .and_then(|v| self.caller(&v.bytes))
+    }
+
+    /// The callbacks of a list, in order, each with the mod it runs as.
+    pub fn callbacks(&self, name: &str) -> Vec<(ModId, abi::Callback)> {
+        self.value(name)
+            .and_then(|v| data::items(&v.schema, &v.bytes))
+            .into_iter()
+            .flatten()
+            .filter_map(|b| self.caller(b))
+            .collect()
+    }
+
+    fn caller(&self, bytes: &[u8]) -> Option<(ModId, abi::Callback)> {
+        let cb = data::from_bytes::<abi::Callback>(bytes).filter(|c| c.is_some())?;
         let by = self
             .callers
             .iter()
-            .find(|c| c.0 == name)
+            .rfind(|c| c.0 == bytes)
             .map_or(self.owner, |c| c.1);
         Some((by, cb))
     }
@@ -159,8 +175,7 @@ impl Entry {
     /// Applies one operation, made by mod `by`; `errors` gets what made no sense.
     pub fn apply(&mut self, op: &RawOp, by: ModId, errors: &mut Vec<String>) {
         if op.value.schema == "callback" {
-            self.callers.retain(|c| c.0 != op.value.name);
-            self.callers.push((op.value.name.clone(), by));
+            self.callers.push((op.value.bytes.clone(), by));
         }
         apply(&mut self.values, op, &self.name, errors);
     }

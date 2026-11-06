@@ -104,7 +104,7 @@ pub fn register(r: &mut Registry) {
         Advancements { done: 0 },
         component_flags::SAVE | component_flags::SYNC_OWNER | component_flags::KEEP_ON_RESPAWN,
     );
-    r.attach(&PLAYER, &ADVANCEMENTS);
+    r.edit(&PLAYER).attach(&ADVANCEMENTS);
     r.sound(&CHIME)
         .files(&["random/advancement"])
         .category(&sound_categories::UI);

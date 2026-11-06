@@ -469,6 +469,46 @@ pub mod dimension {
     pub static WEATHERS: Component<Vec<String>, Dimension> = Component::named(d::WEATHERS);
 }
 
+/// What an entity kind is made of: tags for its flags (`abi::comp::entity::FLAGS`, `OFF`) and
+/// these; the player's inventory layout and menu too.
+pub mod entity {
+    use crate::Component;
+    use crate::Text;
+    use crate::abi::{self, comp::entity as e};
+    use crate::kind::Entity;
+    pub static SIZE: Component<abi::BodySize, Entity> = Component::named(e::SIZE);
+    pub static EYE: Component<f32, Entity> = Component::named(e::EYE);
+    pub static SPEED: Component<f32, Entity> = Component::named(e::SPEED);
+    pub static CARRY_HEIGHT: Component<f32, Entity> = Component::named(e::CARRY_HEIGHT);
+    pub static RIDE_CAMERA: Component<f32, Entity> = Component::named(e::RIDE_CAMERA);
+    pub static TEXTURE: Component<Text, Entity> = Component::named(e::TEXTURE);
+    pub static TEXTURE_SIZE: Component<[u32; 2], Entity> = Component::named(e::TEXTURE_SIZE);
+    pub static PARTS: Component<Vec<abi::ModelPart>, Entity> = Component::named(e::PARTS);
+    pub static BONE_MODELS: Component<Vec<abi::BoneModel>, Entity> = Component::named(e::BONE_MODELS);
+    pub static CATEGORY: Component<Text, Entity> = Component::named(e::CATEGORY);
+    pub static TEMPLATE: Component<Text, Entity> = Component::named(e::TEMPLATE);
+    pub static BLOCK: Component<Text, Entity> = Component::named(e::BLOCK);
+    pub static SEATS: Component<Vec<abi::Seat>, Entity> = Component::named(e::SEATS);
+    pub static ATTACH: Component<Vec<abi::Attach>, Entity> = Component::named(e::ATTACH);
+    pub static ON_TICK: Component<abi::Callback, Entity> = Component::named(e::ON_TICK);
+    pub static ON_INTERACT: Component<abi::Callback, Entity> = Component::named(e::ON_INTERACT);
+    pub static STEER: Component<abi::Callback, Entity> = Component::named(e::STEER);
+    pub static DISMOUNT: Component<abi::Callback, Entity> = Component::named(e::DISMOUNT);
+    pub static FRAMES: Component<Vec<abi::Callback>, Entity> = Component::named(e::FRAMES);
+    pub static SLOT_GROUPS: Component<Vec<abi::SlotGroupDef>, Entity> = Component::named(e::SLOT_GROUPS);
+    pub static INVENTORY_MENU: Component<Text, Entity> = Component::named(e::INVENTORY_MENU);
+}
+
+/// How a bone moves by itself (`abi::comp::bone_motion`).
+pub mod bone_motion {
+    use crate::Component;
+    use crate::abi::comp::bone_motion as b;
+    use crate::kind::BoneMotion;
+    pub static GRAVITY: Component<f32, BoneMotion> = Component::named(b::GRAVITY);
+    pub static SPRING: Component<f32, BoneMotion> = Component::named(b::SPRING);
+    pub static DRAG: Component<f32, BoneMotion> = Component::named(b::DRAG);
+}
+
 /// What a menu is made of: tags for how its screen behaves (`abi::comp::menu::FLAGS`) and these.
 pub mod menu {
     use crate::Component;

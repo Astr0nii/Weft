@@ -1942,7 +1942,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let (item_tables, item_looks) = number_items(&mods, items, &block_tables, &retextures, &mut textures, &mut errors);
     let biome_tables = number_biomes(entries_of(&mut games, abi::entry_kind::BIOME), &tint_kinds, &mod_name, &mut errors);
     let dim_tables = number_dimensions(&mods, entries_of(&mut games, abi::entry_kind::DIMENSION), &mod_name, &mut errors);
-    let entities = crate::registry::freeze_entities(&mut games, &mut errors);
+    let entities = crate::registry::freeze_entities(entries_of(&mut games, abi::entry_kind::ENTITY), &mod_name, &mut errors);
 
     let sets = take_sets(&mods, &mut games);
     let decls = crate::registry::freeze_components(&mut games, &mod_name, &mut errors);
@@ -2197,13 +2197,7 @@ fn drop_overridden(regs: &mut [RawRegistrar]) {
                 .get(name)
                 .is_some_and(|&(m, removed)| removed || m != owner)
         };
-        let g = &mut r.game;
         r.blocks.retain(|b| !gone(ek::BLOCK, &b.name));
-        g.entities.retain(|e| !gone(ek::ENTITY, &e.name));
-        // Replaces the engine's own kinds too (`core:player`).
-        for e in &mut g.entities {
-            e.replace |= by[ek::ENTITY as usize].contains_key(&e.name);
-        }
     }
 }
 
@@ -2890,9 +2884,6 @@ fn fill_components(
                     if let (Some(&i), true) = (item_names.get(base), props.is_empty()) {
                         hits.push((comps::ITEM, i));
                     }
-                    if hits.is_empty() {
-                        hits.extend(entities.names.get(base).map(|&k| (comps::ENTITY, k)));
-                    }
                 }
                 Target::Tagged(pattern) => {
                     let tags: Vec<u32> = cb
@@ -2913,7 +2904,6 @@ fn fill_components(
                         );
                     }
                 }
-                Target::Entity(n) => hits.extend(entities.names.get(n).map(|&k| (comps::ENTITY, k))),
                 Target::Biome(n) => hits.extend(biome_names.get(n).map(|&b| (comps::BIOME, b))),
                 Target::Dimension(n) => hits.extend(dim_names.get(n).map(|&d| (comps::DIMENSION, d))),
             }

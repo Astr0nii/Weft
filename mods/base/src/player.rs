@@ -49,7 +49,7 @@ pub fn register(r: &mut Registry) {
         Hunger { food: 20.0, saturation: 5.0, exhaustion: 0.0, air: MAX_AIR, food_timer: 0 },
         component_flags::SAVE | component_flags::SYNC_OWNER,
     );
-    r.attach(&PLAYER, &HUNGER);
+    r.edit(&PLAYER).attach(&HUNGER);
     r.world_tick(tick_players);
     // Not hungry, it doesn't start eating; the other way round it would only find out at the end.
     r.before_event(&actions::USE_ITEM, |q| {

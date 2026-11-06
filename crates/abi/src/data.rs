@@ -329,5 +329,8 @@ schema_data!(
     PlayerEvent,
     ChatMessage,
     Pickup,
-    Energy
+    Energy,
+    Vec3,
+    ModelCuboid,
+    MeshVertex
 );

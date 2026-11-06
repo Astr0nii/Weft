@@ -238,8 +238,8 @@ pub async fn edits(t: T) -> R {
     t.flat().await?;
     t.check_eq(
         t.op("edited").await?,
-        "8 3 2 true 7 4 true base:cobblestonex2,testkit:editedx1 true true true true".to_string(),
-        "max stack, damage, warmth, tag, a weather's flags, an attribute's default, a recipe removed, a loot table's pools, a liquid's id, its block's and item's tag, a column of Mars, Mars' tag after the edits",
+        "8 3 2 true 7 4 true base:cobblestonex2,testkit:editedx1 true true true true [0.9, 2.5, 1.0] 3".to_string(),
+        "max stack, damage, warmth, tag, a weather's flags, an attribute's default, a recipe removed, a loot table's pools, a liquid's id, its block's and item's tag, a column of Mars, Mars' tag, an entity kind's size and eye, its value after the edits",
     );
     // The edit of the menu adds two slots to the equipment (four and the other hand) and the
     // player's 36.

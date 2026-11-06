@@ -201,11 +201,11 @@ pub fn register(r: &mut Registry) {
         BedSpawn { bed: [0; 3], set: 0, dim_key: 0 },
         component_flags::SAVE | component_flags::KEEP_ON_RESPAWN | component_flags::SYNC_OWNER,
     );
-    r.attach(&PLAYER, &BED_SPAWN);
+    r.edit(&PLAYER).attach(&BED_SPAWN);
     r.entity_component(&SLEEP, Sleep { bed: [0; 3], since: 0, night: 0, asleep: 0 }, 0);
-    r.attach(&PLAYER, &SLEEP);
+    r.edit(&PLAYER).attach(&SLEEP);
     r.entity_component(&ARRIVING, Arriving { from: [0.0; 3], dim: 0, on_way: 0 }, 0);
-    r.attach(&PLAYER, &ARRIVING);
+    r.edit(&PLAYER).attach(&ARRIVING);
     r.on_event(&PLAYER_RESPAWNED, |b| {
         let w = b.world();
         for e in b.iter() {

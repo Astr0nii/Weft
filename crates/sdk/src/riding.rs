@@ -18,7 +18,7 @@ use crate::{EntityState, World, host};
 /// (+Z ahead, +X right, turned with it), whether who sits there steers, where they get off.
 #[derive(Clone)]
 pub struct Seat {
-    pub(crate) desc: abi::SeatDesc,
+    pub(crate) desc: abi::Seat,
     pub(crate) exit: Option<ExitFn>,
 }
 
@@ -26,12 +26,13 @@ pub(crate) type ExitFn = std::sync::Arc<dyn Fn(&World, u64, u64, Vec3) -> Vec3 +
 
 impl Seat {
     pub fn at(pos: impl Into<Vec3>) -> Seat {
-        Seat { desc: abi::SeatDesc { pos: pos.into(), ..abi::SeatDesc::DEFAULT }, exit: None }
+        let desc = abi::Seat { pos: pos.into(), steers: false, exit: abi::seat_exit::NEAREST, exit_at: Vec3::new(2.0, 0.0, 0.0) };
+        Seat { desc, exit: None }
     }
     /// Who sits here steers: a player with its keys (`steering`), a mob with its AI. With nobody
     /// steering a mount moves by its own AI.
     pub fn steers(mut self) -> Seat {
-        self.desc.steers = 1;
+        self.desc.steers = true;
         self
     }
     /// Where a rider of this seat gets off (`Exit::nearest(2.0)` unless told otherwise).

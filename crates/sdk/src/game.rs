@@ -608,17 +608,12 @@ impl PlayerInventoryBuilder<'_> {
 impl Drop for PlayerInventoryBuilder<'_> {
     fn drop(&mut self) {
         let groups = std::mem::take(&mut self.groups);
-        let schema = <Vec<abi::SlotGroupDef> as crate::component::Data>::schema();
-        edit_player(self.reg, Pending::value(abi::comp::entity::SLOT_GROUPS, schema, abi::data::bytes_of(&groups)));
+        drop(
+            self.reg
+                .edit(&PLAYER)
+                .set(&comps::entity::SLOT_GROUPS, groups),
+        );
     }
-}
-
-/// An edit of the player's kind (`abi::comp::entity`): in load order, so the mod loaded last wins.
-fn edit_player(reg: &mut Registry, value: Pending) {
-    let mut e = crate::entry::Entry::new(abi::entry_kind::ENTITY, PLAYER.name().to_string());
-    e.mode = abi::entry_mode::EDIT;
-    e.ops.push(value);
-    e.send(reg);
 }
 
 pub fn recipe_grid_output(kind: &RecipeKind, grid: &[ItemStack], width: u32, height: u32) -> ItemStack {
@@ -847,101 +842,68 @@ pub fn quadruped(body: [f32; 3], leg: f32, head: [f32; 3]) -> Model {
 }
 
 pub struct EntityBuilder<'a> {
-    no_egg: bool,
     reg: &'a mut Registry,
-    name: String,
-    handle: Option<&'static EntityKind>,
-    components: Vec<Pending>,
-    width: f32,
-    height: f32,
-    eye: Option<f32>,
-    speed: f32,
-    flags: u32,
-    texture: String,
-    texture_size: [u32; 2],
-    parts: Vec<ModelPart>,
-    on_tick: abi::Callback,
-    on_interact: abi::Callback,
-    carry_height: f32,
-    category_name: String,
-    template: String,
-    /// Components (full name, starting value) every entity of this kind gets.
-    attached: Vec<(&'static str, Vec<u8>)>,
-    seats: Vec<crate::riding::Seat>,
-    steering: Option<crate::riding::Steering>,
-    rider_rules: Option<crate::riding::RiderRules>,
-    ride_camera: f32,
+    e: crate::entry::Entry,
+    kind: &'static EntityKind,
+    no_egg: bool,
+    /// Where riders of the seats set here get off, those that say.
+    exits: Vec<Option<crate::riding::ExitFn>>,
 }
 
-/// Components of the kind (not per entity; see `Registry::entity_component` for that).
-impl crate::WithComponents for EntityBuilder<'_> {
-    type Kind = crate::kind::Entity;
-    fn pending(&mut self) -> &mut Vec<Pending> {
-        &mut self.components
-    }
-}
+crate::entry::entry_builder!(Entity => EntityBuilder, entity, finish;);
 
 impl EntityBuilder<'_> {
     /// Every entity of this kind carries `component` (declared with `r.entity_component`, by any
-    /// mod), starting at its declared value. Not `.set`: that is one value of the kind itself,
-    /// `.attach` gives each entity its own, which changes.
-    pub fn attach<T: Value>(mut self, component: &'static Component<T>) -> Self {
-        self.attached.push((component.name(), Vec::new()));
-        self
+    /// mod), starting at its declared value; another mod's kind with `r.edit(&PLAYER).attach(..)`.
+    /// Not `.set`: that is one value of the kind itself, `.attach` gives each entity its own,
+    /// which changes.
+    pub fn attach<T: Value>(self, component: &Component<T>) -> Self {
+        self.attached(component.name(), Vec::new())
     }
     /// `attach` with another starting value.
-    pub fn attach_with<T: Value>(mut self, component: &'static Component<T>, value: T) -> Self {
-        self.attached
-            .push((component.name(), crate::component::value_bytes(&value)));
-        self
+    pub fn attach_with<T: Value>(self, component: &Component<T>, value: T) -> Self {
+        self.attached(component.name(), crate::component::value_bytes(&value))
     }
     /// Every entity of the kind carries `storage` (declared with `r.storage`), empty at first.
-    pub fn attach_storage(mut self, storage: &'static Storage) -> Self {
-        self.attached.push((storage.name(), Vec::new()));
-        self
+    pub fn attach_storage(self, storage: &Storage) -> Self {
+        self.attached(storage.name(), Vec::new())
+    }
+    fn attached(self, name: &str, start: Vec<u8>) -> Self {
+        self.push(&comps::entity::ATTACH, abi::Attach { name: name.to_string(), start })
     }
     /// A solid body: others stand on it and ride along, bump into it and get pushed by it
     /// (platforms, boats, lifts). Not pushed around itself.
-    pub fn solid(mut self) -> Self {
-        self.flags = (self.flags | entity_flags::SOLID) & !entity_flags::PUSHABLE;
-        self
+    pub fn solid(self) -> Self {
+        self.with(entity_flags::SOLID).unpushable()
     }
     /// Takes no damage (no hurt flash, health stays); `/clear` and the void still remove it.
-    pub fn invulnerable(mut self) -> Self {
-        self.flags |= entity_flags::INVULNERABLE;
-        self
+    pub fn invulnerable(self) -> Self {
+        self.with(entity_flags::INVULNERABLE)
     }
     /// Neither pushes nor is pushed by other entities (ghosts, projectiles).
-    pub fn unpushable(mut self) -> Self {
-        self.flags &= !entity_flags::PUSHABLE;
-        self
+    pub fn unpushable(self) -> Self {
+        self.tag(abi::comp::entity::UNPUSHABLE)
     }
     /// Moved exactly by the velocity mod logic gives it (`set_entity`), through blocks, no
     /// gravity: lifts, airships, contraptions.
-    pub fn kinematic(mut self) -> Self {
-        self.flags |= entity_flags::KINEMATIC;
-        self
+    pub fn kinematic(self) -> Self {
+        self.with(entity_flags::KINEMATIC)
     }
     /// A solid body that hurts what it squeezes into blocks instead of only pushing it.
-    pub fn crushing(mut self) -> Self {
-        self.flags |= entity_flags::CRUSHES;
-        self
+    pub fn crushing(self) -> Self {
+        self.with(entity_flags::CRUSHES)
     }
     /// Riders up to `blocks` above the body (jumping, flying around inside it) keep moving with
     /// it and their own motion stays relative to it, so a jump on a fast ship lands on the ship.
-    pub fn carry_height(mut self, blocks: f32) -> Self {
-        self.carry_height = blocks;
-        self
+    pub fn carry_height(self, blocks: f32) -> Self {
+        self.set(&comps::entity::CARRY_HEIGHT, blocks)
     }
-    pub fn size(mut self, width: f32, height: f32) -> Self {
-        self.width = width;
-        self.height = height;
-        self
+    pub fn size(self, width: f32, height: f32) -> Self {
+        self.set(&comps::entity::SIZE, abi::BodySize { width, height })
     }
     /// Eye height in blocks, `EYE_SHARE` of its height when not said.
-    pub fn eye_height(mut self, blocks: f32) -> Self {
-        self.eye = Some(blocks);
-        self
+    pub fn eye_height(self, blocks: f32) -> Self {
+        self.set(&comps::entity::EYE, blocks)
     }
     /// No spawn egg. Every entity has one otherwise, `<name>_spawn_egg`, called after it and looking
     /// generic until `item/<name>_spawn_egg.png` exists: for what isn't a creature (a projectile, a
@@ -963,128 +925,110 @@ impl EntityBuilder<'_> {
     }
     /// Damage of its melee hits (`World::attack`), like an item's.
     pub fn attack_damage(self, damage: f32) -> Self {
-        crate::WithComponents::set(self, &crate::component::ATTACK_DAMAGE, damage)
+        self.set(&crate::component::ATTACK_DAMAGE, damage)
     }
     /// Its melee hits per second (1), like an item's; `attribute::ATTACK_SPEED` multiplies it.
     pub fn attack_speed(self, per_second: f32) -> Self {
-        crate::WithComponents::set(self, &crate::component::ATTACK_SPEED, per_second)
+        self.set(&crate::component::ATTACK_SPEED, per_second)
     }
     /// How far it hits (the `ENTITY_REACH` attribute, from its eyes to the target's box); a
     /// modifier changes it like any attribute.
-    pub fn reach(mut self, blocks: f64) -> Self {
-        self.components
-            .retain(|p| p.name != abi::attribute::ENTITY_REACH);
-        self.components
-            .push(Pending::value(abi::attribute::ENTITY_REACH, "f64".into(), crate::component::value_bytes(&blocks)));
+    pub fn reach(self, blocks: f64) -> Self {
+        self.attribute(abi::attribute::ENTITY_REACH, blocks)
+    }
+    pub fn max_health(self, h: f32) -> Self {
+        self.attribute(abi::attribute::MAX_HEALTH, h as f64)
+    }
+    /// The kind's own value of an attribute.
+    fn attribute(mut self, name: &str, v: f64) -> Self {
+        self.e
+            .ops
+            .push(Pending::value(name, "f64".into(), crate::component::value_bytes(&v)));
         self
     }
-    pub fn max_health(mut self, h: f32) -> Self {
-        self.components
-            .retain(|p| p.name != abi::attribute::MAX_HEALTH);
-        self.components
-            .push(Pending::value(abi::attribute::MAX_HEALTH, "f64".into(), crate::component::value_bytes(&(h as f64))));
-        self
+    pub fn walk_speed(self, s: f32) -> Self {
+        self.set(&comps::entity::SPEED, s)
     }
-    pub fn walk_speed(mut self, s: f32) -> Self {
-        self.speed = s;
-        self
-    }
-    /// Raw `entity_flags` on top of what the presets set.
-    pub fn with(mut self, f: u32) -> Self {
-        self.flags |= f;
-        self
+    /// These `entity_flags` on, on top of what the presets set (`abi::comp::entity::FLAGS`).
+    pub fn with(self, flags: u32) -> Self {
+        abi::comp::entity::FLAGS
+            .iter()
+            .filter(|f| flags & f.1 != 0)
+            .fold(self, |b, f| b.tag(f.0))
     }
     /// A category registered with `Registry::entity_category` (any mod's), for spawn caps and
     /// despawning.
-    pub fn category(mut self, category: &EntityCategory) -> Self {
-        self.category_name = category.name().to_string();
-        self
+    pub fn category(self, category: &EntityCategory) -> Self {
+        self.set_text(&comps::entity::CATEGORY, category.name())
     }
-    pub fn hostile(mut self) -> Self {
-        self.category_name = "core:hostile".into();
-        self
+    pub fn hostile(self) -> Self {
+        self.set_text(&comps::entity::CATEGORY, "core:hostile")
     }
-    pub fn passive(mut self) -> Self {
-        self.category_name = "core:passive".into();
-        self
+    pub fn passive(self) -> Self {
+        self.set_text(&comps::entity::CATEGORY, "core:passive")
     }
     /// Skin texture under `entity/`; without this, the kind's name (`entity/zombie`).
-    pub fn texture(mut self, t: &str) -> Self {
-        self.texture = crate::asset("entity", t);
-        self
+    pub fn texture(self, t: &str) -> Self {
+        let t = crate::asset("entity", t);
+        self.set_text(&comps::entity::TEXTURE, &t)
     }
-    /// A model built in code (`biped(..)`, `quadruped(..)`, `spider()`, or parts of your own).
-    pub fn model(mut self, model: impl Into<Model>) -> Self {
+    /// A model built in code (`humanoid(..)`, `quadruped(..)`, `spider()`, or parts of your own).
+    pub fn model(self, model: impl Into<Model>) -> Self {
         let m = model.into();
-        (self.parts, self.texture_size) = (m.parts, m.uv);
-        self
+        let parts: Vec<abi::ModelPart> = m.parts.iter().map(raw_part).collect();
+        self.set(&comps::entity::PARTS, parts)
+            .set(&comps::entity::TEXTURE_SIZE, m.uv)
     }
     /// Sound event `event` (`hurt`, `death`, `ambient`, `step`): one of the files
     /// `sounds/entity/<kind>/<event>*.ogg|wav` at random.
     pub fn sound(self, event: &str) -> Self {
-        let file = format!("entity/{}/{event}*", self.kind_path());
+        let file = format!("entity/{}/{event}*", self.kind.path());
         self.sound_files(event, &[&file])
     }
     /// Sound event `event` from these files of `sounds/entity/<kind>/`, one at random.
     pub fn sound_variants(self, event: &str, files: &[&str]) -> Self {
-        let path = self.kind_path();
+        let path = self.kind.path();
         let files: Vec<String> = files.iter().map(|f| format!("entity/{path}/{f}")).collect();
         let files: Vec<&str> = files.iter().map(String::as_str).collect();
         self.sound_files(event, &files)
     }
-    fn kind_path(&self) -> String {
-        self.name
-            .split_once(':')
-            .map_or(self.name.as_str(), |x| x.1)
-            .to_string()
-    }
-    fn sound_files(mut self, event: &str, files: &[&str]) -> Self {
-        let sound = crate::Sound::generated(format!("{}.{event}", self.name));
+    fn sound_files(self, event: &str, files: &[&str]) -> Self {
+        let name = self.kind.name();
+        let sound = crate::Sound::generated(format!("{name}.{event}"));
         self.reg
             .sound(sound)
             .files(files)
             .category(&crate::sound_categories::CREATURES)
             .pitch(0.8, 1.2);
-        self.components.retain(|p| p.name != abi::comp::SOUND);
-        self.components
-            .push(Pending::text(abi::comp::SOUND, &self.name));
-        self
+        self.set_text(&crate::component::SOUND, name)
     }
     /// Sounds from `<ns>:entity.<group>` (`.hurt`, `.death`, `.ambient`, `.step` events); a name
     /// with a namespace is used as it is.
-    pub fn sound_group(mut self, group: &str) -> Self {
+    pub fn sound_group(self, group: &str) -> Self {
         let prefix = if group.contains(':') { group.to_string() } else { format!("{}:entity.{group}", self.reg.ns) };
-        self.components
-            .push(Pending::text(abi::comp::SOUND, &prefix));
-        self
+        self.set_text(&crate::component::SOUND, &prefix)
     }
 
     /// Keyframe animations from `animations/<name>.animation.json`: `idle` and `walk` play by
     /// themselves, others with `World::action_play`. A file named like the kind is used even
     /// without this.
-    pub fn animations(mut self, name: &str) -> Self {
+    pub fn animations(self, name: &str) -> Self {
         let name = crate::asset("", name);
-        self.components
-            .push(Pending::text(abi::comp::ANIMATIONS, &name));
-        self
+        self.set_text(&crate::component::ANIMATIONS, &name)
     }
     /// A moving body built of `template` (`Registry::template`; block (0, 0, 0) is
     /// centered on the entity's position, its box is what the blocks fill). Blocks are placed and
     /// broken on it like in the world, and it carries what stands on it; usually `.solid()`.
-    pub fn body(mut self, template: &crate::Template) -> Self {
-        self.template = template.name().to_string();
-        self
+    pub fn body(self, template: &crate::Template) -> Self {
+        self.set_text(&comps::entity::TEMPLATE, template.name())
     }
     /// Shades the model with `shaders/entity/<name>.wgsl`.
-    pub fn shader(mut self, shader: &crate::Shader) -> Self {
-        self.components
-            .push(Pending::text(abi::comp::SHADER, shader.name()));
-        self
+    pub fn shader(self, shader: &crate::Shader) -> Self {
+        self.set_text(&crate::component::SHADER, shader.name())
     }
     /// Called once per tick with every entity of this kind.
-    pub fn on_tick(mut self, f: impl Fn(&EntityTick) + Send + Sync + 'static) -> Self {
-        self.on_tick = tick_cb(f);
-        self
+    pub fn on_tick(self, f: impl Fn(&EntityTick) + Send + Sync + 'static) -> Self {
+        self.set(&comps::entity::ON_TICK, tick_cb(f))
     }
     /// Behavior from goals and what sets it off (`ai::Goals`), run every tick; replaces `on_tick`.
     pub fn goals(self, goals: crate::ai::Goals) -> Self {
@@ -1096,7 +1040,7 @@ impl EntityBuilder<'_> {
     /// events at the end of the tick. Changing the damage is `r.modify(&chain::DAMAGE, ..)`,
     /// preventing it `r.before_event(&actions::HURT, ..)`.
     pub fn on_hurt(self, f: impl Fn(&World, &crate::Hurt) + Send + Sync + 'static) -> Self {
-        let Some(kind) = self.handle else { return self };
+        let kind = self.kind;
         self.reg.on_event(&crate::actions::HURT, move |b| {
             let w = b.world();
             for h in b
@@ -1110,7 +1054,7 @@ impl EntityBuilder<'_> {
     }
     /// One of these died: `actions::DIE` for this kind.
     pub fn on_died(self, f: impl Fn(&World, &crate::Death) + Send + Sync + 'static) -> Self {
-        let Some(kind) = self.handle else { return self };
+        let kind = self.kind;
         self.reg.on_event(&crate::actions::DIE, move |b| {
             let w = b.world();
             for d in b.iter().filter(|d| d.kind == kind.id()) {
@@ -1121,123 +1065,67 @@ impl EntityBuilder<'_> {
     }
     /// A player right clicked one, and `actions::INTERACT_ENTITY` let it; true if it did something,
     /// which swings the player's arm.
-    pub fn on_interact(mut self, f: impl Fn(&mut EntityEvent) -> bool + Send + Sync + 'static) -> Self {
-        self.on_interact = event_cb(f);
-        self
+    pub fn on_interact(self, f: impl Fn(&mut EntityEvent) -> bool + Send + Sync + 'static) -> Self {
+        self.set(&comps::entity::ON_INTERACT, event_cb(f))
     }
     /// A place to ride it, in the order seats are numbered (`crate::riding::Seat`).
     pub fn seat(mut self, seat: crate::riding::Seat) -> Self {
-        self.seats.push(seat);
-        self
+        self.exits.push(seat.exit);
+        self.push(&comps::entity::SEATS, seat.desc)
     }
     /// How the keys of a player in a seat that steers move it (`steer::*`, or your own).
-    pub fn steering(mut self, s: crate::riding::Steering) -> Self {
-        self.steering = Some(s);
-        self
+    pub fn steering(self, s: crate::riding::Steering) -> Self {
+        let cb = callback(move |a: &mut abi::SteerArgs| a.out = (s.0)(&a.input, &a.mount));
+        self.set(&comps::entity::STEER, cb)
     }
     /// What its riders may do (`RiderRules`).
-    pub fn rider_rules(mut self, rules: crate::riding::RiderRules) -> Self {
-        self.rider_rules = Some(rules);
+    pub fn rider_rules(self, rules: crate::riding::RiderRules) -> Self {
+        crate::riding::register_rules(self.reg, self.kind, rules);
         self
     }
     /// Its falls hurt its riders too, as a horse's.
-    pub fn riders_fall(mut self) -> Self {
-        self.flags |= entity_flags::RIDERS_FALL;
-        self
+    pub fn riders_fall(self) -> Self {
+        self.with(entity_flags::RIDERS_FALL)
     }
     /// Blocks the third-person camera stays further back while riding it, 0 for none; without
     /// this, by its size.
-    pub fn ride_camera(mut self, blocks: f32) -> Self {
-        self.ride_camera = blocks;
-        self
+    pub fn ride_camera(self, blocks: f32) -> Self {
+        self.set(&comps::entity::RIDE_CAMERA, blocks)
     }
     /// A right click gets on it, in its first free seat (`on_interact` doing `w.mount`).
     pub fn rideable(self) -> Self {
         self.on_interact(|e| e.world().mount(e.other(), e.entity()))
     }
-}
 
-fn raw_part(p: &ModelPart) -> abi::ModelPart {
-    abi::ModelPart {
-        pivot: p.pivot,
-        cuboids: Slice::new(&p.boxes),
-        rest: p.rest,
-        name: Str::new(&p.name),
-        parent: p.parent,
-        mesh: Slice::new(&p.mesh),
-        ..abi::ModelPart::DEFAULT
-    }
-}
-
-impl crate::content::ModelSource for Model {
-    /// A kind's model, another mod's or the engine's (`core:player` is drawn with `biped(false)` by
-    /// base); a later mod's wins.
-    fn set_on(self, r: &mut Registry, what: crate::content::Target<'_>) {
-        let parts: Vec<abi::ModelPart> = self.parts.iter().map(raw_part).collect();
-        let kind = crate::qualify(r.ns, what.name());
-        unsafe { (host().reg_entity_model)(r.raw, Str::new(&kind), Slice::new(&parts), self.uv[0], self.uv[1]) }
-    }
-}
-
-impl Drop for EntityBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        if !self.no_egg {
-            let mob = EntityKind::generated(self.name.clone());
+    fn finish(&mut self) {
+        if self.e.mode == abi::entry_mode::NEW && !self.no_egg {
+            let name = self.kind.name().to_string();
             self.reg
-                .item(crate::Item::generated(format!("{}_spawn_egg", self.name)))
-                .spawns(mob)
+                .item(crate::Item::generated(format!("{name}_spawn_egg")))
+                .spawns(EntityKind::generated(name))
                 .tab(&crate::SPAWN_EGGS);
         }
-        let parts: Vec<abi::ModelPart> = self.parts.iter().map(raw_part).collect();
-        let mut scratch = Vec::new();
-        let values = crate::content::raw_values(&self.components, &mut scratch);
-        let seats: Vec<abi::SeatDesc> = self.seats.iter().map(|s| s.desc).collect();
-        let steer = self
-            .steering
-            .take()
-            .map_or(abi::Callback::NONE, |s| callback(move |a: &mut abi::SteerArgs| a.out = (s.0)(&a.input, &a.mount)));
-        let exits: Vec<Option<crate::riding::ExitFn>> = self.seats.iter().map(|s| s.exit.clone()).collect();
-        let dismount = if exits.iter().any(Option::is_some) {
-            callback(move |a: &mut abi::DismountArgs| {
+        let exits = std::mem::take(&mut self.exits);
+        if exits.iter().any(Option::is_some) {
+            let cb = callback(move |a: &mut abi::DismountArgs| {
                 if let Some(Some(f)) = exits.get(a.seat as usize) {
                     a.out = f(&World::from_raw(a.world), a.mount, a.rider, a.out);
                 }
-            })
-        } else {
-            abi::Callback::NONE
-        };
-        if let Some(rules) = self.rider_rules.take() {
-            crate::riding::register_rules(self.reg, EntityKind::generated(self.name.clone()), rules);
+            });
+            self.e.ops.push(comps::entity::DISMOUNT.raw_value(&cb));
         }
-        let desc = abi::EntityDesc {
-            name: Str::new(&self.name),
-            cell: self.handle.map_or(std::ptr::null(), |h| h.id_cell()),
-            width: self.width,
-            height: self.height,
-            eye: self.eye.unwrap_or(self.height * EYE_SHARE),
-            speed: self.speed,
-            flags: self.flags,
-            texture: Str::new(&self.texture),
-            texture_size: self.texture_size,
-            parts: Slice::new(&parts),
-            on_tick: self.on_tick,
-            on_interact: self.on_interact,
-            components: Slice::new(&values),
-            carry_height: self.carry_height,
-            category_name: Str::new(&self.category_name),
-            template: Str::new(&self.template),
-            seats: Slice::new(&seats),
-            steer,
-            dismount,
-            ride_camera: self.ride_camera,
-        };
-        unsafe { (host().reg_entity)(self.reg.raw, &desc) }
-        for (comp, value) in &self.attached {
-            unsafe { (host().reg_attach)(self.reg.raw, Str::new(&self.name), Str::new(comp), Slice::new(value)) }
-        }
+    }
+}
+
+fn raw_part(p: &ModelPart) -> abi::ModelPart {
+    abi::ModelPart { name: p.name.clone(), parent: p.parent, pivot: p.pivot, rest: p.rest, cuboids: p.boxes.clone(), mesh: p.mesh.clone() }
+}
+
+impl crate::content::ModelSource for Model {
+    /// A kind's model, another mod's or the engine's (`core:player` is drawn with `humanoid(false)`
+    /// by base): an edit of that kind.
+    fn set_on(self, r: &mut Registry, what: &dyn crate::content::ModelTarget) {
+        drop(r.edit_entity(what.model_name()).model(self));
     }
 }
 
@@ -1534,32 +1422,13 @@ impl MenuBuilder<'_> {
 
 impl Registry {
     pub fn entity<'a>(&'a mut self, kind: &'static EntityKind) -> EntityBuilder<'a> {
-        let d = abi::EntityDesc::DEFAULT;
-        EntityBuilder {
-            no_egg: false,
-            name: kind.name().to_string(),
-            reg: self,
-            handle: Some(kind),
-            components: Vec::new(),
-            width: d.width,
-            height: d.height,
-            eye: None,
-            speed: d.speed,
-            flags: d.flags,
-            texture: crate::asset("entity", kind.name()),
-            texture_size: d.texture_size,
-            parts: Vec::new(),
-            on_tick: abi::Callback::NONE,
-            on_interact: abi::Callback::NONE,
-            carry_height: 0.0,
-            category_name: String::new(),
-            template: String::new(),
-            attached: Vec::new(),
-            seats: Vec::new(),
-            steering: None,
-            rider_rules: None,
-            ride_camera: f32::NAN,
-        }
+        EntityBuilder { reg: self, e: crate::entry::Entry::of(kind), kind, no_egg: false, exits: Vec::new() }
+    }
+
+    /// An edit of entity kind `name`, any mod's or the engine's.
+    pub(crate) fn edit_entity(&mut self, name: &str) -> EntityBuilder<'_> {
+        let kind = EntityKind::generated(qualify(self.ns, name));
+        self.edit(kind)
     }
 
     /// Declares `comp` for anything that holds a value of its own: entities (as
@@ -1574,8 +1443,8 @@ impl Registry {
     }
 
     /// Declares per-entity storage for `comp`: the value an entity starts with and the
-    /// `component_flags` (saved, synced to whom). Kinds carry it with `.attach(&COMP)` (or
-    /// `r.attach(&KIND, &COMP)` for another mod's kind).
+    /// `component_flags` (saved, synced to whom). Kinds carry it with `.attach(&COMP)` (another
+    /// mod's kind with `r.edit(&KIND).attach(&COMP)`).
     pub fn entity_component<T: Value>(&mut self, comp: &Component<T>, default: T, flags: u32) -> DeclarationBuilder<'_> {
         self.declare::<T>(comp.name()).entity(&default, flags)
     }
@@ -1630,40 +1499,28 @@ impl Registry {
 
     /// The menu the inventory key opens. The mod loaded last wins.
     pub fn player_menu(&mut self, menu: &Menu) {
-        edit_player(self, Pending::text(abi::comp::entity::INVENTORY_MENU, menu.name()));
+        drop(
+            self.edit(&PLAYER)
+                .set_text(&comps::entity::INVENTORY_MENU, menu.name()),
+        );
     }
 
-    /// Gives `block` a block entity of a kind of its own, named like the block (`BlockBuilder::entity`).
-    pub(crate) fn block_entity(&mut self, block: &Block, f: impl for<'r> FnOnce(EntityBuilder<'r>) -> EntityBuilder<'r>) {
+    /// Gives `block` a block entity of a kind of its own, named like the block
+    /// (`BlockBuilder::entity`), registered as `mode` says (`entry_mode`).
+    pub(crate) fn block_entity(&mut self, block: &Block, mode: u32, f: impl for<'r> FnOnce(EntityBuilder<'r>) -> EntityBuilder<'r>) {
         let kind = EntityKind::generated(block.name().to_string());
-        drop(f(self
-            .entity(kind)
+        let mut b = self.entity(kind);
+        b.e.mode = mode;
+        drop(f(b
             .no_egg()
-            .with(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE)));
-        unsafe { (host().set_block_entity)(self.raw, Str::new(block.name()), Str::new(kind.name())) }
-    }
-
-    /// Every entity of `kind` (any mod's, `&PLAYER`) carries `component`, starting at its
-    /// declared value.
-    pub fn attach<T: Value>(&mut self, kind: &EntityKind, component: &Component<T>) {
-        unsafe { (host().reg_attach)(self.raw, Str::new(kind.name()), Str::new(component.name()), Slice::EMPTY) }
-    }
-
-    /// Every entity of `kind` (any mod's, `&PLAYER`) carries `storage`, empty at first.
-    pub fn attach_storage(&mut self, kind: &EntityKind, storage: &Storage) {
-        unsafe { (host().reg_attach)(self.raw, Str::new(kind.name()), Str::new(storage.name()), Slice::EMPTY) }
+            .with(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE)
+            .set_text(&comps::entity::BLOCK, block.name())));
     }
 
     /// An inventory of `slots` a holder can keep besides its own (`Storage`).
     pub fn storage(&mut self, storage: &Storage, slots: u32) -> DeclarationBuilder<'_> {
         let e = crate::entry::Entry::new(abi::entry_kind::COMPONENT, storage.name().to_string());
         DeclarationBuilder { reg: self, e }.set(&comps::component::SLOTS, slots)
-    }
-
-    /// `attach` with another starting value (a battery's capacity).
-    pub fn attach_with<T: Value>(&mut self, kind: &EntityKind, component: &Component<T>, value: T) {
-        let bytes = crate::component::value_bytes(&value);
-        unsafe { (host().reg_attach)(self.raw, Str::new(kind.name()), Str::new(component.name()), Slice::new(&bytes)) }
     }
 
     /// Chat command `/name` run on the server; `usage` declares its arguments (`<name:type>`,

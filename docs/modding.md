@@ -197,7 +197,7 @@ static BURNER: Component<Burner> = Component::named("mymod:burner");
 A value that names blocks is a reference, not text: `Component<BlockRef>` for one block (or state) and `Component<BlockList>` for blocks with weights, set with `.set_text(&C, "oak_leaves")` or `.set_text(&C, "birch_log:1 oak_log:4")`. The engine turns the names into ids when the game loads, so a typo is a load error instead of a tree that never grows; reading gives `BlockRef(state)` or a `BlockList` with `pick(random)`. Base's trees work this way (`tree_leaves` on logs, `tree_kinds` and `flowers` on biomes).
 
 Per-entity components like a furnace's state, hunger or anything else that changes in time go through
-`r.entity_component(&COMP, default, flags)`, declared once (`r.edit(COMP.declaration())` changes another mod's), and then carried by the kinds that need it: `.attach(&COMP)` on an entity builder (a block entity's too), `r.attach(&PLAYER, &COMP)` for someone else's kind, `.attach_with(&COMP, value)` to start from another value.\
+`r.entity_component(&COMP, default, flags)`, declared once (`r.edit(COMP.declaration())` changes another mod's), and then carried by the kinds that need it: `.attach(&COMP)` on an entity builder (a block entity's too), `r.edit(&PLAYER).attach(&COMP)` for someone else's kind, `.attach_with(&COMP, value)` to start from another value.\
 `.set(&C, v)` is different: one value of the kind itself (like a mob's attack damage), while `.attach` gives every entity its own value that changes.\
 Flags from `component_flags` are `SAVE`, `SYNC_OWNER`, `SYNC_WATCHERS`, `SYNC_MENU`, `KEEP_ON_RESPAWN` (kept when a player respawns; everything else starts over from its default).\
 You can change them through `w.component_mut(id, &COMP)` and the engine will figure out what to send.\
@@ -304,7 +304,8 @@ Stacks with different data don't merge. `r.stack_component` says a component exi
 - `size(w, h)`, with `eye(height)` when its eyes aren't at 85% of that, `health`, `speed`
 - `hostile()` or `passive()` or `category(..)`
 - `texture` (by default `entity/<name>`)
-- `model(humanoid(..))`, or `r.set_model("name", "thing")` for a Blockbench geo.json (any item's or entity's, also someone else's, `"#tag"` for many)
+- `model(humanoid(..))`, or `r.set_model(&KIND, "thing")` for a Blockbench geo.json (any item's or entity's, also someone else's, `"#tag"` for many items)
+- `r.edit(&KIND)` changes any of this on someone else's kind, the engine's too (`r.edit(&PLAYER).attach(&MANA)`), and `r.replace(&KIND)` starts it over
 - `r.bone_model(..)`, `.wearable_model(..)` on an item: a model on a bone. `r.bone_motion`, `c.bone_turn`, `c.bone_position`: bones moving by themselves or by code (`docs/models.md`)
 - `sound("hurt")`, `sound("death")`, `sound("ambient")`: files from `sounds/entity/<name>/`
 - `animations(..)`
