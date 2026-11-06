@@ -100,8 +100,11 @@ fn blocks(_r: &mut Registry) {
     // }
     //
     // Another mod's block changed: what you set goes on every state, `state_where` on some.
+    // `r.replace(&X)` registers it again from scratch, `r.remove(&X)` takes it out.
     // static FURNACE: Block = Block::named("base:furnace");
     // r.edit(&FURNACE).hardness(5.0).state_where("lit=true", |s| s.light(15));
+    // The same edit on everything a pattern names (`#tag`, a name with `*`, `base:furnace[lit=true]`):
+    // r.edit_pattern::<kind::Block>("#logs").hardness(3.0);
 }
 
 /// Your items, texture is `item/<name>.png`, translation is `item.examplemod.<name>`
@@ -141,10 +144,17 @@ fn worldgen(_r: &mut Registry) {
     // Something new in the sky, on an orbit of its own (textures/sky/planet.png):
     // static PLANET: SkyObject = SkyObject::named("planet");
     // r.sky_body(&OVERWORLD, &PLANET).texture("planet").size(6.0).orbit(96000.0).phase(0.1).tilt(20.0);
+    // A weather of your own in base's overworld: lists take `push`, `insert_before`, `remove_item`..
+    // static ACID_RAIN: Weather = Weather::named("acid_rain");
+    // r.weather(&ACID_RAIN).darkness(0.5).duration(2400, 6000).weight(1);
+    // r.edit(&OVERWORLD).push(&comps::dimension::WEATHERS, ACID_RAIN.name().to_string());
+    // Base's iron, twice as common (an ore is named like its block):
+    // static IRON_ORE: Block = Block::named("base:iron_ore");
+    // r.edit(IRON_ORE.ore()).veins(12);
 }
 
 /// Mobs and other entities
-/// Models in code (`biped`, `quadruped`) or Blockbench files in `assets/models`
+/// Models in code (`humanoid`, `quadruped`, `spider`) or Blockbench files in `assets/models`
 /// More at `mods/base/src/mobs.rs` (AI goals, spawn rules, etc.).
 fn entities(_r: &mut Registry) {
     // static GHOST: EntityKind = EntityKind::named("ghost");
@@ -153,7 +163,7 @@ fn entities(_r: &mut Registry) {
 }
 
 /// Reacting to the game, events arrive batched once per tick
-/// for "may this happen" use `r.intercept`
+/// for "may this happen" use `r.before_event`
 /// to change a number use `r.modify`
 /// For more info check "Hooking into the game" in `docs/modding.md`
 fn events(r: &mut Registry) {

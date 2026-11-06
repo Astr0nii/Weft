@@ -288,8 +288,8 @@ pub struct ModDecl {
     pub id: Str,
     /// The crate version.
     pub version: Str,
-    /// Mod ids this one must load after. Registration itself is parallel, this only orders
-    /// `post_init` and callback priority.
+    /// Mod ids this one must load after. Registration itself is parallel, this orders what it
+    /// registers (entries, edits, hooks) after theirs.
     pub deps: Slice<Str>,
     pub init: unsafe extern "C" fn(host: *const Host, me: ModId, reg: *mut Registrar) -> u32,
 }
@@ -316,7 +316,8 @@ pub mod entry_mode {
     /// Its operations go onto the one of that name, whoever registered it, in load order. The
     /// name may be a pattern: `#tag` (every entry with the tag, a block's states by their own),
     /// `*` in it (any text there), `name[prop=value]` (those states of a block, `name[]` all of
-    /// them or the entry of that name of another kind): matching nothing isn't an error then.
+    /// them or the entry of that name of another kind). Matching nothing is a load error for blocks
+    /// and items (a `#tag` only when no such tag exists), fine for other kinds.
     pub const EDIT: u32 = 1;
     /// Registered from scratch over what was there.
     pub const REPLACE: u32 = 2;
@@ -330,7 +331,8 @@ pub mod value_op {
     pub const UNSET: u32 = 1;
     /// List components (`[T]`): the value is one element, added at the end.
     pub const PUSH: u32 = 2;
-    /// Before or after the element `anchor` names: its `name` field, or `#index`.
+    /// Before or after the element `anchor` names: its first field `name` (a text element's
+    /// text), or `#index`.
     pub const INSERT_BEFORE: u32 = 3;
     pub const INSERT_AFTER: u32 = 4;
     /// Takes out the element `anchor` names.
@@ -1386,8 +1388,7 @@ pub mod comp {
     /// Item: it is a liquid (`str`, the liquid's block name) by the millibucket, what liquid
     /// slots hold and recipes count. Every liquid has one, named like it.
     pub const FLUID: &str = "fluid";
-    /// Items: slots of the inventory each stack carries (`u32`); the stacks in it are the
-    /// stack's `contents`.
+    /// Items and entity kinds: slots of the inventory each stack or entity carries (`u32`).
     pub const INVENTORY: &str = "inventory";
     /// Stack component the engine keeps: what an item with `inventory` holds.
     pub const CONTENTS: &str = "contents";
@@ -1476,7 +1477,7 @@ pub mod tool_tier {
     pub const HAND: u32 = u32::MAX;
 }
 
-// ---------------------------------------------------------------- content descriptors
+// ---------------------------------------------------------------- content flags and values
 
 pub mod block_flags {
     /// Entities collide with it.
@@ -2262,10 +2263,10 @@ pub struct EntityEventArgs {
     pub handled: u32,
 }
 
-/// Damage causes. Mods add their own numbers; a cause with `BYPASSES_ARMOR` set is not
-/// reduced by armor (falling, starving, drowning, the void).
-/// The engine's damage causes (`Host::reg_damage_cause`), registered first and in this order,
-/// so their ids are these. Mods' own causes come after.
+/// The engine's damage causes, `DAMAGE_CAUSE` entries registered first and in this order, so
+/// their ids are these; mods' own come after. What a cause does is its tags
+/// (`comp::damage_cause`): one with `BYPASSES_ARMOR` isn't reduced by armor (falling, starving,
+/// drowning, the void).
 pub mod damage_cause {
     pub const GENERIC: u32 = 0;
     pub const FALL: u32 = 1;
@@ -2387,7 +2388,7 @@ pub struct SlotGroup {
     pub cols: u32,
 }
 
-/// The engine's game modes (`Host::reg_game_mode`), registered first in this order.
+/// The engine's game modes, `GAME_MODE` entries registered first in this order.
 pub mod game_mode {
     pub const SURVIVAL: u32 = 0;
     pub const CREATIVE: u32 = 1;
@@ -2404,7 +2405,7 @@ pub mod game_mode_flags {
     pub const NO_PLACE: u32 = 4;
     /// Nothing used up: placed blocks, poured buckets, wear; picking a block gives a stack.
     pub const NO_COSTS: u32 = 8;
-    /// No damage, hunger or air (mods read it as `World::exempt`).
+    /// No damage, hunger or air (mods read it as `World::outside_survival`).
     pub const INVULNERABLE: u32 = 16;
     /// May fly, jumping twice.
     pub const CAN_FLY: u32 = 32;
@@ -3437,10 +3438,6 @@ pub struct Host {
     /// A system: once per tick and region `cb` gets `SystemArgs` with every entity that has the
     /// per-entity component `name` and their values side by side, to change in place.
     pub reg_system: unsafe extern "C" fn(reg: *mut Registrar, name: Str, schema: Str, cb: Callback),
-    /// A command that runs on the client that types it (never sent to the server), same usage
-    /// syntax as `reg_command`; `cb` gets `CommandArgs` with `client` set.
-    /// Adds alternatives (`usage` syntax) to an existing command, handled by `cb` with
-    /// `CommandArgs` laid out by this usage; runs where the command runs.
     /// The `permission` level a server command asks for (by default `GAME_MASTER`).
     pub reg_command_permission: unsafe extern "C" fn(reg: *mut Registrar, command: Str, level: u32),
     /// Weather `weather` in this dimension for `ticks`, after which it changes by itself.
@@ -3464,6 +3461,8 @@ pub struct Host {
     pub player_permission: unsafe extern "C" fn(world: *mut WorldCtx, player: u64) -> u32,
     /// Sets it, remembered with the world.
     pub set_player_permission: unsafe extern "C" fn(world: *mut WorldCtx, player: u64, level: u32),
+    /// Adds alternatives (`usage` syntax) to an existing command, handled by `cb` with
+    /// `CommandArgs` laid out by this usage; `client` as in `reg_command`.
     pub reg_command_branch: unsafe extern "C" fn(reg: *mut Registrar, command: Str, usage: Str, client: u32, cb: Callback),
 
     // ------------------------------------------------ text, shaders, particles
@@ -4792,9 +4791,9 @@ pub struct ChatFormatArgs {
     pub out: *mut core::ffi::c_void,
 }
 
-/// Text for the screen, the one way of putting any there. A place is a set of defaults for what
-/// is left unset here, and an element of the HUD the text joins when it has no `at`.
-/// The engine's text places (`Host::reg_text_place`), registered first in this order.
+/// The engine's text places, `TEXT_PLACE` entries registered first in this order. A place is a
+/// set of defaults for what a `ShowDesc` leaves unset, and an element of the HUD the text joins
+/// when it has no `at`.
 pub mod show_place {
     /// By itself, at `at` or the middle of the screen.
     pub const FREE: u32 = 0;
@@ -4824,6 +4823,7 @@ impl From<u64> for Who {
     }
 }
 
+/// Text for the screen, the one way of putting any there.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ShowDesc {
@@ -4864,7 +4864,7 @@ pub struct CommandArgs {
     pub count: u32,
     /// Engine side reply buffer, written through `Host::command_reply`.
     pub reply: *mut core::ffi::c_void,
-    /// Client commands (`Host::reg_client_command`): the client that typed it; `world` is null.
+    /// Client commands (`Host::reg_command` with `client`): the client that typed it; `world` is null.
     pub client: *mut ClientCtx,
 }
 

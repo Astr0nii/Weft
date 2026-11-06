@@ -62,7 +62,7 @@ Say what a block is and the engine runs it. No ticking and no neighbor callbacks
 // Always on.
 r.block(&CRYSTAL).signal_constant();
 
-// Follows the power around it: a `power` property (`off`, `on_event`) changes by itself.
+// Follows the power around it: a `power` property (`off`, `on`) changes by itself.
 r.block(&LIGHT)
     .signal_sink()
     .prop("power", ["off", "on"])
@@ -99,7 +99,7 @@ The rest of the set, each with the properties it needs added for you:
 - `.signal_torch()`, `.signal_repeater()`, `.signal_comparator()`: as in the game.
 - `.signal_read(|w, p| level)`: what a comparator behind the block reads, instead of how full it is. It looks again when the block changes; `w.signal_read_changed(p)` for anything else it depends on.
 - `.signal_floater(breaks)` after `.facing(..)`: a floater; `breaks` makes it break what is in its way. `power` is 0 idle, 1 going, 2 stuck.
-- `w.body_from_blocks(center, &cells)` takes blocks out of the world into a moving body, with chests and what is in them, circuits going on. Move it with `set_entity` (a speed) or `w.body_move_to(id, pos, ticks)`, and `w.body_to_blocks(id)` makes it blocks again, on the nearest whole block. Its blocks are reached the way the world's are, through `w.on_body(id)`: `w.on_body(ship)?.prop_set(pos, "lit", "true")` in the body's own coordinates, with parts, scheduled ticks and signals as in the world. `w.push_blocks(pos, dir)` moves blocks the way a piston does, without one: what would be pushed goes one block that way, slime and all, so a machine can open a drawbridge. `w.body_fall(id)` lets it drop instead, like sand: each block lands where it comes down, or drops if it can't stand there, so a felled tree or a collapsing roof is a lift and a fall.
+- `w.body_from_blocks(center, &cells)` takes blocks out of the world into a moving body, with chests and what is in them, circuits going on. Move it with `w.entity_modify(id).velocity(..)` or `w.body_move_to(id, pos, ticks)`, and `w.body_to_blocks(id)` makes it blocks again, on the nearest whole block. Its blocks are reached the way the world's are, through `w.on_body(id)`: `w.on_body(ship)?.prop_set(pos, "lit", "true")` in the body's own coordinates, with parts, scheduled ticks and signals as in the world. `w.push_blocks(pos, dir)` moves blocks the way a piston does, without one: what would be pushed goes one block that way, slime and all, so a machine can open a drawbridge. `w.body_fall(id)` lets it drop instead, like sand: each block lands where it comes down, or drops if it can't stand there, so a felled tree or a collapsing roof is a lift and a fall.
 - `.signal_observer()` and `.signal_piston(head, sticky)`, `.signal_piston_head()`: after `.facing(..)`.
 
 **A model on any face:** those blocks have `attach` and `front` properties. Write the model once for a floor with the front to the north, and `oriented` turns it, pictures included:

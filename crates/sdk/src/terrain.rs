@@ -646,7 +646,7 @@ impl Registry {
     /// ```ignore
     /// static TREES: Scatter = Scatter::named("trees");
     /// r.scatter(&TREES).cell(5).reach(2).density(&TREE_DENSITY).shape(|s| {
-    ///     let [x, y, z] = s.pos();
+    ///     let BlockPos { x, y, z } = s.pos();
     ///     for dy in 0..5 { s.put_force([x, y + dy, z], LOG.id()); }
     /// });
     /// ```
@@ -684,8 +684,8 @@ impl ScatterBuilder<'_> {
     pub fn reach(self, blocks: i32) -> Self {
         self.set(&crate::comps::scatter::REACH, blocks)
     }
-    /// Only place where the surface block is one of these blocks or tags (for example,
-    /// `.ground("#plant_soil")`). Without this constraint, any valid surface is allowed.
+    /// Only place where the surface block is one of these blocks (full names, `base:sand`) or
+    /// tags (`.ground("#plant_soil")`). Without this constraint, any valid surface is allowed.
     pub fn ground(mut self, blocks: &str) -> Self {
         for b in blocks.split_whitespace() {
             self = self.push(&crate::comps::scatter::GROUND, b.to_string());

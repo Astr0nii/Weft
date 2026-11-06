@@ -51,7 +51,7 @@ impl World {
 
     /// Takes `cells` out of the world into a new moving body, whose block (0, 0, 0) is at
     /// `center` and which they keep their places around. Chests and the like go along with
-    /// what is in them, and it stands there till told otherwise: `set_entity` for a speed,
+    /// what is in them, and it stands there till told otherwise: `entity_modify(id).velocity(..)` for a speed,
     /// `body_move_to` to go somewhere, `body_to_blocks` to be blocks again. Its entity, or 0 if nothing came.
     pub fn body_from_blocks(&self, center: impl Into<BlockPos>, cells: &[BlockPos]) -> u64 {
         let center = center.into();

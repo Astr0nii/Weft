@@ -65,7 +65,7 @@ r.entity(&ORB).texture("orb").model(Model::from(vec![
 ## Model from Blockbench
 Make the model as a Bedrock Entity, export it as `<name>.geo.json` and drop it into `assets/models/`. A file named like the entity is picked up on its own (`idol.geo.json` for `idol`), and `r.set_model(&IDOL, "other_name")` points at another one. Either way the file replaces any model written in code. Animations work the same way, from `animations/<name>.animation.json`.
 
-The engine reads bones with their `pivot`, `parent` and resting `rotation`, boxes with `origin` (absolute, the way Blockbench writes it), `size`, `uv` (a pair or per face), `mirror` and `inflate`, and `poly_mesh` bones, triangles and quads alike, with normalized uvs if you use them. The geometry's `texture_width` and `texture_height` override the numbers you gave to `Model::uv`, so the skin can be any size.
+The engine reads bones with their `pivot`, `parent` and resting `rotation`, boxes with `origin` (absolute, the way Blockbench writes it), `size`, `uv` (a pair or per face), `mirror` and `inflate`, and `poly_mesh` bones, triangles and quads alike, with normalized uvs if you use them. The geometry's `texture_width` and `texture_height` override the numbers you gave to `Model::uv_size`, so the skin can be any size.
 
 Two things trip people up. A rotated box is drawn unrotated (the log warns about it), so put it in its own bone and rotate the bone. And list parent bones before their children, as Blockbench does. Molang expressions aren't evaluated, only plain numbers.
 
@@ -160,7 +160,7 @@ r.item(&GREATSWORD).two_handed();                     // does nothing while the 
 r.item(&MAP).one_handed_action("hold_one");               // two hands, or one with this action
 r.item(&BOW).use_priority(10);                        // goes before the other hand on a right click
 ```
-A right click goes to the block first (not while sneaking), then to the hands by `use_priority`, the main hand if they are equal. The next hand gets its turn when the item does nothing, which `on_use` says by returning `false`: a bow with no arrows lets the torches in the other hand go down. Hits are for the main hand. The second hand itself is an equipment slot, `r.equipment_slot(&OFF_HAND, 0, "slot_offhand")`, and base registers it. A menu with `.equipment()` has it; its screen places it with `ui.group(OFF_HAND.name())`, as `ui.equipment()` draws only what is worn.
+A right click goes to the block first (not while sneaking), then to the hands by `use_priority`, the main hand if they are equal. The next hand gets its turn when the item does nothing, which `on_use` says by returning `false`: a bow with no arrows lets the torches in the other hand go down. Hits are for the main hand. The second hand itself is an equipment slot, `r.equipment_slot(&OFF_HAND, &[], "slot_offhand")`, and base registers it. A menu with `.equipment()` has it; its screen places it with `ui.group(OFF_HAND.name())`, as `ui.equipment()` draws only what is worn.
 
 Where the item sits in the hand comes from `display.thirdperson_righthand` of `models/item/<name>.json`, which is Blockbench's Display tab, the same from the eyes and from outside; the other hand mirrors it. And `models/item/<name>.geo.json` makes the item out of bones (its texture is `textures/item/<name>.png`). Its origin is the palm with -Z along the arm, and its bones go in the same clips as the arms, so a gun's slide is one more bone in `swing`. On the ground and in the inventory it still shows its sprite.
 

@@ -6,18 +6,19 @@
 3. [Creating a mod in two minutes](#creating-a-mod-in-two-minutes)
 4. [Names and paths](#names-and-paths)
    - [Names](#names), [References](#references), [Handles](#handles), [Textures](#textures-and-other-assets), [Translations](#translations)
-5. [Components and tags as inter-mod communication](#components-and-tags-as-inter-mod-communication)
-6. [Content builders](#content-builders)
-   - [Blocks](#blocks), [Items](#items), [Entities](#entities), [Block entities](#block-entities), [Liquids](#liquids), [World](#world), [Recipes](#recipes), [Loot](#loot), [Replacing something of another mod](#replacing-something-of-another-mod)
-7. [Hooking into the game](#hooking-into-the-game)
+5. [How registering works](#how-registering-works)
+6. [Components and tags as inter-mod communication](#components-and-tags-as-inter-mod-communication)
+7. [Content builders](#content-builders)
+   - [Blocks](#blocks), [Items](#items), [Entities](#entities), [Block entities](#block-entities), [Liquids](#liquids), [World](#world), [Recipes](#recipes), [Loot](#loot), [Changing something of another mod](#changing-something-of-another-mod)
+8. [Hooking into the game](#hooking-into-the-game)
    - [Built-in events](#built-in-events), [Systems and energy](#systems-and-energy)
-8. [Text on the screen](#text-on-the-screen)
-9. [Commands](#commands)
-10. [World API](#world-api)
-11. [Client side](#client-side)
-12. [Debugging](#debugging)
-13. [Things that make your and other modders' life easier](#things-that-make-your-and-other-modders-life-easier)
-14. [Guides for bigger systems](#guides-for-other-systems)
+9. [Text on the screen](#text-on-the-screen)
+10. [Commands](#commands)
+11. [World API](#world-api)
+12. [Client side](#client-side)
+13. [Debugging](#debugging)
+14. [Things that make your and other modders' life easier](#things-that-make-your-and-other-modders-life-easier)
+15. [Guides for bigger systems](#guides-for-other-systems)
 
 ## Introduction
 This is a guide describing how the base game itself is written.\
@@ -155,6 +156,32 @@ Text can carry colors and effects:
 
 All of it works in any text the game shows, chat and command replies included, so there is no second kind of text to learn.
 
+## How registering works
+Everything you register is an entry: a kind (block, item, ore, recipe, sky object, weather...), a name, and the components it is made of.\
+Builder methods are shortcuts for components: `.hardness(3.0)` sets `hardness`, `.veins(6)` on an ore sets `comps::ore::VEINS`. `comps::<kind>` lists what the engine reads off each kind, and every builder has `.set(&C, v)`, `.unset(&C)`, `.tag("t")` and `.untag("t")`, so nothing is out of reach when a shortcut is missing.
+
+Because it's all components, anything registered, yours, another mod's or the engine's, changes the same way:
+- `r.block(&X)`, `r.ore(..)` and the rest register it once; the same name twice is a load error
+- `r.edit(&X)` changes only what you set, the rest stays
+- `r.replace(&X)` registers it again from scratch, nothing of the old one stays
+- `r.remove(&X)` takes it out, as if nobody had registered it
+- `r.edit_pattern::<kind::Block>("#logs")` is one edit of everything a pattern names: `#tag`, a name with `*`, or some states of a block, `base:furnace[lit=true]`
+
+Lists (a dimension's weathers, a loot table's pools, a terrain's rules) take `push`, `insert_before`, `insert_after`, `replace_item` and `remove_item`, pointing at an element by its name or `#index`.\
+The compiler checks that a component fits the kind: `comps::ore::VEINS` goes on an ore and won't build on a block, while your own `Component::named(..)` goes on anything.
+
+```rust
+static GLOWSTONE: Block = Block::named("base:glowstone");
+
+r.edit(&GLOWSTONE).light(10);                                   // on every state, the rest stays
+r.edit(&base_api::OVERWORLD).push(&comps::dimension::WEATHERS, ACID_RAIN.name().into());
+r.remove(&Recipe::named("base:crafting/torch"));
+r.edit_pattern::<kind::Block>("#logs").hardness(3.0);
+```
+
+Edits wait for what they edit, so load order only matters between two mods changing the same thing: the later one wins, and edits by pattern (`r.set` too) come after edits by name.
+Every kind with all its components and an example of changing someone else's is in the [registration guide](registration.md).
+
 ## Components and tags as inter-mod communication
 
 This is the most important part that you should remember to make life easier for you and other modders working with your mod.\
@@ -182,7 +209,7 @@ Blocks and items belong to the mod that adds them, but `fuel`, `food`, `sand`, `
 and mean the same in every mod, so they are written as they are, without a namespace.\
 A term that only makes sense for your mod can carry its prefix, `mymod:heat`, so nobody else picks the same word by accident.
 
-Block properties the engine reads are components as well: `HARDNESS`, `FRICTION`, `DRAG`, `LIGHT`, `TINT` (+ `TINT_FACES`), `SUPPORT_FACE` / `SUPPORT` / `SUPPORT_NEAR` and `HARVEST_LEVEL`.`.hardness(1.5)`, `.light(14)`, `.needs_below("#soil")`, `.tint(&tints::GRASS)` on a builder just set them, so another mod changes them with `r.set` and reads them with `HARDNESS.on_block(state)` like any other.
+Block properties the engine reads are components as well: `HARDNESS`, `FRICTION`, `DRAG`, `LIGHT`, `TINT` (+ `TINT_FACES`), `SUPPORT_FACE` / `SUPPORT` / `SUPPORT_NEAR` and `HARVEST_LEVEL`. `.hardness(1.5)`, `.light(14)`, `.needs_below("#soil")`, `.tint(&tints::GRASS)` on a builder just set them, so another mod changes them with `r.set` or `r.edit` and reads them with `HARDNESS.on_block(state)` like any other.
 
 Your own data structures:
 
@@ -230,7 +257,7 @@ is dropped.
 - `light(15)` or `light_rgb(r, g, b)`
 - `cutout()`, `translucent()`
 - `front_faces(facing, side, top, front)` in `.states` for a furnace's kind of block
-- `model_box(min, max)` (faces show the state's textures) or a `models/block/<name>.json` from Blockbench ([models guide](models.md#blocks-and-items)), `hitbox(min, max)` for its shape in the same 1/16 units, one box a call: what stops a walker, what the crosshair outlines and cracks, only the outline on a block that isn't solid. Without any: the model's boxes, else a plant's cross, else the whole block. Calling `frame(f)` first makes the boxes and hitboxes after it turn with the block, and `turned(..)` and `tilted(..)` change the last box. The order of the other calls doesn't matter (`cutout()` and `opacity(2)`, say)
+- `model_box(min, max)` (faces show the state's textures) or a `models/block/<name>.json` from Blockbench ([models guide](models.md#blocks-and-items)), `hitbox(min, max)` for its shape in the same 1/16 units, one box a call: what stops a walker, what the crosshair outlines and cracks, only the outline on a block that isn't solid. Without any: the model's boxes, else a plant's cross, else the whole block. Calling `oriented(p.orientation())` first in `.states` makes the boxes and hitboxes after it turn with the block, and `turned(..)` and `tilted(..)` change the last box. The order of the other calls doesn't matter (`cutout()` and `light_opacity(2)`, say)
 - `needs_below("#soil")`, or `needs(Dir::West, "")` for another side
 - `two_part("part", ["foot", "head"], |state| state_facing(state).opposite())` for a block two cells long: the second part goes where that says, needs room, and each goes with the other
 - `grows(seconds, min_light)` + `on_grow(..)` for plants
@@ -301,7 +328,7 @@ Stacks with different data don't merge. `r.stack_component` says a component exi
 ### Entities
 `r.entity(&ENTITY)` and then:
 - every entity gets a spawn egg by itself, `<name>_spawn_egg`, called after it and in the creative tab of eggs. Draw `item/<name>_spawn_egg.png` or it looks generic; `no_egg()` for what isn't a creature
-- `size(w, h)`, with `eye(height)` when its eyes aren't at 85% of that, `health`, `speed`
+- `size(w, h)`, with `eye_height(blocks)` when its eyes aren't at 85% of that, `max_health`, `walk_speed`
 - `hostile()` or `passive()` or `category(..)`
 - `texture` (by default `entity/<name>`)
 - `model(humanoid(..))`, or `r.set_model(&KIND, "thing")` for a Blockbench geo.json (any item's or entity's, also someone else's, `"#tag"` for many items)
@@ -314,11 +341,11 @@ Stacks with different data don't merge. `r.stack_component` says a component exi
 - `on_tick`: every entity of the kind at once, once per tick
 - `on_hurt(|w, hurt| ..)`, `on_died(|w, death| ..)`: `actions::HURT` and `actions::DIE` for this kind. The damage itself is the `chain::DAMAGE` chain and `actions::HURT` can stop it, for any kind, yours or not. Every hit has a cause (`damage_causes::FALL`, `LAVA` ...); your own is `r.damage_cause(&RADIATION).bypasses_armor().death_message("death.mymod.radiation")`, and a kind tagged `immune/fall` or `immune/mymod:radiation` takes none of it. Healing is the same call with a negative amount (`w.heal` is that), going through `chain::HEAL` and the `ENTITY_HEALED` event instead
 - riding: `.seat(Seat::at([0.0, 1.0, 0.0]).steers())` is a place to sit, as many as you like, each with its own point in the mount's frame (+Z ahead) and `.exit(Exit::offset(..))`, `Exit::nearest(2.0)` (the default), `Exit::stay()` or `Exit::call(|w, mount, rider, nearest| ..)` for where its rider gets off. Riders ride riders, as deep as you like, never in a ring. Who sits in a seat that `steers` steers it: a mob with its own AI (a zombie jockey), a player with its keys through `.steering(..)`, which runs on that player's client and gives what the mount does; `steer::walk_turn`, `walk_look`, `strafe`, `fly`, `jump` and `charged_jump` are ready, `.and(..)` puts two together, `Steering::new(|keys, mount| ..)` is your own. Nobody steering, its own AI moves it. `.rider_rules(RiderRules::new().hits(|w, mount, rider| ..).builds(..).hurt_reaches_riders(0.5))` says what riders may do, by any condition; `.riders_fall()` passes its falls on; `.ride_camera(blocks)` how far back the third-person camera goes; `.rideable()` gets on with a right click. From code `w.mount(rider, mount)`, `w.mount_seat(..)`, `w.dismount(rider)`, `w.vehicle(id)`, `w.riders(mount)`, and `actions::MOUNT` / `DISMOUNT` to refuse or follow them. Players get off with `core:dismount`, Shift unless rebound. A teleport, to another dimension too, takes a mount's riders along and a rider off its mount. Riders sit by their model's `ride` clip (legs forward on any two-legged one) instead of walking. Testmod's steed shows it all
-- camera modes: `r.camera(&ORBIT).shot(shot::orbit(6.0)).key(&ORBIT_KEY, "O").transition(0.5, easing::SMOOTH)` is a camera of your own. A shot runs every frame on the client and says where the camera is and looks, from the keys, the player's eyes and last frame's camera; `shot::eyes`, `behind`, `orbit`, `free`, `top_down`, `fixed` and `path` (a cutscene through points) are ready, `Shot::new(flags, |a| a.out = ..)` is yours. Flags say what goes with it: `BODY`, `HAND`, `HUD`, `EFFECTS` (bob, sprint FOV, hurt tilt), `CLIP` (pulled in where a block is in the way, as third person), `SOLID` (a small box that bumps into blocks and stays where the world is loaded), `DETACHED` (keys and mouse move the camera, the player stands), `AIM`, `NO_INTERACT`, `CYCLE` (F5 goes through it), `ASK` (only where the server lets it). The engine's first person, behind, front and free camera (P) are modes too: `r.edit(&cameras::FRONT).without(camera_flags::CYCLE)` takes the front view out of F5. The free camera asks `question::CAMERA` first, allowed in a game mode that flies; `Verdict::Allow` lets it anywhere, `Deny` nowhere (`a.is_camera(&cameras::FREE)`). The server puts a player in one with `w.force_camera(player, &MODE, Some((2.0, easing::IN_OUT)))`, held until `w.release_camera(..)`, or `w.set_camera(..)` it may leave. `ease(easing::BOUNCE_OUT, t)` is the same curves for your own moves. The world still loads around the player, not the camera.
+- camera modes: `r.camera(&ORBIT).shot(shot::orbit(6.0)).key(&ORBIT_KEY, "O").transition(0.5, easing::SMOOTH)` is a camera of your own. A shot runs every frame on the client and says where the camera is and looks, from the keys, the player's eyes and last frame's camera; `shot::eyes`, `behind`, `orbit`, `free`, `top_down`, `fixed` and `path` (a cutscene through points) are ready, `Shot::new(flags, |a| a.out = ..)` is yours. Flags say what goes with it: `BODY`, `HAND`, `HUD`, `EFFECTS` (bob, sprint FOV, hurt tilt), `CLIP` (pulled in where a block is in the way, as third person), `SOLID` (a small box that bumps into blocks and stays where the world is loaded), `DETACHED` (keys and mouse move the camera, the player stands), `AIM`, `NO_INTERACT`, `CYCLE` (F5 goes through it), `ASK` (only where the server lets it). The engine's first person, behind, front and free camera (P) are modes too: `r.edit(&cameras::FRONT).without(abi::camera_flags::CYCLE)` takes the front view out of F5. The free camera asks `question::CAMERA` first, allowed in a game mode that flies; `Verdict::Allow` lets it anywhere, `Deny` nowhere (`a.is_camera(&cameras::FREE)`). The server puts a player in one with `w.force_camera(player, &MODE, Some((2.0, easing::IN_OUT)))`, held until `w.release_camera(..)`, or `w.set_camera(..)` it may leave. `ease(easing::BOUNCE_OUT, t)` is the same curves for your own moves. The world still loads around the player, not the camera.
 - `on_interact`: a player right clicked one (after `actions::INTERACT_ENTITY`); true if it did something, which swings the player's arm
 
 Moving platforms: `solid()`, `kinematic()`, `carry_height(..)`, and
-`blocks(&DECK)` with a template (`r.template(&DECK).fill("base:oak_planks", from, to)`) makes a flying structure players can build on; its box is what the blocks fill, no `size` needed. `EntityState.size` is an entity's box and eye height as they are now (crouching and `w.set_size` included), so `st.pos.y + st.size.eye` is where its eyes are (or just `st.eye()`).
+`body(&DECK)` with a template (`r.template(&DECK).fill("base:oak_planks", from, to)`) makes a flying structure players can build on; its box is what the blocks fill, no `size` needed. `EntityState.size` is an entity's box and eye height as they are now (crouching and `w.set_size` included), so `st.pos.y + st.size.eye` is where its eyes are (or just `st.eye()`).
 
 ### Block entities
 A block with `.entity(|e| e.attach(..).inventory(n))` (data, a tick, slots) and `.opens(&MENU)` (a window on use), each on its own; see the [block entities guide](block_entities.md).\
@@ -341,8 +368,8 @@ Every liquid is also an item of its name and tags, its count in millibuckets: wh
 
 ### World
 - `r.biome(..)` with its climate, surface and tints (`.temperature(0.35..).surface(..).tint(&tints::GRASS, ..)`); terrain rules inherit them
-- `r.dimension(..)` (`spawn`, `height`, `gravity`, `fixed_time`, `sky`, `bare`, or `generator` + `column` to fill it in code)
-- weather is a value too: `r.weather(&ACID_RAIN).darkness(0.5).gray(0.8, 0.6, 0.9).sound("mymod:weather.acid").duration(2400, 6000).weight(1)` (`falls`, `lightning`, `shelters_from_sun`, or the whole `look`), and a dimension lists what comes there after clear weather, `.weathers(&[&weathers::RAIN, &weathers::THUNDER, &ACID_RAIN])`. `w.weather()` is the id now (`w.raining()`, `w.thundering()` read its flags), `w.set_weather(&weathers::THUNDER, ticks)` changes it, and `r.on_event(&WEATHER_TICK, ..)` hears every tick of it for acid on whoever stands outside. What falls is the biome's: `.precipitation(&ASH)` after `r.precipitation(&ASH)`, `.snows()` for snow
+- `r.dimension(..)` (`spawn_point`, `player_spawn`, `height_cubes`, `gravity`, `day_length`, `daylight`, `fixed_time`, `sky_color`, `bare`, or `generator` + `column` to fill it in code)
+- weather is a value too: `r.weather(&ACID_RAIN).darkness(0.5).gray(0.8, 0.6, 0.9).sound("mymod:weather.acid").duration(2400, 6000).weight(1)` (`no_falling()`, `lightning()`, `no_shelter()` for a sandstorm that burns, the rest of its look in `comps::weather`), and a dimension lists what comes there after clear weather, `.weathers(&[&weathers::RAIN, &weathers::THUNDER, &ACID_RAIN])`, or `.push(&comps::dimension::WEATHERS, ..)` in an edit of someone else's. `w.weather()` is the id now (`w.raining()`, `w.thundering()` read its flags), `w.set_weather(&weathers::THUNDER, ticks)` changes it, and `r.on_event(&WEATHER_TICK, ..)` hears every tick of it for acid on whoever stands outside. What falls is the biome's: `.precipitation(&ASH)` after `r.precipitation(&ASH)`, `.snows()` for snow
 - `r.sky_body(&DIM, &OBJECT)`, `r.sky_stars`, `r.sky_dome`, `r.sky_clouds` for what is in its sky, the sun and the moon included; `OVERWORLD.sky(&MOON)` is one of them for `r.edit` and `r.remove`
 - `r.terrain(&DIM)` for your dimension's terrain, `r.edit(OVERWORLD.terrain())` for another mod's
 - `r.ore(block)`, in every dimension whose stone it replaces (`.dimension(..)` limits it). `.replaces_with("#granite", &GRANITE_IRON_ORE)` makes the same vein go on as another block where it meets granite, so veins don't stop at stone borders; `.exposed(0.5)` leaves out half of what would touch a cave, as vanilla's gold and diamonds. `r.edit(IRON_ORE.ore())` changes another mod's ore: what you set, its `replaces` and `replaces_with` added to its own
@@ -365,15 +392,17 @@ A recipe is named after its kind and output in the namespace of the mod making i
 ### Loot
 `r.loot(&RUBY_ORE).pool(Pool::new().when(Cond::Harvested).rolls(1, 2).item("ruby"))` (a block's or entity's table is what it drops, `LootTable::named(..)` is a table of its own)\
 A block's table is all it drops, there is no tool check in front of it: put `Cond::Harvested` on the pools that need the right tool (broken by the world, like a torch losing its wall, always counts as harvested).\
-and other mods' tables without replacing them: `r.edit(ZOMBIE.loot()).pool(..)` with `ZOMBIE = EntityKind::named("base:zombie")` adds a pool, `.replace_drop("rotten_flesh", "mymod:brain")` and `.remove_drop(..)` change what any pool of it gives, `.clear()` empties it, and the pools are a list like any (`.remove_item(&comps::loot::POOLS, "#0")` takes out the first).
+Other mods' tables change without replacing them: `r.edit(ZOMBIE.loot()).pool(..)` with `ZOMBIE = EntityKind::named("base:zombie")` adds a pool, `.replace_drop("rotten_flesh", "mymod:brain")` and `.remove_drop(..)` change what any pool of it gives, `.clear()` empties it, and the pools are a list like any (`.remove_item(&comps::loot::POOLS, "#0")` takes out the first).
 
 ### Changing something of another mod
-- `r.edit(&base::TORCH).light(5)`: only what you set changes, the rest stays (testmod edits its own torch this way). On a block it goes on every state; `.state_where("lit=true", |s| s.light(15))` on those states only, whatever properties the block has, and `.prop(..)` adds one. Blocks, items, biomes, dimensions and menus by their handle (stairs and slabs a template made too), and the parts of a block by its: `IRON_ORE.ore()`, `WATER.liquid()`, `ZOMBIE.loot()`, `OVERWORLD.terrain()`, `WELL.structure()`. A block's edit says of its item only what it sets (`item_texture`, `no_item()`).
-- `r.edit_pattern::<kind::Block>("#logs")...`: the same edit on everything a pattern names, `#tag`, `*` in a name, or a block's states `base:furnace[lit=true]`; `r.set` and `r.tag` above are this for blocks and items at once.
-- `r.replace(&base::TORCH)...`: registers it from scratch, nothing of theirs stays; for every kind with a builder (blocks, items, entities, biomes, dimensions, menus, particles, sounds, poses, game modes, weathers, damage causes, text places, sky objects, HUD elements, recipes, loot tables...).
-- `r.remove(&base::RUBY_ORE)`: as if nobody had registered it.
+`edit`, `replace` and `remove` from [How registering works](#how-registering-works), kind by kind:
+- `r.edit(&base::TORCH).light(5)` goes on every state of a block (testmod edits its own torch this way); `.state_where("lit=true", |s| s.light(15))` on those states only, whatever properties the block has, and `.prop(..)` adds one. Stairs and slabs a template made are edited like any block. A block's edit says of its item only what it sets (`item_texture`, `no_item()`).
+- every kind with a builder goes by its handle: entities (`r.edit(&PLAYER).attach(&MANA)`), menus, particles, sounds, keys, settings, weathers, poses, and so on. What belongs to something goes by its owner's: `IRON_ORE.ore()`, `WATER.liquid()`, `GRAVEL.loot()` or `ZOMBIE.loot()`, `OVERWORLD.terrain()`, `OVERWORLD.sky(&MOON)`, `WELL.structure()`
+- what has no handle is named after what made it: recipes `<mod>:<kind>/<output>`, natural spawns `<mod>:<entity>`, decorations `<mod>:decoration`, the second of each `/2` and so on, liquid reactions `<mod>:<liquid>><touching>`, screen parts `<mod>:<screen>/<area>`. `.named(..)` on a recipe, spawn, decoration or reaction gives yours a name of your choice, and `Recipe::named("base:crafting/torch")`, `SpawnRule::named(..)` and the like reach theirs
+- `r.set` and `r.tag` above are `edit_pattern` for blocks and items at once
+- `r.replace` works for every kind with a builder, `r.remove` for every kind (a block takes its item along)
 
-Their handle, item and recipes point at yours.
+After a replace their handle, item and recipes point at yours.
 
 ## Hooking into the game
 There are four mechanisms, try them in this order:
@@ -406,7 +435,7 @@ base adds `base:smelted`.
 
 ### Systems and energy
 Systems run over every entity with a component all at once, and that is how block entities tick:
-`r.system(&BURNER, |batch| for (id, m, ticks) in batch.iter_mut() { .. })`. `ticks` is 1 unless it is catching up on time it missed (unloaded, the time jumped): then it should do that many ticks of work at once, see [machines](machines.md#catching-up).
+`r.system(&BURNER, |batch| for (id, m, ticks) in batch.iter_mut() { .. })`. `ticks` is 1 unless it is catching up on time it missed (unloaded, the time jumped): then it should do that many ticks of work at once, see [block entities](block_entities.md#catching-up).
 
 Energy is a built-in engine contract, you can give a block entity the `core:energy` component, tag
 cables with `conductor`, and every mod's generators and machines will work together.\
@@ -458,7 +487,7 @@ Positions come back as `BlockPos` (a block, `x`, `y`, `z` whole numbers) and `Ve
 Inside any callback you get a `World` (`w`):
 - the world's seed (`seed`, and `seed_at(pos)`, `seed_of_cube(pos)` for a number that belongs to a place: what a chest holds when first opened, a villager's trades)
 - blocks (`block`, `set_block`, `schedule_tick`, `prop`, `prop_int`, `prop_set`, `prop_cycle` for a lever or a repeater's delay); for anything big, `w.fill(shape, block)` fills a whole shape in one call (a crater with air). Shapes are values: `Shape::ball`, `cuboid`, `cylinder`, `ellipsoid`, `noisy`, `blast` (a ragged crater like vanilla's explosions leave), combined with `.union`, `.intersect` and `.subtract` (a geode is a ball minus a smaller one); `.keep(Filter::unbreakable())`, `.keep(Filter::liquids())` and `.only(Filter::tag("#stone"))` choose what changes. The same shapes pick entities (`w.entities_in(&shape, EntityFilter::any().targets().touching())`, a conveyor's top, an arrow's tip), outline themselves with `w.draw_shape` and place particles (`.area(&shape)` on a burst). The engine does a fill at the end of the tick on every core, a cube at a time, lights each cube once, loads what it opens up in players' views right away and gives the rest the change when it loads. Players see it appear whole. Hundreds of blocks of radius take well under a second, where `set_block` per block costs about 1.6 µs each. Testmod's dynamite uses it
-- entities (`spawn`, `spawn_with(&KIND, pos, &Spawn::new().velocity(v))` for one that starts moving, `spawn_item` for a dropped stack (`spawn_with(&ITEM, ..)` with `.stack(s)` throws it), `entity`, `set_entity`, `damage`, `heal`, `game_mode`, `creative`, `outside_survival` for a mode that spares damage and hunger, `set_game_mode(player, &game_modes::CREATIVE)`, `entities_near`, `targets_near` for what can be hit, `navigate`, `walk`, `push` for a trampoline or a blast, players too). Speed and jump are attributes (`attribute::MOVEMENT_SPEED`, `JUMP_STRENGTH`) for mobs and players alike: `w.attribute_add_modifier(player, &MOVEMENT_SPEED, ..)` is a speed effect, and `attribute::FOV` widens or narrows a player's view (a zoom, a speed rush). `w.entity_modify(id)` changes what an entity is now, only what you name, players' clients following: `.pos(..)`, `.velocity(..)`, `.yaw(..)`, `.pitch(..)`, `.health(..)`, `.fall_distance(0.0)` (a mace's smash, a parachute), `.flying(true)`, `.fire(ticks)`, `.selected(slot)`. Testmod's mace is a whole weapon on top of that and `chain::ATTACK_DAMAGE` Reach and mining speed are attributes too (`attribute::BLOCK_REACH`, `ENTITY_REACH`, `MINING_SPEED`), and the client reads them: a modifier is all a long tool or a haste effect takes. `w.in_liquid(pos)` knows a liquid's surface, which the block alone doesn't tell. `w.raycast(from, dir, max, liquids)` finds the first block along any line (a turret, whether a mob sees a player), and `w.target_block(id, ..)` is that from an entity's eyes.
+- entities (`spawn`, `spawn_with(&KIND, pos, &Spawn::new().velocity(v))` for one that starts moving, `spawn_item` for a dropped stack (`spawn_with(&ITEM, ..)` with `.stack(s)` throws it), `entity`, `damage`, `heal`, `game_mode`, `creative`, `outside_survival` for a mode that spares damage and hunger, `set_game_mode(player, &game_modes::CREATIVE)`, `entities_near`, `targets_near` for what can be hit, `navigate`, `walk`, `push` for a trampoline or a blast, players too). Speed and jump are attributes (`attribute::MOVEMENT_SPEED`, `JUMP_STRENGTH`) for mobs and players alike: `w.attribute_add_modifier(player, &MOVEMENT_SPEED, ..)` is a speed effect, and `attribute::FOV` widens or narrows a player's view (a zoom, a speed rush). `w.entity_modify(id)` changes what an entity is now, only what you name, players' clients following: `.pos(..)`, `.velocity(..)`, `.yaw(..)`, `.pitch(..)`, `.health(..)`, `.fall_distance(0.0)` (a mace's smash, a parachute), `.flying(true)`, `.fire(ticks)`, `.selected(slot)`. Testmod's mace is a whole weapon on top of that and `chain::ATTACK_DAMAGE`. Reach and mining speed are attributes too (`attribute::BLOCK_REACH`, `ENTITY_REACH`, `MINING_SPEED`), and the client reads them: a modifier is all a long tool or a haste effect takes. `w.in_liquid(pos)` knows a liquid's surface, which the block alone doesn't tell. `w.raycast(from, dir, max, liquids)` finds the first block along any line (a turret, whether a mob sees a player), and `w.target_block(id, ..)` is that from an entity's eyes.
 - what happens in the world comes as actions, a question before and an event after under one handle: `r.before_event(&actions::DIE, ..)` is a totem (denied, it lives on with one health), `r.on_event(&actions::INTERACT_ENTITY, ..)` hears every right click on an entity. A mod's own is `static WRENCH: Action<Wrenched> = Action::named("wrench")`, and `w.act(&WRENCH, &mut query, value)` asks, then tells everyone if nobody refused
 - conditions are one predicate for music, text, loot and spawning: `r.condition(&BLOOD_MOON, |c| ..)` answers on whichever side asks (`c.world()` on the server, `c.client()` on the client, with `c.pos()` and `c.entity()`), and then `.when(&BLOOD_MOON)` on music or a spawn rule, `Cond::Condition(&BLOOD_MOON)` in a loot pool and `{if:mymod:blood_moon}` in text all use it. The engine's are in `conditions` (`DAY`, `NIGHT`, `UNDERGROUND`, `SURFACE`), and every game mode is one by its name (`Condition::named("core:creative")`, `{if:creative}`)
 - poses are values too: `r.pose(&SIT).height(0.7).eye(0.62).speed(0.0).action("sit")` registers one (`tilt(pose_tilt::FACE_DOWN)` lays the model down), and `w.set_pose(id, Some(&SIT), None)` holds a mob or a player in it until `None` (with a facing in degrees it also stays still and turned so, the way a bed lays a player down). The engine still picks standing, crouching, swimming and crawling (`keys::CRAWL` held, or no room for more) by itself while nothing holds the pose
@@ -515,6 +544,7 @@ Tell me about this instead of building a hack, so I can adjust the engine for th
 You can contact me on Discord: `@vortex_so`
 
 ## Guides for other systems
+- [Registration](registration.md): every kind, its components and lists, and how to change another mod's
 - [Textures](textures.md): animation, glow, tinted overlays
 - [CTM](ctm.md): connected and varied block textures (glass, logs, random stone)
 - [Redstone](redstone.md): wire on any face, gates, pistons, and blocks of your own that join in

@@ -107,7 +107,7 @@ r.particle(&SPARK).textures(&["glint_0", "glint_1"]).life(0.3, 0.6).fullbright()
 ```
 `ParticleFrag` has `uv` (0 to 1 across the quad), `albedo` (the texture sample), `color` (the kind's color at this age, between the two you gave to `color(start, end)`), `life` (0 at birth, 1 at the end) and `time`.
 
-The rest of the builder is `life(min, max)` in seconds, `size(min, max)` in blocks, `gravity(g)` (negative rises), `drag(d)`, `colliding()`, `fullbright()`, `translucent()` and `shrinking()`. From the server, `world.spawn_particles(&SPARK, pos).count(12).spread(0.4).speed(2.0)` makes them appear for everyone nearby. `r.edit(&Particle::named("core:poof"))` (or `replace`) changes how the engine's own smoke looks, `core:block` its block dust.
+The rest of the builder is `life(min, max)` in seconds, `size(min, max)` in blocks, `gravity(g)` (negative rises), `drag(d)`, `colliding()`, `fullbright()`, `translucent()` and `shrinking()`. From the server, `world.spawn_particles(&SPARK, pos).count(12).spread(0.4).speed(2.0)` makes them appear for everyone nearby. `r.edit(&POOF)` with `static POOF: Particle = Particle::named("core:poof")` (or `replace`) changes how the engine's own smoke looks, `core:block` its block dust.
 
 ## Screen effects
 A screen effect works on the finished picture of the world, and fades in and out with a strength from 0 to 1:

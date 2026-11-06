@@ -26,7 +26,7 @@ pub use abi::{
     BlockChange, ChatMessage, Death, DimensionChange, Hurt, Interaction, ItemUsed, Pickup, PlayerEvent, attr_op, permission, stage,
 };
 
-/// The engine's questions with no event after them (`Registry::intercept`, `World::ask`); the
+/// The engine's questions with no event after them (`Registry::before_event`, `World::ask`); the
 /// others are `actions`.
 pub mod question {
     use crate::Question;
@@ -241,7 +241,7 @@ pub enum Verdict {
     Deny,
 }
 
-/// A question being asked (`Registry::intercept`).
+/// A question being asked (`Registry::before_event`).
 pub struct Ask {
     world: World,
     question: &'static str,

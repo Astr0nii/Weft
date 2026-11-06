@@ -748,7 +748,6 @@ pub fn sphere_mesh(center: [f32; 3], radius: f32, rings: u32, segments: u32, uv:
     out
 }
 
-/// Classic humanoid on a 64x32 skin; `arms_forward` for zombies.
 /// A model built in code: its parts and the size of the skin its UVs are laid out on (the
 /// picture itself may be bigger, a pack's high resolution skin keeps lining up).
 pub struct Model {
@@ -884,7 +883,7 @@ impl EntityBuilder<'_> {
     pub fn unpushable(self) -> Self {
         self.tag(abi::comp::entity::UNPUSHABLE)
     }
-    /// Moved exactly by the velocity mod logic gives it (`set_entity`), through blocks, no
+    /// Moved exactly by the velocity mod logic gives it (`entity_modify`), through blocks, no
     /// gravity: lifts, airships, contraptions.
     pub fn kinematic(self) -> Self {
         self.with(entity_flags::KINEMATIC)
@@ -1226,13 +1225,13 @@ impl Slots {
         self.owner = Some(abi::slot_owner::MENU);
         self
     }
-    /// The inventory of what the menu opened on: a block's (`BlockBuilder::inventory`), an
+    /// The inventory of what the menu opened on: a block entity's (`.entity(|e| e.inventory(n))`), an
     /// entity's, a storage's.
     pub fn holder(mut self) -> Self {
         self.owner = Some(abi::slot_owner::HOLDER);
         self
     }
-    /// The player's hotbar, in `Registry::player_inventory`.
+    /// The player's hotbar, in `Registry::player_slots`.
     pub fn hotbar(mut self) -> Self {
         self.flags |= slot_flags::HOTBAR;
         self

@@ -358,7 +358,7 @@ pub type Scatter = Handle<kind::Scatter>;
 /// unless `named`.
 pub type Decoration = Handle<kind::Decoration>;
 /// A fixed shape of blocks (`Registry::template`), for world structures, moving bodies and
-/// `World::place`.
+/// `World::place_template`.
 pub type Template = Handle<kind::Template>;
 /// A template placed while generating, named like it (`Registry::structure`).
 pub type Structure = Handle<kind::Structure>;
@@ -867,8 +867,7 @@ impl LootSource for LootTable {
     }
 }
 
-/// Builders of content carrying components (blocks, items, biomes, dimensions, liquids, entity
-/// kinds) tag and set values the same way.
+/// Every builder (each an entry of its kind) tags, sets values and edits lists the same way.
 pub trait WithComponents: Sized {
     /// The kind it registers (`kind`): which components it takes.
     type Kind;
@@ -909,7 +908,8 @@ pub trait WithComponents: Sized {
             .push(element(list, &item, abi::value_op::PUSH, ""));
         self
     }
-    /// An element before the one `anchor` names (its `name`, or `#index`).
+    /// An element before the one `anchor` names: its `name` field (a text element's text), or
+    /// `#index`; elements without a `name` field only by `#index`.
     fn insert_before<T: Data, K: kind::On<Self::Kind>>(mut self, list: &Component<Vec<T>, K>, anchor: &str, item: T) -> Self {
         self.pending()
             .push(element(list, &item, abi::value_op::INSERT_BEFORE, anchor));
@@ -959,7 +959,7 @@ impl WithComponents for State<'_> {
     }
 }
 
-/// A component value waiting to be sent with a descriptor. Text is kept as a `String` until then.
+/// A component operation waiting to be sent with its entry. Text is kept as a `String` until then.
 #[derive(Clone)]
 pub struct Pending {
     pub(crate) name: String,
@@ -1055,19 +1055,23 @@ impl Registry {
 
     /// `edit` of everything of a kind `pattern` names, any mod's: `#tag` (a block's states by
     /// their own tags), a name with `*` in it, `name[prop=value]` (those states of a block):
-    /// `r.edit_pattern::<kind::Block>("#planks/*").set(&FUEL, 300)`. Matching nothing is fine.
+    /// `r.edit_pattern::<kind::Block>("#planks/*").set(&FUEL, 300)`. Patterns apply after edits by
+    /// name. For blocks and items a pattern matching nothing is a load error (a `#tag` one when
+    /// no such tag exists), for other kinds it is fine.
     pub fn edit_pattern<K: kind::Builds + 'static>(&mut self, pattern: &str) -> K::Builder<'_> {
         self.edit(Handle::<K>::generated(pattern.to_string()))
     }
 
     /// Registers `handle` from scratch over what other mods registered as it, nothing of theirs
     /// staying: `r.replace(&base::TORCH).texture("blue_torch")`. Of several mods replacing one
-    /// thing, the last in load order wins.
+    /// thing, the last in load order wins. A block's item is replaced too (`.no_item()` leaves
+    /// theirs), its loot table only with `.drops*`, its block entity only with `.entity`.
     pub fn replace<K: kind::Builds>(&mut self, handle: &'static Handle<K>) -> K::Builder<'_> {
         K::builder(self, handle, abi::entry_mode::REPLACE)
     }
 
-    /// As if nobody had registered `handle` (a block takes its item along).
+    /// As if nobody had registered `handle` (a block takes its item along, not its loot table or
+    /// block entity).
     pub fn remove<K: kind::Kind>(&mut self, handle: &Handle<K>) {
         let mut e = crate::entry::Entry::of(handle);
         e.mode = abi::entry_mode::REMOVE;
@@ -1168,8 +1172,8 @@ impl Registry {
 
     /// Sets a component on blocks and items of any mod, by reference: `r.set("base:coal", &FUEL,
     /// 1600)`, `r.set("#planks/*", &FUEL, 300)`, `r.set("base:furnace[lit=true]", &HOT, ..)`. An
-    /// edit by pattern of both kinds (`edit_pattern`): the last mod in load order wins, and naming
-    /// nothing of either is a load error.
+    /// edit by pattern of both kinds (`edit_pattern`), so after every edit by name; among patterns
+    /// the last mod in load order wins, and naming nothing of either is a load error.
     pub fn set<T: Value>(&mut self, what: &str, comp: &Component<T>, v: T) {
         self.edit_matching(what, comp.raw_value(&v));
     }
@@ -1363,8 +1367,8 @@ pub struct State<'a> {
 
 macro_rules! state_setters {
     () => {
-        /// Seconds to mine by hand: the `hardness` component, as are the light, friction, drag,
-        /// support and tint setters (other mods change them with `r.set`).
+        /// Seconds to mine by hand (`hardness`). Every setter here writes a component; the shared
+        /// ones (hardness, light, friction, drag, support, tint) other mods also set with `r.set`.
         pub fn hardness(self, h: f32) -> Self {
             self.set(&c::HARDNESS, h)
         }
@@ -2052,7 +2056,7 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// Falls like sand when nothing holds it up: a block next to it changing checks two ticks
-    /// later whether below is free, and if so it drops as a moving block (`World::fall`).
+    /// later whether below is free, and if so it drops as a moving block (`World::fall_block`).
     pub fn falling(self) -> Self {
         self.on_neighbor(|e| e.world().schedule_tick(e.pos(), 2))
             .on_scheduled(|e| {
@@ -2134,7 +2138,7 @@ impl<'a> BlockBuilder<'a> {
     pub fn signal_constant(self) -> Self {
         self.signal_props(abi::signal_kind::SWITCH, 0, false, false)
     }
-    /// A lever or button: goes on the clicked face; its `power` property (`off`, `on_event`) gives full
+    /// A lever or button: goes on the clicked face; its `power` property (`off`, `on`) gives full
     /// power around it and strongly into the block it is on.
     pub fn signal_switch(self) -> Self {
         self.signal_props(abi::signal_kind::SWITCH, 2, true, true)

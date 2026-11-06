@@ -29,7 +29,7 @@ static TIN_ORE: Block = Block::named("tin_ore");
 r.ore(&TIN_ORE).y(-64, 90).veins(5).vein_size(8).replaces("#stone_ore_replaceables");
 ```
 - `y(min, max)`: the heights veins can start at, as many at each; `height(Height::triangle(-24, 56))` puts most in the middle like modern vanilla's iron, `Height::trapezoid(min, max, plateau)` keeps a flat top
-- `shape(Vein::blob(9))`: what a vein looks like, a random walk of `vein_size` blocks unless you say otherwise. `Vein::sphere(r)` and `Vein::disk(r, thickness)` (clay and gravel under water, with `replace("#dirt")`) are the others; none goes further than 16 blocks from its start
+- `shape(Vein::blob(9))`: what a vein looks like, a random walk of `vein_size` blocks unless you say otherwise. `Vein::sphere(r)` and `Vein::disk(r, thickness)` (clay and gravel under water, with `replaces("#dirt")`) are the others; none goes further than 16 blocks from its start
 - `veins(n)`: how many veins are started per cube
 - `vein_size(n)`: blocks in a vein
 - `dimension(&D)`: only there (call it again for more). Another mod's dimension is a handle with its full name, `Dimension::named("base:overworld")`
@@ -41,7 +41,7 @@ r.ore(&TIN_ORE).y(-64, 90).veins(5).vein_size(8).replaces("#stone_ore_replaceabl
 An ore is named like its block, so `r.edit(base::IRON_ORE.ore()).veins(10)` changes base's iron: what you set replaces its own, what you `replaces` adds to its list, and `r.remove(base::IRON_ORE.ore())` takes it out of the world.
 
 ## Structures
-A structure is a template, a fixed shape of blocks, that the engine places on the surface now and then. You draw a template in layers from the bottom up: each layer is a list of rows along z, and each character in a row is one block along x. A key says which block a character means, a space leaves whatever is already there, and `air` clears it. `fill(block, from, to)` adds a box instead. Its blocks are checked when the game loads, so a typo is an error then, and the same template serves a structure, a moving body (`.blocks(&TEMPLATE)` on an entity) and code (`w.place_template(&TEMPLATE, pos)`).
+A structure is a template, a fixed shape of blocks, that the engine places on the surface now and then. You draw a template in layers from the bottom up: each layer is a list of rows along z, and each character in a row is one block along x. A key says which block a character means, a space leaves whatever is already there, and `air` clears it. `fill(block, from, to)` adds a box instead. Its blocks are checked when the game loads, so a typo is an error then, and the same template serves a structure, a moving body (`.body(&TEMPLATE)` on an entity) and code (`w.place_template(&TEMPLATE, pos)`).
 
 ```rust
 static OBELISK: Template = Template::named("obelisk");
@@ -69,7 +69,7 @@ Structures stand on the surface of the dimension's [terrain](#terrain). A dimens
 - `pack_size(min, max)`: how many appear together
 - `weight(n)` and `chance(c)`: how likely it is picked among the rules that fit, and how likely it is to happen per try
 
-A rule is named `<mod>:<entity>`, then `/2`, `/3` for more of the same mob, or what `.named(..)` says, so `r.edit(&SpawnRule::named("base:spider/2")).weight(8)` or `r.remove(..)` changes another mod's.
+A rule is named `<mod>:<entity>`, then `/2`, `/3` for more of the same mob, or what `.named(..)` says, so with `static SPIDERS: SpawnRule = SpawnRule::named("base:spider/2")`, `r.edit(&SPIDERS).weight(8)` or `r.remove(&SPIDERS)` changes another mod's.
 
 A category's cap (`r.entity_category(&C, cap, despawn)`) counts its mobs within 64 blocks of a player, or `.cap_radius(r)`.
 
@@ -104,28 +104,28 @@ Registering a biome doesn't put it anywhere. The rules of a dimension's terrain 
 ```rust
 static MARS: Dimension = Dimension::named("mars");
 r.dimension(&MARS)
-    .spawn(|seed| [8, MARS.column(seed, 8, 8).height + 1, 8])
-    .height(-4, 12)
+    .spawn_point(|seed| [8, MARS.column(seed, 8, 8).height + 1, 8].into())
+    .height_cubes(-4, 12)
     .sky_above(11)
     .gravity(12.0)
     .fixed_time(5000)
-    .sky(0xd8a080, 0xe0b090);
+    .sky_color(0xd8a080, 0xe0b090);
 ```
 
 All the settings:
-- `spawn(f)`: where a new player starts, from the seed. `MARS.column(seed, x, z)` gives the height and biome anywhere, even where nothing is generated yet. Without it the engine looks for open ground near 0, 0, in biomes tagged `spawn_biome` first, out of caves and trees
+- `spawn_point(f)`: where a new player starts, from the seed. `MARS.column(seed, x, z)` gives the height and biome anywhere, even where nothing is generated yet. Without it the engine looks for open ground near 0, 0, in biomes tagged `spawn_biome` first, out of caves and trees
 - `player_spawn()`: new players start here and respawn here (without any dimension doing it, the first registered is used)
 - `generator(f)`: fills one cube by hand, see [writing a generator](#writing-a-generator)
 - `column(f)`: with a generator of your own, the surface height and biome of a column. It's the one place they come from: your generator reads them from `g.columns()`, and structures, trees and the spawn search stand on them
 - `bare()`: only ores, scatters and decorations that name this dimension come in (base's flat test world)
-- `height(min_cube, max_cube)`: the limits of the world, in cubes and inclusive
+- `height_cubes(min_cube, max_cube)`: the limits of the world, in cubes and inclusive
 - `sky_above(cube_y)`: cubes at this height and above are empty, so their sky light is free
 - `no_sky_light()`: no sky light at all, for caves and the like
 - `gravity(g)`: blocks per second squared, 32 by default
 - `day_length(ticks)` or `fixed_time(time)`: either a day of that length, or a time of day that never changes
 - `daylight(&[(turn, level), ..])`: how bright the day gets when, if not vanilla's curve. The turn 0 is sunrise, 0.25 noon, 0.5 sunset, 0.75 midnight, and levels go in straight lines between the points, so `&[(0.0, 0.4)]` is an endless dusk. Mobs, crops and burning in the sun follow it as well as the sky
-- `sky(sky, fog)`: the two colors
-- `ambient(level)`: the lowest light any block gets, 0 to 15
+- `sky_color(sky, fog)`: the two colors
+- `ambient_light(level)`: the lowest light any block gets, 0 to 15
 - `no_block_updates()`: nothing grows, falls or flows here
 
 ## Terrain
@@ -267,7 +267,7 @@ When terrain from parts doesn't fit, a dimension can fill its cubes in code with
 
 ```rust
 fn island(g: &mut Gen) {
-    let [ox, oy, oz] = g.origin();
+    let BlockPos { x: ox, y: oy, z: oz } = g.origin();
     for y in 0..16usize { for z in 0..16usize { for x in 0..16usize {
         let (wx, wy, wz) = ((ox + x as i32) as f32, oy + y as i32, (oz + z as i32) as f32);
         if (wx * wx + wz * wz).sqrt() < 24.0 && wy <= 63 {

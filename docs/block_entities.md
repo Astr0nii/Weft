@@ -167,7 +167,7 @@ w.set_component(id, &ENERGY, e);
 ```
 `w.component(id, &ENERGY)` reads it, and `w.energy_move` moves energy with the limits respected, positive in and negative out (`simulate = true` only reports how much would move). Networks are rebuilt when a cable or a block entity next to one is placed or broken, not every tick.
 
-The same calls take any holder, not only a block entity's id: a block (`w.component(pos, &ENERGY)`) or a stack in someone's inventory, `Holder::held(player, slot)`. An item whose stacks carry `energy` (`.set(&ENERGY, Energy { .. })` on the item) is a battery, and a machine charging the tool in its slot is one `energy_insert` on that slot.
+The same calls take any holder, not only a block entity's id: a block (`w.component(pos, &ENERGY)`) or a stack in someone's inventory, `Holder::held(player, slot)`. An item whose stacks carry `energy` (`.set(&ENERGY, Energy { .. })` on the item) is a battery, and a machine charging the tool in its slot is one `w.energy_move(Holder::held(id, slot), amount, false)`.
 
 There are no units, conversion or losses along the way. Testmod uses 40 per tick and capacities in the tens of thousands, so if your mod should play along with others, stay in that range.
 
