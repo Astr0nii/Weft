@@ -127,7 +127,7 @@ impl Dim {
 
     /// Whether the interceptors of `question` let it happen: any deny wins.
     pub fn ask(&mut self, c: &'static Content, question: &str, q: &mut abi::Query) -> bool {
-        if !c.dims[self.id as usize].editable && (question == abi::question::BREAK_BLOCK || question == abi::question::PLACE_BLOCK) {
+        if !c.dims[self.id as usize].editable && (question == abi::action::BREAK_BLOCK || question == abi::action::PLACE_BLOCK) {
             q.verdict = verdict::DENY;
             return false;
         }
@@ -142,6 +142,28 @@ impl Dim {
                 break;
             }
         }
+        q.verdict = if allowed { verdict::ALLOW } else { verdict::DENY };
+        allowed
+    }
+
+    /// `ask` where an interceptor may also allow outright: with every one abstaining, `default`.
+    pub fn ask_or(&mut self, c: &'static Content, question: &str, q: &mut abi::Query, default: bool) -> bool {
+        let Some(list) = c.game.interceptors.get(question) else { return default };
+        let mut allowed = None;
+        for &(owner, cb) in list {
+            q.verdict = verdict::ABSTAIN;
+            let qp = q as *mut abi::Query;
+            self.call(owner, cb, |w| abi::InterceptArgs { world: w, question: abi::Str::new(question), query: qp });
+            match q.verdict {
+                verdict::DENY => {
+                    allowed = Some(false);
+                    break;
+                }
+                verdict::ALLOW => allowed = Some(true),
+                _ => {}
+            }
+        }
+        let allowed = allowed.unwrap_or(default);
         q.verdict = if allowed { verdict::ALLOW } else { verdict::DENY };
         allowed
     }
@@ -179,14 +201,14 @@ impl Dim {
 /// The engine's attributes come first in the registry (`registry::freeze`).
 pub const MAX_HEALTH: u32 = 0;
 pub const MOVEMENT_SPEED: u32 = 1;
-pub const VISIBILITY: u32 = 2;
+
 pub const JUMP_STRENGTH: u32 = 3;
-pub const SWIM_ANYWHERE: u32 = 4;
-pub const ATTACK_SPEED: u32 = 5;
-pub const CAN_SPRINT: u32 = 6;
-pub const BLOCK_REACH: u32 = 7;
-pub const ENTITY_REACH: u32 = 8;
-pub const MINING_SPEED: u32 = 9;
+pub const ATTACK_SPEED: u32 = 4;
+pub const CAN_SPRINT: u32 = 5;
+pub const BLOCK_REACH: u32 = 6;
+pub const ENTITY_REACH: u32 = 7;
+pub const MINING_SPEED: u32 = 8;
+pub const FOV: u32 = 9;
 
 impl Dim {
     fn base_attribute(&self, c: &Content, entity: u64, attr: u32) -> Option<f64> {
@@ -217,8 +239,8 @@ impl Dim {
                     if a == def.hash && (until == 0 || until > self.time) {
                         match op as u32 {
                             abi::attr_op::ADD => add += amount,
-                            abi::attr_op::MUL_BASE => mul_base += amount,
-                            abi::attr_op::MUL_TOTAL => mul_total *= 1.0 + amount,
+                            abi::attr_op::MULTIPLY_BASE => mul_base += amount,
+                            abi::attr_op::MULTIPLY_TOTAL => mul_total *= 1.0 + amount,
                             _ => {}
                         }
                     }
@@ -238,13 +260,13 @@ impl Dim {
             .sum();
         let mul_base: f64 = mods
             .iter()
-            .filter(|m| m.op as u32 == abi::attr_op::MUL_BASE)
+            .filter(|m| m.op as u32 == abi::attr_op::MULTIPLY_BASE)
             .map(|m| m.amount)
             .sum();
         let mut v = (base + add) * (1.0 + mul_base);
         for m in mods
             .iter()
-            .filter(|m| m.op as u32 == abi::attr_op::MUL_TOTAL)
+            .filter(|m| m.op as u32 == abi::attr_op::MULTIPLY_TOTAL)
         {
             v *= 1.0 + m.amount;
         }
@@ -304,9 +326,27 @@ impl Dim {
     }
 
     /// Rolls a loot table with this region's random stream.
-    pub fn roll_loot(&mut self, c: &Content, table: &str, ctx: &crate::loot::Ctx) -> Vec<weft_abi::ItemStack> {
+    /// Rolls `table`; conditions it asks are answered about `pos` and `entity` first.
+    pub fn roll_loot(
+        &mut self,
+        c: &'static Content,
+        table: &str,
+        ctx: &crate::loot::Ctx,
+        pos: glam::DVec3,
+        entity: u64,
+    ) -> Vec<weft_abi::ItemStack> {
         let Some(t) = c.loot.get(table) else { return Vec::new() };
+        let mut ctx = ctx.clone();
+        for name in crate::loot::conditions_in(t) {
+            if c.game
+                .condition_names
+                .get(name)
+                .is_some_and(|&id| crate::conditions::on_server(self, c, id, pos, entity))
+            {
+                ctx.holds.push(name.to_string());
+            }
+        }
         let mut rng = || self.random_unit();
-        crate::loot::roll(c, t, ctx, &mut rng)
+        crate::loot::roll(c, t, &ctx, &mut rng)
     }
 }

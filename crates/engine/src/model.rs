@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use glam::{EulerRot, Mat4, Quat, Vec3};
 use serde_json::Value;
-use weft_abi::{MeshVertex, worn_parts};
+use weft_abi::MeshVertex;
 
 use crate::registry::{Cuboid, Part};
 
@@ -187,22 +187,14 @@ pub fn load_bones(src: &str) -> Vec<(String, BoneMotion)> {
         .collect()
 }
 
-/// The role bits (`1 << role`) of the model regions a worn item covers (`worn_parts`).
-pub fn role_mask(regions: u32) -> u32 {
-    let mut m = 0;
-    if regions & worn_parts::HEAD != 0 {
-        m |= 1 << role::HEAD;
-    }
-    if regions & worn_parts::BODY != 0 {
-        m |= 1 << role::STATIC;
-    }
-    if regions & worn_parts::ARMS != 0 {
-        m |= 1 << role::ARM_LEFT | 1 << role::ARM_RIGHT;
-    }
-    if regions & worn_parts::LEGS != 0 {
-        m |= 1 << role::LEG_LEFT | 1 << role::LEG_RIGHT | 1 << role::LEG_FRONT_LEFT | 1 << role::LEG_FRONT_RIGHT;
-    }
-    m
+/// The role bits (`1 << role`) of those of `names` that have a role (`head`, `leftArm`, `leg2`):
+/// what a worn item covers on any model; the other names cover their bone only.
+pub fn roles_of(names: &[String]) -> u32 {
+    names
+        .iter()
+        .map(|n| role_of(n, 4))
+        .filter(|&r| r != role::STATIC)
+        .fold(0, |m, r| m | 1 << r)
 }
 
 /// A model file's parts and the texture size it was made for.

@@ -114,8 +114,9 @@ impl Client {
             ToClient::Players(names) => self.players = names,
             ToClient::GameMode(mode) => {
                 self.mode = mode;
-                self.player.flying = mode == GameMode::Spectator || (mode == GameMode::Creative && self.player.flying);
-                self.player.noclip = mode == GameMode::Spectator;
+                self.player.flying =
+                    mode.has(weft_abi::game_mode_flags::ALWAYS_FLY) || (mode.has(weft_abi::game_mode_flags::CAN_FLY) && self.player.flying);
+                self.player.noclip = mode.has(weft_abi::game_mode_flags::NOCLIP);
                 self.player.fly_speed = 1.0;
             }
             ToClient::Inventory(slots) => {
@@ -171,7 +172,6 @@ impl Client {
                 }
                 self.player.speed_mul = self.attributes[a::MOVEMENT_SPEED as usize] as f64;
                 self.player.jump_mul = self.attributes[a::JUMP_STRENGTH as usize] as f64;
-                self.player.swim_anywhere = self.attributes[a::SWIM_ANYWHERE as usize] >= 1.0;
                 self.player.can_sprint = self.attributes[a::CAN_SPRINT as usize] >= 1.0;
             }
             ToClient::BreakRefused { frame, pos } => {
@@ -183,12 +183,10 @@ impl Client {
                 self.using = ticks.map(|(t, _)| (t as f32, t as f32));
                 self.using_off = ticks.is_some_and(|(_, off)| off);
             }
-            ToClient::Weather { raining, thunder } => self.weather = (raining, thunder),
-            ToClient::Flash(id) => {
-                if let Some(e) = self.entities.get_mut(&id) {
-                    e.flash = 0.1;
-                }
+            ToClient::Weather(w) => {
+                self.weather_id = (w as usize).min(content().game.weathers.len() - 1) as u16;
             }
+
             ToClient::EntitySwing { id, off } => {
                 if let Some(e) = self.entities.get_mut(&id) {
                     restart_swing(&mut e.arm_swing);
@@ -196,12 +194,18 @@ impl Client {
                 }
             }
             ToClient::Cracks(list) => self.others_mining = list,
-            ToClient::StopSprint => self.controls.stop_sprint(),
+            ToClient::StopSprint => self.sprint_stopped = true,
+            ToClient::LodColumns { dim, all, cols } => self.lod.set_columns(dim, all, &cols),
+            ToClient::Camera { mode, locked, transition, easing } => self.camera_from_server(mode, locked, transition, easing),
             ToClient::Knock { away } => {
-                let away = glam::Vec3::from_array(away).as_dvec3();
+                let away = Vec3::from_array(away).as_dvec3();
                 self.player.vel = physics::knock(self.player.vel, away, self.player.on_ground);
             }
-            ToClient::Velocity { add } => self.player.vel += glam::Vec3::from_array(add).as_dvec3(),
+            ToClient::Velocity { add } => self.player.vel += Vec3::from_array(add).as_dvec3(),
+            ToClient::SetVelocity(v) => self.player.vel = Vec3::from_array(v).as_dvec3(),
+            ToClient::Look([yaw, pitch]) => (self.player.yaw, self.player.pitch) = (yaw, pitch),
+            ToClient::Flying(on) => self.player.flying = on,
+            ToClient::Selected(slot) => self.selected = (slot as usize).min(content().game.player_layout.hotbar.saturating_sub(1) as usize),
             ToClient::TickRate(rate) => self.tick_rate = rate.max(1) as f64,
             ToClient::Died => {
                 self.dead = true;
@@ -248,7 +252,7 @@ impl Client {
             ToClient::PlayAction(list) => {
                 for (id, name, looping) in list {
                     if id == self.player_id {
-                        self.self_action = (!name.is_empty()).then(|| (name, self.start.elapsed().as_secs_f32(), looping));
+                        self.me.action = (!name.is_empty()).then(|| (name, self.me.age, looping));
                     } else if let Some(e) = self.entities.get_mut(&id) {
                         e.action = (!name.is_empty()).then(|| (name, e.age, looping));
                     }
@@ -289,50 +293,8 @@ impl Client {
 
     fn spawn_entities(&mut self, list: Vec<crate::net::EntityView>) {
         for e in list {
-            self.entities.insert(
-                e.id,
-                ClientEntity {
-                    kind: e.kind,
-                    pos: e.pos,
-                    target: e.pos,
-                    yaw: e.yaw,
-                    target_yaw: e.yaw,
-                    body_yaw: e.yaw,
-                    arm_swing: None,
-                    flash: 0.0,
-                    pitch: e.pitch,
-                    item: e.item,
-                    // Arrives as a component right after: no hurt flash for the first.
-                    health: f32::NAN,
-                    hurt: 0.0,
-                    worn: Vec::new(),
-                    held: 0,
-                    off_held: 0,
-                    using: None,
-                    use_ticks: 0.0,
-                    crouched: 0.0,
-                    swaps: Vec::new(),
-                    swing_off: false,
-                    walk: 0.0,
-                    walked: 0.0,
-                    swing: 0.0,
-                    age: 0.0,
-                    burning: false,
-                    dying: None,
-                    next_step: 0.0,
-                    action: None,
-                    pose: Pose::Stand,
-                    track: Default::default(),
-                    pulled: None,
-                    size: None,
-                    look: None,
-                    frame: 0,
-                    rel: DVec3::ZERO,
-                    rel_target: None,
-                    structure: None,
-                    world_light: Default::default(),
-                },
-            );
+            self.entities
+                .insert(e.id, ClientEntity::new(e.kind, e.pos, e.yaw, e.pitch, e.item));
         }
     }
 
@@ -346,9 +308,14 @@ impl Client {
         let solid = |k: u32| content().game.entities[k as usize].is(weft_abi::entity_flags::SOLID);
         // Physics looks a step of its own back, many ticks at a high `/tick rate`.
         let keep = ((self.tick_rate * STEP).ceil() as usize * 2 + 4).max(8);
-        for &(id, pos, yaw, pitch, pose, frame) in &list {
+        // The mount this client steers goes where it moves it.
+        let driving = self.me.vehicle.map(|v| v.0);
+        for &(id, pos, yaw, pitch, pose, sprinting, frame) in &list {
+            if Some(id) == driving {
+                continue;
+            }
             if let Some(e) = self.entities.get_mut(&id) {
-                e.pose = pose;
+                (e.pose, e.sprinting) = (pose, sprinting);
                 let was = e.target;
                 e.target = pos;
                 e.target_yaw = yaw;

@@ -266,7 +266,7 @@ impl WireSet {
             let info = &c.states[state as usize];
             // A pack may have given it a model of its own, which the mesher draws.
             let drawn = looks.drawn(state, info);
-            if drawn.model != weft_abi::Model::Wire {
+            if drawn.model != weft_abi::BlockModel::Wire {
                 continue;
             }
             let (dot_tex, line_tex) = (drawn.textures[3], drawn.textures[0]);

@@ -4,6 +4,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use weft_sdk::abi::entry_kind as ek;
+use weft_sdk::terrain::{BiomeRule, Expr};
 use weft_sdk::*;
 
 /// How many of each event arrived since `events reset`, in `EVENT_NAMES` order.
@@ -17,21 +18,43 @@ static GOLD: Block = Block::named("base:gold_block");
 pub static MARK: Component<u32> = Component::named("testkit:mark");
 /// Server-side stack data that is not saved either.
 pub static SECRET: Component<u32> = Component::named("testkit:secret");
-static PIG: Entity = Entity::named("base:pig");
+/// A stash every player carries, for menus on an inventory that is no block's or entity's own.
+static STASH: Storage = Storage::named("testkit:stash");
+static PIG: EntityKind = EntityKind::named("base:pig");
 pub static COUNT_MARKS: Config<bool> = Config::named("count_marks");
 pub static PROTECT_GOLD: Config<bool> = Config::named("protect_gold");
 pub static HALF_DAMAGE: Config<bool> = Config::named("half_damage");
 /// Mobs may not attack while it is on.
 pub static PEACE: Config<bool> = Config::named("peace");
 static DRILL: Block = Block::named("drill");
+/// Registered, then changed by `r.edit` (the `edits` test).
+static EDITED: Item = Item::named("edited");
+static EDITED_BIOME: Biome = Biome::named("edited");
+static EDITED_LOOT: LootTable = LootTable::named("edited");
+static EDITED_KIND: EntityKind = EntityKind::named("edited");
+static WARMTH: Component<f32> = Component::named("testkit:warmth");
+static STORM: Weather = Weather::named("storm");
+static GRIT: Attribute = Attribute::named("grit");
+static TIN_ORE: Block = Block::named("testmod:tin_ore");
+static OIL: Block = Block::named("testmod:oil");
+static MARS: Dimension = Dimension::named("testmod:mars");
+/// Lit by `.states`, then edited: its light on every state, its opacity on the lit one.
+static LAMP: Block = Block::named("lamp");
+/// Made by base's stairs template, edited like any block.
+static OAK_STAIRS: Block = Block::named("base:oak_planks_stairs");
+/// A column of Mars, far from what other tests look at, that an edit of its terrain gives base's
+/// plains.
+const PROBE: [i32; 2] = [-20000, 20000];
+/// Only the equipment of what it opens on (the `armor` test opens it on a zombie).
+static GEAR: Menu = Menu::named("gear");
 /// How many cells of the world a drill on a moving body has come to.
 static PASSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-/// Players can't be hurt (`question::HURT`) or use items (`question::USE_ITEM`) while on.
+/// Players can't be hurt (`actions::HURT`) or use items (`actions::USE_ITEM`) while on.
 pub static NO_HURT: Config<bool> = Config::named("no_hurt");
 pub static NO_USE: Config<bool> = Config::named("no_use");
 /// `chat_hooks`: "forbidden" stays unsaid, lines are written by this mod.
 pub static CHAT_HOOKS: Config<bool> = Config::named("chat_hooks");
-/// What the last `CHAT_MESSAGE` said.
+/// What the last `actions::CHAT` said.
 static LAST_SAID: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 /// Fired by `after` timers; counted.
 static RANG: Event<u64> = Event::named("rang");
@@ -45,21 +68,21 @@ fn count(i: usize, n: usize) {
 
 pub fn register(r: &mut Registry) {
     // Neutral as long as you keep your distance.
-    static SENTRY: Entity = Entity::named("sentry");
+    static SENTRY: EntityKind = EntityKind::named("sentry");
     r.entity(&SENTRY)
         .size(0.6, 1.95)
-        .health(20.0)
-        .speed(2.6)
+        .max_health(20.0)
+        .walk_speed(2.6)
         .hostile()
         .texture("base:zombie")
-        .model(biped(true))
+        .model(humanoid(true))
         .attack_damage(1.0)
         .goals(
-            weft_sdk::ai::Goals::new()
-                .then(weft_sdk::ai::melee(1.6))
-                .then(weft_sdk::ai::follow_player(20.0, 1.0)),
-        )
-        .neutral(|_, mob, player| (mob.pos[0] - player.pos[0]).hypot(mob.pos[2] - player.pos[2]) > 5.0);
+            ai::Goals::new()
+                .aggressive(5.0)
+                .then(ai::melee_within(1.3))
+                .then(ai::chase_target(20.0, 1.0)),
+        );
     // A random `.ctm` with tiles of two colors, on what isn't a cube.
     static VARIED_PLANT: Block = Block::named("varied_plant");
     static VARIED_BOX: Block = Block::named("varied_box");
@@ -71,13 +94,86 @@ pub fn register(r: &mut Registry) {
     static VARIED_CUBE: Block = Block::named("varied_cube");
     r.block(&VARIED_CUBE).texture("varied_cube").no_item();
     r.block(&DRILL)
-        .on_pass(|_| {
+        .on_carried(|_| {
             PASSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         })
         .texture("varied")
         .no_item();
     r.entity_component(&MARK, 0, component_flags::SYNC_WATCHERS);
-    r.attach(&PIG, &MARK);
+    // A suit to swim in lava with (`swimming`).
+    r.edit(Item::generated("base:diamond_chestplate".into()))
+        .set_text(&SWIMS_IN, "#lava");
+    r.edit(&PIG).attach(&MARK);
+    r.storage(&STASH, 54);
+    // What an edit sets wins, the rest stays; the testmod ones load after or before this mod
+    // depending on order, which edits don't care about.
+    r.item(&EDITED).max_stack(16).attack_damage(3.0);
+    r.edit(&EDITED).max_stack(8);
+    r.biome(&EDITED_BIOME).set(&WARMTH, 1.0).tag("edited_a");
+    r.edit(&EDITED_BIOME).set(&WARMTH, 2.0);
+    r.weather(&STORM).no_falling().weight(0);
+    r.edit(&STORM).lightning().untag(abi::comp::weather::DRY);
+    r.attribute(&GRIT, 1.0, 0.0, 10.0);
+    r.edit(&GRIT).set(&comps::attribute::DEFAULT, 4.0);
+    r.entity(&EDITED_KIND)
+        .size(0.6, 1.8)
+        .eye_height(1.0)
+        .set(&WARMTH, 1.0)
+        .no_egg();
+    r.edit(&EDITED_KIND)
+        .size(0.9, 2.5)
+        .set(&WARMTH, 3.0)
+        .attach(&MARK);
+    r.edit(TIN_ORE.ore()).veins(7);
+    r.block(&LAMP)
+        .prop("lit", ["false", "true"])
+        .states(|p, s| if p.is("lit", "true") { s.light(13) } else { s })
+        .tag("testkit:lamps")
+        .no_item();
+    r.edit(&LAMP)
+        .light(4)
+        .state_where("lit=true", |s| s.light_opacity(3));
+    r.edit(&OAK_STAIRS).light(7);
+    r.set("#testkit:lamp*", &WARMTH, 1.5);
+    r.tag("testkit:lit", &["lamp[lit=true]"]);
+    r.shapeless(&base_api::SMELTING, "base:stick", 1, &["edited"], 200)
+        .named("smelt_edited");
+    r.remove(&Recipe::named("smelt_edited"));
+    r.loot(&EDITED_LOOT)
+        .pool(Pool::new().item("base:stick"))
+        .pool(Pool::new().item("base:dirt"));
+    r.edit(&EDITED_LOOT)
+        .remove_item(&comps::loot::POOLS, "#1")
+        .replace_drop("base:stick", "edited")
+        .pool(Pool::new().items("base:cobblestone", 2, 2));
+    r.edit(OIL.liquid())
+        .flow_delay(12)
+        .block(|b| b.tag("testkit:edited"));
+    let off = |at: i32, of: Expr| (of - Expr::blocks(at as f64)).abs();
+    r.edit(&MARS).tag("testkit:edited");
+    r.edit(MARS.terrain())
+        .field(
+            "testkit:probe",
+            off(PROBE[0], Expr::x())
+                .max(off(PROBE[1], Expr::z()))
+                .ramp_blocks(1.0, 1.0)
+                .not(),
+        )
+        .rule_before(
+            "#0",
+            BiomeRule::new("base:plains")
+                .named("probe")
+                .field("testkit:probe", 0.5..),
+        );
+    r.menu(&GEAR).equipment().player_inventory().screen(|ui| {
+        ui.panel("panel", S::column().pad(7.0).gap(4.0), |ui| {
+            ui.title();
+            ui.equipment();
+            ui.player_inventory(true);
+        });
+    });
+    r.edit(&GEAR).group("extra", Slots::row(2));
+    r.edit(&PLAYER).attach_storage(&STASH);
     r.config(&COUNT_MARKS).bool(false).world();
     // While the rule is on, every marked pig counts up once a tick.
     r.system(&MARK, |b| {
@@ -94,48 +190,48 @@ pub fn register(r: &mut Registry) {
     // Switches for the tests of the extension mechanisms, off unless a test turns them on.
     r.config(&PROTECT_GOLD).bool(false).world();
     r.config(&PEACE).bool(false).world();
-    r.intercept(&question::ATTACK, |q| {
+    r.before_event(&question::ATTACK, |q| {
         let w = q.world();
         let mob = w
             .entity(q.entity())
-            .is_some_and(|e| !w.each_player().any(|p| p == q.entity()) && e.health > 0.0);
+            .is_some_and(|e| !w.players_iter().any(|p| p == q.entity()) && e.health > 0.0);
         if mob && PEACE.get() { Verdict::Deny } else { Verdict::Abstain }
     });
     r.config(&NO_HURT).bool(false).world();
     r.config(&NO_USE).bool(false).world();
     r.config(&CHAT_HOOKS).bool(false).world();
-    r.intercept(&question::CHAT, |q| if CHAT_HOOKS.get() && q.text() == "forbidden" { Verdict::Deny } else { Verdict::Abstain });
+    r.before_event(&actions::CHAT, |q| if CHAT_HOOKS.get() && q.text() == "forbidden" { Verdict::Deny } else { Verdict::Abstain });
     r.chat_format(|f| {
         if CHAT_HOOKS.get() {
             f.set("{0} from a mod", &[Arg::Text(f.text())]);
         }
     });
-    r.on(&CHAT_MESSAGE, |b| {
+    r.on_event(&actions::CHAT, |b| {
         for m in b.iter() {
             *LAST_SAID.lock().unwrap() = m.text().to_string();
         }
     });
-    let player = |w: &World, id: u64| w.each_player().any(|p| p == id);
-    r.intercept(&question::HURT, move |q| if player(&q.world(), q.entity()) && NO_HURT.get() { Verdict::Deny } else { Verdict::Abstain });
-    r.intercept(&question::USE_ITEM, |_| if NO_USE.get() { Verdict::Deny } else { Verdict::Abstain });
-    r.on(&RANG, |b| {
+    let player = |w: &World, id: u64| w.players_iter().any(|p| p == id);
+    r.before_event(&actions::HURT, move |q| if player(&q.world(), q.entity()) && NO_HURT.get() { Verdict::Deny } else { Verdict::Abstain });
+    r.before_event(&actions::USE_ITEM, |_| if NO_USE.get() { Verdict::Deny } else { Verdict::Abstain });
+    r.on_event(&RANG, |b| {
         RINGS.fetch_add(b.len() as u32, Ordering::Relaxed);
     });
     r.config(&HALF_DAMAGE).bool(false).world();
-    r.intercept(&question::BREAK_BLOCK, |q| if GOLD.is(q.state()) && PROTECT_GOLD.get() { Verdict::Deny } else { Verdict::Abstain });
+    r.before_event(&actions::BREAK_BLOCK, |q| if GOLD.is(q.state()) && PROTECT_GOLD.get() { Verdict::Deny } else { Verdict::Abstain });
     r.modify(&chain::DAMAGE, stage::FINAL, |m| {
         if HALF_DAMAGE.get() {
             m.value *= 0.5;
         }
     });
-    r.on(&BLOCK_BROKEN, |b| count(0, b.len()));
-    r.on(&BLOCK_PLACED, |b| count(1, b.len()));
-    r.on(&ITEM_PICKED_UP, |b| count(2, b.len()));
-    r.on(&ENTITY_DIED, |b| count(3, b.len()));
-    r.on(&ENTITY_HURT, |b| count(4, b.len()));
-    r.on(&PLAYER_JOINED, |b| count(5, b.len()));
-    r.on(&ITEM_USED, |b| count(6, b.len()));
-    r.on(&SMELTED, |b| count(7, b.len()));
+    r.on_event(&actions::BREAK_BLOCK, |b| count(0, b.len()));
+    r.on_event(&actions::PLACE_BLOCK, |b| count(1, b.len()));
+    r.on_event(&actions::PICKUP_ITEM, |b| count(2, b.len()));
+    r.on_event(&actions::DIE, |b| count(3, b.len()));
+    r.on_event(&actions::HURT, |b| count(4, b.len()));
+    r.on_event(&PLAYER_JOINED, |b| count(5, b.len()));
+    r.on_event(&actions::USE_ITEM, |b| count(6, b.len()));
+    r.on_event(&SMELTED, |b| count(7, b.len()));
     // A mob walks where a test says for a while, after its own AI had its say.
     r.world_tick(|w| {
         let mut driven = DRIVEN.lock().unwrap();
@@ -184,7 +280,7 @@ pub fn register_ops(r: &mut Registry) {
 }
 
 fn pos(cmd: &Command, name: &str) -> Result<[i32; 3], String> {
-    Ok(block_at(cmd.pos(name).ok_or_else(|| format!("missing {name}"))?))
+    Ok((block_pos_of(cmd.pos(name).ok_or_else(|| format!("missing {name}"))?)).to_array())
 }
 
 fn int<T: TryFrom<i64>>(cmd: &Command, name: &str) -> Result<T, String> {
@@ -211,7 +307,7 @@ fn owner(w: &World, cmd: &Command) -> Result<u64, String> {
     }
     let p = pos(cmd, "at")?;
     match w.block_entity(p) {
-        0 => Err(format!("no block entity at {p:?} ({})", block_name(w.get(p)))),
+        0 => Err(format!("no block entity at {p:?} ({})", block_name(w.block(p)))),
         id => Ok(id),
     }
 }
@@ -223,7 +319,7 @@ fn item(name: &str) -> Result<u32, String> {
 }
 
 fn stack_text(s: ItemStack) -> String {
-    if s.is_empty() { "- 0 0".into() } else { format!("{} {} {}", item_name(s.item), s.count, s.damage()) }
+    if s.is_empty() { "- 0 0".into() } else { format!("{} {} {}", item_name(s.item), s.count, s.wear()) }
 }
 
 fn run(w: &World, cmd: &Command) -> Result<String, String> {
@@ -234,7 +330,7 @@ fn run(w: &World, cmd: &Command) -> Result<String, String> {
         .iter()
         .find(|o| cmd.text(o.0) == Some(o.0))
         .ok_or("no operation")?;
-    (op.2)(w, cmd, player, me)
+    (op.2)(w, cmd, player, me.to_array())
 }
 
 /// A repeater with a delay of four into a block with a torch on it, the torch feeding the
@@ -250,12 +346,12 @@ fn clock(w: &World, p: [i32; 3]) -> Result<String, String> {
     };
     let wire = Block::lookup("base:redstone").ok_or("no redstone")? + (1 << 2);
     let at = |x: i32, z: i32| [p[0] + x, p[1], p[2] + z];
-    w.set(at(0, 0), state("base:stone", &[])?);
-    w.set(at(1, 0), state("base:redstone_torch", &[("attach", "west")])?);
+    w.set_block(at(0, 0), state("base:stone", &[])?);
+    w.set_block(at(1, 0), state("base:redstone_torch", &[("attach", "west")])?);
     for (x, z) in [(2, 0), (2, 1), (2, 2), (1, 2), (0, 2), (-1, 2), (-2, 2), (-2, 1), (-2, 0)] {
-        w.set(at(x, z), wire);
+        w.set_block(at(x, z), wire);
     }
-    w.set(at(-1, 0), state("base:repeater", &[("attach", "down"), ("front", "east"), ("delay", "4")])?);
+    w.set_block(at(-1, 0), state("base:repeater", &[("attach", "down"), ("front", "east"), ("delay", "4")])?);
     Ok(String::new())
 }
 
@@ -268,12 +364,12 @@ type Run = fn(&World, &Command, u64, [i32; 3]) -> Result<String, String>;
 const OPS: &[(&str, &str, Run)] = &[
     ("last_said", "", |_, _, _, _| Ok(LAST_SAID.lock().unwrap().clone())),
     ("show", "<who:word> <place:word> <text:text>", |w, cmd, player, _| {
-        let pos = w.entity(player).map_or([0.0; 3], |e| e.pos);
+        let pos = w.entity(player).map_or([0.0; 3], |e| e.pos.to_array());
         let who = match word(cmd, "who")? {
             "all" => Who::All,
             "dim" => Who::Dimension(w.dimension()),
-            "near" => Who::Near(w.dimension(), pos, 8.0),
-            "far" => Who::Near(w.dimension(), [pos[0] + 100.0, pos[1], pos[2]], 8.0),
+            "near" => Who::Near(w.dimension(), pos.into(), 8.0),
+            "far" => Who::Near(w.dimension(), [pos[0] + 100.0, pos[1], pos[2]].into(), 8.0),
             _ => Who::Player(player),
         };
         let text = word(cmd, "text")?;
@@ -294,11 +390,15 @@ const OPS: &[(&str, &str, Run)] = &[
         for x in -r..=r {
             for y in -r..=r {
                 for z in -r..=r {
-                    cells.push([p[0] + x, p[1] + y, p[2] + z]);
+                    cells.push(BlockPos::new(p[0] + x, p[1] + y, p[2] + z));
                 }
             }
         }
-        Ok(w.lift(p, &cells).to_string())
+        Ok(w.body_from_blocks(p, &cells).to_string())
+    }),
+    ("bodyfall", "<id:int>", |w, cmd, _, _| {
+        w.body_fall(int(cmd, "id")?);
+        Ok(String::new())
     }),
     ("passes", "", |_, _, _, _| {
         Ok(PASSES
@@ -307,7 +407,11 @@ const OPS: &[(&str, &str, Run)] = &[
     }),
     ("structureset", "<id:int> <x:int> <y:int> <z:int> <block:block>", |w, cmd, _, _| {
         let (id, p) = (int::<u64>(cmd, "id")?, [int::<i32>(cmd, "x")?, int::<i32>(cmd, "y")?, int::<i32>(cmd, "z")?]);
-        if w.set_structure_block(id, p, self::id(cmd, "block")?) { Ok(String::new()) } else { Err(format!("no structure {id}")) }
+        let block = self::id(cmd, "block")?;
+        match w.on_body(id) {
+            Some(f) if f.set_block(p, block) => Ok(String::new()),
+            _ => Err(format!("no structure {id}")),
+        }
     }),
     ("rsbuild", "<at:pos> <seed:int>", |w, cmd, _, _| crate::tests::redstone::build_turned(w, int::<u64>(cmd, "seed")?, pos(cmd, "at")?)),
     ("rsfill", "<at:pos> <half:int>", |w, cmd, _, _| {
@@ -315,7 +419,7 @@ const OPS: &[(&str, &str, Run)] = &[
         let s = Block::lookup("base:redstone").ok_or("no redstone")? + (1 << 2);
         for x in -half..half {
             for z in -half..half {
-                w.set([p[0] + x, p[1], p[2] + z], s);
+                w.set_block([p[0] + x, p[1], p[2] + z], s);
             }
         }
         Ok(String::new())
@@ -325,7 +429,7 @@ const OPS: &[(&str, &str, Run)] = &[
         let air = 0;
         for x in -half - 3..half + 3 {
             for z in -half - 3..half + 3 {
-                w.set([p[0] + x, p[1], p[2] + z], air);
+                w.set_block([p[0] + x, p[1], p[2] + z], air);
             }
         }
         Ok(String::new())
@@ -346,7 +450,7 @@ const OPS: &[(&str, &str, Run)] = &[
     }),
     ("set", "<pos:pos> <block:block>", |w, cmd, _, _| {
         let p = pos(cmd, "pos")?;
-        if !w.set(p, id(cmd, "block")?) {
+        if !w.set_block(p, id(cmd, "block")?) {
             return Err(format!("{p:?} is not loaded"));
         }
         Ok(String::new())
@@ -363,13 +467,13 @@ const OPS: &[(&str, &str, Run)] = &[
         for y in lo[1]..=hi[1] {
             for z in lo[2]..=hi[2] {
                 for x in lo[0]..=hi[0] {
-                    missed += !w.set([x, y, z], s) as u32;
+                    missed += !w.set_block([x, y, z], s) as u32;
                 }
             }
         }
         if missed > 0 { Err(format!("{missed} blocks not loaded")) } else { Ok(volume.to_string()) }
     }),
-    ("get", "<pos:pos>", |w, cmd, _, _| Ok(block_name(w.get(pos(cmd, "pos")?)).to_string())),
+    ("get", "<pos:pos>", |w, cmd, _, _| Ok(block_name(w.block(pos(cmd, "pos")?)).to_string())),
     ("parts", "<pos:pos>", |w, cmd, _, _| {
         Ok(w.parts(pos(cmd, "pos")?)
             .into_iter()
@@ -377,7 +481,7 @@ const OPS: &[(&str, &str, Run)] = &[
             .collect::<Vec<_>>()
             .join(" "))
     }),
-    ("addpart", "<pos:pos> <block:block>", |w, cmd, _, _| Ok((w.add_part(pos(cmd, "pos")?, id(cmd, "block")?) as u32).to_string())),
+    ("addpart", "<pos:pos> <block:block>", |w, cmd, _, _| Ok((w.part_add(pos(cmd, "pos")?, id(cmd, "block")?) as u32).to_string())),
     ("crater", "<r:int>", |w, cmd, _, me| {
         // Every loaded block within `r` of the player turned to air, one `w.set` each, the
         // way a mod would do it today: changed, already air, not loaded, milliseconds.
@@ -391,10 +495,10 @@ const OPS: &[(&str, &str, Run)] = &[
                         continue;
                     }
                     let p = [me[0] + x, me[1] + y, me[2] + z];
-                    let s = w.get(p);
+                    let s = w.block(p);
                     if s == 0 {
                         air += 1;
-                    } else if w.set(p, 0) {
+                    } else if w.set_block(p, 0) {
                         changed += 1;
                     } else {
                         missed += 1;
@@ -407,7 +511,7 @@ const OPS: &[(&str, &str, Run)] = &[
     ("crater_fast", "<r:int>", |w, cmd, _, me| {
         // The same through the area edit: one call, done at the end of the tick.
         let r: i32 = int(cmd, "r")?;
-        w.fill_sphere([me[0] as f64 + 0.5, me[1] as f64 + 0.5, me[2] as f64 + 0.5], r as f64, 0)
+        w.fill(Shape::ball([me[0] as f64 + 0.5, me[1] as f64 + 0.5, me[2] as f64 + 0.5], r as f64), 0)
             .keep_unbreakable();
         Ok(String::new())
     }),
@@ -418,10 +522,11 @@ const OPS: &[(&str, &str, Run)] = &[
     ("sblock", "<id:int> <pos:pos> [block:block]", |w, cmd, _, _| {
         // A block of a moving structure, or set it.
         let (id_, p) = (int::<u64>(cmd, "id")?, pos(cmd, "pos")?);
+        let f = w.on_body(id_).ok_or("not a structure")?;
         match cmd.id("block") {
-            Some(b) => Ok((w.set_structure_block(id_, p, b) as u32).to_string()),
-            None => w
-                .structure_block(id_, p)
+            Some(b) => Ok((f.set_block(p, b) as u32).to_string()),
+            None => f
+                .block_loaded(p)
                 .map(|s| block_name(s).to_string())
                 .ok_or_else(|| "not a structure".to_string()),
         }
@@ -436,12 +541,12 @@ const OPS: &[(&str, &str, Run)] = &[
             .split_whitespace()
             .map(|n| if n == "air" { ItemStack::EMPTY } else { ItemStack::new(Item::lookup(n).unwrap_or(0), 1) })
             .collect();
-        let made = recipe_match(&base_api::CRAFTING, &grid, width, height);
+        let made = recipe_grid_output(&base_api::CRAFTING, &grid, width, height);
         Ok(format!("{} {}", name_of(abi::entry_kind::ITEM, made.item), made.count))
     }),
     ("seed", "<pos:pos>", |w, cmd, _, _| {
         let p = pos(cmd, "pos")?;
-        Ok(format!("{} {} {}", w.seed(), w.position_seed(p), w.cube_seed(p)))
+        Ok(format!("{} {} {}", w.seed(), w.seed_at(p), w.seed_of_cube(p)))
     }),
     ("skip", "<ticks:int>", |w, cmd, _, _| {
         w.skip_ticks(int(cmd, "ticks")?);
@@ -456,13 +561,13 @@ const OPS: &[(&str, &str, Run)] = &[
     }),
     ("wear", "@owner <index:int> <amount:int>", |w, cmd, _, _| {
         let (inv, i) = (w.inventory(owner(w, cmd)?), int(cmd, "index")?);
-        inv.set(i, inv.get(i).with_damage(int(cmd, "amount")?));
+        inv.set(i, inv.get(i).with_wear(int(cmd, "amount")?));
         Ok(String::new())
     }),
     ("insert", "<pos:pos> <item:item> [count:int]", |w, cmd, _, _| {
         let p = pos(cmd, "pos")?;
         let o = match w.block_entity(p) {
-            0 => return Err(format!("no block entity at {p:?} ({})", block_name(w.get(p)))),
+            0 => return Err(format!("no block entity at {p:?} ({})", block_name(w.block(p)))),
             id => id,
         };
         let count: u32 = int(cmd, "count").unwrap_or(1);
@@ -473,7 +578,7 @@ const OPS: &[(&str, &str, Run)] = &[
     }),
     ("inv", "@owner", |w, cmd, _, _| {
         let inv = w.inventory(owner(w, cmd)?);
-        let parts: Vec<String> = (0..inv.size())
+        let parts: Vec<String> = (0..inv.len())
             .map(|i| (i, inv.get(i)))
             .filter(|(_, s)| !s.is_empty())
             .map(|(i, s)| format!("{i}:{}:{}", item_name(s.item), s.count))
@@ -487,16 +592,16 @@ const OPS: &[(&str, &str, Run)] = &[
     }),
     ("entity", "@entity", |w, cmd, _, _| {
         let e = w.entity(owner(w, cmd)?).ok_or("no such entity")?;
-        Ok(format!("{} {:.2} {:.2} {:.2} {}", name_of(ek::ENTITY, e.kind), e.pos[0], e.pos[1], e.pos[2], e.health))
+        Ok(format!("{} {:.2} {:.2} {:.2} {}", name_of(ek::ENTITY, e.kind), e.pos.x, e.pos.y, e.pos.z, e.health))
     }),
     ("size", "@entity", |w, cmd, _, _| {
         let s = w.entity(owner(w, cmd)?).ok_or("no such entity")?.size;
-        Ok(format!("{:.3} {:.3} {:.3}", s[0], s[1], s[2]))
+        Ok(format!("{:.3} {:.3} {:.3}", s.width, s.height, s.eye))
     }),
     ("near", "<pos:pos> <r:float>", |w, cmd, player, _| {
         let p = pos(cmd, "pos")?;
         let r = cmd.float("r").ok_or("missing r")?;
-        let ids = w.near([p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5], r, None);
+        let ids = w.entities_near([p[0] as f64 + 0.5, p[1] as f64, p[2] as f64 + 0.5], r, None);
         let parts: Vec<String> = ids
             .iter()
             .filter(|&&id| id != player)
@@ -508,7 +613,7 @@ const OPS: &[(&str, &str, Run)] = &[
         Ok(parts.join(" "))
     }),
     ("action", "@owner [name:word]", |w, cmd, _, _| {
-        w.play_action(owner(w, cmd)?, cmd.text("name").unwrap_or(""), false);
+        w.action_play(owner(w, cmd)?, cmd.text("name").unwrap_or(""), false);
         Ok(String::new())
     }),
     ("survey", "<r:int>", |w, cmd, _, me| {
@@ -523,7 +628,7 @@ const OPS: &[(&str, &str, Run)] = &[
                 for x in me[0] - r..=me[0] + r {
                     let b = w.biome([x, y, z]);
                     *biomes.entry(name_of(ek::BIOME, b)).or_default() += 1;
-                    if block_of(w.get([x, y, z])) == block_of(crystal) {
+                    if block_of(w.block([x, y, z])) == block_of(crystal) {
                         if cave.on_biome(b) { in_cave += 1 } else { elsewhere += 1 }
                     }
                 }
@@ -550,7 +655,7 @@ const OPS: &[(&str, &str, Run)] = &[
     ("crowd", "<kind:word> <n:int>", |w, cmd, _, me| {
         // `n` mobs in a grid north of the player, walking on the spot if they have room to.
         let n: u32 = int(cmd, "n")?;
-        let kind = Entity::lookup(word(cmd, "kind")?).ok_or("no such entity")?;
+        let kind = EntityKind::lookup(word(cmd, "kind")?).ok_or("no such entity")?;
         let side = (n as f64).sqrt().ceil() as u32;
         for i in 0..n {
             let (x, z) = ((i % side) as f64 * 1.5 - side as f64 * 0.75, -8.0 - (i / side) as f64 * 1.5);
@@ -560,8 +665,8 @@ const OPS: &[(&str, &str, Run)] = &[
     }),
     ("swap", "<id:int> <from:word> [to:word]", |w, cmd, _, _| {
         match cmd.text("to") {
-            Some(to) => w.replace_action(int(cmd, "id")?, word(cmd, "from")?, to),
-            None => w.restore_action(int(cmd, "id")?, word(cmd, "from")?),
+            Some(to) => w.action_override(int(cmd, "id")?, word(cmd, "from")?, to),
+            None => w.action_override_clear(int(cmd, "id")?, word(cmd, "from")?),
         }
         Ok(String::new())
     }),
@@ -573,7 +678,7 @@ const OPS: &[(&str, &str, Run)] = &[
         for y in me[1] - up..=me[1] + up {
             for z in me[2] - r..=me[2] + r {
                 for x in me[0] - r..=me[0] + r {
-                    if block_of(w.get([x, y, z])) == want {
+                    if block_of(w.block([x, y, z])) == want {
                         return Ok(format!("{x} {y} {z}"));
                     }
                 }
@@ -597,7 +702,7 @@ const OPS: &[(&str, &str, Run)] = &[
         for y in me[1] - r..=me[1] + r {
             for z in me[2] - r..=me[2] + r {
                 for x in me[0] - r..=me[0] + r {
-                    let b = block_of(w.get([x, y, z]));
+                    let b = block_of(w.block([x, y, z]));
                     if let Some(i) = ids.iter().position(|&id| id == b) {
                         counts[i] += 1;
                     }
@@ -632,7 +737,7 @@ const OPS: &[(&str, &str, Run)] = &[
                 }
                 let k = if (h + 1) & 15 == 0 { 0 } else { 2 };
                 n[k] += 1;
-                n[k + 1] += plants.contains(&block_of(w.get([x, h + 1, z]))) as u32;
+                n[k + 1] += plants.contains(&block_of(w.block([x, h + 1, z]))) as u32;
             }
         }
         Ok(format!("{} {} {} {}", n[0], n[1], n[2], n[3]))
@@ -642,7 +747,7 @@ const OPS: &[(&str, &str, Run)] = &[
         // platforms move on while a teleport by command makes its way).
         let e = w.entity(int(cmd, "id")?).ok_or("no such entity")?;
         let rider = cmd.int("rider").map_or(player, |r| r as u64);
-        w.teleport(rider, None, [e.pos[0], e.pos[1] + cmd.float("h").unwrap_or(0.0) + 0.05, e.pos[2]]);
+        w.teleport(rider, None, [e.pos.x, e.pos.y + cmd.float("h").unwrap_or(0.0) + 0.05, e.pos.z]);
         Ok(String::new())
     }),
     ("navigate", "@owner <to:pos>", |w, cmd, _, _| {
@@ -651,20 +756,65 @@ const OPS: &[(&str, &str, Run)] = &[
     }),
     ("structure", "<name:word> <r:int>", |w, cmd, _, me| {
         Ok(w.structure_near(word(cmd, "name")?, me, int(cmd, "r")?)
-            .map_or("none".into(), |a| format!("{} {} {}", a[0], a[1], a[2])))
+            .map_or("none".into(), |a| format!("{} {} {}", a.x, a.y, a.z)))
     }),
     // A timer on the player: `after 60`, then `rings` counts the ones that fired.
     ("after", "<ticks:int>", |w, cmd, player, _| {
-        w.after(player, int(cmd, "ticks")?, &RANG, player);
+        w.emit_after(player, int(cmd, "ticks")?, &RANG, player);
         Ok(String::new())
     }),
     ("rings", "", |_, _, _, _| Ok(RINGS.load(Ordering::Relaxed).to_string())),
+    ("edited", "", |w, _, player, _| {
+        let i = EDITED.id();
+        let b = EDITED_BIOME.id();
+        let mut drops: Vec<String> = w
+            .roll_loot(&EDITED_LOOT, &LootCtx::default())
+            .iter()
+            .map(|s| format!("{}x{}", item_name(s.item), s.count))
+            .collect();
+        drops.sort();
+        let oil = Tag::named("testkit:edited");
+        let probe = |dx: i32| name_of(ek::BIOME, MARS.column(w.seed(), PROBE[0] + dx, PROBE[1]).biome) == "base:plains";
+        let size = w
+            .kind_size(EDITED_KIND.name())
+            .map_or([0.0; 3], |s| [s.width, s.height, s.eye]);
+        // Each state of the lamp: light, opacity, warmth, lit tag.
+        let lit = Tag::named("testkit:lit");
+        let lamp: Vec<String> = (LAMP.id()..LAMP.id() + 2)
+            .map(|s| {
+                let i = block_info(s).map_or(([0; 3], 0), |i| (i.light, i.opacity));
+                format!("{}/{}/{}/{}", i.0[0], i.1, WARMTH.on_block(s).unwrap_or(0.0), lit.on_block(s))
+            })
+            .collect();
+        let stairs = block_info(OAK_STAIRS.id()).map_or(0, |i| i.states);
+        let stairs_lit = (OAK_STAIRS.id()..OAK_STAIRS.id() + stairs).all(|s| block_info(s).is_some_and(|i| i.light == [7; 3]));
+        Ok(format!(
+            "{} {} {} {} {} {} {} {} {} {} {} {} {:?} {} {} {} {}",
+            MAX_STACK.on_item(i).unwrap_or(0),
+            ATTACK_DAMAGE.on_item(i).unwrap_or(0.0),
+            WARMTH.on_biome(b).unwrap_or(0.0),
+            Tag::named("edited_a").on_biome(b),
+            Weather::flags_of(STORM.id()),
+            w.attribute(player, &GRIT),
+            recipe_process(&base_api::SMELTING, i).is_none(),
+            drops.join(","),
+            liquid_of(OIL.id()) == Some(OIL.liquid().id()),
+            oil.on_block(OIL.id()) && oil.on_item(Item::generated(OIL.name().to_string()).id()),
+            (probe(0), probe(4)) == (true, false),
+            oil.on_dimension(MARS.id()),
+            size,
+            WARMTH.on_entity(EDITED_KIND.id()).unwrap_or(0.0),
+            lamp.join(","),
+            stairs,
+            stairs_lit,
+        ))
+    }),
     ("look", "", |w, _, player, _| {
-        Ok(w.look_at(player, 5.0, false)
-            .map_or("none".into(), |l| format!("{} {} {} {} {}", l.frame, l.pos[0], l.pos[1], l.pos[2], block_name(l.state))))
+        Ok(w.target_block(player, 5.0, false)
+            .map_or("none".into(), |l| format!("{} {} {} {} {}", l.body, l.pos.x, l.pos.y, l.pos.z, block_name(l.state))))
     }),
     ("place", "<template:word> <pos:pos>", |w, cmd, _, _| {
-        Ok((w.place(&Template::generated(word(cmd, "template")?.to_string()), pos(cmd, "pos")?) as u32).to_string())
+        Ok((w.place_template(&Template::generated(word(cmd, "template")?.to_string()), pos(cmd, "pos")?) as u32).to_string())
     }),
     ("heal", "", |w, _, player, _| {
         w.heal(player, f32::MAX);
@@ -695,7 +845,7 @@ const OPS: &[(&str, &str, Run)] = &[
     ("mode", "survival | creative | spectator", |w, cmd, player, _| {
         let m = ["survival", "creative", "spectator"]
             .iter()
-            .position(|m| cmd.has(m))
+            .position(|m| cmd.given(m))
             .ok_or("no game mode")?;
         w.set_game_mode(player, m as u32);
         Ok(String::new())
@@ -704,29 +854,98 @@ const OPS: &[(&str, &str, Run)] = &[
         let name = word(cmd, "which")?;
         let m = Menu::lookup(name).ok_or_else(|| format!("no menu {name}"))?;
         let p = pos(cmd, "pos")?;
-        if !w.open_menu_at(player, m, p) {
-            return Err(format!("no block entity at {p:?} ({})", block_name(w.get(p))));
+        if !w.open_menu(player, m, p) {
+            return Err(format!("no block entity at {p:?} ({})", block_name(w.block(p))));
         }
         Ok(String::new())
     }),
-    ("vmenu", "<which:word> <slots:int> [items:text]", |w, cmd, player, _| {
+    ("emenu", "<which:word> <id:int>", |w, cmd, player, _| {
         let name = word(cmd, "which")?;
         let m = Menu::lookup(name).ok_or_else(|| format!("no menu {name}"))?;
-        let pos = w.entity(player).map_or([0.0; 3], |e| e.pos);
-        let id = w.virtual_inventory(int(cmd, "slots")?, pos);
-        let inv = w.inventory(id);
-        // Pairs of item and count.
+        let id: u64 = int(cmd, "id")?;
+        if !w.open_menu(player, m, id) {
+            return Err(format!("can't open {name} on {id}"));
+        }
+        Ok(String::new())
+    }),
+    ("hmenu", "<which:word> <slot:int>", |w, cmd, player, _| {
+        let name = word(cmd, "which")?;
+        let m = Menu::lookup(name).ok_or_else(|| format!("no menu {name}"))?;
+        let slot = int(cmd, "slot")?;
+        if !w.open_menu(player, m, Holder::held(player, slot)) {
+            return Err(format!("nothing to open in slot {slot}"));
+        }
+        Ok(String::new())
+    }),
+    ("hput", "<slot:int> <index:int> <item:item> [count:int]", |w, cmd, player, _| {
+        let held = w.inventory(Holder::held(player, int(cmd, "slot")?));
+        held.set(int(cmd, "index")?, ItemStack::new(id(cmd, "item")?, int(cmd, "count").unwrap_or(1)));
+        Ok(held.len().to_string())
+    }),
+    ("stash", "<which:word> [items:text]", |w, cmd, player, _| {
+        let name = word(cmd, "which")?;
+        let m = Menu::lookup(name).ok_or_else(|| format!("no menu {name}"))?;
+        let inv = w.inventory(STASH.of(player));
+        // Pairs of item and count, the rest emptied.
         let words: Vec<&str> = cmd.text("items").unwrap_or("").split_whitespace().collect();
-        for (i, pair) in words.chunks(2).enumerate() {
-            if let [n, c] = pair {
-                inv.set(i as u32, ItemStack::new(item(n)?, c.parse().map_err(|_| format!("bad count {c}"))?));
+        for i in 0..inv.len() {
+            let stack = match words.chunks(2).nth(i as usize) {
+                Some([n, c]) => ItemStack::new(item(n)?, c.parse().map_err(|_| format!("bad count {c}"))?),
+                _ => ItemStack::EMPTY,
+            };
+            inv.set(i, stack);
+        }
+        if !w.open_menu(player, m, STASH.of(player)) {
+            return Err(format!("cannot open {name} on the stash"));
+        }
+        Ok(inv.len().to_string())
+    }),
+    // A stick with a diamond over it, tinted red: a stack's own layered picture.
+    ("layered", "<index:int>", |w, cmd, player, _| {
+        let s = ItemStack::new(item("base:stick")?, 1).with_layers(&[("base:stick", None), ("base:diamond", Some(0xFF2020))]);
+        w.inventory(player).set(int(cmd, "index")?, s);
+        Ok(String::new())
+    }),
+    // `rider` (the player by default) onto `mount`: 1 if it got on.
+    ("mount", "<onto:int> [rider:int]", |w, cmd, player, _| {
+        let rider = cmd.int("rider").map_or(player, |r| r as u64);
+        Ok((w.mount(rider, int(cmd, "onto")?) as u32).to_string())
+    }),
+    // Entity `id` to dimension `dim` (`here` for the same one) at x y z.
+    ("send", "<id:int> <dim:word> <x:float> <y:float> <z:float>", |w, cmd, _, _| {
+        let p = ["x", "y", "z"].map(|a| cmd.float(a).unwrap_or(0.0));
+        let name = word(cmd, "dim")?;
+        let dim = (name != "here").then(|| Dimension::generated(name.to_string()));
+        w.teleport(int(cmd, "id")?, dim, p);
+        Ok(String::new())
+    }),
+    // What `id` (the player by default) rides and its seat, "0 0" for nothing.
+    // The player's camera: a mode by name, held there with `locked` 1; `release` gives it back.
+    ("camera", "<which:word> [locked:int]", |w, cmd, player, _| {
+        let name = word(cmd, "which")?;
+        if name == "release" {
+            w.release_camera(player, None);
+        } else {
+            if CameraMode::lookup(name).is_none() {
+                return Err(format!("no camera {name}"));
+            }
+            let m = CameraMode::generated(name.to_string());
+            if cmd.int("locked") == Some(1) {
+                w.force_camera(player, m, None);
+            } else {
+                w.set_camera(player, m, None);
             }
         }
-        w.open_menu(player, m, id);
-        Ok(id.to_string())
+        Ok(String::new())
     }),
+    ("vehicle", "[id:int]", |w, cmd, player, _| {
+        let id = cmd.int("id").map_or(player, |r| r as u64);
+        Ok(w.vehicle(id)
+            .map_or("0 0".to_string(), |(m, s)| format!("{m} {s}")))
+    }),
+    ("stashed", "<index:int>", |w, cmd, player, _| Ok(stack_text(w.inventory(STASH.of(player)).get(int(cmd, "index")?)))),
     ("remove", "<id:int>", |w, cmd, _, _| {
-        w.remove(int(cmd, "id")?);
+        w.despawn(int(cmd, "id")?);
         Ok(String::new())
     }),
     ("mark", "<id:int> <value:int>", |w, cmd, _, _| {
@@ -744,12 +963,12 @@ const OPS: &[(&str, &str, Run)] = &[
                 Ok(String::new())
             }
             None => Ok(SECRET
-                .stack_only(&s)
+                .on_stack_own(&s)
                 .map_or("none".into(), |v| v.to_string())),
         }
     }),
     ("events", " | reset", |_, cmd, _, _| {
-        if cmd.has("reset") {
+        if cmd.given("reset") {
             COUNTS.iter().for_each(|c| c.store(0, Ordering::Relaxed));
         }
         Ok(EVENT_NAMES
@@ -760,13 +979,13 @@ const OPS: &[(&str, &str, Run)] = &[
             .join(" "))
     }),
     ("attr", "@owner <attribute:word>", |w, cmd, _, _| {
-        let (v, text) = w.explain_attribute(owner(w, cmd)?, Attribute::generated(word(cmd, "attribute")?.to_string()));
+        let (v, text) = w.attribute_explain(owner(w, cmd)?, Attribute::generated(word(cmd, "attribute")?.to_string()));
         Ok(format!("{v} | {text}"))
     }),
     ("attr_mod", "@owner <attribute:word> <mod:word> <op:int> <amount:float> <ticks:int>", |w, cmd, _, _| {
         let o = owner(w, cmd)?;
         let amount = cmd.float("amount").ok_or("missing amount")?;
-        w.add_modifier(
+        w.attribute_add_modifier(
             o,
             Attribute::generated(word(cmd, "attribute")?.to_string()),
             word(cmd, "mod")?,
@@ -777,7 +996,7 @@ const OPS: &[(&str, &str, Run)] = &[
         Ok(String::new())
     }),
     ("attr_rm", "@owner <attribute:word> <mod:word>", |w, cmd, _, _| {
-        w.remove_modifier(owner(w, cmd)?, Attribute::generated(word(cmd, "attribute")?.to_string()), word(cmd, "mod")?);
+        w.attribute_remove_modifier(owner(w, cmd)?, Attribute::generated(word(cmd, "attribute")?.to_string()), word(cmd, "mod")?);
         Ok(String::new())
     }),
     ("loot", "<table:word> <n:int> [ctx:text]", |w, cmd, _, _| {
@@ -811,11 +1030,43 @@ const OPS: &[(&str, &str, Run)] = &[
             .map_or(ItemStack::EMPTY, |t| ItemStack::new(t, 1));
         Ok((w.break_block(pos(cmd, "pos")?, tool, player, true) as u32).to_string())
     }),
+    // A melee hit's damage with what `item` makes of the player having fallen `fall` blocks.
+    ("attack_damage", "<item:item> <fall:float>", |w, cmd, player, _| {
+        let fall = cmd.float("fall").ok_or("missing fall")?;
+        w.entity_modify(player).fall_distance(fall as f32);
+        let base = 6.0;
+        let q = abi::Query { entity: player, item: id(cmd, "item")?, amount: base, ..query() };
+        let fell = w.entity(player).map_or(-1.0, |s| s.fall_distance);
+        Ok(format!("{} {fell}", w.chain_compute(&chain::ATTACK_DAMAGE, base, &q)))
+    }),
+    // The player hits `id` as if having fallen `fall` blocks first.
+    ("hit_falling", "<id:int> <fall:float>", |w, cmd, player, _| {
+        w.entity_modify(player)
+            .fall_distance(cmd.float("fall").unwrap_or(0.0) as f32);
+        w.damage(int(cmd, "id")?, 1.0, player, damage_cause::ATTACK);
+        Ok(String::new())
+    }),
+    // Three blocks up, flying there: landing would end the flight.
+    ("edit_me", "<yaw:float> <slot:int> <flying:int> <fire:int>", |w, cmd, player, _| {
+        let up = w
+            .entity(player)
+            .ok_or("no player")?
+            .pos
+            .offset(0.0, 3.0, 0.0);
+        w.entity_modify(player)
+            .pos(up)
+            .yaw(cmd.float("yaw").unwrap_or(0.0) as f32)
+            .selected(int(cmd, "slot")?)
+            .flying(int::<u32>(cmd, "flying")? != 0)
+            .fire(int(cmd, "fire")?);
+        let s = w.entity(player).ok_or("no player")?;
+        Ok(format!("{} {}", s.selected, s.fire))
+    }),
     ("damage", "<amount:float> [cause:int]", |w, cmd, player, _| {
         let amount = cmd.float("amount").ok_or("missing amount")?;
-        let cause: u32 = int(cmd, "cause").unwrap_or(abi::damage::GENERIC);
+        let cause: u32 = int(cmd, "cause").unwrap_or(abi::damage_cause::GENERIC);
         let q = abi::Query { entity: player, cause, amount, ..query() };
-        let (v, text) = w.explain(&chain::DAMAGE, amount, &q);
+        let (v, text) = w.chain_explain(&chain::DAMAGE, amount, &q);
         Ok(format!("{v} | {text}"))
     }),
     ("in_liquid", "<x:float> <y:float> <z:float>", |w, cmd, _, _| {
@@ -823,14 +1074,20 @@ const OPS: &[(&str, &str, Run)] = &[
         Ok((w.in_liquid(p) as u32).to_string())
     }),
     // A hit from the player who runs it.
+    ("effect", "<id:int> <which:word> <strength:float> <ticks:int>", |w, cmd, _, _| {
+        let name = word(cmd, "which")?;
+        let id = EntityEffect::lookup(name).ok_or_else(|| format!("no entity effect {name}"))?;
+        w.entity_effect(int(cmd, "id")?, id, cmd.float("strength").unwrap_or(1.0) as f32, int(cmd, "ticks")?);
+        Ok(String::new())
+    }),
     ("hurt", "<id:int> <amount:float>", |w, cmd, player, _| {
         let amount = cmd.float("amount").ok_or("missing amount")? as f32;
-        Ok((w.damage(int(cmd, "id")?, amount, player, abi::damage::ATTACK) as u32).to_string())
+        Ok((w.damage(int(cmd, "id")?, amount, player, abi::damage_cause::ATTACK) as u32).to_string())
     }),
     ("pose", "", |w, _, player, _| Ok(w.entity(player).map_or(0, |e| e.pose).to_string())),
     ("hurt_me", "<amount:float>", |w, cmd, player, _| {
         let amount = cmd.float("amount").ok_or("missing amount")? as f32;
-        Ok((w.damage(player, amount, 0, abi::damage::ATTACK) as u32).to_string())
+        Ok((w.damage(player, amount, 0, abi::damage_cause::ATTACK) as u32).to_string())
     }),
     ("snapshot", "<from:pos> <to:pos>", |w, cmd, _, _| {
         let (p, q) = (pos(cmd, "from")?, pos(cmd, "to")?);
@@ -838,7 +1095,7 @@ const OPS: &[(&str, &str, Run)] = &[
         for y in p[1].min(q[1])..=p[1].max(q[1]) {
             for z in p[2].min(q[2])..=p[2].max(q[2]) {
                 for x in p[0].min(q[0])..=p[0].max(q[0]) {
-                    out.push(w.get([x, y, z]).to_string());
+                    out.push(w.block([x, y, z]).to_string());
                 }
             }
         }

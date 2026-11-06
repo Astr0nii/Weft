@@ -1,16 +1,19 @@
 // Particles on the GPU: every live one moved a frame, stopped by what `cells` says of the blocks
-// around the camera, and written out for `particle.wgsl` to draw. The prelude
+// around the camera, answering what happens to it by its kind's `rules`, and written out for
+// `particle.wgsl` to draw. The prelude
 // (`gpu_layout::particle_sim_prelude`) declares the bindings and `args`.
 
 const THROUGH: u32 = 65536u;
 const ON_GROUND: u32 = 131072u;
 const STOPPED: u32 = 262144u;
+const IN_LIQUID: u32 = 524288u;
 // Vanilla's box: 0.2 across and 0.2 up from where it is.
 const BOX_LOW: vec3<f32> = vec3<f32>(-0.1, 0.0, -0.1);
 const BOX_HIGH: vec3<f32> = vec3<f32>(0.1, 0.2, 0.1);
 
 // A block's word: light (a nibble each: sky, red, green, blue), then what is solid of it from
-// bottom to top in sixteenths. What is not in the window is nothing, under the open sky.
+// bottom to top in sixteenths, then whether it is a liquid and its tags. What is not in the
+// window is nothing, under the open sky.
 fn cell_word(c: vec3<i32>) -> u32 {
     let cube = c >> vec3<u32>(4u);
     let far = abs(cube - args.center.xyz);
@@ -95,38 +98,118 @@ fn mix_color(a: u32, b: u32, t: f32) -> u32 {
     return out;
 }
 
+// A block's word past its span: bit 26 a liquid, from bit 27 the tags `Game::particle_tags` name.
+const LIQUID_BIT: u32 = 26u;
+const TAG_SHIFT: u32 = 27u;
+
+// Whether rule `r` holds at a block with word `word`.
+fn holds(r: ParticleRule, word: u32) -> bool {
+    let when = (r.data.x >> 4u) & 15u;
+    if when == WHEN_LIQUID {
+        return ((word >> LIQUID_BIT) & 1u) != 0u;
+    }
+    if when == WHEN_TAG {
+        return ((word >> (TAG_SHIFT + ((r.data.x >> 8u) & 255u))) & 1u) != 0u;
+    }
+    return true;
+}
+
+// The first of the kind's rules for `event` that holds at `word`, or `none`.
+const NO_RULE: u32 = 0xFFFFFFFFu;
+fn find_rule(kind: ParticleKind, event: u32, word: u32) -> u32 {
+    for (var n = 0u; n < kind.frames.w; n++) {
+        let i = kind.frames.z + n;
+        let r = rules[i];
+        if (r.data.x & 15u) == event && holds(r, word) {
+            return i;
+        }
+    }
+    return NO_RULE;
+}
+
+fn action(rule: u32) -> u32 {
+    return (rules[rule].data.x >> 16u) & 255u;
+}
+
+// A number in 0..1 of its own for particle `i` at `age`.
+fn random01(i: u32, age: f32) -> f32 {
+    var h = i * 747796405u + bitcast<u32>(age) * 2891336453u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    return f32((h >> 22u) ^ h) / 4294967295.0;
+}
+
+// What a particle is while one step runs.
+struct Live {
+    kind: u32,
+    flags: u32,
+    age: f32,
+    life: f32,
+    size: f32,
+    vel: vec3<f32>,
+}
+
+// Rule `rule` on `l`, which hit something along `axis` (3: nothing) at the speed `before`.
+fn apply(rule: u32, l: ptr<function, Live>, axis: u32, before: vec3<f32>, i: u32) {
+    let a = action(rule);
+    if a == THEN_DIE {
+        (*l).age = (*l).life;
+    } else if a == THEN_STOP {
+        (*l).flags |= STOPPED;
+        (*l).vel = vec3(0.0);
+    } else if a == THEN_SLIDE {
+        if axis < 3u {
+            (*l).vel[axis] = 0.0;
+        }
+    } else if a == THEN_BOUNCE {
+        if axis < 3u {
+            (*l).vel[axis] = -before[axis] * bitcast<f32>(rules[rule].data.y);
+        }
+    } else if a == THEN_BECOME || a == THEN_BECOME_STILL {
+        let into = rules[rule].data.z;
+        let start = kinds[into].start;
+        (*l).kind = into;
+        (*l).age = 0.0;
+        (*l).life = mix(start.x, start.y, random01(i, (*l).life));
+        (*l).size = mix(start.z, start.w, random01(i + 1u, (*l).life));
+        (*l).flags &= ~(STOPPED | ON_GROUND);
+        if a == THEN_BECOME_STILL {
+            (*l).vel = vec3(0.0);
+        }
+    }
+}
+
 @compute @workgroup_size(256)
 fn simulate(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= args.count {
         return;
     }
     let i = args.first + id.x;
-    var p = sim[i];
-    let life = p.life.x;
-    var age = p.vel_age.w;
+    let p = sim[i];
     var position = p.pos_size.xyz + args.shift.xyz;
-    if age >= life {
+    if p.vel_age.w >= p.life.x {
         dst[i].pos_size = vec4(0.0);
         sim[i].pos_size = vec4(position, p.pos_size.w);
         return;
     }
-    var flags = p.data.x;
-    let kind = kinds[flags & 65535u];
+    var l = Live(p.data.x & 65535u, p.data.x & ~65535u, p.vel_age.w, p.life.x, p.pos_size.w, p.vel_age.xyz);
+    var kind = kinds[l.kind];
     let dt = args.dt;
-    age += dt;
-    var vel = p.vel_age.xyz;
-    vel.y -= kind.motion.x * dt;
-    vel *= kind.motion.y;
+    l.age += dt;
+    l.vel.y -= kind.motion.x * dt;
+    l.vel *= kind.motion.y;
     // At most a block a step, the most `sweep` looks ahead.
-    let delta = clamp(vel * dt, vec3(-1.0), vec3(1.0));
-    if (flags & THROUGH) != 0u {
+    let delta = clamp(l.vel * dt, vec3(-1.0), vec3(1.0));
+    let collides = (kind.data.z & PARTICLE_FLAG_COLLIDE) != 0u;
+    if (l.flags & THROUGH) != 0u {
         position += delta;
         if !overlaps(position) {
-            flags &= ~THROUGH;
+            l.flags &= ~THROUGH;
         }
-    } else if (kind.data.z & PARTICLE_FLAG_COLLIDE) != 0u && (flags & STOPPED) == 0u {
-        let was_on_ground = (flags & ON_GROUND) != 0u;
+    } else if collides && (l.flags & STOPPED) == 0u {
+        let was_on_ground = (l.flags & ON_GROUND) != 0u;
+        let before = l.vel;
         var hit = vec3<bool>(false);
+        var stuck = false;
         for (var n = 0u; n < 3u; n++) {
             // Up and down first, as anything else in the world moves.
             let axis = (n + 1u) % 3u;
@@ -137,31 +220,80 @@ fn simulate(@builtin(global_invocation_id) id: vec3<u32>) {
             position[axis] += moved;
             // As in vanilla: one that can't go up or down any more stays where it is for good.
             if axis == 1u && abs(delta.y) >= 1e-5 && abs(moved) < 1e-5 {
-                flags |= STOPPED;
+                stuck = true;
             }
             if moved != delta[axis] {
                 hit[axis] = true;
-                vel[axis] = 0.0;
+                l.vel[axis] = 0.0;
             }
+        }
+        // What it hit, by the side it hit it on: the kind's rules for that, else vanilla's way.
+        var answered = false;
+        for (var axis = 0u; axis < 3u; axis++) {
+            if !hit[axis] || answered {
+                continue;
+            }
+            var event = EVENT_WALL;
+            var reach = 0.11;
+            if axis == 1u {
+                event = select(EVENT_CEILING, EVENT_LAND, delta.y < 0.0);
+                reach = select(0.21, 0.01, delta.y < 0.0);
+            }
+            // Landing counts once, not every step it lies there.
+            if event == EVENT_LAND && was_on_ground {
+                continue;
+            }
+            var probe = position + vec3(0.0, 0.1, 0.0);
+            probe[axis] = position[axis] + sign(delta[axis]) * reach;
+            if axis == 1u && delta.y < 0.0 {
+                probe.y = position.y - reach;
+            }
+            let rule = find_rule(kind, event, cell_word(vec3<i32>(floor(probe)) + args.origin.xyz));
+            if rule != NO_RULE {
+                apply(rule, &l, axis, before, i);
+                answered = true;
+            }
+        }
+        if !answered && stuck {
+            l.flags |= STOPPED;
         }
         let on_ground = (hit.y && delta.y < 0.0) || (was_on_ground && hit.y);
-        flags = (flags & ~ON_GROUND) | select(0u, ON_GROUND, on_ground);
-        if on_ground {
-            if (kind.data.z & PARTICLE_FLAG_DIES_ON_LAND) != 0u {
-                age = life;
-            }
-            vel.x *= kind.motion.z;
-            vel.z *= kind.motion.z;
+        l.flags = (l.flags & ~ON_GROUND) | select(0u, ON_GROUND, on_ground);
+        if on_ground && (l.flags & STOPPED) == 0u {
+            l.vel.x *= kind.motion.z;
+            l.vel.z *= kind.motion.z;
         }
-    } else if (kind.data.z & PARTICLE_FLAG_COLLIDE) == 0u {
+    } else if !collides {
         position += delta;
     }
-    sim[i].pos_size = vec4(position, p.pos_size.w);
-    sim[i].vel_age = vec4(vel, age);
-    sim[i].data.x = flags;
+    // In or out of a liquid, by the middle of its box.
+    let here = cell_word(vec3<i32>(floor(position + vec3(0.0, 0.1, 0.0))) + args.origin.xyz);
+    let wet = ((here >> LIQUID_BIT) & 1u) != 0u;
+    if wet != ((l.flags & IN_LIQUID) != 0u) {
+        l.flags ^= IN_LIQUID;
+        let rule = find_rule(kind, select(EVENT_LEAVE_LIQUID, EVENT_ENTER_LIQUID, wet), here);
+        if rule != NO_RULE {
+            apply(rule, &l, 3u, l.vel, i);
+        }
+    }
+    if l.age >= l.life {
+        let rule = find_rule(kind, EVENT_EXPIRE, here);
+        if rule != NO_RULE {
+            apply(rule, &l, 3u, l.vel, i);
+        }
+    }
+    kind = kinds[l.kind];
+    sim[i].pos_size = vec4(position, l.size);
+    sim[i].vel_age = vec4(l.vel, l.age);
+    sim[i].life.x = l.life;
+    sim[i].data.x = l.kind | l.flags;
+    if l.age >= l.life {
+        dst[i].pos_size = vec4(0.0);
+        return;
+    }
 
-    let t = clamp(age / life, 0.0, 1.0);
-    let size = select(p.pos_size.w, p.pos_size.w * (1.0 - t), (kind.data.z & PARTICLE_FLAG_SHRINK) != 0u);
+    let t = clamp(l.age / l.life, 0.0, 1.0);
+    let size = select(l.size, l.size * (1.0 - t), (kind.data.z & PARTICLE_FLAG_SHRINK) != 0u);
     // A kind's frames over its life, or the block a piece of dust is of.
     var texture = p.data.z;
     var uv = p.data.w;
@@ -171,9 +303,7 @@ fn simulate(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     var light = 0xFFFFFFFFu;
     if (kind.data.z & PARTICLE_FLAG_FULLBRIGHT) == 0u {
-        // The middle of its box: on a floor, rounding must not put it in the floor's dark.
-        let w = cell_word(vec3<i32>(floor(position + vec3(0.0, 0.1, 0.0))) + args.origin.xyz);
-        light = (w & 15u) | (((w >> 4u) & 15u) << 8u) | (((w >> 8u) & 15u) << 16u) | (((w >> 12u) & 15u) << 24u);
+        light = (here & 15u) | (((here >> 4u) & 15u) << 8u) | (((here >> 8u) & 15u) << 16u) | (((here >> 12u) & 15u) << 24u);
     }
     let color = mix_color(kind.data.x, kind.data.y, t);
     let tint = p.data.y;

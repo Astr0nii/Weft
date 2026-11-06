@@ -9,9 +9,9 @@ use crate::runner::{R, T};
 
 async fn reopen(t: &T, seed: u64) -> R {
     let name = format!("test-{}", t.name());
-    t.c().leave_world();
+    t.c().world_leave();
     t.screen("core:title").await?;
-    t.c().open_world(&name, seed);
+    t.c().world_open(&name, seed);
     t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED))
         .await?;
     t.loaded().await?;
@@ -54,7 +54,7 @@ pub async fn death_is_a_state(t: T) -> R {
     t.click_ui("slot:36", 0);
     t.until("on the cursor", Duration::from_secs(2), |t| t.c().inventory_slot(0).is_empty())
         .await?;
-    t.cmd("/kill").await?;
+    t.cmd("/clear @s").await?;
     t.screen("core:death").await?;
     t.secs(5.0).await?;
     t.check_eq(t.op("health").await?, "0".to_string(), "still dead after a hunger pulse");

@@ -430,6 +430,27 @@ pub fn composite_texture(parts: [&LoadedTexture; 4]) -> LoadedTexture {
     LoadedTexture { size, frames: vec![mip_chain(out, size)], glow: vec![None], anim: None }
 }
 
+/// Pictures one over the other, the first at the bottom, each multiplied by its tint
+/// (0xRRGGBB): what a stack with `layers` shows. All are scaled to the biggest.
+pub fn layered_texture(parts: &[(&LoadedTexture, u32)]) -> LoadedTexture {
+    let size = parts.iter().map(|p| p.0.size).max().unwrap_or(16);
+    let mut out = vec![0u8; (size * size * 4) as usize];
+    for (p, tint) in parts {
+        let Some(rgba) = p.frames.first().and_then(|f| f.first()) else { continue };
+        let from = scale_nearest(rgba, p.size, size);
+        let t = [(tint >> 16) & 255, (tint >> 8) & 255, tint & 255];
+        for (o, s) in out.chunks_exact_mut(4).zip(from.chunks_exact(4)) {
+            let a = s[3] as u32;
+            for k in 0..3 {
+                let c = s[k] as u32 * t[k] / 255;
+                o[k] = ((c * a + o[k] as u32 * (255 - a)) / 255) as u8;
+            }
+            o[3] = (a + o[3] as u32 * (255 - a) / 255) as u8;
+        }
+    }
+    LoadedTexture { size, frames: vec![mip_chain(out, size)], glow: vec![None], anim: None }
+}
+
 /// Fingerprint of the files a texture is made of (image, `.anim`, glow masks): changes when any of
 /// them is edited, added or removed, so a reload reads only what changed.
 pub fn texture_stamp(assets: &Assets, name: &str) -> u64 {
@@ -556,6 +577,28 @@ fn downsample(src: &[u8], size: u32) -> Vec<u8> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+
+    fn one(size: u32, px: [u8; 4]) -> LoadedTexture {
+        let rgba = px.repeat((size * size) as usize);
+        LoadedTexture { size, frames: vec![vec![rgba]], glow: vec![None], anim: None }
+    }
+
+    #[test]
+    fn layers_stack_tinted_and_scaled() {
+        let base = one(16, [200, 200, 200, 255]);
+        let top = one(32, [255, 255, 255, 255]);
+        let clear = one(16, [9, 9, 9, 0]);
+        let t = layered_texture(&[(&base, 0xFF_FFFF), (&clear, 0xFF_FFFF), (&top, 0xFF_0000)]);
+        assert_eq!(t.size, 32);
+        assert_eq!(&t.frames[0][0][..4], &[255, 0, 0, 255]);
+        let t = layered_texture(&[(&base, 0xFF_FFFF), (&clear, 0xFF_FFFF)]);
+        assert_eq!(&t.frames[0][0][..4], &[200, 200, 200, 255]);
+    }
 }
 
 #[cfg(test)]

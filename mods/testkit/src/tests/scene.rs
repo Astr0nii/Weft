@@ -121,7 +121,7 @@ async fn sync_edits(t: T, o: [i32; 3]) -> R {
     t.frames(20).await?;
     let s = pos_of(&t, pig).await?;
     if let Some(e) = t.c().entity(pig) {
-        let d = ((e.pos[0] - s[0]).powi(2) + (e.pos[1] - s[1]).powi(2) + (e.pos[2] - s[2]).powi(2)).sqrt();
+        let d = ((e.pos.x - s[0]).powi(2) + (e.pos.y - s[1]).powi(2) + (e.pos.z - s[2]).powi(2)).sqrt();
         t.check(d < 1.5, format!("pig is {d:.2} blocks off between server and client"));
     }
     Ok(())
@@ -140,6 +140,18 @@ async fn sand_and_support(t: T, o: [i32; 3]) -> R {
     t.secs(2.0).await?;
     t.check_eq(t.block(air).await?, "core:air".into(), "sand left the air");
     t.check_eq(t.block(o).await?, "base:sand".into(), "sand landed on the ground");
+    // Any body falls the same way, each block landing where it comes down.
+    let high = add(o, [3, 5, 0]);
+    t.set(high, "stone").await?;
+    t.set(add(high, [0, 1, 0]), "oak_planks").await?;
+    let body = t
+        .op(&format!("lift {} {} {} 1", high[0], high[1], high[2]))
+        .await?;
+    t.op(&format!("bodyfall {body}")).await?;
+    t.secs(2.5).await?;
+    t.check_eq(t.block(add(o, [3, 0, 0])).await?, "base:stone".into(), "a falling body's bottom block landed");
+    t.check_eq(t.block(add(o, [3, 1, 0])).await?, "base:oak_planks".into(), "the block on it landed on top");
+    t.check_eq(t.block(high).await?, "core:air".into(), "nothing left up there");
     let stone = add(o, [6, 0, 0]);
     t.set(stone, "stone").await?;
     t.set(add(stone, [0, 1, 0]), "torch").await?;
@@ -326,7 +338,9 @@ async fn damage_chain(t: &T) -> R {
     t.op("put me 37 iron_chestplate 1").await?;
     let armored = t.op("damage 8 0").await?;
     t.check((value(&armored) - 7.36).abs() < 1e-4, format!("iron chestplate: {armored}"));
-    let fall = t.op(&format!("damage 8 {}", abi::damage::FALL)).await?;
+    let fall = t
+        .op(&format!("damage 8 {}", abi::damage_cause::FALL))
+        .await?;
     t.check((value(&fall) - 8.0).abs() < 1e-6, format!("armor does not soften falls: {fall}"));
     t.cmd("/rule testkit:half_damage 1").await?;
     let both = t.op("damage 8 0").await?;
@@ -348,8 +362,9 @@ async fn loot_tables(t: &T) -> R {
     let zombie = counts(&t.op("loot base:zombie 2000").await?);
     let flesh = zombie.get("base:rotten_flesh").copied().unwrap_or(0);
     t.check((1700..=2300).contains(&flesh), format!("rotten flesh from 2000 zombies: {flesh} (0..2 each)"));
-    let tin = zombie.get("testmod:tin_ingot").copied().unwrap_or(0);
-    t.check((50..=160).contains(&tin), format!("tin from 2000 zombies through testmod's modifier: {tin} (5%: 100)"));
+    let steed = counts(&t.op("loot testmod:steed 2000").await?);
+    let tin = steed.get("testmod:tin_ingot").copied().unwrap_or(0);
+    t.check((50..=160).contains(&tin), format!("tin from 2000 steeds through testmod's modifier: {tin} (5%: 100)"));
     let pig = counts(&t.op("loot base:pig 200 fire").await?);
     t.check(
         pig.contains_key("base:cooked_porkchop") && !pig.contains_key("base:porkchop"),
@@ -449,5 +464,9 @@ async fn facing_states(t: &T) -> R {
     t.check_eq(state_prop(lit, "facing"), Some("east"), "facing of a lit furnace");
     t.check_eq(state_with(lit, "lit", "false").and_then(|s| state_prop(s, "facing")), Some("east"), "putting it out keeps its facing");
     t.check_eq(block_name(lit).to_string(), "base:furnace[facing=east,lit=true]".to_string(), "the state's name");
+    // Asking a mod's files whether it has a picture (for making something of every mod's logs).
+    t.check(texture_exists("base:block/leaves_oak"), "base has an oak leaves picture");
+    t.check(!texture_exists("base:block/log_oak_inner"), "and no inner one");
+    t.check(texture_exists("testmod:block/tin_ore"), "testmod's own");
     Ok(())
 }

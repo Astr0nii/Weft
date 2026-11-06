@@ -333,7 +333,7 @@ impl Hud {
             list_shown,
             client.dead,
             groups,
-            client.mode as u8,
+            client.mode.0 as u8,
             size,
             (held.item, held.data, fade),
             shown_steps,
@@ -373,12 +373,12 @@ impl Hud {
             ("core:chat".into(), CHAT.into(), 0, Part::Chat),
             ("core:debug.help".into(), a::DEBUG_LEFT.into(), i32::MAX, Part::DebugHelp),
         ];
-        for (i, p) in PLACES
+        for (i, p) in places()
             .iter()
             .enumerate()
             .filter(|(_, p)| !p.element.is_empty())
         {
-            all.push((p.element.into(), p.anchor.into(), p.order, Part::Place(i)));
+            all.push((p.element.clone(), p.anchor.clone(), p.order, Part::Place(i)));
         }
         for (i, g) in DEBUG_GROUPS.iter().enumerate() {
             let side = if g.1 { a::DEBUG_RIGHT } else { a::DEBUG_LEFT };
@@ -410,7 +410,7 @@ impl Hud {
             .map(|(name, anchor, order, part)| {
                 let p = self.layout.get(&name).cloned().unwrap_or_default();
                 let at = match part {
-                    Part::Place(i) if p.flow.is_none() => p.at.or(PLACES[i].at),
+                    Part::Place(i) if p.flow.is_none() => p.at.or(places()[i].at),
                     _ => p.at,
                 };
                 let (anchor, order) = p.flow.unwrap_or((anchor, order));
@@ -441,7 +441,7 @@ impl Hud {
             }
             Part::HeldName if editing => drop(ui.text(text::rich(lang.get("hud.edit.sample_name"), lang, None), "label")),
             Part::HeldName => {}
-            Part::Hotbar if client.mode == crate::world::GameMode::Spectator => {}
+            Part::Hotbar if client.mode.has(weft_abi::game_mode_flags::NO_HUD) => {}
             Part::Hotbar => {
                 ui.container(Style::row().gap(0.0), |ui| {
                     for i in 0..content().game.player_layout.hotbar as u64 {
@@ -469,9 +469,11 @@ impl Hud {
                     shown_text(ui, s, *alpha, lang, Some(input));
                 }
                 if lines.is_empty() && editing {
-                    let id = ui.text(text::rich(lang.get(PLACES[i].sample), lang, None), PLACES[i].class);
+                    let place = &places()[i];
+                    let id = ui.text(text::rich(lang.get(&place.sample), lang, None), &place.class);
                     if let Some(t) = ui.text_mut(id) {
-                        t.scale = PLACES[i].scale;
+                        t.scale = place.scale;
+                        t.wrap = place.wrap;
                     }
                 }
             }
@@ -624,77 +626,112 @@ impl Hud {
 const CENTER: &str = "core:center";
 const CHAT: &str = "core:chat";
 
-/// What makes one `abi::show_place` different from another: everything, as text goes the same way.
+/// A place for text on the screen (`abi::show_place` and mods' own): what text there looks like
+/// unless it says otherwise, and the HUD element it is.
+#[derive(Clone, Debug)]
 pub struct Place {
+    pub name: String,
     pub scale: f32,
     /// Fading in, staying, fading out.
     pub times: [f32; 3],
     /// More text without an id adds to what is there instead of replacing it.
     pub stacks: bool,
-    pub class: &'static str,
+    pub class: String,
     pub wrap: bool,
     /// Where text stands if no one says, instead of joining an element.
     pub own_at: Option<[f32; 2]>,
     /// The element of the HUD it joins and where that goes by default: `anchor` and `order`, or
-    /// a free spot `at` (`Placement::at`). None for what has no element of this table's.
-    pub element: &'static str,
-    pub anchor: &'static str,
+    /// a free spot `at` (`Placement::at`). Empty for what is no element (free text, the chat).
+    pub element: String,
+    pub anchor: String,
     pub order: i32,
     pub at: Option<[f32; 4]>,
     /// What the HUD editor shows of it.
-    pub sample: &'static str,
+    pub sample: String,
 }
 
-const NO_ELEMENT: Place = Place {
-    scale: 1.0,
-    times: [0.0, 2.5, 0.5],
-    stacks: true,
-    class: "label",
-    wrap: false,
-    own_at: None,
-    element: "",
-    anchor: "",
-    order: 0,
-    at: None,
-    sample: "",
-};
+impl Place {
+    fn plain(name: &str) -> Place {
+        Place {
+            name: name.into(),
+            scale: 1.0,
+            times: [0.0, 2.5, 0.5],
+            stacks: true,
+            class: "label".into(),
+            wrap: false,
+            own_at: None,
+            element: String::new(),
+            anchor: String::new(),
+            order: 0,
+            at: None,
+            sample: String::new(),
+        }
+    }
 
-/// By `abi::show_place`. Vanilla's numbers, with the crosshair between a title and its subtitle.
-pub const PLACES: [Place; 5] = [
-    Place { own_at: Some([0.5, 0.5]), ..NO_ELEMENT },
-    Place { times: [0.0, 10.0, 0.0], class: "chat", wrap: true, ..NO_ELEMENT },
-    Place {
-        stacks: false,
-        element: "core:hint",
-        anchor: weft_abi::hud_anchor::ABOVE_HOTBAR,
-        order: 1,
-        sample: "hud.edit.sample_hint",
-        ..NO_ELEMENT
-    },
-    Place {
-        scale: 4.0,
-        times: [0.5, 3.5, 1.0],
-        stacks: false,
-        element: "core:title",
-        at: Some([0.5, 0.5, 0.0, -24.0]),
-        sample: "hud.edit.sample_title",
-        ..NO_ELEMENT
-    },
-    Place {
-        scale: 2.0,
-        times: [0.5, 3.5, 1.0],
-        stacks: false,
-        element: "core:subtitle",
-        at: Some([0.5, 0.5, 0.0, 18.0]),
-        sample: "hud.edit.sample_subtitle",
-        ..NO_ELEMENT
-    },
-];
+    /// A place from its entry: plain text where it says nothing.
+    pub fn bake(e: &crate::entries::Entry) -> Place {
+        use weft_abi::comp::text_place as t;
+        let anchor = e.text(t::ANCHOR).unwrap_or_default().to_string();
+        let class = e.text(t::CLASS).unwrap_or("label").to_string();
+        Place {
+            element: if e.has(t::NO_ELEMENT) { String::new() } else { e.name.clone() },
+            at: (anchor.is_empty() && !e.has(t::OWN_AT)).then(|| e.or(t::AT, [0.5, 0.5, 0.0, 0.0])),
+            own_at: e.get(t::OWN_AT),
+            anchor,
+            order: e.or(t::ORDER, 0),
+            scale: e.get::<f32>(t::SCALE).filter(|s| *s > 0.0).unwrap_or(1.0),
+            times: e.or(t::TIMES, [0.0f32, 2.5, 0.5]).map(|v| v.max(0.0)),
+            stacks: e.has(t::STACKS),
+            wrap: e.has(t::WRAP),
+            class,
+            sample: e.text(t::SAMPLE).unwrap_or_default().to_string(),
+            ..Place::plain(&e.name)
+        }
+    }
+}
+
+/// The engine's places, by `abi::show_place`: vanilla's numbers, with the crosshair between a
+/// title and its subtitle.
+pub fn engine_places() -> Vec<crate::entries::RawEntry> {
+    use weft_abi::comp::text_place as t;
+    let n = weft_abi::show_place::NAMES;
+    let e = |name: &str| crate::entries::RawEntry::engine(weft_abi::entry_kind::TEXT_PLACE, name);
+    let title = |name: &str, scale: f32, dy: f32, sample: &str| {
+        e(name)
+            .set(t::SCALE, scale)
+            .set(t::TIMES, [0.5f32, 3.5, 1.0])
+            .set(t::AT, [0.5f32, 0.5, 0.0, dy])
+            .set(t::SAMPLE, sample.to_string())
+    };
+    vec![
+        e(n[0])
+            .set(t::OWN_AT, [0.5f32, 0.5])
+            .tag(t::STACKS)
+            .tag(t::NO_ELEMENT),
+        e(n[1])
+            .set(t::TIMES, [0.0f32, 10.0, 0.0])
+            .set(t::CLASS, "chat".to_string())
+            .tag(t::WRAP)
+            .tag(t::STACKS)
+            .tag(t::NO_ELEMENT),
+        e(n[2])
+            .set(t::ANCHOR, weft_abi::hud_anchor::ABOVE_HOTBAR.to_string())
+            .set(t::ORDER, 1i32)
+            .set(t::SAMPLE, "hud.edit.sample_hint".to_string()),
+        title(n[3], 4.0, -24.0, "hud.edit.sample_title"),
+        title(n[4], 2.0, 18.0, "hud.edit.sample_subtitle"),
+    ]
+}
+
+/// Every place, the engine's first.
+pub fn places() -> &'static [Place] {
+    &crate::content::content().game.text_places
+}
 
 /// One text on the screen, whichever way it got there.
 pub fn shown_text(ui: &mut Ui, s: &crate::net::Shown, alpha: f32, lang: &Lang, input: Option<&crate::input::Input>) -> crate::ui::NodeId {
     let look = s.look();
-    let id = ui.text(s.msg.spans(lang, input), look.class);
+    let id = ui.text(s.msg.spans(lang, input), &look.class);
     // Its class's color spelled out, for the alpha to go with it and not jump at the end of a fade.
     let color = s.color.unwrap_or_else(|| {
         let class = lang
@@ -1036,7 +1073,7 @@ pub fn item_tooltip(lang: &Lang, input: &crate::input::Input, stack: weft_abi::I
         let key = text::lang_key("tagged", &c.components.names[comp as usize]);
         group(&key, Some(comp), &mut out);
     }
-    let max = c.items.get(stack.item as usize).map_or(0, |d| d.durability);
+    let max = c.durability(&stack);
     if max > 0 {
         let damage = crate::stack::damage(&stack);
         line(lang.get("tooltip.durability"), &[text::Arg::Int((max - damage.min(max)) as i64), text::Arg::Int(max as i64)], None, &mut out);

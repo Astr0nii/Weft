@@ -1346,7 +1346,10 @@ impl CubeTable {
         let Some(&(b, _)) = self.buckets.get(slot) else { return (0, 0) };
         let words: &[u32] = bytemuck::cast_slice(gpu.mapped(b));
         let n = self.per_bucket.len().min(words.len() / 2);
-        let draws = words[..n * 2].chunks_exact(2).map(|c| c[0]).sum();
+        // The GPU's counts, read back: a frame's worth may be stale or half written.
+        let draws = words[..n * 2]
+            .chunks_exact(2)
+            .fold(0u32, |sum, c| sum.saturating_add(c[0]));
         (draws, words.get(self.per_bucket.len() * 2).copied().unwrap_or(0) as u64)
     }
 

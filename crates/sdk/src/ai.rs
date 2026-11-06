@@ -3,45 +3,238 @@
 //! so mobs walk around walls instead of into them.
 //!
 //! ```ignore
-//! r.entity(&ZOMBIE).goals(Goals::new().then(attack).then(ai::follow_player(18.0, 1.0)).then(ai::wander(0.6, 10.0)));
+//! r.entity(&ZOMBIE).goals(Goals::new().aggressive(35.0).then(ai::melee()).then(ai::chase_target(35.0, 1.0)).then(ai::wander(0.6, 10.0)));
 //! ```
 //!
-//! A kind made `.neutral(..)` leaves players alone while its condition holds, and goes for one who
-//! hit it for a while regardless. `melee` and `follow_player` go by that, as does `target`, for
-//! goals of your own.
+//! Every mob leaves everyone alone until something sets it off. A trigger (`Trigger::sight`,
+//! `hurt`, `gaze`, `when`) says when, a reaction what then: any function of the mob and who set
+//! it off, or `react::anger` (`melee`, `chase_target` and `target` go after them), `react::fear`
+//! (`panic`, `flee` run), `react::alert` (the same for its kind around). `aggressive` and
+//! `neutral` are the usual sets of them.
 
-use std::sync::RwLock;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-use crate::{Component, Entity, EntityState, EntityTick, World};
+use crate::{EntityKind, EntityState, EntityTick, World};
 
-crate::value! {
-    #[derive(Default)]
-    /// Who a neutral mob goes for whatever its condition says, and until which tick.
-    pub struct Anger { pub at: u64, pub until: u64 }
+/// What a mob feels about whom: per mob, (who, until which tick) for anger and for fear. Kept
+/// by this mod while it runs, not saved with the world.
+#[derive(Default)]
+struct Moods {
+    anger: Vec<(u64, u64)>,
+    fear: Vec<(u64, u64)>,
 }
 
-pub(crate) static ANGER: Component<Anger> = Component::named("anger");
-/// How long a neutral mob stays after who hit it: 20 seconds.
-const ANGER_TICKS: u64 = 400;
+static MOODS: Mutex<Option<HashMap<u64, Moods>>> = Mutex::new(None);
 
-/// Is it calm towards this player? (world, the mob, the player)
-type Calm = Box<dyn Fn(&World, &EntityState, &EntityState) -> bool + Send + Sync>;
-
-/// The neutral kinds of this mod.
-static NEUTRAL: RwLock<Vec<(&'static Entity, Calm)>> = RwLock::new(Vec::new());
-
-/// Makes `kind` neutral; true if it is the first of this mod.
-pub(crate) fn add_neutral(kind: &'static Entity, calm: Calm) -> bool {
-    let mut all = NEUTRAL.write().unwrap();
-    all.push((kind, calm));
-    all.len() == 1
+/// `f` on mob `id`'s moods, what has run out already dropped.
+fn moods<T>(w: &World, id: u64, f: impl FnOnce(&mut Moods) -> T) -> T {
+    let now = w.game_time();
+    let mut all = MOODS.lock().unwrap();
+    let all = all.get_or_insert_with(HashMap::new);
+    // Now and then everything run out, so mobs gone leave nothing behind.
+    if now % 200 == 0 && all.len() > 64 {
+        all.retain(|_, m| m.anger.iter().chain(&m.fear).any(|e| e.1 > now));
+    }
+    let m = all.entry(id).or_default();
+    m.anger.retain(|e| e.1 > now);
+    m.fear.retain(|e| e.1 > now);
+    f(m)
 }
 
-/// A neutral mob was hurt: by a player, it goes after them.
-pub(crate) fn provoked(w: &World, h: &crate::Hurt) {
-    if w.each_player().any(|p| p == h.source) {
-        if let Some(a) = w.component_mut(h.entity, &ANGER) {
-            *a = Anger { at: h.source, until: w.time() + ANGER_TICKS };
+/// Adds `who` until `until`, or keeps them longer; with `max` there already, the one that runs
+/// out first makes room.
+fn feel(list: &mut Vec<(u64, u64)>, who: u64, until: u64, max: usize) {
+    if let Some(e) = list.iter_mut().find(|e| e.0 == who) {
+        e.1 = e.1.max(until);
+        return;
+    }
+    if list.len() >= max.max(1) {
+        let first = (0..list.len()).min_by_key(|&i| list[i].1).unwrap_or(0);
+        list.remove(first);
+    }
+    list.push((who, until));
+}
+
+/// What a mob does when a trigger goes off: (world, the mob, who set it off; 0 for nothing).
+pub type Reaction = Arc<dyn Fn(&World, u64, u64) + Send + Sync>;
+
+/// Is a mob open to it now? (world, the mob)
+type Only = Arc<dyn Fn(&World, &EntityState) -> bool + Send + Sync>;
+/// Does it set the mob off? (world, the mob, them)
+type Test = Arc<dyn Fn(&World, &EntityState, &EntityState) -> bool + Send + Sync>;
+
+#[derive(Clone)]
+enum Sense {
+    Sight(f64),
+    Gaze(f64),
+    Hurt,
+    When(f64, Test),
+}
+
+/// Which entities count. (world, its id, its state)
+type Pick = Arc<dyn Fn(&World, u64, &EntityState) -> bool + Send + Sync>;
+
+/// Who a trigger notices.
+#[derive(Clone)]
+enum Whom {
+    Players,
+    Entities(Pick),
+    /// Anyone and anything, the world included (a fall, a cactus): hurt only.
+    Anything,
+}
+
+/// When a mob reacts: what sets it off, at whom, and while what holds.
+#[derive(Clone)]
+pub struct Trigger {
+    sense: Sense,
+    whom: Whom,
+    only: Option<Only>,
+}
+
+impl Trigger {
+    /// Someone within `range` blocks (8 up and down), as near as their `visibility` makes them;
+    /// it goes on as long as they are.
+    pub fn sight(range: f64) -> Trigger {
+        Trigger { sense: Sense::Sight(range), whom: Whom::Players, only: None }
+    }
+
+    /// Someone within `range` looking at it, with nothing in between (an enderman).
+    pub fn gaze(range: f64) -> Trigger {
+        Trigger { sense: Sense::Gaze(range), whom: Whom::Players, only: None }
+    }
+
+    /// Someone hurting it.
+    pub fn hurt() -> Trigger {
+        Trigger { sense: Sense::Hurt, whom: Whom::Players, only: None }
+    }
+
+    /// Someone within `range` for whom `test(world, the mob, them)` holds.
+    pub fn when(range: f64, test: impl Fn(&World, &EntityState, &EntityState) -> bool + Send + Sync + 'static) -> Trigger {
+        Trigger { sense: Sense::When(range, Arc::new(test)), whom: Whom::Players, only: None }
+    }
+
+    /// Only while `f(world, the mob)` holds: a spider out of the daylight.
+    pub fn only_if(mut self, f: impl Fn(&World, &EntityState) -> bool + Send + Sync + 'static) -> Trigger {
+        self.only = Some(Arc::new(f));
+        self
+    }
+
+    /// Notices mobs of `kind` instead of players (a wolf and sheep).
+    pub fn of(self, kind: &'static EntityKind) -> Trigger {
+        self.of_any(move |_, _, st| st.kind == kind.id())
+    }
+
+    /// Notices entities of kinds with `tag` instead of players (`#undead`).
+    pub fn of_tag(self, tag: &'static crate::Tag) -> Trigger {
+        self.of_any(move |_, _, st| tag.on_entity(st.kind))
+    }
+
+    /// Notices whatever `pick(world, id, state)` accepts instead of players, them included or not.
+    pub fn of_any(mut self, pick: impl Fn(&World, u64, &EntityState) -> bool + Send + Sync + 'static) -> Trigger {
+        self.whom = Whom::Entities(Arc::new(pick));
+        self
+    }
+
+    /// For `hurt`: whatever hurts it, other mobs and the world too.
+    pub fn by_anything(mut self) -> Trigger {
+        self.whom = Whom::Anything;
+        self
+    }
+
+    fn open(&self, w: &World, st: &EntityState) -> bool {
+        self.only.as_ref().is_none_or(|f| f(w, st))
+    }
+
+    fn noticed(&self, w: &World, who: u64) -> bool {
+        match &self.whom {
+            Whom::Players => w.players_iter().any(|p| p == who),
+            Whom::Entities(pick) => w.entity(who).is_some_and(|s| pick(w, who, &s)),
+            Whom::Anything => true,
+        }
+    }
+
+    /// Who sets it off now, the farthest first (with room for one, the nearest stays); hurt
+    /// goes by the events instead.
+    fn seen(&self, w: &World, id: u64, st: &EntityState) -> Vec<u64> {
+        let (range, test): (f64, &dyn Fn(&EntityState) -> bool) = match &self.sense {
+            Sense::Hurt => return Vec::new(),
+            Sense::Sight(r) => (*r, &|_| true),
+            Sense::Gaze(r) => (*r, &|them| looks_at(w, them, st)),
+            Sense::When(r, f) => (*r, &|them| f(w, st, them)),
+        };
+        let area = around(st, range);
+        let mut found: Vec<(f64, u64)> = match &self.whom {
+            Whom::Entities(pick) => w
+                .entities_near(st.pos, range + 8.0, None)
+                .into_iter()
+                .filter(|&e| e != id)
+                .filter_map(|e| w.entity(e).map(|s| (e, s)))
+                .filter(|(e, s)| s.health > 0.0 && area.contains(s.pos) && pick(w, *e, s) && test(s))
+                .map(|(e, s)| ((s.pos - st.pos).length_squared(), e))
+                .collect(),
+            _ => w
+                .players_iter()
+                .filter_map(|p| w.entity(p).map(|s| (p, s)))
+                .filter(|(p, s)| {
+                    let seen = w.attribute(*p, &crate::attribute::VISIBILITY);
+                    s.health > 0.0 && seen > 0.0 && area.contains(st.pos + (s.pos - st.pos) * (1.0 / seen)) && test(s)
+                })
+                .map(|(p, s)| ((s.pos - st.pos).length_squared(), p))
+                .collect(),
+        };
+        found.sort_by(|a, b| b.0.total_cmp(&a.0));
+        found.into_iter().map(|f| f.1).collect()
+    }
+}
+
+/// Whether `who` looks at `st` (vanilla's enderman test, a narrower cone further off) with no
+/// block in between.
+fn looks_at(w: &World, who: &EntityState, st: &EntityState) -> bool {
+    let (from, to) = (who.eye(), st.eye());
+    let d = to - from;
+    let len = d.length_squared().sqrt().max(1e-6);
+    let look = crate::look_dir(who.yaw, who.pitch);
+    let dot = (look.x * d.x + look.y * d.y + look.z * d.z) / len;
+    dot > 1.0 - 0.025 / len && w.raycast(from, d * (1.0 / len), len, false).is_none()
+}
+
+/// The usual reactions.
+pub mod react {
+    use super::*;
+
+    /// Goes after them for `secs` (again from now each time it goes off), and after at most
+    /// `max` at once: 1 for most mobs, more for one that charges through a crowd (`targets`).
+    pub fn anger(secs: f64, max: usize) -> impl Fn(&World, u64, u64) + Send + Sync + Clone + 'static {
+        move |w: &World, mob: u64, who: u64| {
+            let until = w.game_time() + (secs * 20.0) as u64;
+            moods(w, mob, |m| feel(&mut m.anger, who, until, max));
+        }
+    }
+
+    /// Runs from them for `secs` (`panic` anywhere, `flee` away from all it fears), of at most
+    /// `max` at once.
+    pub fn fear(secs: f64, max: usize) -> impl Fn(&World, u64, u64) + Send + Sync + Clone + 'static {
+        move |w: &World, mob: u64, who: u64| {
+            let until = w.game_time() + (secs * 20.0) as u64;
+            moods(w, mob, |m| feel(&mut m.fear, who, until, max));
+        }
+    }
+
+    /// `then` for this mob and every one of its kind within `radius`: a pack.
+    pub fn alert(
+        radius: f64,
+        then: impl Fn(&World, u64, u64) + Send + Sync + 'static,
+    ) -> impl Fn(&World, u64, u64) + Send + Sync + 'static {
+        move |w: &World, mob: u64, who: u64| {
+            let Some(st) = w.entity(mob) else { return };
+            let near = w.entities_near(st.pos, radius, None);
+            for id in near
+                .into_iter()
+                .filter(|&id| w.entity(id).is_some_and(|s| s.kind == st.kind))
+            {
+                then(w, id, who);
+            }
         }
     }
 }
@@ -59,24 +252,58 @@ impl<F: Fn(&World, u64, &EntityState) -> bool + Send + Sync + 'static> Goal for 
     }
 }
 
+/// How long a mob goes after someone once nothing sets it off any more.
+const SIGHT_ANGER: f64 = 2.0;
+/// And after who hurt it (vanilla's 20 seconds).
+const HURT_ANGER: f64 = 20.0;
+
 #[derive(Default)]
-pub struct Goals(Vec<Box<dyn Goal>>);
+pub struct Goals {
+    goals: Vec<Box<dyn Goal>>,
+    pub(crate) reactions: Vec<(Trigger, Reaction)>,
+}
 
 impl Goals {
     pub fn new() -> Goals {
-        Goals(Vec::new())
+        Goals::default()
     }
     /// Adds a goal below the ones added before.
     pub fn then(mut self, g: impl Goal) -> Goals {
-        self.0.push(Box::new(g));
+        self.goals.push(Box::new(g));
         self
     }
-    /// Runs the goals for every entity of the tick.
+    /// When `trigger` goes off, `reaction`: `react::anger(30.0, 1)`, or anything of your own
+    /// (world, the mob, who set it off).
+    pub fn react(mut self, trigger: Trigger, reaction: impl Fn(&World, u64, u64) + Send + Sync + 'static) -> Goals {
+        self.reactions.push((trigger, Arc::new(reaction)));
+        self
+    }
+    /// Goes for a player within `range` and for who hurt it: a zombie.
+    pub fn aggressive(self, range: f64) -> Goals {
+        self.react(Trigger::sight(range), react::anger(SIGHT_ANGER, 1))
+            .neutral()
+    }
+    /// Goes for who hurt it, for 20 seconds; leaves everyone else alone.
+    pub fn neutral(self) -> Goals {
+        self.react(Trigger::hurt(), react::anger(HURT_ANGER, 1))
+    }
+    /// Runs about for `secs` when hurt, by anything: an animal.
+    pub fn timid(self, secs: f64) -> Goals {
+        self.react(Trigger::hurt().by_anything(), react::fear(secs, 8))
+    }
+    /// Runs the triggers, then the goals, for every entity of the tick.
     pub fn tick(&self, t: &EntityTick) {
         let w = t.world();
         for &id in t.ids() {
             let Some(st) = w.entity(id) else { continue };
-            let mut goals = self.0.iter();
+            for (trigger, reaction) in self.reactions.iter() {
+                if trigger.open(&w, &st) {
+                    for who in trigger.seen(&w, id, &st) {
+                        reaction(&w, id, who);
+                    }
+                }
+            }
+            let mut goals = self.goals.iter();
             for g in goals.by_ref() {
                 if g.run(&w, id, &st) {
                     break;
@@ -84,6 +311,16 @@ impl Goals {
             }
             for g in goals {
                 g.passed_over(&w, id);
+            }
+        }
+    }
+
+    /// One of these was hurt: the hurt triggers go off.
+    pub(crate) fn hurt(reactions: &[(Trigger, Reaction)], w: &World, h: &crate::Hurt) {
+        let Some(st) = w.entity(h.entity) else { return };
+        for (trigger, reaction) in reactions {
+            if matches!(trigger.sense, Sense::Hurt) && trigger.open(w, &st) && trigger.noticed(w, h.source) {
+                reaction(w, h.entity, h.source);
             }
         }
     }
@@ -99,21 +336,21 @@ impl<G: Goal> Goal for Playing<G> {
     fn run(&self, w: &World, id: u64, st: &EntityState) -> bool {
         let on = self.goal.run(w, id, st);
         if on {
-            w.replace_action(id, self.from, self.to);
+            w.action_override(id, self.from, self.to);
         } else {
-            w.restore_action(id, self.from);
+            w.action_override_clear(id, self.from);
         }
         on
     }
 
     fn passed_over(&self, w: &World, id: u64) {
-        w.restore_action(id, self.from);
+        w.action_override_clear(id, self.from);
         self.goal.passed_over(w, id);
     }
 }
 
 /// `goal`, and while it is what the mob does, it plays action `to` wherever it would play `from`.
-pub fn replacing_action(from: &'static str, to: &'static str, goal: impl Goal) -> impl Goal {
+pub fn with_action_override(from: &'static str, to: &'static str, goal: impl Goal) -> impl Goal {
     Playing { from, to, goal }
 }
 
@@ -128,42 +365,109 @@ pub fn wander(speed: f32, radius: f64) -> impl Goal {
         }
         let a = w.random_below(628) as f64 / 100.0;
         let r = radius * (0.3 + w.random_below(70) as f64 / 100.0);
-        w.navigate(id, [st.pos[0] + a.cos() * r, st.pos[1], st.pos[2] + a.sin() * r], speed);
+        w.navigate(id, [st.pos.x + a.cos() * r, st.pos.y, st.pos.z + a.sin() * r], speed);
         true
     }
 }
 
-/// The nearest living player within `range` times its `visibility` attribute (0 in creative)
-/// and 8 blocks up or down: its id and state.
+/// The nearest living player within `range` and 8 blocks up or down, seen as if its
+/// `visibility` attribute times nearer (0 in creative): its id and state.
 pub fn nearest_player(w: &World, st: &EntityState, range: f64) -> Option<(u64, EntityState)> {
-    nearest_player_where(w, st, range, |_, _| true)
+    nearest_player_by(w, st, &around(st, range), |_, _| true)
 }
 
-/// Who this mob goes for within `range`: `nearest_player`, but for a neutral kind only one who hit
-/// it lately or towards whom its condition doesn't hold.
-pub fn target(w: &World, id: u64, st: &EntityState, range: f64) -> Option<(u64, EntityState)> {
-    let neutral = NEUTRAL.read().unwrap();
-    let Some((_, calm)) = neutral.iter().find(|(kind, _)| kind.id() == st.kind) else {
-        return nearest_player(w, st, range);
-    };
-    let angry = w
-        .component(id, &ANGER)
-        .filter(|a| a.until > w.time())
-        .map(|a| a.at);
-    nearest_player_where(w, st, range, |p, ps| Some(p) == angry || !calm(w, st, ps))
+/// The usual zone a mob looks for players in: `range` around, 8 up and down.
+fn around(st: &EntityState, range: f64) -> crate::Shape {
+    crate::Shape::cylinder([st.pos.x, st.pos.y - 8.0, st.pos.z], range, 16.0, crate::Dir::Up)
 }
 
-fn nearest_player_where(w: &World, st: &EntityState, range: f64, wanted: impl Fn(u64, &EntityState) -> bool) -> Option<(u64, EntityState)> {
-    let d2 = |s: &EntityState| (s.pos[0] - st.pos[0]).powi(2) + (s.pos[2] - st.pos[2]).powi(2);
-    w.each_player()
+/// The nearest living player in `area` that `wanted` accepts, by horizontal distance. A player
+/// counts as if its `visibility` attribute times as close to the mob (0: never): a flyer can
+/// look far down with a tall area, a mob of your own can have any condition.
+pub fn nearest_player_by(
+    w: &World,
+    st: &EntityState,
+    area: &crate::Shape,
+    wanted: impl Fn(u64, &EntityState) -> bool,
+) -> Option<(u64, EntityState)> {
+    let d2 = |s: &EntityState| (s.pos.x - st.pos.x).powi(2) + (s.pos.z - st.pos.z).powi(2);
+    w.players_iter()
         .filter_map(|p| w.entity(p).map(|s| (p, s)))
         .filter(|(p, s)| {
-            s.health > 0.0
-                && (s.pos[1] - st.pos[1]).abs() < 8.0
-                && d2(s) < (range * w.attribute(*p, &crate::attribute::VISIBILITY)).powi(2)
-                && wanted(*p, s)
+            let seen = w.attribute(*p, &crate::attribute::VISIBILITY);
+            s.health > 0.0 && seen > 0.0 && area.contains(st.pos + (s.pos - st.pos) * (1.0 / seen)) && wanted(*p, s)
         })
         .min_by(|a, b| d2(&a.1).total_cmp(&d2(&b.1)))
+}
+
+/// Everyone this mob goes after (`react::anger`) who is within `range` and alive, as near as
+/// their `visibility` makes them (0 in creative: not at all), the nearest first.
+pub fn targets(w: &World, id: u64, st: &EntityState, range: f64) -> Vec<(u64, EntityState)> {
+    let angry = moods(w, id, |m| m.anger.iter().map(|e| e.0).collect::<Vec<_>>());
+    let area = around(st, range);
+    let mut out: Vec<(u64, EntityState)> = angry
+        .into_iter()
+        .filter_map(|who| w.entity(who).filter(|s| s.health > 0.0).map(|s| (who, s)))
+        .filter(|(who, s)| {
+            let seen = if w.players_iter().any(|p| p == *who) { w.attribute(*who, &crate::attribute::VISIBILITY) } else { 1.0 };
+            seen > 0.0 && area.contains(st.pos + (s.pos - st.pos) * (1.0 / seen))
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        (a.1.pos - st.pos)
+            .length_squared()
+            .total_cmp(&(b.1.pos - st.pos).length_squared())
+    });
+    out
+}
+
+/// The nearest of `targets`: who `melee` and `chase_target` go for.
+pub fn target(w: &World, id: u64, st: &EntityState, range: f64) -> Option<(u64, EntityState)> {
+    targets(w, id, st, range).into_iter().next()
+}
+
+/// What it is afraid of now (`react::fear`; 0 is nothing in particular), if anything.
+fn afraid(w: &World, id: u64) -> Option<Vec<u64>> {
+    let of = moods(w, id, |m| m.fear.iter().map(|e| e.0).collect::<Vec<_>>());
+    (!of.is_empty()).then_some(of)
+}
+
+/// Runs about while afraid (`react::fear`), a new way every second, at `speed` times its walk:
+/// vanilla's animals when hurt.
+pub fn panic(speed: f32) -> impl Goal {
+    move |w: &World, id: u64, st: &EntityState| {
+        if afraid(w, id).is_none() {
+            return false;
+        }
+        if w.game_time() % 20 == id % 20 || !w.navigating(id) {
+            let a = w.random_below(628) as f64 / 100.0;
+            w.navigate(id, [st.pos.x + a.cos() * 8.0, st.pos.y, st.pos.z + a.sin() * 8.0], speed);
+        }
+        true
+    }
+}
+
+/// Runs away from all it is afraid of (`react::fear`), from their middle, at `speed`; afraid of
+/// nothing in particular, about like `panic`.
+pub fn flee(speed: f32) -> impl Goal {
+    move |w: &World, id: u64, st: &EntityState| {
+        let Some(of) = afraid(w, id) else { return false };
+        let them: Vec<crate::Vec3> = of
+            .iter()
+            .filter(|&&e| e != 0)
+            .filter_map(|&e| w.entity(e).map(|s| s.pos))
+            .collect();
+        if them.is_empty() {
+            return panic(speed).run(w, id, st);
+        }
+        let middle = them.iter().fold(crate::Vec3::ZERO, |a, &p| a + p) * (1.0 / them.len() as f64);
+        let away = st.pos - middle;
+        let len = (away.x * away.x + away.z * away.z).sqrt().max(1e-3);
+        if w.game_time() % 10 == id % 10 || !w.navigating(id) {
+            w.navigate(id, [st.pos.x + away.x / len * 8.0, st.pos.y, st.pos.z + away.z / len * 8.0], speed);
+        }
+        true
+    }
 }
 
 /// Looks at the nearest player within `range` while standing around (vanilla's
@@ -174,24 +478,45 @@ pub fn watch_player(range: f64) -> impl Goal {
     move |w: &World, id: u64, st: &EntityState| {
         if !w.navigating(id) {
             if let Some((_, ps)) = nearest_player(w, st, range) {
-                let (dx, dz) = (ps.pos[0] - st.pos[0], ps.pos[2] - st.pos[2]);
-                let dy = ps.eye()[1] - st.eye()[1];
-                let mut now = *st;
-                now.yaw = crate::yaw_toward(st.pos, ps.pos);
-                now.pitch = dy.atan2((dx * dx + dz * dz).sqrt()) as f32;
-                w.set_entity(id, &now);
+                let (dx, dz) = (ps.pos.x - st.pos.x, ps.pos.z - st.pos.z);
+                let dy = ps.eye().y - st.eye().y;
+                w.entity_modify(id)
+                    .yaw(crate::yaw_toward(st.pos, ps.pos))
+                    .pitch(dy.atan2((dx * dx + dz * dz).sqrt()) as f32);
             }
         }
         false
     }
 }
 
-/// Hits its `target` within `reach` (and less than a body high above or below) with
-/// `World::attack`, which keeps the pace. Never takes over: chasing goes on.
-pub fn melee(reach: f64) -> impl Goal {
+/// Hits its `target` when it is in reach (`World::in_reach`: the kind's `.reach(..)`, an
+/// attribute modifiers change) with `World::attack`, which keeps the pace. Never takes over:
+/// chasing goes on.
+pub fn melee() -> impl Goal {
     move |w: &World, id: u64, st: &EntityState| {
-        if let Some((p, ps)) = target(w, id, st, reach) {
-            if (ps.pos[1] - st.pos[1]).abs() < 1.8 {
+        let reach = w.attribute(id, &crate::attribute::ENTITY_REACH);
+        if let Some((p, _)) = target(w, id, st, reach + st.size.width as f64 + 2.0) {
+            if w.in_reach(id, p) {
+                w.attack(id, p);
+            }
+        }
+        false
+    }
+}
+
+/// `melee` with a reach of its own instead of the attribute, from its eyes to the target's box.
+pub fn melee_within(reach: f64) -> impl Goal {
+    move |w: &World, id: u64, st: &EntityState| {
+        if let Some((p, ps)) = target(w, id, st, reach + 2.0) {
+            let eye = st.eye();
+            let half = ps.size.width as f64 / 2.0;
+            let near = crate::Vec3::new(
+                eye.x.clamp(ps.pos.x - half, ps.pos.x + half),
+                eye.y.clamp(ps.pos.y, ps.pos.y + ps.size.height as f64),
+                eye.z.clamp(ps.pos.z - half, ps.pos.z + half),
+            );
+            let d2 = (near - eye).length_squared();
+            if d2 <= reach * reach {
                 w.attack(id, p);
             }
         }
@@ -200,7 +525,7 @@ pub fn melee(reach: f64) -> impl Goal {
 }
 
 /// Walks to its `target` within `range` at `speed`.
-pub fn follow_player(range: f64, speed: f32) -> impl Goal {
+pub fn chase_target(range: f64, speed: f32) -> impl Goal {
     move |w: &World, id: u64, st: &EntityState| match target(w, id, st, range) {
         Some((_, p)) => {
             w.navigate(id, p.pos, speed);

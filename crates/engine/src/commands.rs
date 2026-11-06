@@ -5,7 +5,7 @@
 //!
 //! Types: int, float, word (`word(a,b)`: any word, completing a and b; `word(#set)` completes
 //! from a word set mods add to, like `#core:rules`), text (rest of the line), item, block,
-//! entity, dim, player, time
+//! entity, dim, attribute, player, time
 //! (`day`, `noon`, `night`, `midnight` or ticks), pos (three coordinates; `~` relative to the player,
 //! `^left ^up ^forward` relative to where they look) and targets (a player name or a selector:
 //! `@p` nearest player, `@a` all players, `@e` entities, `@s` yourself, `@r` a random player, with
@@ -29,6 +29,7 @@ pub enum Kind {
     Block,
     Entity,
     Dim,
+    Attribute,
     Player,
     Pos,
     Targets,
@@ -81,6 +82,7 @@ pub fn parse_usage(usage: &str) -> Result<Vec<Alt>, String> {
                 "block" => Kind::Block,
                 "entity" => Kind::Entity,
                 "dim" => Kind::Dim,
+                "attribute" => Kind::Attribute,
                 "player" => Kind::Player,
                 "pos" => Kind::Pos,
                 "targets" => Kind::Targets,
@@ -335,6 +337,10 @@ fn parse_alt(c: &Content, alt: &Alt, tokens: &[&str], here: Origin, players: &[S
                 let n = resolve(c.dim_names.keys(), tok).ok_or_else(|| err("unknown_dimension", tok))?;
                 Value::Id(c.dim_names[&n], n)
             }
+            Kind::Attribute => {
+                let n = resolve(c.game.attr_names.keys(), tok).ok_or_else(|| err("unknown_attribute", tok))?;
+                Value::Id(c.game.attr_names[&n], n)
+            }
             Kind::Player => {
                 if !players.iter().any(|n| n == tok) {
                     return Err(err("no_player", tok));
@@ -445,6 +451,7 @@ fn type_name(k: &Kind) -> String {
         Kind::Block => "block".into(),
         Kind::Entity => "entity".into(),
         Kind::Dim => "dim".into(),
+        Kind::Attribute => "attribute".into(),
         Kind::Player => "player".into(),
         Kind::Pos => "pos".into(),
         Kind::Targets => "targets".into(),
@@ -482,7 +489,7 @@ pub fn abi_values(args: &Args, selected: &[Option<String>]) -> Vec<weft_abi::Com
                 int: 0,
                 float: 0.0,
                 text: Str::new(""),
-                pos: [0.0; 3],
+                pos: [0.0; 3].into(),
                 name: Str::new(&args.names[i]),
             };
             match v {
@@ -491,7 +498,7 @@ pub fn abi_values(args: &Args, selected: &[Option<String>]) -> Vec<weft_abi::Com
                 Some(Value::Float(f)) => (out.kind, out.float) = (cv::FLOAT, *f),
                 Some(Value::Text(t)) => (out.kind, out.text) = (cv::TEXT, Str::new(t)),
                 Some(Value::Id(n, name)) => (out.kind, out.int, out.text) = (cv::ID, *n as i64, Str::new(name)),
-                Some(Value::Pos(p)) => (out.kind, out.pos) = (cv::POS, p.to_array()),
+                Some(Value::Pos(p)) => (out.kind, out.pos) = (cv::POS, p.to_array().into()),
                 Some(Value::Targets(_)) => {
                     let ids = selected.get(i).and_then(|s| s.as_deref()).unwrap_or("");
                     (out.kind, out.int, out.text) = (cv::TARGETS, ids.split_whitespace().count() as i64, Str::new(ids));
@@ -627,6 +634,7 @@ pub fn complete(c: &Content, line: &str, players: &[String], permission: u32) ->
                     .collect(),
             ),
             Kind::Dim => names_from(c.dim_names.keys().collect()),
+            Kind::Attribute => names_from(c.game.attr_names.keys().collect()),
             Kind::Player => players
                 .iter()
                 .filter(|n| n.starts_with(partial))

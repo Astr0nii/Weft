@@ -94,7 +94,7 @@ impl Gizmos {
                 .values()
                 .filter(|e| (e.pos - me).length_squared() < 64.0 * 64.0)
             {
-                let (hw, h, eye) = e.dims();
+                let crate::physics::Dims { half_width: hw, height: h, eye } = e.dims();
                 cuboid(&mut lines, e.pos - DVec3::new(hw, 0.0, hw), e.pos + DVec3::new(hw, h, hw), 0xFFFFFFFF);
                 let eye = e.pos + DVec3::Y * eye;
                 let (sy, cy) = (e.yaw as f64).sin_cos();
@@ -124,7 +124,7 @@ impl Gizmos {
             // monsters may spawn now, yellow where they may at night, green where never.
             let dim = client.world.dim;
             let hostile = |s: &&crate::registry::SpawnRule| {
-                c.game.categories[s.category as usize].name == "core:hostile" && s.dimension.is_none_or(|d| d == dim)
+                c.game.categories[s.category as usize].name == "core:hostile" && (s.dims.is_empty() || s.dims.contains(&dim))
             };
             let rules: Vec<[u32; 2]> = c
                 .game
@@ -176,7 +176,7 @@ pub fn shape(s: &GizmoShape, lines: &mut Vec<Line>, fills: &mut Vec<Fill>, label
         weft_abi::gizmo_kind::LINE => lines.push((s.a, s.b, s.color)),
         weft_abi::gizmo_kind::BOX => cuboid(lines, s.a.min(s.b), s.a.max(s.b), s.color),
         weft_abi::gizmo_kind::FILL => fills.push((s.a.min(s.b), s.a.max(s.b), s.color)),
-        _ => labels.push((s.a, s.text.clone(), s.color, if s.b.x > 0.0 { s.b.x as f32 } else { 1.0 })),
+        _ => labels.push((s.a, s.text.clone(), s.color, if s.size > 0.0 { s.size } else { 1.0 })),
     }
 }
 

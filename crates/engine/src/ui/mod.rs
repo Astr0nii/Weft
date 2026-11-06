@@ -25,6 +25,14 @@ pub type NodeId = usize;
 pub type Action = Rc<dyn Fn(&mut Ctx)>;
 pub type TextBind = Box<dyn Fn(&Ctx) -> (String, Vec<Arg>)>;
 pub type FloatBind = Box<dyn Fn(&Ctx) -> f32>;
+
+/// One of a row of icons' `abi::icon_effect`s, with its value this frame.
+pub struct IconEffect {
+    pub kind: u32,
+    pub bind: Option<FloatBind>,
+    pub amount: f32,
+    pub value: f32,
+}
 pub type ItemBind = Box<dyn Fn(&Ctx) -> (u32, u32)>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -230,14 +238,17 @@ pub enum Kind {
         dir: u32,
     },
     /// `count` icons showing `value` in half steps (hearts): textures `gui/<class>_full`, `_half`, `_empty`.
-    /// `shake`: at 4 or less they jump about, like hearts near the end.
+    /// `shake`: at this or less they jump about, like hearts near the end.
     Icons {
         class: String,
         count: u32,
         bind: FloatBind,
         value: f32,
         dir: u32,
-        shake: bool,
+        shake: Option<f32>,
+        effects: Vec<IconEffect>,
+        /// The last change: the value before it, when (`shaders::clock`), whether up.
+        change: Option<(f32, f32, bool)>,
     },
     /// Single-line text field; `caret` is a char index.
     Input {

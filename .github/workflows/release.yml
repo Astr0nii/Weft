@@ -1,5 +1,5 @@
-# Builds the game for Windows, Linux and macOS and publishes all three on GitHub. Nothing is
-# published unless all of them build.
+# Builds the game for Windows, Linux and macOS (Apple silicon and Intel) and publishes them on
+# GitHub. Nothing is published unless all of them build.
 #   - push a tag like v0.2.0 (the version in Cargo.toml must match), or
 #   - run it by hand from the Actions tab and give an existing tag (for a release that was tagged
 #     before this workflow existed).
@@ -36,6 +36,8 @@ jobs:
           # The oldest available, since a Linux build only runs on this glibc or newer.
           - { os: ubuntu-22.04, platform: linux-x64, exe: weft }
           - { os: macos-latest, platform: macos-arm64, exe: weft }
+          # Intel Macs; MoltenVK's library below is universal.
+          - { os: macos-15-intel, platform: macos-x64, exe: weft }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7

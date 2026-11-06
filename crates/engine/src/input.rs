@@ -1,5 +1,9 @@
-//! Raw input plus named actions. Every action (engine or mod) is registered here with a default
-//! key, so rebinding and conflict detection work on one table.
+//! Raw input plus named actions. Every action (engine or mod) is registered here with its default
+//! bindings, so rebinding and conflict detection work on one table. An action has up to `SLOTS`
+//! bindings, each a key held, switched on and off, or tapped twice (`Trigger`); `held` and
+//! `pressed` answer for all of them, so no caller knows which.
+
+use std::time::{Duration, Instant};
 
 use glam::Vec2;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -18,48 +22,76 @@ pub const HOTBAR: [&str; 9] = [
     "core:hotbar9",
 ];
 
-/// The engine's actions and their default keys.
-pub const ENGINE_KEYS: &[(&str, Key)] = {
-    use KeyCode::*;
-    &[
-        ("core:forward", Key::Code(KeyW)),
-        ("core:back", Key::Code(KeyS)),
-        ("core:left", Key::Code(KeyA)),
-        ("core:right", Key::Code(KeyD)),
-        ("core:jump", Key::Code(Space)),
-        ("core:sneak", Key::Code(ShiftLeft)),
-        ("core:sprint", Key::Code(ControlLeft)),
-        ("core:crawl", Key::Code(KeyC)),
-        ("core:fly", Key::Code(KeyF)),
-        ("core:inventory", Key::Code(KeyE)),
-        ("core:drop", Key::Code(KeyQ)),
-        ("core:command", Key::Code(Slash)),
-        ("core:chat", Key::Code(KeyT)),
-        ("core:debug", Key::Code(F3)),
-        ("core:screenshot", Key::Code(F2)),
-        ("core:perspective", Key::Code(F5)),
-        ("core:fullscreen", Key::Code(F11)),
-        ("core:player_list", Key::Code(Tab)),
-        ("core:hide_hud", Key::Code(F1)),
-        ("core:swap_hands", Key::Code(KeyG)),
-        // Also F3+T, like vanilla.
-        ("core:reload", Key::Code(F8)),
-        ("core:recipes", Key::Code(KeyR)),
-        ("core:uses", Key::Code(KeyU)),
-        ("core:attack", Key::Mouse(0)),
-        ("core:use", Key::Mouse(1)),
-        ("core:pick", Key::Mouse(2)),
-        (HOTBAR[0], Key::Code(Digit1)),
-        (HOTBAR[1], Key::Code(Digit2)),
-        (HOTBAR[2], Key::Code(Digit3)),
-        (HOTBAR[3], Key::Code(Digit4)),
-        (HOTBAR[4], Key::Code(Digit5)),
-        (HOTBAR[5], Key::Code(Digit6)),
-        (HOTBAR[6], Key::Code(Digit7)),
-        (HOTBAR[7], Key::Code(Digit8)),
-        (HOTBAR[8], Key::Code(Digit9)),
-    ]
-};
+/// The engine's actions and their default bindings (`Binding::parse_slots`).
+pub const ENGINE_KEYS: &[(&str, &str)] = &[
+    ("core:forward", "KeyW"),
+    ("core:back", "KeyS"),
+    ("core:left", "KeyA"),
+    ("core:right", "KeyD"),
+    ("core:jump", "Space"),
+    ("core:sneak", "ShiftLeft"),
+    ("core:dismount", "ShiftLeft"),
+    // Vanilla's double tap of forward is a second way to sprint.
+    ("core:sprint", "ControlLeft, double KeyW"),
+    ("core:crawl", "KeyC"),
+    // And of jump to fly.
+    ("core:fly", "KeyF, double Space"),
+    ("core:inventory", "KeyE"),
+    ("core:drop", "KeyQ"),
+    ("core:command", "Slash"),
+    ("core:chat", "KeyT"),
+    ("core:debug", "F3"),
+    ("core:screenshot", "F2"),
+    ("core:perspective", "F5"),
+    // Away from the keys a hand rests on.
+    ("core:freecam", "KeyP"),
+    ("core:fullscreen", "F11"),
+    ("core:player_list", "Tab"),
+    // In a screen with a search field (the creative inventory, the recipe viewer).
+    ("core:focus_search", "Tab"),
+    ("core:hide_hud", "F1"),
+    ("core:swap_hands", "KeyG"),
+    // Also F3+T, like vanilla.
+    ("core:reload", "F8"),
+    ("core:recipes", "KeyR"),
+    ("core:uses", "KeyU"),
+    ("core:attack", "mouse0"),
+    ("core:use", "mouse1"),
+    ("core:pick", "mouse2"),
+    ("core:hotbar1", "Digit1"),
+    ("core:hotbar2", "Digit2"),
+    ("core:hotbar3", "Digit3"),
+    ("core:hotbar4", "Digit4"),
+    ("core:hotbar5", "Digit5"),
+    ("core:hotbar6", "Digit6"),
+    ("core:hotbar7", "Digit7"),
+    ("core:hotbar8", "Digit8"),
+    ("core:hotbar9", "Digit9"),
+];
+
+/// Actions that may share a key without it being a conflict: they never act at the same moment
+/// (one in the world, the other in a screen), or are meant as one key (sneak gets off a mount).
+pub const SHARE_KEYS: &[(&str, &str)] = &[("core:player_list", "core:focus_search"), ("core:sneak", "core:dismount")];
+
+/// What a detached camera takes for itself (`Input::mute_moves`).
+pub const MOVE_KEYS: &[&str] = &[
+    "core:forward",
+    "core:back",
+    "core:left",
+    "core:right",
+    "core:jump",
+    "core:sneak",
+    "core:sprint",
+    "core:crawl",
+    "core:fly",
+    "core:dismount",
+];
+
+/// What a camera that doesn't interact turns off (`Input::mute_hands`).
+pub const HAND_KEYS: &[&str] = &["core:attack", "core:use", "core:pick", "core:drop", "core:swap_hands"];
+
+/// Two presses closer than this are a double tap (vanilla's 7 ticks).
+pub const DOUBLE_TAP: Duration = Duration::from_millis(350);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
@@ -101,41 +133,123 @@ pub fn modifier(k: Key) -> u8 {
         .map_or(0, |m| m.0)
 }
 
+/// How a binding's key sets its action off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum Trigger {
+    /// While the key is down.
+    #[default]
+    Hold,
+    /// From one press to the next.
+    Toggle,
+    /// From a second press in quick succession (`DOUBLE_TAP`) for as long as the key stays down.
+    Double,
+}
+
+/// One way to set an action off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Binding {
+    pub chord: Chord,
+    pub trigger: Trigger,
+}
+
+/// How many bindings an action has.
+pub const SLOTS: usize = 2;
+
+pub type Slots = [Option<Binding>; SLOTS];
+
+impl Binding {
+    /// `ctrl+KeyT`, `toggle KeyW`, `double Space`.
+    pub fn id(self) -> String {
+        let chord = self.chord.id();
+        match self.trigger {
+            Trigger::Hold => chord,
+            Trigger::Toggle => format!("toggle {chord}"),
+            Trigger::Double => format!("double {chord}"),
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Binding> {
+        let s = s.trim();
+        let (trigger, chord) = match s.split_once(' ') {
+            Some(("toggle", c)) => (Trigger::Toggle, c),
+            Some(("double", c)) => (Trigger::Double, c),
+            _ => (Trigger::Hold, s),
+        };
+        Some(Binding { chord: Chord::parse(chord)?, trigger })
+    }
+
+    /// The bindings of one action, by slot, `none` for an empty one: `ControlLeft, double KeyW`.
+    pub fn parse_slots(s: &str) -> Option<Slots> {
+        let mut out = [None; SLOTS];
+        for (slot, part) in s.split(',').map(str::trim).enumerate() {
+            match part {
+                "" | "none" => {}
+                _ if slot >= SLOTS => return None,
+                p => out[slot] = Some(Binding::parse(p)?),
+            }
+        }
+        Some(out)
+    }
+
+    pub fn slots_id(slots: &Slots) -> String {
+        let last = slots.iter().rposition(Option::is_some).map_or(0, |i| i + 1);
+        slots[..last]
+            .iter()
+            .map(|b| b.map_or("none".into(), Binding::id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 pub struct Bind {
     pub action: String,
-    pub default: Chord,
-    pub key: Chord,
+    pub default: Slots,
+    pub keys: Slots,
+    /// Per slot: switched on (a toggle, or a double tap while its key stays down), set off this
+    /// frame, and a double tap's first press.
+    on: [bool; SLOTS],
+    fired: [bool; SLOTS],
+    tapped: [Option<Instant>; SLOTS],
+}
+
+impl Bind {
+    fn new(action: &str, default: Slots) -> Bind {
+        Bind { action: action.to_string(), default, keys: default, on: [false; SLOTS], fired: [false; SLOTS], tapped: [None; SLOTS] }
+    }
 }
 
 pub struct Input {
     pub captured: bool,
+    /// The movement keys (`MOVE_KEYS`) are the camera's, and the mouse too: `held`, `pressed`
+    /// and the look don't see them.
+    pub mute_moves: bool,
+    /// Hitting, using and picking (`HAND_KEYS`) are off.
+    pub mute_hands: bool,
     pub mouse_delta: Vec2,
     pub cursor: Vec2,
     pub scroll: f32,
     pub sensitivity: f32,
     pub invert_y: bool,
-    pub toggle_sneak: bool,
-    pub toggle_sprint: bool,
     pub typed: String,
     held: FxHashSet<Key>,
     pressed: FxHashSet<Key>,
     released: FxHashSet<Key>,
     repeated: FxHashSet<Key>,
     pub binds: Vec<Bind>,
-    lookup: FxHashMap<String, Chord>,
+    lookup: FxHashMap<String, usize>,
 }
 
 impl Default for Input {
     fn default() -> Self {
         let mut i = Input {
             captured: false,
+            mute_moves: false,
+            mute_hands: false,
             mouse_delta: Vec2::ZERO,
             cursor: Vec2::ZERO,
             scroll: 0.0,
             sensitivity: 1.0,
             invert_y: false,
-            toggle_sneak: false,
-            toggle_sprint: false,
             typed: String::new(),
             held: FxHashSet::default(),
             pressed: FxHashSet::default(),
@@ -144,36 +258,37 @@ impl Default for Input {
             binds: Vec::new(),
             lookup: FxHashMap::default(),
         };
-        for &(name, key) in ENGINE_KEYS {
-            i.register(name, key.into());
+        for &(name, keys) in ENGINE_KEYS {
+            i.register(name, Binding::parse_slots(keys).expect("engine key"));
         }
         i
     }
 }
 
 impl Input {
-    pub fn register(&mut self, action: &str, default: Chord) {
+    pub fn register(&mut self, action: &str, default: Slots) {
         if self.lookup.contains_key(action) {
             return;
         }
-        self.binds
-            .push(Bind { action: action.to_string(), default, key: default });
-        self.lookup.insert(action.to_string(), default);
+        self.lookup.insert(action.to_string(), self.binds.len());
+        self.binds.push(Bind::new(action, default));
     }
 
-    pub fn rebind(&mut self, action: &str, key: Chord) {
-        if let Some(b) = self.binds.iter_mut().find(|b| b.action == action) {
-            b.key = key;
-            self.lookup.insert(action.to_string(), key);
+    pub fn rebind(&mut self, action: &str, keys: Slots) {
+        if let Some(&i) = self.lookup.get(action) {
+            self.binds[i] = Bind { keys, ..Bind::new(action, self.binds[i].default) };
         }
     }
 
-    /// Actions sharing a key with another action.
+    /// Actions with the same binding as another action.
     pub fn conflicts(&self) -> Vec<(String, String)> {
         let mut out = Vec::new();
         for (i, a) in self.binds.iter().enumerate() {
             for b in &self.binds[i + 1..] {
-                if a.key == b.key {
+                let apart = SHARE_KEYS
+                    .iter()
+                    .any(|&(x, y)| (x == a.action && y == b.action) || (y == a.action && x == b.action));
+                if !apart && a.keys.iter().flatten().any(|k| b.keys.contains(&Some(*k))) {
                     out.push((a.action.clone(), b.action.clone()));
                 }
             }
@@ -181,20 +296,55 @@ impl Input {
         out
     }
 
-    pub fn key_of(&self, action: &str) -> Option<Chord> {
-        self.lookup.get(action).copied()
+    /// The first binding of an action, for showing it and for pressing it on a player's behalf.
+    pub fn binding_of(&self, action: &str) -> Option<Binding> {
+        self.lookup
+            .get(action)
+            .and_then(|&i| self.binds[i].keys.iter().flatten().next().copied())
+    }
+
+    /// Whether a camera mode has `action` for itself now (`muted`).
+    fn muted(&self, action: &str) -> bool {
+        (self.mute_moves && MOVE_KEYS.contains(&action)) || (self.mute_hands && HAND_KEYS.contains(&action))
     }
 
     pub fn held(&self, action: &str) -> bool {
-        self.lookup
-            .get(action)
-            .is_some_and(|&c| self.active(c, &self.held))
+        !self.muted(action) && self.held_raw(action)
     }
 
     pub fn pressed(&self, action: &str) -> bool {
-        self.lookup
-            .get(action)
-            .is_some_and(|&c| self.active(c, &self.pressed))
+        !self.muted(action) && self.pressed_raw(action)
+    }
+
+    /// `held` even while muted: the camera's own reading of the keys.
+    pub fn held_raw(&self, action: &str) -> bool {
+        self.lookup.get(action).is_some_and(|&i| {
+            let b = &self.binds[i];
+            (0..SLOTS).any(|s| match b.keys[s] {
+                Some(Binding { chord, trigger: Trigger::Hold }) => self.active(chord, &self.held),
+                Some(_) => b.on[s],
+                None => false,
+            })
+        })
+    }
+
+    pub fn pressed_raw(&self, action: &str) -> bool {
+        self.lookup.get(action).is_some_and(|&i| {
+            let b = &self.binds[i];
+            (0..SLOTS).any(|s| match b.keys[s] {
+                Some(Binding { chord, trigger: Trigger::Hold }) => self.active(chord, &self.pressed),
+                Some(_) => b.fired[s],
+                None => false,
+            })
+        })
+    }
+
+    /// Switches the action off until its key is pressed again (a toggled sprint the server
+    /// ended); held keys still count.
+    pub fn stop(&mut self, action: &str) {
+        if let Some(&i) = self.lookup.get(action) {
+            (self.binds[i].on, self.binds[i].tapped) = ([false; SLOTS], [None; SLOTS]);
+        }
     }
 
     /// Modifiers held now (`Chord` bits).
@@ -213,7 +363,49 @@ impl Input {
             && !self
                 .binds
                 .iter()
-                .any(|b| b.key.key == c.key && b.key.mods != c.mods && b.key.mods & c.mods == c.mods && held & b.key.mods == b.key.mods)
+                .flat_map(|b| b.keys.iter().flatten())
+                .any(|b| {
+                    b.chord.key == c.key && b.chord.mods != c.mods && b.chord.mods & c.mods == c.mods && held & b.chord.mods == b.chord.mods
+                })
+    }
+
+    /// Toggles and double taps see a key go down. They switch only while the game has the
+    /// mouse, so typing in a screen leaves them be.
+    fn switch(&mut self, k: Key) {
+        if !self.captured {
+            return;
+        }
+        let now = Instant::now();
+        for i in 0..self.binds.len() {
+            for s in 0..SLOTS {
+                let Some(b) = self.binds[i].keys[s].filter(|b| b.chord.key == k && b.trigger != Trigger::Hold) else { continue };
+                if !self.active(b.chord, &self.held) {
+                    continue;
+                }
+                let bind = &mut self.binds[i];
+                match b.trigger {
+                    Trigger::Toggle => {
+                        bind.on[s] = !bind.on[s];
+                        bind.fired[s] = bind.on[s];
+                    }
+                    _ => match bind.tapped[s].take() {
+                        Some(t) if now.duration_since(t) < DOUBLE_TAP => (bind.on[s], bind.fired[s]) = (true, true),
+                        _ => bind.tapped[s] = Some(now),
+                    },
+                }
+            }
+        }
+    }
+
+    /// A double tap lasts while its key is down.
+    fn let_go(&mut self, k: Key) {
+        for b in &mut self.binds {
+            for s in 0..SLOTS {
+                if b.keys[s].is_some_and(|b| b.chord.key == k && b.trigger == Trigger::Double) {
+                    b.on[s] = false;
+                }
+            }
+        }
     }
 
     pub fn held_key(&self, k: Key) -> bool {
@@ -253,21 +445,28 @@ impl Input {
     pub fn key_down(&mut self, k: Key) {
         if self.held.insert(k) {
             self.pressed.insert(k);
+            self.switch(k);
         }
     }
 
     pub fn key_up(&mut self, k: Key) {
         if self.held.remove(&k) {
             self.released.insert(k);
+            self.let_go(k);
         }
     }
 
     pub fn release_all(&mut self) {
-        self.held.clear();
+        for k in std::mem::take(&mut self.held) {
+            self.let_go(k);
+        }
     }
 
     /// Clears per-frame state after the frame consumed it.
     pub fn end_frame(&mut self) {
+        for b in &mut self.binds {
+            b.fired = [false; SLOTS];
+        }
         self.pressed.clear();
         self.released.clear();
         self.repeated.clear();
@@ -482,6 +681,61 @@ pub fn key_name(k: Key) -> String {
 #[cfg(test)]
 mod key_tests {
     use super::*;
+
+    fn input(action: &str, keys: &str) -> Input {
+        let mut i = Input { captured: true, ..Input::default() };
+        i.rebind(action, Binding::parse_slots(keys).unwrap());
+        i
+    }
+
+    fn tap(i: &mut Input, k: KeyCode) {
+        i.key_down(Key::Code(k));
+        i.key_up(Key::Code(k));
+        i.end_frame();
+    }
+
+    #[test]
+    fn bindings_read_back() {
+        for s in ["ControlLeft, double KeyW", "none, toggle ctrl+KeyT", "F3"] {
+            assert_eq!(Binding::slots_id(&Binding::parse_slots(s).unwrap()), s);
+        }
+        assert!(Binding::parse_slots("KeyA, KeyB, KeyC").is_none(), "more than two");
+        assert!(Binding::parse_slots("triple KeyA").is_none());
+    }
+
+    #[test]
+    fn a_toggle_stays_on_until_pressed_again() {
+        let mut i = input("core:sneak", "toggle ShiftLeft");
+        i.key_down(Key::Code(KeyCode::ShiftLeft));
+        assert!(i.pressed("core:sneak"));
+        i.key_up(Key::Code(KeyCode::ShiftLeft));
+        i.end_frame();
+        assert!(i.held("core:sneak") && !i.pressed("core:sneak"));
+        tap(&mut i, KeyCode::ShiftLeft);
+        assert!(!i.held("core:sneak"));
+        // Not while typing in a screen.
+        i.captured = false;
+        tap(&mut i, KeyCode::ShiftLeft);
+        assert!(!i.held("core:sneak"));
+    }
+
+    #[test]
+    fn a_double_tap_lasts_while_held_and_either_slot_counts() {
+        let mut i = input("core:sprint", "ControlLeft, double KeyW");
+        tap(&mut i, KeyCode::KeyW);
+        assert!(!i.held("core:sprint"), "one tap");
+        i.key_down(Key::Code(KeyCode::KeyW));
+        assert!(i.pressed("core:sprint") && i.held("core:sprint"));
+        i.key_up(Key::Code(KeyCode::KeyW));
+        assert!(!i.held("core:sprint"));
+        i.key_down(Key::Code(KeyCode::ControlLeft));
+        assert!(i.held("core:sprint"));
+        // Stopped, a toggle or a double tap waits for its key again; a held key still counts.
+        let mut i = input("core:sprint", "toggle ControlLeft");
+        tap(&mut i, KeyCode::ControlLeft);
+        i.stop("core:sprint");
+        assert!(!i.held("core:sprint"));
+    }
 
     #[test]
     fn key_names() {

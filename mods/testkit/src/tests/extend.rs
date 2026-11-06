@@ -23,7 +23,7 @@ pub async fn events_batched(t: T) -> R {
         t.op(&format!("break {} stone_pickaxe", at(p))).await?;
     }
     t.op("put me 0 dirt 4").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     let ground = add(f, [0, -1, -2]);
     t.look_at(ground);
     t.frames(3).await?;
@@ -32,7 +32,7 @@ pub async fn events_batched(t: T) -> R {
         .await?;
     t.cmd("/feed 10").await?;
     t.op("put me 1 bread 2").await?;
-    t.c().select(1);
+    t.c().select_slot(1);
     t.secs(0.3).await?;
     t.hold("core:use", 2.0);
     t.until("ate", Duration::from_secs(5), |t| t.c().inventory_slot(1).count == 1)
@@ -54,18 +54,18 @@ pub async fn events_batched(t: T) -> R {
 pub async fn vetoes_and_timers(t: T) -> R {
     t.flat().await?;
     t.cmd("/rule testkit:no_hurt 1").await?;
-    t.cmd("/kill").await?;
+    t.cmd("/clear @s").await?;
     t.secs(0.3).await?;
-    t.check(!t.flag(weft_sdk::client::client_flags::DEAD), "question::HURT denied, the player lives");
+    t.check(!t.flag(weft_sdk::client::client_flags::DEAD), "actions::HURT denied, the player lives");
     t.cmd("/rule testkit:no_hurt 0").await?;
     t.cmd("/feed 10").await?;
     t.op("put me 1 bread 2").await?;
-    t.c().select(1);
+    t.c().select_slot(1);
     t.cmd("/rule testkit:no_use 1").await?;
     t.secs(0.3).await?;
     t.press("core:use");
     t.secs(0.5).await?;
-    t.check_eq(t.c().inventory_slot(1).count, 2, "question::USE_ITEM denied, the bread stays");
+    t.check_eq(t.c().inventory_slot(1).count, 2, "actions::USE_ITEM denied, the bread stays");
     t.cmd("/rule testkit:no_use 0").await?;
     t.hold("core:use", 2.0);
     t.until("ate", Duration::from_secs(5), |t| t.c().inventory_slot(1).count == 1)

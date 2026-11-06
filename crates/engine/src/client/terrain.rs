@@ -342,9 +342,8 @@ struct Terrain {
     out: Vec<Out>,
     pending: Arc<AtomicU64>,
     gpu: Option<(Sender<super::terrain_gpu::Job>, Arc<std::sync::atomic::AtomicBool>)>,
-    /// The features of this dimension whose heights the CPU gives the GPU; `None`: the GPU
-    /// cannot make its terrain.
-    gpu_custom: Option<Arc<Vec<usize>>>,
+    /// Whether the GPU can make this dimension's terrain.
+    gpu_able: bool,
     vis: crate::server::visibility::Visibility,
     /// Which faces of each cube see each other, for `vis`; cubes changed since go into
     /// `edited`, and the fill looks at them again.
@@ -391,7 +390,7 @@ impl Terrain {
             out: Vec::new(),
             pending,
             gpu: None,
-            gpu_custom: None,
+            gpu_able: false,
             vis: crate::server::visibility::Visibility::new(),
             conn: FxHashMap::default(),
             edited: Vec::new(),
@@ -466,7 +465,7 @@ impl Terrain {
                     ..Terrain::new(self.pending.clone(), self.gen_tx.clone())
                 };
                 (self.dim, self.seed, self.active) = (dim, seed, true);
-                self.gpu_custom = super::terrain_gpu::describe(c, dim, seed).map(|(_, custom)| Arc::new(custom));
+                self.gpu_able = super::terrain_gpu::describe(c, dim, seed).is_some();
                 self.view.radius = 0;
             }
             In::View { center, radius } => self.set_view(center, radius),
@@ -624,7 +623,7 @@ impl Terrain {
         }
         // The GPU answers a few frames later whatever the count: it needs far more asked at once
         // to stay busy than the workers do.
-        let gpu = self.gpu_custom.is_some()
+        let gpu = self.gpu_able
             && self
                 .gpu
                 .as_ref()
@@ -795,8 +794,7 @@ impl Terrain {
         self.ask_column(vec![pos]);
     }
 
-    /// Has the cubes `list` of one cube column made, together: what the GPU needs from mods'
-    /// code is the same for all of them.
+    /// Has the cubes `list` of one cube column made.
     fn ask_column(&mut self, list: Vec<IVec3>) {
         let c = content();
         let (tx, epoch, dim, seed, edits) = (self.gen_tx.clone(), self.epoch, self.dim, self.seed, self.edits.clone());
@@ -808,28 +806,11 @@ impl Terrain {
             .map(|g| g.0.clone());
         let (on_gpu, on_cpu): (Vec<IVec3>, Vec<IVec3>) = list
             .into_iter()
-            .partition(|p| gpu.is_some() && self.gpu_custom.is_some() && p.y >= def.min_cube_y && p.y <= def.max_cube_y);
+            .partition(|p| gpu.is_some() && self.gpu_able && p.y >= def.min_cube_y && p.y <= def.max_cube_y);
         self.generating.extend(on_gpu.iter().chain(&on_cpu));
-        if let (Some(gpu), Some(custom), Some(&first)) = (gpu, self.gpu_custom.clone(), on_gpu.first()) {
-            let (tx, edits) = (tx.clone(), edits.clone());
-            let send = move |heights: Arc<Vec<i32>>| {
-                for pos in on_gpu {
-                    let _ = gpu.send(super::terrain_gpu::Job {
-                        epoch,
-                        dim,
-                        seed,
-                        pos,
-                        custom: heights.clone(),
-                        edits: edits.clone(),
-                        done: tx.clone(),
-                    });
-                }
-            };
-            if custom.is_empty() {
-                send(Arc::new(Vec::new()));
-            } else {
-                // Mods' features run their code: on a worker, not here.
-                crate::background().spawn(move || send(super::terrain_gpu::custom_heights(c, dim, seed, first.x, first.z, &custom)));
+        if let Some(gpu) = gpu {
+            for pos in on_gpu {
+                let _ = gpu.send(super::terrain_gpu::Job { epoch, dim, seed, pos, edits: edits.clone(), done: tx.clone() });
             }
         }
         for pos in on_cpu {

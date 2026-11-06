@@ -1,8 +1,9 @@
 //! Distant terrain beyond the view: made on the GPU straight from the dimension's terrain at a
-//! coarser step (`shaders/terrain.wgsl`'s `lod`), never from cubes, so it reaches as far as wanted
-//! for a few kilobytes a tile. A tile is 32x32 cells of 2^level blocks; each cell is the column
-//! at its middle: its top block, the one under it, its biome, and tree canopies over it (no
-//! caves or edits).
+//! coarser step (`shaders/terrain.wgsl`'s `lod`), so it reaches as far as wanted for a few
+//! kilobytes a tile. A tile is 32x32 cells of 2^level blocks; each cell is the column at its
+//! middle: its top block, the one under it, its biome, and tree canopies over it. Where saved
+//! cubes made a column's top other than the terrain's (a town, a crater), the server says so
+//! (`server::lod_tops`) and that column is taken instead.
 //! Tiles are picked by distance, nearer ones split into the four of the level below; one is
 //! shown once made, its parent or children standing in until then. Where a column of real cubes
 //! shows its ground the tiles' pixels are dropped (`fs_lod`, `Lod::mask`), so they fill in for
@@ -12,7 +13,10 @@ use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use glam::{DVec3, IVec2};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
+
+/// Columns whose top isn't the terrain's: height, top block, the one under it.
+pub type Columns = FxHashMap<IVec2, (i32, u32, u32)>;
 
 use crate::content::{Content, content};
 use crate::gpu_layout::face;
@@ -22,6 +26,7 @@ pub const CELLS: i32 = 32;
 /// Columns a tile is made from: its cells and one around them (for the walls at its edges).
 pub const SAMPLES: usize = crate::gpu_layout::terrain::lod::SAMPLES as usize;
 const SIDE: i32 = crate::gpu_layout::terrain::lod::SIDE as i32;
+const GRID: usize = (CELLS + 2) as usize;
 /// Words per tile coming back from the GPU.
 pub const LOD_WORDS_PER_TILE: usize = SAMPLES * 2;
 pub const MAX_LEVEL: u32 = 5;
@@ -70,13 +75,14 @@ impl TileKey {
     }
 }
 
-/// A tile for the GPU to make, with the heights of mods' own features at its columns.
+/// A tile for the GPU to make.
 pub struct LodJob {
     pub dim: u32,
     pub seed: u64,
     pub key: TileKey,
-    pub custom: Vec<i32>,
     pub done: Sender<LodMesh>,
+    /// What the server said of columns, taken over the terrain's where the tile samples them.
+    pub columns: Arc<Columns>,
 }
 
 /// A made tile's quads (`mesh`) and the heights they span.
@@ -89,8 +95,19 @@ pub struct LodMesh {
 }
 
 /// What came back for `job`, meshed on a worker.
-pub fn made(job: LodJob, words: Vec<u32>) {
+pub fn made(job: LodJob, mut words: Vec<u32>) {
     crate::background().spawn(move || {
+        if !job.columns.is_empty() {
+            let (s, o) = (1 << job.key.level, job.key.origin());
+            for k in 0..SAMPLES {
+                let (i, j) = ((k as i32 % SIDE) - 1, (k as i32 / SIDE) - 1);
+                let col = o + IVec2::new(i * s + s / 2, j * s + s / 2);
+                if let Some(&(y, top, under)) = job.columns.get(&col) {
+                    words[k * 2] = (y as u32 & 0xFFFF) | (top << 16);
+                    words[k * 2 + 1] = (words[k * 2 + 1] & 0xFFFF) | (under << 16);
+                }
+            }
+        }
         let (quads, y) = mesh(content(), job.key, &words);
         let _ = job
             .done
@@ -99,22 +116,23 @@ pub fn made(job: LodJob, words: Vec<u32>) {
 }
 
 /// A record of `world.wgsl`'s `vs_lod`: the `dir` face of a box at (x, y, z) in the tile, size
-/// (sx, sy, sz) blocks, drawn in the average color of texture `tex` (its smallest mip), tinted
-/// for `biome` when `tint`.
-fn quad(dir: u32, x: i32, y: i32, z: i32, size: (i32, i32, i32), tex: u32, tint: u32, biome: u32) -> [u32; 4] {
-    crate::gpu_layout::lod_record(dir, [x, y, z], [size.0, size.1, size.2], tex, tint, biome)
+/// (sx, sy, sz) blocks, drawn with texture `tex`, tinted for `biome` when `tint`, corners in `ao`.
+fn quad(dir: u32, x: i32, y: i32, z: i32, size: (i32, i32, i32), tex: u32, tint: u32, biome: u32, ao: u32) -> [u32; 4] {
+    let mut r = crate::gpu_layout::lod_record(dir, [x, y, z], [size.0, size.1, size.2], tex, tint, biome);
+    r[3] |= (ao & 0xFF) << 24;
+    r
 }
 
 fn corner_y(words: &[u32], gi: i32, gj: i32) -> i32 {
-    let gi = gi.clamp(0, CELLS);
-    let gj = gj.clamp(0, CELLS);
+    let gi = gi.clamp(-1, CELLS);
+    let gj = gj.clamp(-1, CELLS);
     let k = ((gj + 1) * SIDE + gi + 1) as usize * 2;
     (words[k] & 0xFFFF) as u16 as i16 as i32
 }
 
 fn sample_y(words: &[u32], gx: f32, gz: f32) -> i32 {
-    let i0 = gx.floor().clamp(0.0, (CELLS - 1) as f32) as i32;
-    let j0 = gz.floor().clamp(0.0, (CELLS - 1) as f32) as i32;
+    let i0 = gx.floor().clamp(-1.0, (CELLS - 1) as f32) as i32;
+    let j0 = gz.floor().clamp(-1.0, (CELLS - 1) as f32) as i32;
     let fx = gx - i0 as f32;
     let fz = gz - j0 as f32;
     let h = |x: i32, z: i32| corner_y(words, x, z) as f32;
@@ -122,9 +140,8 @@ fn sample_y(words: &[u32], gx: f32, gz: f32) -> i32 {
     (x(j0) * (1.0 - fz) + x(j0 + 1) * fz).round() as i32
 }
 
-/// The tile's top faces (runs along x merged) and the walls down to lower neighbors: the top
-/// block's top color for its own height (a grass side averages to the dirt under its rim, and
-/// every slope came out striped brown), then the block under it for the rest.
+/// The tile's top faces and the walls down to lower neighbors: the top block for its own
+/// height, then the block under it for the rest.
 pub fn mesh(c: &Content, key: TileKey, words: &[u32]) -> (Vec<[u32; 4]>, (i32, i32)) {
     let s = 1 << key.level;
     let at = |i: i32, j: i32| {
@@ -132,65 +149,120 @@ pub fn mesh(c: &Content, key: TileKey, words: &[u32]) -> (Vec<[u32; 4]>, (i32, i
         let (a, b) = (words[k], words[k + 1]);
         (a >> 16, b & 0xFFFF, b >> 16)
     };
-    let mut h = [[0i32; CELLS as usize]; CELLS as usize];
-    for j in 0..CELLS {
-        for i in 0..CELLS {
-            h[i as usize][j as usize] = sample_y(words, i as f32 + 0.5, j as f32 + 0.5);
-        }
-    }
-    let y_at = |i: i32, j: i32| h[i as usize][j as usize];
+    let h = height_grid(words);
     let looks = super::looks::current();
+    let ctm = super::ctm::current();
     let face_of = |state: u32, dir: usize| {
         let info = &c.states[state as usize];
-        // No overlays out there.
-        let tint = if crate::content::face_paint(info, dir, false).base_tinted { info.tint as u32 } else { 0 };
-        (looks.drawn(state, info).textures[dir] & face::TEX_MASK, tint)
+        let tex = looks.drawn(state, info).textures[dir] & face::TEX_MASK;
+        let paint = crate::content::face_paint(info, dir, ctm.has_overlay(tex));
+        let tint = if paint.base_tinted || paint.overlay_tinted { info.tint as u32 } else { 0 };
+        (tex, tint)
     };
     let mut out = Vec::new();
     let (mut lo, mut hi) = (i32::MAX, i32::MIN);
     for j in 0..CELLS {
-        let mut i = 0;
-        while i < CELLS {
-            let y = y_at(i, j);
+        for i in 0..CELLS {
+            let y = column(&h, i, j);
             let (top, biome, _) = at(i, j);
-            let mut end = i + 1;
-            while end < CELLS && y_at(end, j) == y && at(end, j).0 == top && at(end, j).1 == biome {
-                end += 1;
-            }
             let (tex, tint) = face_of(top, 3);
-            out.push(quad(3, i * s, y, j * s, ((end - i) * s, 1, s), tex, tint, biome));
+            out.push(quad(3, i * s, y, j * s, (s, 1, s), tex, tint, biome, ao_bits(&h, i, j, 3, y)));
             (lo, hi) = (lo.min(y), hi.max(y + 1));
-            i = end;
         }
     }
     for j in 0..CELLS {
         for i in 0..CELLS {
             let (top, biome, under) = at(i, j);
-            let y = y_at(i, j);
+            let y = column(&h, i, j);
             for (dir, (di, dj)) in [(0usize, (-1, 0)), (1, (1, 0)), (4, (0, -1)), (5, (0, 1))] {
                 // At the tile's edge the tile beside may be of another level, its ground not
                 // where this one's sample says: the wall goes on down below it (a skirt), or
                 // the sky shows through the crack.
                 let (ni, nj) = (i + di, j + dj);
-                let ny = if (-1..=CELLS).contains(&ni) && (-1..=CELLS).contains(&nj) {
-                    sample_y(words, ni as f32 + 0.5, nj as f32 + 0.5)
-                } else {
-                    y.min(y - 1) - 2 * s
-                };
-                if ny >= y {
+                let ny = if (-1..=CELLS).contains(&ni) && (-1..=CELLS).contains(&nj) { column(&h, ni, nj) } else { y.min(y - 1) - 2 * s };
+                // Past a neighbor as high, real cubes may stand in for it lower than its sample
+                // says (it is interpolated): a skirt down below that, or the sky shows through
+                // between them.
+                if ny > y {
                     continue;
                 }
-                let (tex, tint) = face_of(top, 3);
-                out.push(quad(dir as u32, i * s, y, j * s, (s, 1, s), tex, tint, biome));
-                if y - 1 > ny {
-                    let (tex, tint) = face_of(under, dir);
-                    out.push(quad(dir as u32, i * s, ny + 1, j * s, (s, y - 1 - ny, s), tex, tint, biome));
+                let skirt = ny.min(y - 1) - s - 2;
+                if ny < y {
+                    let (tex, tint) = face_of(top, dir);
+                    out.push(quad(dir as u32, i * s, y, j * s, (s, 1, s), tex, tint, biome, ao_bits(&h, i, j, dir, y)));
                 }
-                lo = lo.min(ny + 1);
+                let (tex, tint) = face_of(under, dir);
+                let top_y = if ny < y { y - 1 } else { y };
+                let ao = ao_span(&h, i, j, dir, top_y, (ny + 1).min(top_y));
+                out.push(quad(dir as u32, i * s, skirt + 1, j * s, (s, y - 1 - skirt, s), tex, tint, biome, ao));
+                lo = lo.min(skirt + 1);
             }
         }
     }
     (out, (lo, hi))
+}
+
+fn height_grid(words: &[u32]) -> [[i32; GRID]; GRID] {
+    let mut h = [[0i32; GRID]; GRID];
+    for j in -1..=CELLS {
+        for i in -1..=CELLS {
+            let y = if i < CELLS && j < CELLS {
+                sample_y(words, i as f32 + 0.5, j as f32 + 0.5)
+            } else {
+                let (i0, fx) = if i < CELLS { (i, 0.5) } else { (CELLS, 0.0) };
+                let (j0, fz) = if j < CELLS { (j, 0.5) } else { (CELLS, 0.0) };
+                let s = |x: i32, z: i32| corner_y(words, x, z) as f32;
+                let a = s(i0, j0) * (1.0 - fx) + s((i0 + 1).min(CELLS), j0) * fx;
+                let b = s(i0, (j0 + 1).min(CELLS)) * (1.0 - fx) + s((i0 + 1).min(CELLS), (j0 + 1).min(CELLS)) * fx;
+                (a * (1.0 - fz) + b * fz).round() as i32
+            };
+            h[(i + 1) as usize][(j + 1) as usize] = y;
+        }
+    }
+    h
+}
+
+fn column(h: &[[i32; GRID]; GRID], i: i32, j: i32) -> i32 {
+    h[(i + 1).clamp(0, CELLS + 1) as usize][(j + 1).clamp(0, CELLS + 1) as usize]
+}
+
+fn ao_bits(h: &[[i32; GRID]; GRID], i: i32, j: i32, dir: usize, by: i32) -> u32 {
+    let nrm = weft_abi::FACE_DIRS[dir];
+    let axis = dir / 2;
+    let (ta, tb) = match axis {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    };
+    let base = [i + nrm[0], by + nrm[1], j + nrm[2]];
+    let mut bits = 0u32;
+    for (k, corner) in crate::gpu_layout::CORNERS[dir].iter().enumerate() {
+        let sa = corner[ta] * 2 - 1;
+        let sb = corner[tb] * 2 - 1;
+        let mut p1 = base;
+        let mut p2 = base;
+        let mut p3 = base;
+        p1[ta] += sa;
+        p2[tb] += sb;
+        p3[ta] += sa;
+        p3[tb] += sb;
+        let solid = |p: [i32; 3]| column(h, p[0], p[2]) >= p[1];
+        let (s1, s2, s3) = (solid(p1), solid(p2), solid(p3));
+        let ao = if s1 && s2 { 0 } else { 3 - u32::from(s1) - u32::from(s2) - u32::from(s3) };
+        bits |= ao << (2 * k);
+    }
+    bits
+}
+
+fn ao_span(h: &[[i32; GRID]; GRID], i: i32, j: i32, dir: usize, top: i32, bot: i32) -> u32 {
+    let hi = ao_bits(h, i, j, dir, top);
+    let lo = ao_bits(h, i, j, dir, bot);
+    let mut bits = 0u32;
+    for (k, c) in crate::gpu_layout::CORNERS[dir].iter().enumerate() {
+        let src = if c[1] == 1 { hi } else { lo };
+        bits |= ((src >> (2 * k)) & 3) << (2 * k);
+    }
+    bits
 }
 
 /// The client's distant terrain: which tiles to show, asking for missing ones, taking made ones.
@@ -201,9 +273,9 @@ pub struct Lod {
     done: (Sender<LodMesh>, Receiver<LodMesh>),
     dim: u32,
     seed: u64,
-    /// Indices of the dimension's features whose heights run mods' code (`terrain_gpu`);
-    /// `None`: no distant terrain here.
-    custom: Option<Arc<Vec<usize>>>,
+    /// Whether the GPU makes this dimension's terrain (`terrain_gpu`); if not, there is no
+    /// distant terrain here.
+    able: bool,
     ready: FxHashSet<TileKey>,
     pending: FxHashSet<TileKey>,
     /// Tiles wanted, nearest first, and where the camera was then.
@@ -216,6 +288,11 @@ pub struct Lod {
     half: i32,
     center: IVec2,
     mask_changed: bool,
+    /// What the server said of columns of `columns_dim`.
+    columns: Arc<Columns>,
+    columns_dim: u32,
+    /// Made tiles to make again for columns that changed, shown as they are till then.
+    stale: FxHashSet<TileKey>,
 }
 
 /// Columns the mask reaches past the view radius (cubes are kept that far).
@@ -229,7 +306,7 @@ impl Lod {
             done: unbounded(),
             dim: u32::MAX,
             seed: 0,
-            custom: None,
+            able: false,
             ready: FxHashSet::default(),
             pending: FxHashSet::default(),
             wanted: Vec::new(),
@@ -238,7 +315,50 @@ impl Lod {
             half: 0,
             center: IVec2::ZERO,
             mask_changed: false,
+            columns: Arc::default(),
+            columns_dim: u32::MAX,
+            stale: FxHashSet::default(),
         }
+    }
+
+    /// `ToClient::LodColumns`: tiles with those columns are made again.
+    pub fn set_columns(&mut self, dim: u32, all: bool, cols: &[(i32, i32, i32, u32, u32)]) {
+        if all || dim != self.columns_dim {
+            self.columns = Arc::default();
+            self.columns_dim = dim;
+            self.stale.extend(self.ready.iter().copied());
+        }
+        let map = Arc::make_mut(&mut self.columns);
+        for &(x, z, y, top, under) in cols {
+            let p = IVec2::new(x, z);
+            if top == u32::MAX {
+                map.remove(&p);
+            } else {
+                map.insert(p, (y, top, under));
+            }
+            if !all {
+                // Every level's tile with it, and the ones beside that sample it for their walls.
+                for level in 0..=MAX_LEVEL {
+                    let size = CELLS << level;
+                    for dz in -1..=1 {
+                        for dx in -1..=1 {
+                            let key = TileKey {
+                                level,
+                                x: (x + dx * (size / CELLS)).div_euclid(size),
+                                z: (z + dz * (size / CELLS)).div_euclid(size),
+                            };
+                            if self.ready.contains(&key) {
+                                self.stale.insert(key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn columns_len(&self) -> usize {
+        self.columns.len()
     }
 
     /// Tiles asked for and not back yet.
@@ -282,7 +402,7 @@ impl Lod {
         }
         if (dim, seed) != (self.dim, self.seed) {
             (self.dim, self.seed) = (dim, seed);
-            self.custom = super::terrain_gpu::describe(c, dim, seed).map(|(_, custom)| Arc::new(custom));
+            self.able = super::terrain_gpu::describe(c, dim, seed).is_some();
         }
         // Tiles stand in for cubes not shown yet; the inner half of the view is shown long
         // before the edge, where flying outruns the cubes.
@@ -302,7 +422,7 @@ impl Lod {
             render.upload_lod(gpu, textures, m.key, &m.quads, m.y);
             self.ready.insert(m.key);
         }
-        if reach == 0 || self.custom.is_none() {
+        if reach == 0 || !self.able {
             render.lod_draw.clear();
             return;
         }
@@ -463,44 +583,22 @@ impl Lod {
         self.wanted = out.into_iter().map(|t| t.1).collect();
     }
 
-    /// Asks for the nearest wanted tiles not made yet.
+    /// Asks for the nearest wanted tiles not made yet, or made before columns changed.
     fn request(&mut self) {
-        let c = content();
-        let custom = self.custom.clone().unwrap();
+        let columns = if self.columns_dim == self.dim { self.columns.clone() } else { Arc::default() };
         for &key in &self.wanted {
             if self.pending.len() >= IN_FLIGHT {
                 break;
             }
-            if self.ready.contains(&key) || self.pending.contains(&key) {
+            let again = self.stale.remove(&key);
+            if (self.ready.contains(&key) && !again) || self.pending.contains(&key) {
                 continue;
             }
             self.pending.insert(key);
-            let (dim, seed, done, jobs) = (self.dim, self.seed, self.done.0.clone(), self.jobs.clone());
-            if custom.is_empty() {
-                let _ = jobs.send(LodJob { dim, seed, key, custom: Vec::new(), done });
-                continue;
-            }
-            let custom = custom.clone();
-            // Mods' features run their code: on a worker.
-            crate::background().spawn(move || {
-                let heights = custom_heights(c, dim, seed, key, &custom);
-                let _ = jobs.send(LodJob { dim, seed, key, custom: heights, done });
-            });
+            let _ = self
+                .jobs
+                .send(LodJob { dim: self.dim, seed: self.seed, key, done: self.done.0.clone(), columns: columns.clone() });
         }
+        self.stale.retain(|k| self.ready.contains(k));
     }
-}
-
-/// Heights of the mod features `custom` at the tile's columns, for its job.
-fn custom_heights(c: &Content, dim: u32, seed: u64, key: TileKey, custom: &[usize]) -> Vec<i32> {
-    let Some(t) = c.dims[dim as usize].terrain.as_ref() else { return Vec::new() };
-    let f = weft_noise::fixed::Fields { seed };
-    let (o, s) = (key.origin(), 1 << key.level);
-    let mut out = Vec::with_capacity(custom.len() * SAMPLES);
-    for &i in custom {
-        for k in 0..SAMPLES as i32 {
-            let (x, z) = (o.x + (k % SIDE - 1) * s + s / 2, o.y + (k / SIDE - 1) * s + s / 2);
-            out.push(t.features[i].height_at(&f, x * 16, z * 16));
-        }
-    }
-    out
 }

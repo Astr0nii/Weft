@@ -118,7 +118,7 @@ impl Screen for MenuScreen {
         ui.root_style(Style::default().stretch());
         let creative = cx
             .client
-            .is_some_and(|cl| cl.mode == crate::world::GameMode::Creative)
+            .is_some_and(|cl| cl.mode.has(weft_abi::game_mode_flags::CREATIVE_INVENTORY))
             && c.game.player_menu == Some(self.kind);
         ui.panel("overlay", Style::default().grow().center(), |ui| {
             ui.container(Style::row().gap(4.0).align(crate::ui::Align::Start), |ui| {
@@ -126,9 +126,9 @@ impl Screen for MenuScreen {
                     creative_panel(ui, cx, &self.search, &self.tab);
                 }
                 if let Some(def) = c.game.menus.get(self.kind as usize) {
-                    if let Some(cb) = def.screen {
+                    if let Some((by, cb)) = def.screen {
                         let first = ui.nodes.len();
-                        modui::build(ui, cx.lang, Some(cx.input), def.owner, cb, cx.client);
+                        modui::build(ui, cx.lang, Some(cx.input), by, cb, cx.client);
                         // The arrows of a menu that makes recipes open them.
                         if !def.recipes.is_empty() {
                             let tip = cx.t("recipes.show", &[]);
@@ -382,9 +382,13 @@ impl Screen for Chat {
             ctx.requests.push(Request::Rebuild);
         };
         match key {
+            // Shift+Tab goes back through the list.
             Key::Code(KeyCode::Tab) if n > 0 => {
+                let back = ctx.input.mods() & crate::input::SHIFT != 0;
                 if st.stem.is_some() {
-                    st.selected = (st.selected + 1) % n;
+                    st.selected = if back { (st.selected + n - 1) % n } else { (st.selected + 1) % n };
+                } else if back {
+                    st.selected = n - 1;
                 }
                 take(&mut st, ctx);
                 true
@@ -774,27 +778,6 @@ pub fn recipe_slot(
         Ingredient::Empty => {
             ui.add(Kind::Container { class: Some("recipe_slot".into()) }, size);
             return;
-        }
-        Ingredient::Fluid(name) => {
-            // The liquid's own top texture, tinted like its item would be (water is gray).
-            let state = c
-                .liquids
-                .iter()
-                .find(|l| &l.name == name)
-                .and_then(|l| c.states.get(l.first_state as usize));
-            let texture = state
-                .and_then(|s| c.textures.get(s.textures[2] as usize))
-                .cloned()
-                .unwrap_or_default();
-            let color =
-                state.map_or(0xFFFFFFFF, |s| if s.tint != 0 { (crate::content::item_tint(s.tint) << 8) | 0xFF } else { 0xFFFFFFFF });
-            let b = ui.button("recipe_slot", size, Rc::new(|_: &mut Ctx| {}), |ui| {
-                ui.add(Kind::Image { texture, color }, Style::default().size(16.0, 16.0));
-            });
-            tip = text::Name::Liquid(name.clone()).spans(lang, None);
-            tip.push(text::Span::text("\n", None));
-            tip.extend(fmt("recipes.fluid_amount", &[text::Arg::Int(count as i64)]));
-            b
         }
         Ingredient::Item(_) | Ingredient::Tag(_) | Ingredient::Any(_) => {
             let items: Vec<u32> = match ing {
