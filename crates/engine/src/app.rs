@@ -1040,7 +1040,7 @@ impl Running {
         let Some((_, ui)) = self.screens.last_mut() else { return UiCallbacks::default() };
         if self.input.pressed_button(0) {
             ui.pressed = hovered;
-            ui.focused = hovered.filter(|&h| matches!(ui.nodes[h].kind, Kind::Input { .. }));
+            ui.focused = hovered.filter(|&h| matches!(ui.nodes[h].kind, Kind::Input { .. } | Kind::Slider { .. }));
             ui.anchor = None;
             if let Some(h) = hovered {
                 if let Kind::Text(t) = &ui.nodes[h].kind {
@@ -1100,6 +1100,19 @@ impl Running {
                     if let Some(cb) = on_change {
                         text_changed = Some((cb.clone(), value.clone()));
                     }
+                }
+            } else if let Kind::Slider { value, on_change, steps, .. } = &mut ui.nodes[f].kind {
+                let by: f32 = [(KeyCode::ArrowLeft, -1.0), (KeyCode::ArrowRight, 1.0)]
+                    .into_iter()
+                    .filter(|(k, _)| self.input.pressed_or_repeated(Key::Code(*k)))
+                    .map(|(_, by)| by)
+                    .sum();
+                if by != 0.0 {
+                    let n = (*steps).max(1) as f32;
+                    let v = (((*value * n).round() + by) / n).clamp(0.0, 1.0);
+                    *value = v;
+                    slider = Some((on_change.clone(), v));
+                    self.quads_dirty = true;
                 }
             }
         }

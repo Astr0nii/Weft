@@ -56,6 +56,14 @@ impl ConfigDef {
         }
     }
 
+    /// How many steps a slider of it goes through: its own, or `unit` (what one shown digit
+    /// is worth) where it has none or a finer one.
+    pub fn steps(&self, unit: f64) -> u32 {
+        ((self.max - self.min).abs() / self.step.max(unit))
+            .round()
+            .clamp(1.0, u32::MAX as f64) as u32
+    }
+
     fn parse(&self, s: &str) -> Option<f64> {
         let s = s.trim();
         match self.kind {
@@ -366,14 +374,14 @@ pub fn engine_configs(keys: &[(String, String)]) -> Vec<RawEntry> {
         number("core:gui_scale", ck::INT, 0.0, 0.0, 16.0, 1.0),
         number("core:view_distance", ck::INT, 12.0, 2.0, 64.0, 1.0),
         // Distant terrain beyond the view (`client::lod`), in cubes; 0 off.
-        number("core:lod_distance", ck::INT, 256.0, 0.0, 2048.0, 16.0),
+        number("core:lod_distance", ck::INT, 256.0, 0.0, 2048.0, 1.0),
         // Blocks clouds float above where their dimension puts them.
-        number("core:cloud_height", ck::INT, 0.0, 0.0, 512.0, 8.0),
+        number("core:cloud_height", ck::INT, 0.0, 0.0, 512.0, 1.0),
         // Vanilla's: in GUI pixels, and percent of the dark behind the text.
-        number("core:chat_width", ck::INT, 320.0, 40.0, 1000.0, 10.0),
-        number("core:chat_height", ck::INT, 180.0, 20.0, 1000.0, 10.0),
-        number("core:chat_height_closed", ck::INT, 110.0, 20.0, 1000.0, 10.0),
-        number("core:chat_opacity", ck::INT, 50.0, 0.0, 100.0, 5.0),
+        number("core:chat_width", ck::INT, 320.0, 40.0, 1000.0, 1.0),
+        number("core:chat_height", ck::INT, 180.0, 20.0, 1000.0, 1.0),
+        number("core:chat_height_closed", ck::INT, 110.0, 20.0, 1000.0, 1.0),
+        number("core:chat_opacity", ck::INT, 50.0, 0.0, 100.0, 1.0),
         number("core:chat_visibility", ck::CHOICE, 0.0, 0.0, 2.0, 0.0)
             .set(c::CHOICES, ["all", "system", "hidden"].map(String::from).to_vec()),
         number("core:vsync", ck::BOOL, 1.0, 0.0, 1.0, 0.0),
@@ -382,7 +390,7 @@ pub fn engine_configs(keys: &[(String, String)]) -> Vec<RawEntry> {
         number("core:terrain_check", ck::BOOL, 0.0, 0.0, 1.0, 0.0),
         number("core:client_visibility", ck::INT, 0.0, 0.0, 2.0, 1.0),
         number("core:fov", ck::FLOAT, 70.0, 30.0, 110.0, 1.0),
-        number("core:sensitivity", ck::FLOAT, 1.0, 0.01, 3.0, 0.05),
+        number("core:sensitivity", ck::FLOAT, 1.0, 0.01, 3.0, 0.01),
         number("core:brightness", ck::FLOAT, 0.5, 0.0, 1.0, 0.0),
         number("core:debug_groups", ck::INT, u32::MAX as f64, 0.0, u32::MAX as f64, 1.0),
         number("core:invert_y", ck::BOOL, 0.0, 0.0, 1.0, 0.0),
@@ -428,8 +436,7 @@ fn string(name: &str, default: &str) -> RawEntry {
     number(name, ck::TEXT, 0.0, 0.0, 0.0, 0.0).set(weft_abi::comp::config::TEXT, default.to_string())
 }
 
-/// A setting from its entry. The engine's defaults stand as written (sensitivity's 1 is off its
-/// slider's steps); a mod's are made to fit.
+/// A setting from its entry. The engine's defaults stand as written; a mod's are made to fit.
 pub fn bake(e: &Entry, errors: &mut Vec<String>) -> ConfigDef {
     use weft_abi::comp::config as c;
     let [min, max] = e.or(c::RANGE, [0.0, 1.0]);

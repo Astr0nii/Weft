@@ -863,11 +863,13 @@ impl Screen for ConfigScreen {
                                 );
                                 if !locked {
                                     let (min, range) = (d.min, (d.max - d.min).max(1e-9));
+                                    let unit = if d.kind == weft_abi::config_kind::INT { 1.0 } else { range / 100.0 };
                                     ui.add(
                                         Kind::Slider {
                                             value: 0.0,
                                             bind: Box::new(move |_: &Ctx| ((crate::config::get(id) - min) / range) as f32),
                                             on_change: Rc::new(move |_: &mut Ctx, f: f32| crate::config::set(id, min + f as f64 * range)),
+                                            steps: d.steps(unit),
                                         },
                                         Style::default().h(20.0).stretch(),
                                     );
@@ -1072,9 +1074,6 @@ impl Screen for Controls {
         let conflicts = cx.input.conflicts();
         let waiting = self.waiting.clone();
         frame(ui, cx, "controls.title", |ui| {
-            if let Some((a, _)) = &waiting {
-                label(ui, cx, "controls.press", &[Arg::Name(text::Name::Key(a.clone()))], "default");
-            }
             let list = ui.panel(
                 "panel",
                 Style::default()

@@ -2854,7 +2854,8 @@ pub mod ui_kind {
     /// A one-line text field showing `text` (a ready value, not a key), at most `count`
     /// characters (0: any); `on_change` gets each edit.
     pub const INPUT: u32 = 15;
-    /// A slider at `bind` (0..1); `on_change` gets the value the player drags it to.
+    /// A slider at `bind` (0..1); `on_change` gets the value the player drags it to. Clicked, the
+    /// arrow keys move it one of `count` steps across (0: a hundred).
     pub const SLIDER: u32 = 16;
     /// Item `data` as its icon, with `count` under it when above 1.
     pub const ITEM: u32 = 17;

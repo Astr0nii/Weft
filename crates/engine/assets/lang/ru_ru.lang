@@ -30,7 +30,6 @@ settings.language.current = Текущий язык: {0}
 settings.first_person_model = Тело от первого лица: {0}
 settings.show_avatars = Свои модели игроков: {0}
 controls.title = Управление
-controls.press = Нажмите клавишу для действия {color:key}{0}{/}...
 controls.conflict = {color:warning}Конфликт с: {0}{/}
 controls.reset = Сбросить всё
 controls.mode_hold = Действует, пока клавиша зажата
