@@ -27,6 +27,7 @@ pub static HOST: Host = Host {
     state_cycle,
     state_flags,
     find_component,
+    matcher_has,
     component_table,
     stack_get,
     stack_with,
@@ -172,10 +173,8 @@ pub static HOST: Host = Host {
     reg_system,
     set_weather,
     weather_now,
-    weather_flags,
     entity_effect,
     entity_set_pose,
-    game_mode_flags,
     reg_command_permission,
     player_permission,
     set_player_permission,
@@ -199,7 +198,6 @@ pub static HOST: Host = Host {
     world_seed,
     structure_near,
     fall_block,
-    damage_cause_flags,
     player_inventory_group,
     set_entity_size,
     set_entity_appearance,
@@ -994,7 +992,6 @@ unsafe extern "C" fn set_day_time(w: *mut abi::WorldCtx, time: u64) {
 }
 
 unsafe extern "C" fn fill(w: *mut abi::WorldCtx, desc: *const abi::FillDesc) {
-    use crate::server::area::Filter;
     unsafe {
         let d = dim(w);
         let a = &*desc;
@@ -1011,17 +1008,13 @@ unsafe extern "C" fn fill(w: *mut abi::WorldCtx, desc: *const abi::FillDesc) {
             misuse("fill", || format!("no block state {}", a.state));
             return;
         }
-        let filters = |l: abi::Slice<abi::BlockFilter>| -> Option<Vec<Filter>> {
-            l.as_slice()
-                .iter()
-                .map(|f| Filter::from_abi(c, f))
-                .collect()
+        let fill = match crate::server::area::AreaFill::new(c, shape, a.state, a.keep.as_str(), a.only.as_str()) {
+            Ok(f) => f,
+            Err(e) => {
+                misuse("fill", || e);
+                return;
+            }
         };
-        let (Some(keep), Some(only)) = (filters(a.keep), filters(a.only)) else {
-            misuse("fill", || "a filter names no tag or block".to_string());
-            return;
-        };
-        let fill = crate::server::area::AreaFill { id: 0, shape, state: a.state, keep, only };
         d.events
             .push(crate::server::DimEvent::AreaFill { dim: d.id, fill });
     }
@@ -1130,6 +1123,10 @@ unsafe extern "C" fn find_component(name: Str, schema: Str) -> u32 {
         return u32::MAX;
     }
     id
+}
+
+extern "C" fn matcher_has(matcher: u32, state: u32) -> u32 {
+    try_content().is_some_and(|c| c.matchers.has(matcher, state)) as u32
 }
 
 unsafe extern "C" fn component_table() -> *const abi::ComponentTable {
@@ -1782,12 +1779,6 @@ unsafe extern "C" fn game_mode(w: *mut abi::WorldCtx, entity: u64) -> u32 {
     unsafe { dim(w).entities.get(entity).map_or(0, |e| e.mode.0 as u32) }
 }
 
-unsafe extern "C" fn damage_cause_flags(cause: u32) -> u32 {
-    try_content()
-        .and_then(|c| c.game.damage_causes.get(cause as usize))
-        .map_or(0, |d| d.flags)
-}
-
 unsafe extern "C" fn liquid_of(state: u32) -> u32 {
     try_content()
         .and_then(|c| c.states.get(state as usize))
@@ -1990,14 +1981,6 @@ unsafe extern "C" fn weather_now(w: *mut abi::WorldCtx) -> u32 {
     unsafe { dim(w).weather as u32 }
 }
 
-extern "C" fn weather_flags(weather: u32) -> u32 {
-    content()
-        .game
-        .weathers
-        .get(weather as usize)
-        .map_or(0, |d| d.flags)
-}
-
 unsafe extern "C" fn entity_effect(w: *mut abi::WorldCtx, id: u64, effect: u32, strength: f32, ticks: u32) {
     unsafe {
         let d = dim(w);
@@ -2047,12 +2030,6 @@ unsafe extern "C" fn entity_set_pose(w: *mut abi::WorldCtx, id: u64, pose: u32, 
             .comps
             .insert((id, comp), bytes.into_boxed_slice());
     }
-}
-
-unsafe extern "C" fn game_mode_flags(mode: u32) -> u32 {
-    try_content()
-        .and_then(|c| c.game.game_modes.get(mode as usize))
-        .map_or(0, |m| m.flags)
 }
 
 unsafe extern "C" fn reg_command_permission(r: *mut abi::Registrar, command: Str, level: u32) {

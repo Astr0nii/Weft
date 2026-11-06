@@ -642,7 +642,7 @@ fn dynamite(r: &mut Registry) {
             } else {
                 w.play_sound(&BOOM, center, 4.0);
                 w.fill(Shape::ball(center, DYNAMITE_RADIUS.get() as f64), 0)
-                    .keep_unbreakable();
+                    .keep("#unbreakable");
             }
         });
 }

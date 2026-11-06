@@ -17,13 +17,18 @@ const NAMES: [&str; 6] = ["west", "east", "down", "up", "north", "south"];
 const VECS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
 
 fn wire(faces: &[u8]) -> String {
-    let sides: Vec<String> = faces.iter().map(|&f| format!("{}=true", NAMES[f as usize])).collect();
+    let sides: Vec<String> = faces
+        .iter()
+        .map(|&f| format!("{}=true", NAMES[f as usize]))
+        .collect();
     format!("base:redstone[{}]", sides.join(","))
 }
 
 /// The sides a state of wire lies on, a bit per face.
 fn wire_sides(state: u32) -> u8 {
-    (0..6u8).filter(|&f| state_prop(state, NAMES[f as usize]) == Some("true")).fold(0, |m, f| m | 1 << f)
+    (0..6u8)
+        .filter(|&f| state_prop(state, NAMES[f as usize]) == Some("true"))
+        .fold(0, |m, f| m | 1 << f)
 }
 
 fn on_floor(name: &str, front: u8, rest: &str) -> String {
@@ -1639,30 +1644,18 @@ pub async fn redstone_by_hand(t: T) -> R {
     t.look_at(wall);
     t.frames(2).await?;
     t.press("core:use");
-    t.until("dust on the wall", Duration::from_secs(2), |t| {
-        t.c()
-            .block(cell)
-            .is_some_and(|s| wire_sides(s) == 16)
-    })
-    .await?;
+    t.until("dust on the wall", Duration::from_secs(2), |t| t.c().block(cell).is_some_and(|s| wire_sides(s) == 16))
+        .await?;
     t.look_at(add(cell, [0, -1, 0]));
     t.secs(0.3).await?;
     t.press("core:use");
-    t.until("dust on the floor as well", Duration::from_secs(2), |t| {
-        t.c()
-            .block(cell)
-            .is_some_and(|s| wire_sides(s) == 20)
-    })
-    .await?;
+    t.until("dust on the floor as well", Duration::from_secs(2), |t| t.c().block(cell).is_some_and(|s| wire_sides(s) == 20))
+        .await?;
     t.look_at(wall);
     t.secs(0.3).await?;
     t.press("core:attack");
-    t.until("the wall's piece gone", Duration::from_secs(2), |t| {
-        t.c()
-            .block(cell)
-            .is_some_and(|s| wire_sides(s) == 4)
-    })
-    .await?;
+    t.until("the wall's piece gone", Duration::from_secs(2), |t| t.c().block(cell).is_some_and(|s| wire_sides(s) == 4))
+        .await?;
     // The one left goes with its floor.
     t.set(add(cell, [0, -1, 0]), "air").await?;
     settle(&t).await?;
@@ -1953,11 +1946,9 @@ fn state_of(part: Part, way: ([usize; 3], [i32; 3])) -> Option<u32> {
     let first = |name: &str| Block::lookup(name);
     Some(match part {
         Part::Solid(n) | Part::Plain(n) => first(n)?,
-        Part::Wire(mask) => {
-            (0..6u8)
-                .filter(|d| mask & (1 << d) != 0)
-                .try_fold(first("base:redstone")?, |s, d| state_with(s, NAMES[turned_dir(way, d) as usize], "true"))?
-        }
+        Part::Wire(mask) => (0..6u8)
+            .filter(|d| mask & (1 << d) != 0)
+            .try_fold(first("base:redstone")?, |s, d| state_with(s, NAMES[turned_dir(way, d) as usize], "true"))?,
         Part::Device(n, attach, front, prop) => {
             let mut s = first(n)?;
             if let Some(a) = attach {

@@ -1,5 +1,5 @@
 //! Components: typed values attached to content entries (block states, items, entity kinds,
-//! biomes, dimensions), one namespace for every mod. A tag is a component without a value.
+//! biomes, dimensions, weathers, game modes ...), one namespace for every mod. A tag is a component without a value.
 //! Names without a prefix are the common vocabulary (`plant_soil`, `fuel`, `ingots/iron`),
 //! `modid:` ones are private to a mod.
 //!
@@ -35,9 +35,9 @@ pub const BUILTIN: &[(&str, &str)] = &[
     (abi::comp::TINT, "tint"),
     (abi::comp::TINT_FACES, "u8"),
     (abi::comp::SUPPORT_FACE, "u8"),
-    (abi::comp::SUPPORT, "tag"),
-    (abi::comp::SUPPORT_NEAR, "tag"),
-    (abi::comp::SPREADS_TO, "tag"),
+    (abi::comp::SUPPORT, "match"),
+    (abi::comp::SUPPORT_NEAR, "match"),
+    (abi::comp::SPREADS_TO, "match"),
     (abi::comp::GROW_TIME, "f32"),
     (abi::comp::GROW_LIGHT, "u32"),
     (abi::comp::SPREAD_TIME, "f32"),
@@ -48,7 +48,10 @@ pub const BUILTIN: &[(&str, &str)] = &[
     (abi::comp::DRIP, "str"),
     (abi::comp::SPLASH, "str"),
     (abi::comp::BUBBLE, "str"),
-    (abi::comp::SWIMS_IN, "str"),
+    (abi::comp::SWIMS_IN, "match"),
+    (abi::comp::JOINS, "match"),
+    (abi::comp::LIQUIDS, ""),
+    (abi::comp::UNBREAKABLE, ""),
     (abi::comp::CONDUCTOR, ""),
     (abi::comp::ENERGY, <abi::Energy as abi::Schema>::SCHEMA),
     (abi::comp::WORN, <abi::Worn as abi::Schema>::SCHEMA),
@@ -87,8 +90,8 @@ impl RawValue {
 }
 
 /// Schemas a mod writes as text: `str` stays text; references (`block`: one block or state,
-/// `blocks`: a weighted list `name[:weight] ..`, `item`: an item, `tag`: `#name`, `tint`: a tint
-/// kind) are resolved into ids at freeze, with errors.
+/// `blocks`: a weighted list `name[:weight] ..`, `item`: an item, `match`: a block matcher
+/// (`refs`), `tint`: a tint kind) are resolved into ids at freeze, with errors.
 pub fn written_as_text(schema: &str) -> bool {
     abi::data::is_text(schema)
 }
@@ -99,7 +102,7 @@ fn primitive_size(schema: &str) -> Option<usize> {
         "" => 0,
         "u8" | "i8" | "bool" => 1,
         "u16" | "i16" => 2,
-        "u32" | "i32" | "f32" | "block" | "blocks" | "item" | "tag" | "tint" => 4,
+        "u32" | "i32" | "f32" | "block" | "blocks" | "item" | "match" | "tint" => 4,
         "u64" | "i64" | "f64" => 8,
         "str" => size_of::<Str>(),
         "callback" => 16,
@@ -137,6 +140,80 @@ impl Table {
         let (stride, data) = &self.cols[comp as usize];
         (self.has(entry, comp) && *stride > 0).then(|| &data[(entry * stride) as usize..((entry + 1) * stride) as usize])
     }
+
+    fn put(&mut self, entry: u32, comp: u32, bytes: &[u8]) -> Result<(), String> {
+        if entry >= self.entries {
+            return Ok(());
+        }
+        if !bytes.is_empty() {
+            let (stride, data) = &mut self.cols[comp as usize];
+            if *stride == 0 {
+                *stride = bytes.len() as u32;
+                data.resize(self.entries as usize * bytes.len(), 0);
+            }
+            if bytes.len() != *stride as usize {
+                // Marking it present with no value would read as zero.
+                return Err(format!("has a value of {} bytes, others have {}", bytes.len(), stride));
+            }
+            let at = (entry * *stride) as usize;
+            data[at..at + bytes.len()].copy_from_slice(bytes);
+        }
+        let w = (entry * self.words + comp / 64) as usize;
+        self.bits[w] |= 1 << (comp % 64);
+        Ok(())
+    }
+
+    fn columns(&self) -> Vec<abi::Column> {
+        self.cols
+            .iter()
+            .map(|(stride, data)| abi::Column { data: data.as_ptr(), stride: *stride })
+            .collect()
+    }
+
+    fn view(&self, columns: &[abi::Column]) -> abi::KindTable {
+        abi::KindTable { entries: self.entries, words: self.words, bits: self.bits.as_ptr(), columns: columns.as_ptr() }
+    }
+}
+
+type Refs = dyn Fn(&str, &str) -> Result<Vec<u8>, String>;
+
+/// A value as the tables keep it: text and packed values boxed into `texts` and `blobs` (the
+/// table holds a `Str` or `Slice` to them), references resolved, a matcher's text to its id.
+fn encode<'v>(
+    v: &'v RawValue,
+    texts: &mut Vec<Box<str>>,
+    blobs: &mut Vec<Box<[u8]>>,
+    refs: Option<&Refs>,
+    matcher: &mut dyn FnMut(&str) -> Result<u32, String>,
+) -> Result<std::borrow::Cow<'v, [u8]>, String> {
+    match &v.text {
+        Some(t) if v.schema == "match" => matcher(t).map(|id| id.to_le_bytes().to_vec().into()),
+        Some(t) if v.schema != "str" => match refs {
+            Some(resolve) => resolve(&v.schema, t).map(Into::into),
+            None => Err("references resolve only at load".into()),
+        },
+        Some(t) => {
+            let boxed: Box<str> = t.as_str().into();
+            let s = Str { ptr: boxed.as_ptr(), len: boxed.len() };
+            texts.push(boxed);
+            Ok(unsafe {
+                std::slice::from_raw_parts(&s as *const Str as *const u8, size_of::<Str>())
+                    .to_vec()
+                    .into()
+            })
+        }
+        None if v.schema.starts_with('<') || abi::data::list_of(&v.schema).is_some() => {
+            let boxed: Box<[u8]> = v.bytes.as_slice().into();
+            let s = abi::Slice { ptr: boxed.as_ptr(), len: boxed.len() };
+            blobs.push(boxed);
+            Ok(unsafe {
+                std::slice::from_raw_parts(&s as *const abi::Slice<u8> as *const u8, size_of::<abi::Slice<u8>>())
+                    .to_vec()
+                    .into()
+            })
+        }
+        None => Ok(v.bytes.as_slice().into()),
+    }
 }
 
 pub struct Components {
@@ -145,9 +222,10 @@ pub struct Components {
     by_name: FxHashMap<String, u32>,
     tables: Vec<Table>,
     /// Strings `str` values point into; boxed so the pointers stay put.
-    _texts: Vec<Box<str>>,
-    _blobs: Vec<Box<[u8]>>,
-    _columns: Vec<Vec<abi::Column>>,
+    texts: Vec<Box<str>>,
+    blobs: Vec<Box<[u8]>>,
+    columns: Vec<Vec<abi::Column>>,
+    refs: Option<Box<Refs>>,
     abi: Box<abi::ComponentTable>,
 }
 
@@ -209,6 +287,34 @@ impl Components {
 
     pub fn table(&self) -> *const abi::ComponentTable {
         &*self.abi
+    }
+
+    /// The table of a kind whose ids are known only after the others froze (weathers, game
+    /// modes ...): every value of each entry, in id order, its components declared already.
+    pub fn add_table(
+        &mut self,
+        kind: usize,
+        entries: &[crate::entries::Entry],
+        matcher: &mut dyn FnMut(&str, &Components) -> Result<u32, String>,
+        errors: &mut Vec<String>,
+    ) {
+        let mut t = Table::new(entries.len(), self.names.len());
+        let (mut texts, mut blobs) = (Vec::new(), Vec::new());
+        for (i, e) in entries.iter().enumerate() {
+            for v in &e.values {
+                let Some(&comp) = self.by_name.get(&v.name) else { continue };
+                let put = encode(v, &mut texts, &mut blobs, self.refs.as_deref(), &mut |m| matcher(m, self))
+                    .and_then(|bytes| t.put(i as u32, comp, &bytes));
+                if let Err(err) = put {
+                    errors.push(format!("{}: {}: {err}", e.name, v.name));
+                }
+            }
+        }
+        self.texts.append(&mut texts);
+        self.blobs.append(&mut blobs);
+        self.columns[kind] = t.columns();
+        self.abi.kinds[kind] = t.view(&self.columns[kind]);
+        self.tables[kind] = t;
     }
 }
 
@@ -310,7 +416,11 @@ pub struct Builder {
     /// Values that could not be stored (freeze errors).
     pub errors: Vec<String>,
     /// Turns the text of a reference value (`block`, `blocks`) into its bytes.
-    pub refs: Option<Box<dyn Fn(&str, &str) -> Result<Vec<u8>, String>>>,
+    pub refs: Option<Box<Refs>>,
+    /// Matcher texts values name, by id, with who named each first: compiled once the tables
+    /// they test are filled.
+    pub matchers: Vec<(String, String)>,
+    match_ids: FxHashMap<String, u32>,
 }
 
 impl Default for Builder {
@@ -324,6 +434,8 @@ impl Default for Builder {
             blobs: Vec::new(),
             errors: Vec::new(),
             refs: None,
+            matchers: Vec::new(),
+            match_ids: FxHashMap::default(),
         };
         for (name, schema) in BUILTIN {
             b.decl
@@ -360,19 +472,16 @@ impl Builder {
         }
     }
 
-    /// Declares a value's component, and the tag a `tag` value names (it exists by being named).
+    /// Declares a value's component.
     pub fn declare_value(&mut self, v: &RawValue, who: &dyn Fn() -> String, errors: &mut Vec<String>) {
-        self.declare(&v.name, &v.schema, v.text.is_none().then_some(v.bytes.len()), who, errors);
-        if let (Some(t), "tag") = (&v.text, v.schema.as_str()) {
-            match crate::refs::tag_name(t) {
-                Ok(tag) => self.declare(tag, "", None, who, errors),
-                Err(e) => errors.push(format!("{}: {}: {e}", who(), v.name)),
-            }
-        }
+        // Packed values (lists, `<..>` structs) are as long as they are.
+        let packed = v.schema.starts_with('<') || abi::data::list_of(&v.schema).is_some();
+        self.declare(&v.name, &v.schema, (v.text.is_none() && !packed).then_some(v.bytes.len()), who, errors);
     }
 
-    /// Assigns ids and allocates the tables; values go in with `put` afterwards.
-    pub fn start(&mut self, entries: [usize; KINDS]) {
+    /// Assigns ids and allocates the tables of the first kinds (`entries` of each); values go in
+    /// with `put` afterwards, the other kinds' with `Components::add_table`.
+    pub fn start(&mut self, entries: &[usize]) {
         let mut names: Vec<String> = self.decl.keys().cloned().collect();
         names.sort();
         self.ids = names
@@ -380,9 +489,8 @@ impl Builder {
             .enumerate()
             .map(|(i, n)| (n.clone(), i as u32))
             .collect();
-        self.tables = entries
-            .iter()
-            .map(|&n| Table::new(n, names.len()))
+        self.tables = (0..KINDS)
+            .map(|k| Table::new(entries.get(k).copied().unwrap_or(0), names.len()))
             .collect();
         self.names = names;
     }
@@ -391,73 +499,23 @@ impl Builder {
         self.ids.get(name).copied()
     }
 
-    fn encode<'v>(&mut self, v: &'v RawValue) -> Result<std::borrow::Cow<'v, [u8]>, String> {
-        match &v.text {
-            Some(t) if v.schema == "tag" => {
-                let tag = crate::refs::tag_name(t)?;
-                self.id(tag)
-                    .map(|id| id.to_le_bytes().to_vec().into())
-                    .ok_or_else(|| format!("unknown tag {tag}"))
-            }
-            Some(t) if v.schema != "str" => match &self.refs {
-                Some(resolve) => resolve(&v.schema, t).map(Into::into),
-                None => Err("references resolve only at load".into()),
-            },
-            Some(t) => {
-                let boxed: Box<str> = t.as_str().into();
-                let s = Str { ptr: boxed.as_ptr(), len: boxed.len() };
-                self.texts.push(boxed);
-                Ok(unsafe {
-                    std::slice::from_raw_parts(&s as *const Str as *const u8, size_of::<Str>())
-                        .to_vec()
-                        .into()
-                })
-            }
-            None if v.schema.starts_with('<') || abi::data::list_of(&v.schema).is_some() => {
-                let boxed: Box<[u8]> = v.bytes.as_slice().into();
-                let s = abi::Slice { ptr: boxed.as_ptr(), len: boxed.len() };
-                self.blobs.push(boxed);
-                Ok(unsafe {
-                    std::slice::from_raw_parts(&s as *const abi::Slice<u8> as *const u8, size_of::<abi::Slice<u8>>())
-                        .to_vec()
-                        .into()
-                })
-            }
-            None => Ok(v.bytes.as_slice().into()),
-        }
-    }
-
     /// Sets a value (or tag) on an entry.
     pub fn put(&mut self, kind: usize, entry: u32, v: &RawValue, label: &dyn Fn() -> String) {
         let Some(comp) = self.id(&v.name) else { return };
-        let bytes = match self.encode(v) {
-            Ok(b) => b,
-            Err(e) => {
-                self.errors.push(format!("{}: {}: {e}", label(), v.name));
-                return;
+        let (matchers, match_ids) = (&mut self.matchers, &mut self.match_ids);
+        let mut matcher = |t: &str| {
+            let next = matchers.len() as u32;
+            let id = *match_ids.entry(t.to_string()).or_insert(next);
+            if id == next {
+                matchers.push((t.to_string(), format!("{}: {}", label(), v.name)));
             }
+            Ok(id)
         };
-        let t = &mut self.tables[kind];
-        if entry >= t.entries {
-            return;
+        let put = encode(v, &mut self.texts, &mut self.blobs, self.refs.as_deref(), &mut matcher)
+            .and_then(|bytes| self.tables[kind].put(entry, comp, &bytes));
+        if let Err(e) = put {
+            self.errors.push(format!("{}: {}: {e}", label(), v.name));
         }
-        if !bytes.is_empty() {
-            let (stride, data) = &mut t.cols[comp as usize];
-            if *stride == 0 {
-                *stride = bytes.len() as u32;
-                data.resize(t.entries as usize * bytes.len(), 0);
-            }
-            if bytes.len() != *stride as usize {
-                // Marking it present with no value would read as zero.
-                self.errors
-                    .push(format!("{}: {} has a value of {} bytes, others have {}", label(), v.name, bytes.len(), stride));
-                return;
-            }
-            let at = (entry * *stride) as usize;
-            data[at..at + bytes.len()].copy_from_slice(&bytes);
-        }
-        let w = (entry * t.words + comp / 64) as usize;
-        t.bits[w] |= 1 << (comp % 64);
     }
 
     /// Copies every component of `from` that `to` lacks (block items get their block's).
@@ -497,23 +555,12 @@ impl Builder {
     }
 
     pub fn finish(self) -> Components {
-        let Builder { decl, names, ids, tables, texts, blobs, .. } = self;
+        let Builder { decl, names, ids, tables, texts, blobs, refs, .. } = self;
         let schemas: Vec<String> = names.iter().map(|n| decl[n].0.clone()).collect();
-        let columns: Vec<Vec<abi::Column>> = tables
-            .iter()
-            .map(|t| {
-                t.cols
-                    .iter()
-                    .map(|(stride, data)| abi::Column { data: data.as_ptr(), stride: *stride })
-                    .collect()
-            })
-            .collect();
-        let kinds: [abi::KindTable; KINDS] = std::array::from_fn(|k| {
-            let t = &tables[k];
-            abi::KindTable { entries: t.entries, words: t.words, bits: t.bits.as_ptr(), columns: columns[k].as_ptr() }
-        });
+        let columns: Vec<Vec<abi::Column>> = tables.iter().map(Table::columns).collect();
+        let kinds: [abi::KindTable; KINDS] = std::array::from_fn(|k| tables[k].view(&columns[k]));
         let abi = Box::new(abi::ComponentTable { components: names.len() as u32, kinds });
-        Components { names, schemas, by_name: ids, tables, _texts: texts, _blobs: blobs, _columns: columns, abi }
+        Components { names, schemas, by_name: ids, tables, texts, blobs, columns, refs, abi }
     }
 }
 
@@ -574,7 +621,7 @@ mod tests {
         let mut b = Builder::default();
         let mut errors = Vec::new();
         b.declare("leaves", "block", None, &|| "a".into(), &mut errors);
-        b.start([1, 0, 0, 0, 0]);
+        b.start(&[1]);
         b.refs =
             Some(Box::new(|_, t| if t == "a:oak_leaves" { Ok(7u32.to_le_bytes().to_vec()) } else { Err(format!("unknown block {t}")) }));
         let v = |t: &str| RawValue { name: "leaves".into(), schema: "block".into(), bytes: vec![], text: Some(t.into()) };
@@ -592,7 +639,7 @@ mod tests {
         b.declare("fuel", "u32", Some(4), &|| "a".into(), &mut errors);
         b.declare("plant_soil", "", Some(0), &|| "a".into(), &mut errors);
         b.declare("label", "str", None, &|| "a".into(), &mut errors);
-        b.start([3, 2, 0, 0, 0]);
+        b.start(&[3, 2]);
         b.put(BLOCK, 1, &value("fuel", "u32", 300), &|| "x".into());
         b.put(BLOCK, 2, &RawValue::tag("plant_soil"), &|| "x".into());
         b.put(ITEM, 0, &RawValue { name: "label".into(), schema: "str".into(), bytes: vec![], text: Some("hi".into()) }, &|| "x".into());

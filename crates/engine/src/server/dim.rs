@@ -192,7 +192,7 @@ impl CubeMap for Cubes<'_> {
 /// world, on the server or a client: the area edits made since, then its light on its own as if
 /// open sky were above (`light::prelight`; joining the world fixes that up).
 pub fn prepare(c: &Content, dim: u32, edits: &[super::area::AreaFill], pos: IVec3, cube: &mut Cube) {
-    super::area::catch_up(c, edits, pos, cube);
+    super::area::catch_up(edits, pos, cube);
     light::prelight(c, cube, c.dims[dim as usize].sky_light);
 }
 
@@ -303,11 +303,10 @@ fn place_ores(
         if o.y > ore.max_y.saturating_add(reach) || o.y + 15 < ore.min_y.saturating_sub(reach) {
             continue;
         }
-        if !present.iter().any(|&s| {
-            ore.replace
-                .binary_search(&c.states[s as usize].block)
-                .is_ok()
-        }) {
+        if !present
+            .iter()
+            .any(|&s| ore.state_in(&c.matchers, s).is_some())
+        {
             continue;
         }
         for nz in pos.z - 1..=pos.z + 1 {
@@ -333,7 +332,6 @@ fn place_ores(
                                     c.components
                                         .has(comps::BIOME, biomes[(l.z * 16 + l.x) as usize] as u32, t)
                                 });
-                                let was = c.states[blocks[i] as usize].block;
                                 // Vanilla's ores in caves: some of what would touch air is left out.
                                 let bare = ore.exposed > 0.0
                                     && crate::world::DIRS.iter().any(|d| {
@@ -343,8 +341,10 @@ fn place_ores(
                                             && blocks[local_index(n)] == crate::content::AIR
                                     })
                                     && weft_noise::unit(hash(h, p.x as i64, p.y as i64, p.z as i64)) < ore.exposed as f64;
-                                if biome_ok && !bare && ore.replace.binary_search(&was).is_ok() {
-                                    let s = ore.state_in(was);
+                                if biome_ok
+                                    && !bare
+                                    && let Some(s) = ore.state_in(&c.matchers, blocks[i])
+                                {
                                     blocks[i] = s;
                                     placed = true;
                                     if !present.contains(&s) {
@@ -462,16 +462,10 @@ pub fn scatter_site(
     {
         return None;
     }
-    if !s.ground.is_empty() {
-        // The terrain surface is a state ID; the scatter constraint stores block IDs.
+    if let Some(ground) = s.ground {
         // A zero surface state means there is no usable terrain surface.
         let state = def.surface_block(seed, x, z);
-        if state == 0
-            || state as usize >= c.states.len()
-            || s.ground
-                .binary_search(&c.states[state as usize].block)
-                .is_err()
-        {
+        if state == 0 || !c.matchers.has(ground, state) {
             return None;
         }
     }
@@ -2123,8 +2117,7 @@ impl Dim {
                         && (s.y[0]..=s.y[1]).contains(&y)
                         && s.biome
                             .is_none_or(|t| c.components.has(comps::BIOME, biome_at(spot), t))
-                        && s.ground
-                            .is_none_or(|t| c.components.has(comps::BLOCK, ground, t)))
+                        && s.ground.is_none_or(|m| c.matchers.has(m, ground)))
                     .then_some(y)
                 };
                 let found: Vec<Option<i32>> = c.game.spawns.iter().map(fits).collect();
@@ -2700,14 +2693,14 @@ impl Dim {
         // Something the support must stand next to (water by sugar cane); a stack of the same
         // block is held by the one at its bottom.
         match c.states[state as usize].support_near {
-            Some(t) if c.states[n as usize].block != c.states[state as usize].block => {
+            Some(m) if c.states[n as usize].block != c.states[state as usize].block => {
                 [IVec3::X, -IVec3::X, IVec3::Z, -IVec3::Z].iter().any(|d| {
-                    self.get(at + *d).is_none_or(|s| c.block_has(s, Some(t)))
+                    self.get(at + *d).is_none_or(|s| c.matchers.has(m, s))
                         || self
                             .space
                             .extras(at + *d)
                             .iter()
-                            .any(|&s| c.block_has(s, Some(t)))
+                            .any(|&s| c.matchers.has(m, s))
                 })
             }
             _ => true,
@@ -3199,7 +3192,7 @@ impl Dim {
                         && (!covered || !sp.open_top)
                         && (-at).cmpge(sp.min).all()
                         && (-at).cmple(sp.max).all()
-                        && c.components.has(comps::BLOCK, state, sp.tag)
+                        && c.matchers.has(sp.to, state)
                     {
                         first.get_or_insert((s, sp));
                         n += 1;

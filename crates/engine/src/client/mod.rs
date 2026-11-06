@@ -2620,31 +2620,22 @@ fn angle_diff(a: f32, b: f32) -> f32 {
 /// One 20 Hz tick of player movement with vanilla's numbers (blocks per tick): acceleration
 /// scaled by ground slipperiness, 0.91 air drag, 0.98 vertical drag, 0.08 gravity, 0.42 jump,
 /// so jumps, sprint-jumps and parkur distances match.
-/// By liquid, whether `kind` wearing `worn` swims in it: what its `comp::SWIMS_IN` and theirs name.
+/// By liquid, whether `kind` wearing `worn` swims in it: what its `comp::SWIMS_IN` and theirs take.
 fn swims_in(c: &crate::content::Content, kind: u32, worn: &[u32]) -> Vec<bool> {
     use crate::components as comps;
-    let Some(id) = c.components.id(weft_abi::comp::SWIMS_IN) else { return vec![false; c.liquids.len()] };
-    let words: Vec<&str> = c
-        .components
-        .text(comps::ENTITY, kind, id)
+    let id = c.components.id(weft_abi::comp::SWIMS_IN);
+    let matchers: Vec<u32> = id
         .into_iter()
-        .chain(
-            worn.iter()
-                .filter_map(|&i| c.components.text(comps::ITEM, i, id)),
-        )
-        .flat_map(str::split_whitespace)
+        .flat_map(|id| {
+            c.components.get(comps::ENTITY, kind, id).into_iter().chain(
+                worn.iter()
+                    .filter_map(move |&i| c.components.get(comps::ITEM, i, id)),
+            )
+        })
         .collect();
     c.liquids
         .iter()
-        .map(|l| {
-            words.iter().any(|w| match w.strip_prefix('#') {
-                Some(tag) => c
-                    .components
-                    .id(tag)
-                    .is_some_and(|t| c.components.has(comps::BLOCK, l.first_state, t)),
-                None => *w == l.name,
-            })
-        })
+        .map(|l| matchers.iter().any(|&m| c.matchers.has(m, l.first_state)))
         .collect()
 }
 

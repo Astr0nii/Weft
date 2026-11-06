@@ -80,7 +80,7 @@ impl ClientView {
     }
     /// The local player's mode spares it damage and hunger: no bars to show.
     pub fn outside_survival(&self) -> bool {
-        crate::GameMode::flags_of(self.game_mode()) & abi::game_mode_flags::INVULNERABLE != 0
+        crate::comps::game_mode::INVULNERABLE.on(abi::entry_kind::GAME_MODE, self.game_mode())
     }
     /// `abi::game_mode`.
     pub fn game_mode(&self) -> u32 {

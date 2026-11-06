@@ -23,8 +23,8 @@ pub(crate) struct Blocks {
     /// The menu each block but air opens, by name.
     pub opens_names: Vec<String>,
     pub block_names: FxHashMap<String, u32>,
-    /// What may share a cell with a block though their shapes overlap.
-    pub shares: Vec<(String, Vec<String>)>,
+    /// What may share a cell with a block though their shapes overlap (a matcher).
+    pub shares: Vec<(String, String)>,
     /// Made by templates: (name, source, lang key).
     pub shapes: Vec<(String, String, String)>,
     /// (block, [(texture, its replacement)]): its item's follow.
@@ -34,20 +34,27 @@ pub(crate) struct Blocks {
 }
 
 /// Every mod's block entries in load order, frozen. Templates copy their item in `items` for each
-/// block they make; `hot` blocks burn what touches them; `tex` gives a texture's id.
+/// block they make; `hot` blocks burn what touches them; `liquids` are liquids' blocks; `tex`
+/// gives a texture's id.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn freeze(
     raw: Vec<RawEntry>,
     items: &mut Folded,
     hot: &[String],
+    liquids: &[String],
     read_model: &dyn Fn(&str) -> Option<String>,
     tex: &mut dyn FnMut(&str) -> u32,
     mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) -> Blocks {
     let mut f = entries::fold("block", raw, mod_name, errors);
-    for e in f.entries.iter_mut().filter(|e| hot.contains(&e.name)) {
-        e.parts
-            .push((String::new(), vec![set_op(RawValue::tag(abi::comp::HOT))]));
+    for e in &mut f.entries {
+        for (list, tag) in [(hot, abi::comp::HOT), (liquids, abi::comp::LIQUIDS)] {
+            if list.contains(&e.name) {
+                e.parts
+                    .push((String::new(), vec![set_op(RawValue::tag(tag))]));
+            }
+        }
     }
     let (tagged, named): (Vec<RawEntry>, Vec<RawEntry>) = std::mem::take(&mut f.patterns)
         .into_iter()
@@ -124,6 +131,9 @@ pub(crate) fn freeze(
                     }
                 }
             }
+            if s.or(abi::comp::HARDNESS, 1.0f32) < 0.0 && !liquids.contains(&e.name) {
+                s.0.push(Cow::Owned(RawValue::tag(abi::comp::UNBREAKABLE)));
+            }
             let (info, head) = bake_state(&e.name, index, &s, &retexture, file.as_ref(), tex, errors);
             if !head.is_empty() {
                 heads.push((out.states.len(), head));
@@ -182,9 +192,8 @@ pub(crate) fn freeze(
         out.block_values.push((e.owner, state_values));
         out.opens_names
             .push(e.text(b::OPENS).unwrap_or_default().to_string());
-        let shares: Vec<String> = e.or(b::SHARES_CELL, Vec::new());
-        if !shares.is_empty() {
-            out.shares.push((e.name.clone(), shares));
+        if let Some(shares) = e.text(b::SHARES_CELL).filter(|t| !t.is_empty()) {
+            out.shares.push((e.name.clone(), shares.to_string()));
         }
         if !retexture.is_empty() {
             out.retextures.push((e.name.clone(), retexture));

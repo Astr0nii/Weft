@@ -431,8 +431,9 @@ pub mod entry_kind {
     pub const TERRAIN: u32 = 42;
     /// How a bone of a model file moves by itself, named `<model>/<bone>`.
     pub const BONE_MOTION: u32 = 43;
-    /// Kinds that carry components (block to dimension).
-    pub const COUNT: usize = 5;
+    /// How many kinds there are; each has a component table (`ComponentTable`), empty for the
+    /// kinds whose entries aren't numbered one to one (recipes, ores, sky objects ...).
+    pub const COUNT: usize = NAMES.len();
     /// Each kind's name for messages, by value.
     pub const NAMES: [&str; 44] = [
         "block",
@@ -562,6 +563,9 @@ pub struct ItemInfo {
 /// `attack_damage: f32` (default 1), `tool_level: u32` with a `tools/<class>` tag and
 /// `mining_speed: f32` (default 1). Blocks: `mineable/<class>` tags, and with `harvest_level: u32`
 /// nothing drops without a tool of a matching class and at least that level (SDK `mined_by`). Stacks: `damage: u32`.
+/// A block matcher (`match` values, and the `str` ones said to be one) is block names, `#tags`
+/// (`*` any text) and states `name[prop=value]` apart by spaces, `!` before one to leave what it
+/// names out; only `!` ones: anything but those.
 pub mod comp {
     /// A damage cause's: tags `BYPASSES_ARMOR`, `PIERCES_INVULNERABLE` (outside survival too),
     /// `IGNORES_COOLDOWN`, `BURNING` (cooked drops), `NO_KNOCKBACK`, `SILENT`; `DEATH_MESSAGE` and
@@ -591,19 +595,31 @@ pub mod comp {
     pub mod game_mode {
         use crate::game_mode_flags as f;
         pub const MODIFIERS: &str = "game_mode.modifiers";
+        pub const INSTANT_BREAK: &str = "game_mode.instant_break";
+        pub const NO_BREAK: &str = "game_mode.no_break";
+        pub const NO_PLACE: &str = "game_mode.no_place";
+        pub const NO_COSTS: &str = "game_mode.no_costs";
+        pub const INVULNERABLE: &str = "game_mode.invulnerable";
+        pub const CAN_FLY: &str = "game_mode.can_fly";
+        pub const ALWAYS_FLY: &str = "game_mode.always_fly";
+        pub const NOCLIP: &str = "game_mode.noclip";
+        pub const NO_INTERACT: &str = "game_mode.no_interact";
+        pub const HIDDEN: &str = "game_mode.hidden";
+        pub const NO_HUD: &str = "game_mode.no_hud";
+        pub const CREATIVE_INVENTORY: &str = "game_mode.creative_inventory";
         pub const FLAGS: [(&str, u32); 12] = [
-            ("game_mode.instant_break", f::INSTANT_BREAK),
-            ("game_mode.no_break", f::NO_BREAK),
-            ("game_mode.no_place", f::NO_PLACE),
-            ("game_mode.no_costs", f::NO_COSTS),
-            ("game_mode.invulnerable", f::INVULNERABLE),
-            ("game_mode.can_fly", f::CAN_FLY),
-            ("game_mode.always_fly", f::ALWAYS_FLY),
-            ("game_mode.noclip", f::NOCLIP),
-            ("game_mode.no_interact", f::NO_INTERACT),
-            ("game_mode.hidden", f::HIDDEN),
-            ("game_mode.no_hud", f::NO_HUD),
-            ("game_mode.creative_inventory", f::CREATIVE_INVENTORY),
+            (INSTANT_BREAK, f::INSTANT_BREAK),
+            (NO_BREAK, f::NO_BREAK),
+            (NO_PLACE, f::NO_PLACE),
+            (NO_COSTS, f::NO_COSTS),
+            (INVULNERABLE, f::INVULNERABLE),
+            (CAN_FLY, f::CAN_FLY),
+            (ALWAYS_FLY, f::ALWAYS_FLY),
+            (NOCLIP, f::NOCLIP),
+            (NO_INTERACT, f::NO_INTERACT),
+            (HIDDEN, f::HIDDEN),
+            (NO_HUD, f::NO_HUD),
+            (CREATIVE_INVENTORY, f::CREATIVE_INVENTORY),
         ];
     }
 
@@ -916,7 +932,7 @@ pub mod comp {
     /// An ore's (`entry_kind::ORE`), scattered after the dimension's generator: `VEINS` (`u32`,
     /// started per cube, 4), `SIZE` (`u32`, blocks per vein, 8), `SHAPE` (`VeinShape`, a walk),
     /// `HEIGHT` (`OreHeight`, how the starts spread over `common::Y`, evenly), `REPLACES`
-    /// (`[str]`, blocks or `#tags` it may replace), `REPLACES_WITH` (`[OreVariant]`), `EXPOSED`
+    /// (`match`: what it may replace), `REPLACES_WITH` (`[OreVariant]`), `EXPOSED`
     /// (`f32`, share of its blocks left out where they would touch air, 0).
     pub mod ore {
         pub const VEINS: &str = "ore.veins";
@@ -947,8 +963,8 @@ pub mod comp {
         pub const OVERLAY: &str = "liquid.overlay";
     }
 
-    /// What happens where two liquids meet (`entry_kind::REACTION`): when `LIQUID` (`str`, a
-    /// liquid block or `#tag`) has `TOUCHING` (`str`, likewise) beside or above it, it turns into
+    /// What happens where two liquids meet (`entry_kind::REACTION`): when `LIQUID` (`match`) has
+    /// `TOUCHING` (`match`) beside or above it, it turns into
     /// `SOURCE` (`str`, a block) if it was a source, else `FLOWING` (`str`); when it flows down
     /// into `TOUCHING`, that block becomes `FALLS_INTO` (`str`). What is not set stays as it is.
     pub mod reaction {
@@ -962,7 +978,7 @@ pub mod comp {
     /// Something scattered over the ground on a grid (`entry_kind::SCATTER`, trees): one site per
     /// `CELL` x `CELL` square (`i32`, 8) at a seeded spot, kept with the chance the biome's
     /// `DENSITY` component gives (`str`, the name of an `f32` 0..1 on biomes; none there: no
-    /// sites), on `GROUND` (`[str]`, blocks or `#tags`; none: any), not under the terrain's sea
+    /// sites), on `GROUND` (`match`; none: any), not under the terrain's sea
     /// nor where caves took the ground. `SHAPE` (`callback`, `ScatterArgs`, pure: called for each
     /// cube the site reaches) puts blocks up to `REACH` (`i32`, 0) sideways, `REACH_UP` (`i32`,
     /// 32) above and `REACH_DOWN` (`i32`, 16) below the site; what goes further is left out.
@@ -1002,7 +1018,7 @@ pub mod comp {
     /// `WEIGHT` (`u32`, 1), while that entity category is under its cap near the player (8
     /// hostile, 6 passive, 6 other within 64 blocks). `ENTITY` (`str`) spawns `GROUP` (`[u32;2]`,
     /// at least and at most, 1 and 1) at a time with `CHANCE` (`f32`, 1) per attempt once picked,
-    /// at a `PLACE` (`u32`, `spawn_place`, on the ground) whose block carries tag `GROUND` (`str`:
+    /// at a `PLACE` (`u32`, `spawn_place`, on the ground) whose block `GROUND` takes (`match`:
     /// under it, above it for a ceiling, the liquid itself; none: any), where the light is in
     /// `LIGHT` (`[u32;2]`, inclusive, the brighter of sky light times daylight and block light;
     /// 0..15) and condition `WHEN` (`str`) holds. The `core:mob_spawning` rule turns it off.
@@ -1064,7 +1080,7 @@ pub mod comp {
     /// `signal_kind::SINK` changed), `SIGNAL_GATE` (`GateArgs`, a `signal_kind::GATE`'s output),
     /// `SIGNAL_READ` (`SignalReadArgs`, what a comparator behind it reads instead of how full it
     /// is); `OPENS` (`str`, a menu using it opens, on its block entity if it has one: a station of
-    /// the menu's recipe kinds), `SHARES_CELL` (`[str]`, names and `#tags` that may share its cell
+    /// the menu's recipe kinds), `SHARES_CELL` (`match`: what may share its cell
     /// though their shapes overlap), `MODEL_FILE` (`str`, `models/block/<path>.json` of the named
     /// mod instead of the one named like the block), `MODEL_TEXTURES` (`[ModelTexture]`),
     /// `SHAPES_OF` (`ShapesOf`: no block of its own but a template, one for each full cube among
@@ -1373,10 +1389,9 @@ pub mod comp {
     /// Block: face (-X, +X, -Y, +Y, -Z, +Z) whose neighbor holds it up (`u8`). Unsupported, it
     /// cannot be placed and breaks off when the support goes.
     pub const SUPPORT_FACE: &str = "support_face";
-    /// Block: the tag the supporting block needs (`tag`, `#plant_soil`); without it any solid
-    /// block holds it.
+    /// Block: what holds it up (`match`, `#plant_soil`); without it any solid block does.
     pub const SUPPORT: &str = "support";
-    /// Block: the tag one of the supporting block's horizontal neighbors needs (`tag`, sugar
+    /// Block: what one of the supporting block's horizontal neighbors must be (`match`, sugar
     /// cane: `#water`), unless the support is the same block.
     pub const SUPPORT_NEAR: &str = "support_near";
     /// The own name of one stack or block entity (UTF-8), as a player gave it: shown instead of
@@ -1433,7 +1448,7 @@ pub mod comp {
     pub const GROW_TIME: &str = "grow_time";
     /// `u32`, see `grow_time`.
     pub const GROW_LIGHT: &str = "grow_light";
-    /// Block: spreads onto blocks with this tag (`tag`; grass onto dirt) within `spread_reach`,
+    /// Block: spreads onto these blocks (`match`; grass onto dirt) within `spread_reach`,
     /// where the target has light (`spread_light`) and nothing opaque on top (unless tagged
     /// `spreads_covered`). In `spread_time` seconds on average, sooner with more of it around.
     pub const SPREADS_TO: &str = "spreads_to";
@@ -1462,9 +1477,16 @@ pub mod comp {
     /// Liquid block: the particle kind (`str`) that rises from what is under it and from a
     /// falling in.
     pub const BUBBLE: &str = "bubble";
-    /// Entity kinds and worn items: the liquids sprinting swims in (`str`, names and `#tags`
-    /// apart by spaces); a worn item's add to its wearer's.
+    /// Entity kinds and worn items: the liquids sprinting swims in (`match`); a worn item's add
+    /// to its wearer's.
     pub const SWIMS_IN: &str = "swims_in";
+    /// Block: what it joins on the sides its `true`/`false` side properties name (`match`,
+    /// fences: `#fences`), kept up to date by the SDK's `joins`.
+    pub const JOINS: &str = "joins";
+    /// Tag the engine puts on every liquid's block.
+    pub const LIQUIDS: &str = "liquids";
+    /// Tag the engine puts on blocks of negative `hardness`, liquids aside.
+    pub const UNBREAKABLE: &str = "unbreakable";
 }
 
 /// Harvest levels (`tool_level` of a tool, `harvest_level` of a block) of the vanilla tiers.
@@ -1581,6 +1603,20 @@ crate::data! {
 pub const UV_FROM_BOX: [f32; 4] = [-1.0, 0.0, 0.0, 0.0];
 /// A box's texel rectangle saying it has no such face.
 pub const UV_NO_FACE: [f32; 4] = [-2.0, 0.0, 0.0, 0.0];
+
+/// The terms of a block matcher (`comp`): apart by spaces, except inside a state's `[..]`.
+pub fn matcher_terms(text: &str) -> impl Iterator<Item = &str> {
+    let mut depth = 0i32;
+    text.split(move |ch: char| {
+        match ch {
+            '[' => depth += 1,
+            ']' => depth -= 1,
+            _ => {}
+        }
+        depth == 0 && ch.is_whitespace()
+    })
+    .filter(|t| !t.is_empty())
+}
 
 /// The texels a box between `min` and `max` (texels too) shows on a face when it says nothing, a
 /// box reaching out of its cell going on with the edge of the picture.
@@ -2614,24 +2650,6 @@ pub mod shape_kind {
     pub const SUBTRACT: u32 = 7;
 }
 
-/// Which blocks a fill keeps or changes (`FillDesc`).
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BlockFilter {
-    /// `block_filter`.
-    pub kind: u32,
-    /// `TAG`: the tag's component id; `BLOCK`: any state of the block.
-    pub id: u32,
-}
-
-pub mod block_filter {
-    pub const LIQUIDS: u32 = 0;
-    /// Negative hardness.
-    pub const UNBREAKABLE: u32 = 1;
-    pub const TAG: u32 = 2;
-    pub const BLOCK: u32 = 3;
-}
-
 /// A shape filled with one block (`Host::fill`): a crater with air.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -2639,12 +2657,12 @@ pub struct FillDesc {
     /// Blocks whose middle is inside change.
     pub shape: Slice<ShapeStep>,
     pub state: u32,
-    /// Blocks any of these match stay.
-    pub keep: Slice<BlockFilter>,
-    /// When not empty, only blocks one of these matches change.
-    pub only: Slice<BlockFilter>,
+    /// A block matcher: blocks it takes stay. Empty: none.
+    pub keep: Str,
+    /// A block matcher: when not empty, only blocks it takes change.
+    pub only: Str,
 }
-defaults!(FillDesc { shape: Slice::EMPTY, state: 0, keep: Slice::EMPTY, only: Slice::EMPTY });
+defaults!(FillDesc { shape: Slice::EMPTY, state: 0, keep: Str::EMPTY, only: Str::EMPTY });
 
 pub mod component_flags {
     pub const SAVE: u32 = 1;
@@ -3091,6 +3109,8 @@ pub struct Host {
     /// Component id by name, `u32::MAX` if nothing uses it. A non-empty `schema` that differs from
     /// the registered one is an error (logged) and also gives `u32::MAX`.
     pub find_component: unsafe extern "C" fn(name: Str, schema: Str) -> u32,
+    /// Whether block matcher `matcher` (a `match` value's id) takes `state`.
+    pub matcher_has: unsafe extern "C" fn(matcher: u32, state: u32) -> u32,
     /// The frozen component tables (null before freeze); stable for the whole session.
     pub component_table: unsafe extern "C" fn() -> *const ComponentTable,
     /// Value bytes of stack component `comp` on stack data `data`, null if absent.
@@ -3447,8 +3467,6 @@ pub struct Host {
     pub weather_now: unsafe extern "C" fn(world: *mut WorldCtx) -> u32,
     /// The weather the client has now.
     pub client_weather: unsafe extern "C" fn(client: *mut ClientCtx) -> u32,
-    /// `weather_flags` of a weather, 0 for one that doesn't exist.
-    pub weather_flags: unsafe extern "C" fn(weather: u32) -> u32,
     /// Shader effect `effect` on an entity for everyone who sees it (players coming along later
     /// too) at `strength` for `ticks`; 0 ticks ends it. One at a time: a new one replaces it.
     pub entity_effect: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, effect: u32, strength: f32, ticks: u32),
@@ -3456,8 +3474,6 @@ pub struct Host {
     /// it go back to what its movement makes. `yaw` (radians) keeps it facing that way and still
     /// while it holds, `NaN` leaves it free (a bed, against a pet that sits).
     pub entity_set_pose: unsafe extern "C" fn(world: *mut WorldCtx, id: u64, pose: u32, yaw: f32),
-    /// `game_mode_flags` of a mode, 0 for one that doesn't exist.
-    pub game_mode_flags: unsafe extern "C" fn(mode: u32) -> u32,
     /// A player's `permission` level.
     pub player_permission: unsafe extern "C" fn(world: *mut WorldCtx, player: u64) -> u32,
     /// Sets it, remembered with the world.
@@ -3514,9 +3530,6 @@ pub struct Host {
     /// The block at `pos` falls as an entity and is placed again where it lands; returns the
     /// entity (0 if there was no block).
     pub fall_block: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos) -> u64,
-
-    /// `damage_flags` of a cause, 0 for one that doesn't exist.
-    pub damage_cause_flags: unsafe extern "C" fn(cause: u32) -> u32,
 
     /// An entity's own box (width, height, eye height) instead of its kind's; `width` <= 0 goes
     /// back to the kind's. Its pose (crouching, swimming) scales whichever applies.
@@ -4585,7 +4598,7 @@ crate::data! {
 }
 
 crate::data! {
-    /// Where an ore's vein meets `name` (a block or `#tag`), block `ore` goes there instead of
+    /// Where an ore's vein meets what `name` takes (a block matcher), block `ore` goes there instead of
     /// the ore (granite iron ore in granite).
     pub struct OreVariant { pub name: alloc::string::String, pub ore: alloc::string::String }
 }

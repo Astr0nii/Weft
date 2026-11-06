@@ -6,7 +6,10 @@
 pub mod weather {
     use crate::abi::comp::weather as w;
     use crate::kind::Weather;
-    use crate::{Component, Text};
+    use crate::{Component, Tag, Text};
+    pub static DRY: Tag = Tag::named(w::DRY);
+    pub static LIGHTNING: Tag = Tag::named(w::LIGHTNING);
+    pub static UNSHELTERED: Tag = Tag::named(w::UNSHELTERED);
     pub static FALLS: Component<f32, Weather> = Component::named(w::FALLS);
     pub static SKY_GRAY: Component<f32, Weather> = Component::named(w::SKY_GRAY);
     pub static SKY_COVER: Component<f32, Weather> = Component::named(w::SKY_COVER);
@@ -47,9 +50,22 @@ pub mod pose {
 /// What a game mode is made of: a tag per ability (`abi::comp::game_mode::FLAGS`) and the
 /// modifiers its players get.
 pub mod game_mode {
-    use crate::Component;
+    use crate::abi::comp::game_mode as g;
     use crate::kind::GameMode;
-    pub static MODIFIERS: Component<Vec<crate::abi::ModeModifier>, GameMode> = Component::named(crate::abi::comp::game_mode::MODIFIERS);
+    use crate::{Component, Tag};
+    pub static MODIFIERS: Component<Vec<crate::abi::ModeModifier>, GameMode> = Component::named(g::MODIFIERS);
+    pub static INSTANT_BREAK: Tag = Tag::named(g::INSTANT_BREAK);
+    pub static NO_BREAK: Tag = Tag::named(g::NO_BREAK);
+    pub static NO_PLACE: Tag = Tag::named(g::NO_PLACE);
+    pub static NO_COSTS: Tag = Tag::named(g::NO_COSTS);
+    pub static INVULNERABLE: Tag = Tag::named(g::INVULNERABLE);
+    pub static CAN_FLY: Tag = Tag::named(g::CAN_FLY);
+    pub static ALWAYS_FLY: Tag = Tag::named(g::ALWAYS_FLY);
+    pub static NOCLIP: Tag = Tag::named(g::NOCLIP);
+    pub static NO_INTERACT: Tag = Tag::named(g::NO_INTERACT);
+    pub static HIDDEN: Tag = Tag::named(g::HIDDEN);
+    pub static NO_HUD: Tag = Tag::named(g::NO_HUD);
+    pub static CREATIVE_INVENTORY: Tag = Tag::named(g::CREATIVE_INVENTORY);
 }
 
 /// What a damage cause is made of: tags for what it does (`abi::comp::damage_cause`) and its
@@ -57,7 +73,13 @@ pub mod game_mode {
 pub mod damage_cause {
     use crate::abi::comp::damage_cause as d;
     use crate::kind::DamageCause;
-    use crate::{Component, Text};
+    use crate::{Component, Tag, Text};
+    pub static BYPASSES_ARMOR: Tag = Tag::named(d::BYPASSES_ARMOR);
+    pub static PIERCES_INVULNERABLE: Tag = Tag::named(d::PIERCES_INVULNERABLE);
+    pub static IGNORES_COOLDOWN: Tag = Tag::named(d::IGNORES_COOLDOWN);
+    pub static BURNING: Tag = Tag::named(d::BURNING);
+    pub static NO_KNOCKBACK: Tag = Tag::named(d::NO_KNOCKBACK);
+    pub static SILENT: Tag = Tag::named(d::SILENT);
     pub static DEATH_MESSAGE: Component<Text, DamageCause> = Component::named(d::DEATH_MESSAGE);
     pub static DEATH_MESSAGE_BY: Component<Text, DamageCause> = Component::named(d::DEATH_MESSAGE_BY);
 }
@@ -315,7 +337,7 @@ pub mod ore {
     pub static SIZE: Component<u32, Ore> = Component::named(o::SIZE);
     pub static SHAPE: Component<abi::VeinShape, Ore> = Component::named(o::SHAPE);
     pub static HEIGHT: Component<abi::OreHeight, Ore> = Component::named(o::HEIGHT);
-    pub static REPLACES: Component<Vec<String>, Ore> = Component::named(o::REPLACES);
+    pub static REPLACES: Component<crate::Matcher, Ore> = Component::named(o::REPLACES);
     pub static REPLACES_WITH: Component<Vec<abi::OreVariant>, Ore> = Component::named(o::REPLACES_WITH);
     pub static EXPOSED: Component<f32, Ore> = Component::named(o::EXPOSED);
 }
@@ -340,8 +362,8 @@ pub mod reaction {
     use crate::abi::comp::reaction as r;
     use crate::kind::Reaction;
     use crate::{Component, Text};
-    pub static LIQUID: Component<Text, Reaction> = Component::named(r::LIQUID);
-    pub static TOUCHING: Component<Text, Reaction> = Component::named(r::TOUCHING);
+    pub static LIQUID: Component<crate::Matcher, Reaction> = Component::named(r::LIQUID);
+    pub static TOUCHING: Component<crate::Matcher, Reaction> = Component::named(r::TOUCHING);
     pub static SOURCE: Component<Text, Reaction> = Component::named(r::SOURCE);
     pub static FLOWING: Component<Text, Reaction> = Component::named(r::FLOWING);
     pub static FALLS_INTO: Component<Text, Reaction> = Component::named(r::FALLS_INTO);
@@ -357,7 +379,7 @@ pub mod scatter {
     pub static REACH_UP: Component<i32, Scatter> = Component::named(s::REACH_UP);
     pub static REACH_DOWN: Component<i32, Scatter> = Component::named(s::REACH_DOWN);
     pub static DENSITY: Component<Text, Scatter> = Component::named(s::DENSITY);
-    pub static GROUND: Component<Vec<String>, Scatter> = Component::named(s::GROUND);
+    pub static GROUND: Component<crate::Matcher, Scatter> = Component::named(s::GROUND);
     pub static SHAPE: Component<crate::abi::Callback, Scatter> = Component::named(s::SHAPE);
 }
 
@@ -391,7 +413,7 @@ pub mod spawn {
     use crate::kind::SpawnRule;
     use crate::{Component, Text};
     pub static ENTITY: Component<Text, SpawnRule> = Component::named(s::ENTITY);
-    pub static GROUND: Component<Text, SpawnRule> = Component::named(s::GROUND);
+    pub static GROUND: Component<crate::Matcher, SpawnRule> = Component::named(s::GROUND);
     pub static PLACE: Component<u32, SpawnRule> = Component::named(s::PLACE);
     pub static GROUP: Component<[u32; 2], SpawnRule> = Component::named(s::GROUP);
     pub static WEIGHT: Component<u32, SpawnRule> = Component::named(s::WEIGHT);
@@ -488,7 +510,7 @@ pub mod block {
     pub static SIGNAL_GATE: Component<Callback, Block> = Component::named(b::SIGNAL_GATE);
     pub static SIGNAL_READ: Component<Callback, Block> = Component::named(b::SIGNAL_READ);
     pub static OPENS: Component<Text, Block> = Component::named(b::OPENS);
-    pub static SHARES_CELL: Component<Vec<String>, Block> = Component::named(b::SHARES_CELL);
+    pub static SHARES_CELL: Component<crate::Matcher, Block> = Component::named(b::SHARES_CELL);
     pub static MODEL_FILE: Component<Text, Block> = Component::named(b::MODEL_FILE);
     pub static MODEL_TEXTURES: Component<Vec<abi::ModelTexture>, Block> = Component::named(b::MODEL_TEXTURES);
     pub static SHAPES_OF: Component<abi::ShapesOf, Block> = Component::named(b::SHAPES_OF);

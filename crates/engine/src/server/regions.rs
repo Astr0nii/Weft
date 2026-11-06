@@ -217,7 +217,7 @@ impl DimSet {
             return;
         }
         // Edits made while it was being made.
-        let edited = self.catch_up_edits(c, pos, &mut cube);
+        let edited = self.catch_up_edits(pos, &mut cube);
         if edited {
             prelit = false;
             conn = super::dim::see_through(c, &cube);
@@ -267,8 +267,8 @@ impl DimSet {
 
     /// Gives a cube coming from storage or generation the area edits made while it was away
     /// (or before it was ever generated), once each. Whether that changed it.
-    pub fn catch_up_edits(&self, c: &Content, pos: IVec3, cube: &mut Cube) -> bool {
-        super::area::catch_up(c, &self.edits, pos, cube)
+    pub fn catch_up_edits(&self, pos: IVec3, cube: &mut Cube) -> bool {
+        super::area::catch_up(&self.edits, pos, cube)
     }
 
     /// Loaded cubes changed since they were generated or loaded (saved when they unload).

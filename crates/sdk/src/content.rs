@@ -454,13 +454,6 @@ pub type Weather = Handle<kind::Weather>;
 /// What falls from the sky in a biome (`Registry::precipitation`, `BiomeBuilder::precipitation`).
 pub type Precipitation = Handle<kind::Precipitation>;
 
-impl Weather {
-    /// `abi::weather_flags` of the weather with this id (`w.weather()`).
-    pub fn flags_of(weather: u32) -> u32 {
-        unsafe { (crate::host().weather_flags)(weather) }
-    }
-}
-
 pub mod weathers {
     use super::Weather;
     pub static CLEAR: Weather = Weather::named("core:clear");
@@ -629,13 +622,6 @@ pub mod game_modes {
     pub static SPECTATOR: GameMode = GameMode::named("core:spectator");
 }
 
-impl GameMode {
-    /// `abi::game_mode_flags` of the mode with this id.
-    pub fn flags_of(mode: u32) -> u32 {
-        unsafe { (crate::host().game_mode_flags)(mode) }
-    }
-}
-
 /// A game mode being registered: survival's rules unless told otherwise.
 ///
 /// ```ignore
@@ -674,59 +660,52 @@ impl crate::Registry {
 }
 
 impl GameModeBuilder<'_> {
-    /// Raw `abi::game_mode_flags`, what the presets below set.
-    pub fn with(self, flags: u32) -> Self {
-        abi::comp::game_mode::FLAGS
-            .iter()
-            .filter(|f| flags & f.1 != 0)
-            .fold(self, |b, f| b.tag(f.0))
-    }
     pub fn breaks(self, how: Breaking) -> Self {
-        use abi::game_mode_flags as f;
-        self.with(match how {
-            Breaking::Instant => f::INSTANT_BREAK,
-            Breaking::None => f::NO_BREAK,
-            Breaking::Normal => 0,
-        })
+        use abi::comp::game_mode as g;
+        match how {
+            Breaking::Instant => self.tag(g::INSTANT_BREAK),
+            Breaking::None => self.tag(g::NO_BREAK),
+            Breaking::Normal => self,
+        }
     }
     pub fn flight(self, how: Flight) -> Self {
-        use abi::game_mode_flags as f;
-        self.with(match how {
-            Flight::Allowed => f::CAN_FLY,
-            Flight::Always => f::ALWAYS_FLY,
-            Flight::None => 0,
-        })
+        use abi::comp::game_mode as g;
+        match how {
+            Flight::Allowed => self.tag(g::CAN_FLY),
+            Flight::Always => self.tag(g::ALWAYS_FLY),
+            Flight::None => self,
+        }
     }
     pub fn no_placing(self) -> Self {
-        self.with(abi::game_mode_flags::NO_PLACE)
+        self.tag(abi::comp::game_mode::NO_PLACE)
     }
     /// Nothing gets used up: placed blocks, poured buckets, wear. Picking a block gives a stack.
     pub fn no_costs(self) -> Self {
-        self.with(abi::game_mode_flags::NO_COSTS)
+        self.tag(abi::comp::game_mode::NO_COSTS)
     }
     /// No damage, hunger or air.
     pub fn invulnerable(self) -> Self {
-        self.with(abi::game_mode_flags::INVULNERABLE)
+        self.tag(abi::comp::game_mode::INVULNERABLE)
     }
     /// Through blocks.
     pub fn noclip(self) -> Self {
-        self.with(abi::game_mode_flags::NOCLIP)
+        self.tag(abi::comp::game_mode::NOCLIP)
     }
     /// Unnoticed by mobs, spawning and other players, and not a body to hit.
     pub fn hidden(self) -> Self {
-        self.with(abi::game_mode_flags::HIDDEN)
+        self.tag(abi::comp::game_mode::HIDDEN)
     }
     /// It can't use, hit, pick up, drop or hold anything.
     pub fn no_interacting(self) -> Self {
-        self.with(abi::game_mode_flags::NO_INTERACT)
+        self.tag(abi::comp::game_mode::NO_INTERACT)
     }
     /// The hotbar and bars don't show.
     pub fn no_hud(self) -> Self {
-        self.with(abi::game_mode_flags::NO_HUD)
+        self.tag(abi::comp::game_mode::NO_HUD)
     }
     /// The inventory key opens the creative inventory.
     pub fn creative_inventory(self) -> Self {
-        self.with(abi::game_mode_flags::CREATIVE_INVENTORY)
+        self.tag(abi::comp::game_mode::CREATIVE_INVENTORY)
     }
     /// An attribute modifier its players have while in it (longer reach, `visibility` 0).
     pub fn modifier(self, attribute: &crate::Attribute, op: u32, amount: f64) -> Self {
@@ -750,14 +729,6 @@ pub mod damage_causes {
     pub static SUFFOCATE: DamageCause = DamageCause::named("core:suffocate");
     pub static EXPLOSION: DamageCause = DamageCause::named("core:explosion");
     pub static HEAL: DamageCause = DamageCause::named("core:heal");
-}
-
-impl DamageCause {
-    /// `abi::damage_flags` of the cause with this id: a mod's armor asks
-    /// `DamageCause::flags_of(q.cause) & damage_flags::BYPASSES_ARMOR`.
-    pub fn flags_of(cause: u32) -> u32 {
-        unsafe { (crate::host().damage_cause_flags)(cause) }
-    }
 }
 
 /// `r.damage_cause(&RADIATION).bypasses_armor().death_message("death.mymod.radiation")`.
@@ -994,6 +965,7 @@ impl Pending {
                 })
                 .collect::<Vec<_>>()
                 .join(" "),
+            "match" => crate::qualify_matcher(crate::mod_id(), text),
             _ => text.to_string(),
         };
         Pending { name: name.to_string(), schema, bytes: Vec::new(), text: Some(text), op: abi::value_op::SET, anchor: String::new() }
@@ -1422,21 +1394,21 @@ macro_rules! state_setters {
             self.set(&bc::LAYER, RenderLayer::Translucent as u32)
                 .cull_same()
         }
-        /// Needs a block with `tag` underneath (`#plant_soil`): placed only there, and breaks
-        /// off when it goes.
-        pub fn needs_below(self, tag: &str) -> Self {
-            self.needs(crate::Dir::Down, tag)
+        /// Needs a block `what` takes underneath (a block matcher: `#plant_soil`): placed only
+        /// there, and breaks off when it goes.
+        pub fn needs_below(self, what: &str) -> Self {
+            self.needs(crate::Dir::Down, what)
         }
-        /// Needs the neighbor that way to carry `tag` (`#plant_soil`), or to be solid if `tag` is
-        /// empty.
-        pub fn needs(self, side: crate::Dir, tag: &str) -> Self {
+        /// Needs the neighbor that way to be one `what` takes (a block matcher), or to be solid
+        /// if `what` is empty.
+        pub fn needs(self, side: crate::Dir, what: &str) -> Self {
             let s = self.set(&c::SUPPORT_FACE, side.face() as u8);
-            if tag.is_empty() { s } else { s.set_text(&c::SUPPORT, tag) }
+            if what.is_empty() { s } else { s.set_text(&c::SUPPORT, what) }
         }
-        /// The supporting block must have a block tagged `tag` beside it (sugar cane: `#water`),
-        /// unless it is this same block.
-        pub fn needs_near(self, tag: &str) -> Self {
-            self.set_text(&c::SUPPORT_NEAR, tag)
+        /// The supporting block must have one `what` takes beside it (a block matcher, sugar
+        /// cane: `#water`), unless it is this same block.
+        pub fn needs_near(self, what: &str) -> Self {
+            self.set_text(&c::SUPPORT_NEAR, what)
         }
         /// A plant: tagged `plantable`, cross model, no collision. Placing a block into it is
         /// refused, as for vanilla's flowers and sugar cane; grass that gives way is `.replaceable()`.
@@ -1878,12 +1850,12 @@ impl<'a> BlockBuilder<'a> {
         self.set(&bc::ON_GROW, block_event_cb(f))
     }
 
-    /// Spreads onto blocks with `tag` near it (grass onto `#grass_spreads_to`): a target
-    /// within 1 block sideways, 3 down and 1 up with `min_light` above it and nothing opaque on
-    /// top turns into this block in `mean_seconds` on average (sooner with more of this around),
-    /// also while nobody is near (caught up on loading).
-    pub fn spreads(self, tag: &str, mean_seconds: f32, min_light: u32) -> Self {
-        self.set_text(&c::SPREADS_TO, tag)
+    /// Spreads onto blocks `to` takes near it (a block matcher, grass onto `#grass_spreads_to`):
+    /// a target within 1 block sideways, 3 down and 1 up with `min_light` above it and nothing
+    /// opaque on top turns into this block in `mean_seconds` on average (sooner with more of this
+    /// around), also while nobody is near (caught up on loading).
+    pub fn spreads(self, to: &str, mean_seconds: f32, min_light: u32) -> Self {
+        self.set_text(&c::SPREADS_TO, to)
             .set(&c::SPREAD_TIME, mean_seconds)
             .set(&c::SPREAD_LIGHT, min_light)
     }
@@ -1959,25 +1931,20 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// A `true`/`false` property for each of `sides` (`north`, `east` .. `up`, `down`) the engine
-    /// keeps saying whether the block there is one it joins: blocks tagged `to` (`#fences`,
-    /// another mod's pipes by a shared tag), named `to`, or with `"self"` its own kind. Fences,
-    /// walls, panes, pipes and cables: `.states` shapes it by `p.is("north", "true")`.
+    /// A `true`/`false` property for each of `sides` (`north`, `east` .. `up`, `down`) kept saying
+    /// whether the block there is one `to` takes (a block matcher: `#fences`, another mod's pipes
+    /// by a shared tag, its own name). Fences, walls, panes, pipes and cables: `.states` shapes it
+    /// by `p.is("north", "true")`.
     pub fn joins(mut self, sides: crate::Facings, to: &str) -> Self {
         for d in sides.dirs() {
             self = self.prop(d.name(), ["false", "true"]);
         }
-        let to = to.to_string();
+        self = self.set_text(&c::JOINS, to);
         self.derive_each(move |n, e| {
-            let own = e.state();
+            let to = c::JOINS.on_block(e.state());
             for d in sides.dirs() {
                 let there = n.at(d);
-                let joins = there != 0
-                    && match to.as_str() {
-                        "self" => crate::block_of(there) == crate::block_of(own),
-                        t if t.starts_with('#') => crate::block_has_tag(there, &t[1..]),
-                        name => crate::block_name(there).split('[').next() == Some(name),
-                    };
+                let joins = there != 0 && to.is_some_and(|m| m.has(there));
                 let want = if joins { "true" } else { "false" };
                 if n.world().prop(n.pos(), d.name()) != Some(want) {
                     n.world().prop_set(n.pos(), d.name(), want);
@@ -2219,10 +2186,10 @@ impl<'a> BlockBuilder<'a> {
         self
     }
 
-    /// What may be in one cell with it though their shapes overlap (`#tags`, names): snow on a
+    /// What may be in one cell with it though their shapes overlap (a block matcher): snow on a
     /// plant. Blocks whose shapes don't overlap share a cell without asking.
     pub fn shares_cell_with(self, what: &str) -> Self {
-        self.push(&bc::SHARES_CELL, what.to_string())
+        self.set_text(&bc::SHARES_CELL, what)
     }
 
     /// Its shape from model file `name` (`models/block/<path>.json` of that mod) instead of the one
@@ -2913,22 +2880,15 @@ impl OreBuilder<'_> {
     pub fn vein_size(self, n: u32) -> Self {
         self.set(&crate::comps::ore::SIZE, n)
     }
-    /// Blocks or `#tags` the ore may replace, space separated; again for more.
-    pub fn replaces(mut self, blocks: &str) -> Self {
-        for b in blocks.split_whitespace() {
-            let name = qualify(self.reg.ns, b);
-            self = self.push(&crate::comps::ore::REPLACES, name);
-        }
-        self
+    /// What the ore may replace (a block matcher).
+    pub fn replaces(self, what: &str) -> Self {
+        self.set_text(&crate::comps::ore::REPLACES, what)
     }
-    /// Where the vein meets `blocks` (names or `#tags`), `ore` goes there instead: one vein
-    /// through stone and granite, iron ore in one and granite iron ore in the other.
-    pub fn replaces_with(mut self, blocks: &str, ore: &Block) -> Self {
-        for b in blocks.split_whitespace() {
-            let variant = abi::OreVariant { name: qualify(self.reg.ns, b), ore: ore.name().to_string() };
-            self = self.push(&crate::comps::ore::REPLACES_WITH, variant);
-        }
-        self
+    /// Where the vein meets what `what` takes (a block matcher), `ore` goes there instead: one
+    /// vein through stone and granite, iron ore in one and granite iron ore in the other.
+    pub fn replaces_with(self, what: &str, ore: &Block) -> Self {
+        let variant = abi::OreVariant { name: crate::qualify_matcher(self.reg.ns, what), ore: ore.name().to_string() };
+        self.push(&crate::comps::ore::REPLACES_WITH, variant)
     }
     /// Share of its blocks left out where they would touch air, as vanilla's in caves (0.5 for
     /// most of them).
@@ -3453,14 +3413,13 @@ impl Registry {
         LiquidBuilder { e: crate::entry::Entry::of(liquid), reg: self, block, look: None, bucket: None }
     }
 
-    /// When `liquid` touches `touching` (names or `#tags` of liquid blocks), see `ReactionBuilder`.
+    /// When liquid `liquid` touches `touching` (block matchers), see `ReactionBuilder`.
     pub fn liquid_reaction(&mut self, liquid: &str, touching: &str) -> ReactionBuilder<'_> {
-        let (liquid, touching) = (qualify(self.ns, liquid), qualify(self.ns, touching));
         let path = |n: &str| {
             let n = n.trim_start_matches('#');
             n.split_once(':').map_or(n, |x| x.1).to_string()
         };
-        let name = self.derive_name(&format!("{}>{}", path(&liquid), path(&touching)));
+        let name = self.derive_name(&format!("{}>{}", path(liquid), path(touching)));
         ReactionBuilder { reg: self, e: crate::entry::Entry::new(abi::entry_kind::REACTION, name) }
             .set_text(&crate::comps::reaction::LIQUID, &liquid)
             .set_text(&crate::comps::reaction::TOUCHING, &touching)

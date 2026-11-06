@@ -40,7 +40,7 @@ pub use extend::*;
 pub use facing::{Dir, Facings, Toward};
 pub use game::*;
 pub use riding::{Exit, RiderRules, Seat, Steering, steer};
-pub use shape::{EntityFilter, Fill, Filter, Shape};
+pub use shape::{EntityFilter, Fill, Shape};
 pub use show::{ChatFormat, Show, TextPlaceBuilder, text_places};
 pub use ui::*;
 pub use view::View;
@@ -263,6 +263,18 @@ pub(crate) fn full_name(name: &str) -> String {
 pub(crate) fn qualify(ns: &str, name: &str) -> String {
     let base = name.split('[').next().unwrap_or(name);
     if name.starts_with('#') || base.contains(':') || name.is_empty() { name.to_string() } else { format!("{ns}:{name}") }
+}
+
+/// A block matcher with each name qualified (`qualify`), `!` kept: what every call taking
+/// "which blocks" sends.
+pub(crate) fn qualify_matcher(ns: &str, text: &str) -> String {
+    abi::matcher_terms(text)
+        .map(|t| match t.strip_prefix('!') {
+            Some(t) => format!("!{}", qualify(ns, t)),
+            None => qualify(ns, t),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]

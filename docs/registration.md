@@ -20,7 +20,7 @@ Every registration is an entry: a kind, a name, and operations on its components
 
 The anchor is an element's `name` field (a text element's text), or `#index`; elements without a `name` field (biome tints, game mode modifiers, template blocks, daylight points) only go by `#index`.
 
-`comps::<kind>::X` handles are typed by their kind, so `comps::ore::VEINS` builds on an ore and not on a block. Your own `Component::named(..)` and the shared ones (`HARDNESS`, `LIGHT`, `MAX_STACK`...) go on anything; most kinds keep such extra values in their component table, readable with `C.on_block(..)`, `on_item`, `on_entity`, `on_biome`, `on_dimension`.
+`comps::<kind>::X` handles are typed by their kind, so `comps::ore::VEINS` builds on an ore and not on a block. Your own `Component::named(..)` and the shared ones (`HARDNESS`, `LIGHT`, `MAX_STACK`...) go on anything; most kinds keep such extra values in their component table, readable with `C.on(entry_kind::WEATHER, id)` for any of them, or `C.on_block(..)`, `on_item`, `on_entity`, `on_biome`, `on_dimension`. Recipes, loot, ores, scatters, decorations, structures, spawn rules, terrains, sky objects, screen parts, word sets, component declarations, tint kinds and creative tabs have none: what they register isn't what the game numbers, or nothing reads them by id.
 
 | what | how | notes |
 |---|---|---|
@@ -46,7 +46,7 @@ Block-level components (`comps::block`):
 | `PLACEMENT`, `MERGE` | callback | none | the state placed (`.placement`, `.facing`), its own item placed into its cell (`.merge`) |
 | `ON_SIGNAL`, `SIGNAL_GATE`, `SIGNAL_READ` | callback | none | redstone: `.on_signal`, `.signal_gate`, `.signal_read` |
 | `OPENS` | `str` | none | the menu using it opens (`.opens`) |
-| `SHARES_CELL` | `[str]` | none | names and `#tags` that may share its cell (`.shares_cell_with`) |
+| `SHARES_CELL` | `match` | none | which blocks may share its cell (`.shares_cell_with`) |
 | `MODEL_FILE` | `str` | `models/block/<name>.json` | another model file (`.model_file`) |
 | `MODEL_TEXTURES` | `[ModelTexture]` | none | what goes where the file says `#name` (`.model_texture`) |
 | `RETEXTURE` | `[Retexture]` | none | texture renamed on its states and item (`.retexture`) |
@@ -232,7 +232,7 @@ Veins of a block, named like it. `r.ore(&BLOCK)`, another mod's `r.edit(BLOCK.or
 | `SIZE` | `u32` | 8 | blocks per vein (`.vein_size`) |
 | `SHAPE` | `VeinShape` | a walk | `.shape(Vein::..)` |
 | `HEIGHT` | `OreHeight` | even | `.height(Height::..)` |
-| `REPLACES` | `[str]` | | `.replaces` pushes |
+| `REPLACES` | `match` | | which blocks it replaces (`.replaces`) |
 | `REPLACES_WITH` | `[OreVariant]` | | `.replaces_with` |
 | `EXPOSED` | `f32` | 0 | share left out touching air (`.exposed`) |
 
@@ -263,7 +263,7 @@ What happens where two liquids meet, named `<mod>:<liquid>><touching>` (`#` and 
 
 | component (`comps::reaction`) | schema | what |
 |---|---|---|
-| `LIQUID`, `TOUCHING` | `str` | the two, blocks or `#tags` |
+| `LIQUID`, `TOUCHING` | `match` | which blocks, the two sides |
 | `SOURCE`, `FLOWING` | `str` | what the liquid turns into (`.source_turns_into`, `.flowing_turns_into`) |
 | `FALLS_INTO` | `str` | what the touching block becomes under it (`.below_turns_into`) |
 
@@ -280,7 +280,7 @@ Things on the ground bigger than a cube, trees. `r.scatter(&SCATTER)`, placement
 | `CELL` | `i32` | 8 | `.cell` |
 | `REACH`, `REACH_UP`, `REACH_DOWN` | `i32` | 0, 32, 16 | `.reach`, `.reach_y` |
 | `DENSITY` | `str` | no sites | the biome component that is the chance (`.density`) |
-| `GROUND` | `[str]` | any | `.ground` pushes |
+| `GROUND` | `match` | any | which blocks it stands on (`.ground`) |
 | `SHAPE` | callback | | `.shape` |
 
 ```rust
@@ -321,7 +321,7 @@ Where a mob shows up by itself, named `<mod>:<entity>`, `/2`.. unless `.named`. 
 | component (`comps::spawn`) | schema | default | what |
 |---|---|---|---|
 | `ENTITY` | `str` | | the mob |
-| `GROUND` | `str` | any | tag of the block (`.ground`, `.place(SpawnPlace::in_liquid(..))`) |
+| `GROUND` | `match` | any | which blocks (`.ground`, `.place(SpawnPlace::in_liquid(..))`) |
 | `PLACE` | `u32` | ground | `.place` |
 | `GROUP` | `[u32;2]` | 1, 1 | `.pack_size` |
 | `WEIGHT` | `u32` | 1 | `.weight` |
