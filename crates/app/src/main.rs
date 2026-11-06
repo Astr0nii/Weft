@@ -11,6 +11,12 @@ fn vulkan(desc: &BackendDesc) -> Result<Box<dyn Backend>, Error> {
     Ok(Box::new(weft_vulkan::VulkanBackend::new(desc)?))
 }
 
+fn wgpu(desc: &BackendDesc) -> Result<Box<dyn Backend>, Error> {
+    Ok(Box::new(weft_wgpu::WgpuBackend::new(desc)?))
+}
+
+const RENDERERS: weft_engine::Renderers = &[("vulkan", vulkan), ("wgpu", wgpu)];
+
 /// Where `run` (and, in the source tree, `mods`) live: the working directory if it has either,
 /// otherwise the nearest folder above the executable that does (a development build runs from
 /// `target/<profile>/`).
@@ -44,6 +50,7 @@ fn main() {
         automated: false,
         no_vsync: false,
         view: None,
+        renderer: None,
     };
     let mut chosen_run: Option<PathBuf> = None;
     let mut verbose = false;
@@ -70,6 +77,7 @@ fn main() {
             // Engine shaders and assets live from the source tree in a release build too.
             "--dev" => opts.dev = true,
             "--view" => opts.view = value().parse().ok(),
+            "--renderer" => opts.renderer = Some(value()),
             "--pack-mod" => pack = Some(PathBuf::from(value())),
             "--dist" => dist = Some(PathBuf::from(value())),
             "--size" => {
@@ -141,7 +149,7 @@ fn main() {
         }
         return;
     }
-    if let Err(e) = weft_engine::run(vulkan, opts) {
+    if let Err(e) = weft_engine::run(RENDERERS, opts) {
         log::error!("{e}");
         std::process::exit(1);
     }

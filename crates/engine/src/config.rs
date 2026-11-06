@@ -385,6 +385,8 @@ pub fn engine_configs(keys: &[(String, String)]) -> Vec<RawEntry> {
         number("core:chat_visibility", ck::CHOICE, 0.0, 0.0, 2.0, 0.0)
             .set(c::CHOICES, ["all", "system", "hidden"].map(String::from).to_vec()),
         number("core:vsync", ck::BOOL, 1.0, 0.0, 1.0, 0.0),
+        // Taken at the next start; the others are tried if it can't run.
+        number("core:renderer", ck::CHOICE, 0.0, 0.0, 1.0, 0.0).set(c::CHOICES, ["vulkan", "wgpu"].map(String::from).to_vec()),
         number("core:fullscreen", ck::BOOL, 0.0, 0.0, 1.0, 0.0),
         number("core:terrain_gpu", ck::BOOL, 1.0, 0.0, 1.0, 0.0),
         number("core:terrain_check", ck::BOOL, 0.0, 0.0, 1.0, 0.0),

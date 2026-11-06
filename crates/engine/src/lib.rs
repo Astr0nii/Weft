@@ -46,7 +46,7 @@ pub mod wire;
 pub mod world;
 
 pub use app::api::{exit_code, set_launch_options};
-pub use app::{BackendFactory, Options, run};
+pub use app::{BackendFactory, Options, Renderers, run};
 
 /// Background workers (generation, meshing, region ticks) leave two cores to the render and
 /// server threads: a full pool starved the render thread during loading and frames missed vsync.

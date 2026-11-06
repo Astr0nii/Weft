@@ -27,6 +27,8 @@ pub struct BuildCx<'a> {
     pub size: glam::Vec2,
     pub look: &'a crate::ui::look::Look,
     pub assets: &'a crate::assets::Assets,
+    /// The renderer drawing now (`core:renderer` may have chosen another for the next start).
+    pub renderer: &'a str,
 }
 
 impl BuildCx<'_> {
@@ -620,6 +622,17 @@ impl Screen for SettingsScreen {
                     });
                     d.button("settings.vsync", &[on_off(s.vsync())], 300.0, false, |r| {
                         r.settings.set("vsync", !r.settings.vsync() as u8 as f64);
+                        r.handle(vec![Request::Rebuild]);
+                    });
+                    let chosen = s.renderer();
+                    let key = if chosen == cx.renderer { "settings.renderer" } else { "settings.renderer.restart" };
+                    d.button(key, &[Arg::Key(format!("settings.renderer.{chosen}"))], 300.0, false, |r| {
+                        let id = crate::config::by_name("core:renderer").unwrap_or(0);
+                        let count = crate::content::content().game.configs[id as usize]
+                            .choices
+                            .len()
+                            .max(1);
+                        crate::config::set(id, (crate::config::get(id) + 1.0) % count as f64);
                         r.handle(vec![Request::Rebuild]);
                     });
 

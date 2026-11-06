@@ -90,6 +90,16 @@ impl Settings {
     pub fn vsync(&self) -> bool {
         number("core:vsync") != 0.0
     }
+    /// The chosen renderer's name (`core:renderer`).
+    pub fn renderer(&self) -> String {
+        let id = id("core:renderer");
+        crate::content::content()
+            .game
+            .configs
+            .get(id as usize)
+            .map(|d| d.show(config::get(id)))
+            .unwrap_or_default()
+    }
     pub fn fov(&self) -> f32 {
         number("core:fov") as f32
     }
