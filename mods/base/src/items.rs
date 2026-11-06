@@ -148,11 +148,8 @@ pub fn register(r: &mut Registry) {
             let points = points[slot];
             let tag = ARMOR_SLOTS[slot];
             // Leggings are the inner layer, drawn closer to the body.
-            let (inflate, layer) = if mat == "leather" {
-                if slot == 2 { (0.2, 2) } else { (0.4, 1) }
-            } else {
-                if slot == 2 { (0.5, 2) } else { (0.75, 1) }
-            };
+            let (inflate, layer) =
+                if mat == "leather" { if slot == 2 { (0.2, 2) } else { (0.4, 1) } } else { if slot == 2 { (0.5, 2) } else { (0.75, 1) } };
             r.item(Item::generated(format!("{mat}_{piece}")))
                 .durability(durability * dur)
                 .set(&ARMOR, Armor { points, toughness })

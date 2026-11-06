@@ -139,7 +139,16 @@ fn pig_model() -> Model {
         &[([-4.0, -4.0, -8.0], [8.0, 8.0, 8.0], [0.0, 0.0]), ([-2.0, 0.0, -9.0], [4.0, 3.0, 1.0], [16.0, 16.0])],
     );
     let body = vanilla_part("body", [0.0, 11.0, 2.0], &[([-5.0, -10.0, -7.0], [10.0, 16.0, 8.0], [28.0, 8.0])]).rotation(-90.0, 0.0, 0.0);
-    let mut parts = vec![head, body];
+    let left_ear = ModelPart::new("leftEar", [-4.0, 12.0, -9.0])
+        .cuboid([-1.0, -2.0, -4.0], [1.0, 5.0, 4.0], [0.0, 26.0])
+        .rotation(0.0, 0.0, -15.0)
+        .mirrored()
+        .child_of(0);
+    let right_ear = ModelPart::new("rightEar", [4.0, 12.0, -9.0])
+        .cuboid([0.0, -2.0, -4.0], [1.0, 5.0, 4.0], [0.0, 26.0])
+        .rotation(0.0, 0.0, 15.0)
+        .child_of(0);
+    let mut parts = vec![head, body, left_ear, right_ear];
     parts.extend(vanilla_legs(3.0, 18.0));
     Model::from(parts).uv_size(64, 64)
 }
