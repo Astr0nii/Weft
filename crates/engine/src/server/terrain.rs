@@ -58,35 +58,6 @@ pub(crate) fn merge(rule: &mut BiomeRule, edit: &BiomeRule) {
     }
 }
 
-/// # Safety
-/// The strings in `r` must be valid for the call.
-pub unsafe fn copy_rule(r: &abi::BiomeRuleDesc) -> BiomeRule {
-    unsafe {
-        let s = |s: abi::Str| s.as_str().to_string();
-        BiomeRule {
-            name: s(r.name),
-            fields: r.fields,
-            biome: s(r.biome),
-            ranges: r
-                .ranges
-                .as_slice()
-                .iter()
-                .map(|f| abi::RuleRange { name: s(f.name), min: f.min, max: f.max })
-                .collect(),
-            height: r.height,
-            top: s(r.top),
-            filler: s(r.filler),
-            depth: r.depth,
-            under: s(r.under),
-            under_layers: r.under_layers,
-            deep_top: s(r.deep_top),
-            deep_below: r.deep_below,
-            bare_above: r.bare_above,
-            ice: s(r.ice),
-        }
-    }
-}
-
 /// The most steps an expression may have.
 const MAX_STEPS: usize = 256;
 

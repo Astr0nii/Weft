@@ -33,13 +33,8 @@ impl RawEntry {
     }
 
     pub fn set<T: data::Data>(mut self, name: &str, v: T) -> RawEntry {
-        let bytes = data::bytes_of(&v);
-        let schema = T::schema();
-        let text = data::is_text(&schema)
-            .then(|| data::from_bytes::<String>(&bytes))
-            .flatten();
         self.ops
-            .push(RawOp { op: vo::SET, value: RawValue { name: name.to_string(), schema, bytes, text }, anchor: String::new() });
+            .push(RawOp { op: vo::SET, value: value(name, v), anchor: String::new() });
         self
     }
 
@@ -75,6 +70,16 @@ impl RawEntry {
             }
         }
     }
+}
+
+/// `v` as the value of component `name`.
+fn value<T: data::Data>(name: &str, v: T) -> RawValue {
+    let bytes = data::bytes_of(&v);
+    let schema = T::schema();
+    let text = data::is_text(&schema)
+        .then(|| data::from_bytes::<String>(&bytes))
+        .flatten();
+    RawValue { name: name.to_string(), schema, bytes, text }
 }
 
 /// One entry of a kind after every mod had its say.
@@ -114,6 +119,22 @@ impl Entry {
 
     pub fn or<T: data::Data>(&self, name: &str, default: T) -> T {
         self.get(name).unwrap_or(default)
+    }
+
+    /// Sets a value, as the engine does for what it makes of an entry (a template's items).
+    pub fn set<T: data::Data>(&mut self, name: &str, v: T) {
+        self.values.retain(|x| x.name != name);
+        self.values.push(value(name, v));
+    }
+
+    /// Its values but the engine's own of its kind, named `<own>..`: what goes in the kind's
+    /// component table.
+    pub fn components(&self, own: &str) -> Vec<RawValue> {
+        self.values
+            .iter()
+            .filter(|v| !v.name.starts_with(own))
+            .cloned()
+            .collect()
     }
 
     /// A callback value and the mod it runs as.

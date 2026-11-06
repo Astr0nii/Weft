@@ -237,8 +237,8 @@ pub fn finish_generated(
         let columns = cols.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
         let mut args =
             abi::GenArgs { seed, cube: pos.to_array().into(), blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), dim, columns };
-        if let Some(cb) = def.generator {
-            host::invoke(def.owner, cb, &mut args);
+        if let Some((by, cb)) = def.generator {
+            host::invoke(by, cb, &mut args);
         }
         place_scatters(c, def, dim, seed, pos, &mut blocks);
         let mut args = abi::GenArgs { blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), ..args };

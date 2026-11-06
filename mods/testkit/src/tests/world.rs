@@ -232,16 +232,25 @@ pub async fn camera(t: T) -> R {
 /// Mods change a player's state from the server, and its client follows: a mace's smash by the
 /// fall it reads, then the look, the hand, flight and fire set from outside.
 /// `r.edit` of an item and a biome: the edit's values win, the rest stays (testkit's own, see
-/// its registration; its ore, liquid and terrain edits of testmod's would fail the load if they
-/// found nothing).
+/// its registration; its ore, liquid, dimension and terrain edits of testmod's would fail the load
+/// if they found nothing).
 pub async fn edits(t: T) -> R {
     t.flat().await?;
     t.check_eq(
         t.op("edited").await?,
-        "8 3 2 true 7 4 true base:cobblestonex2,testkit:editedx1 true true true".to_string(),
-        "max stack, damage, warmth, tag, a weather's flags, an attribute's default, a recipe removed, a loot table's pools, a liquid's id, its block's and item's tag, a column of Mars after the edits",
+        "8 3 2 true 7 4 true base:cobblestonex2,testkit:editedx1 true true true true".to_string(),
+        "max stack, damage, warmth, tag, a weather's flags, an attribute's default, a recipe removed, a loot table's pools, a liquid's id, its block's and item's tag, a column of Mars, Mars' tag after the edits",
     );
-    Ok(())
+    // The edit of the menu adds two slots to the equipment (four and the other hand) and the
+    // player's 36.
+    t.op(&format!("emenu testkit:gear {}", t.c().player()))
+        .await?;
+    let gear = Menu::lookup("testkit:gear").unwrap_or(u32::MAX);
+    t.until("the edited menu open", Duration::from_secs(5), |t| t.c().menu().is_some_and(|m| m.kind == gear))
+        .await?;
+    t.check_eq(t.c().menu().map(|m| m.slots), Some(43), "the slots of a menu an edit added a group to");
+    t.c().menu_close();
+    t.no_screen().await
 }
 
 pub async fn entity_modify(t: T) -> R {

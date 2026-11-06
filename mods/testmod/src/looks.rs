@@ -28,6 +28,7 @@ static GLOW_FLOWER: Block = Block::named("glow_flower");
 static SNOW_LAYER: Block = Block::named("snow_layer");
 static GLOW_CRYSTAL: Block = Block::named("glow_crystal");
 static GLOW: TintKind = TintKind::named("glow");
+static PLAINS: Biome = Biome::named("base:plains");
 static SPIRITS: EntityCategory = EntityCategory::named("spirits");
 static HURT: Condition = Condition::named("hurt");
 static DREAM_KEY: Key = Key::named("dream");
@@ -104,7 +105,7 @@ pub fn register(r: &mut Registry) {
         .mined_by("pickaxe", tool_tier::HAND);
     // A tint kind of the mod's own: violet by default (and on the item), teal in plains.
     r.tint_kind(&GLOW, 0xc080ff);
-    r.biome_tint(&Biome::named("base:plains"), &GLOW, 0x40e0c0);
+    r.edit(&PLAINS).tint(&GLOW, 0x40e0c0);
     r.block(&GLOW_MOSS)
         .tint(&GLOW)
         .hardness(0.6)

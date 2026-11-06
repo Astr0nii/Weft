@@ -18,15 +18,10 @@ pub static HOST: Host = Host {
     log_at,
     log_enabled,
     reg_block,
-    reg_item,
-    reg_biome,
-    reg_dimension,
     reg_entity,
     reg_entity_model,
     reg_world_tick,
     emit_after,
-    reg_menu,
-    set_player_menu,
     set_block_entity,
     reg_command,
     reg_set,
@@ -124,7 +119,6 @@ pub static HOST: Host = Host {
     reg_client_entity_frame,
     reg_bone_model,
     reg_bone_motion,
-    reg_item_looks,
     client_pose_bone: crate::app::api::client_pose_bone,
     client_bone_position: crate::app::api::client_bone_position,
     client_action_current: crate::app::api::client_entity_action,
@@ -216,8 +210,6 @@ pub static HOST: Host = Host {
     fall_block,
     reg_attach,
     damage_cause_flags,
-    reg_biome_tint,
-    reg_player_inventory,
     player_inventory_group,
     set_entity_size,
     set_entity_appearance,
@@ -1389,18 +1381,6 @@ unsafe extern "C" fn inventory_group(w: *mut abi::WorldCtx, h: *const abi::Holde
     }
 }
 
-unsafe extern "C" fn reg_player_inventory(r: *mut abi::Registrar, groups: abi::Slice<abi::SlotGroupDesc>) {
-    unsafe {
-        let r = reg(r);
-        let groups = groups
-            .as_slice()
-            .iter()
-            .map(|g| (g.name.as_str().to_string(), g.cols.max(1), g.rows.max(1), g.flags))
-            .collect();
-        r.game.player_inventory = Some((r.owner, groups));
-    }
-}
-
 unsafe extern "C" fn player_inventory_group(name: Str, out: *mut abi::SlotGroup) -> u32 {
     unsafe {
         match content().game.player_layout.group(name.as_str()) {
@@ -1705,36 +1685,6 @@ unsafe extern "C" fn reg_block(r: *mut abi::Registrar, d: *const abi::BlockDesc)
     }
 }
 
-unsafe extern "C" fn reg_item(r: *mut abi::Registrar, d: *const abi::ItemDesc) {
-    unsafe {
-        let r = reg(r);
-        let mut item = content::copy_item(&*d);
-        item.seq = r.items.len() as u32;
-        r.items.push(item);
-    }
-}
-
-unsafe extern "C" fn reg_biome(r: *mut abi::Registrar, d: *const abi::BiomeDesc) {
-    unsafe {
-        let d = &*d;
-        reg(r).biomes.push((
-            content::BiomeDef { name: d.name.as_str().to_string(), tints: Vec::new() },
-            d.cell as usize,
-            crate::components::RawValue::list(d.components),
-            crate::server::terrain::copy_rule(&d.rule),
-            d.edit != 0,
-        ));
-    }
-}
-
-unsafe extern "C" fn reg_dimension(r: *mut abi::Registrar, d: *const abi::DimensionDesc) {
-    unsafe {
-        let r = reg(r);
-        let owner = r.owner;
-        r.dims.push(content::copy_dimension(owner, &*d));
-    }
-}
-
 unsafe extern "C" fn reg_entity(r: *mut abi::Registrar, d: *const abi::EntityDesc) {
     unsafe {
         let r = reg(r);
@@ -1787,14 +1737,6 @@ unsafe extern "C" fn emit_after(w: *mut abi::WorldCtx, entity: u64, ticks: u32, 
         }
         crate::server::dim::push_timer(&mut v, until, &def.name, data.as_slice());
         *list = v.into_boxed_slice();
-    }
-}
-
-unsafe extern "C" fn reg_menu(r: *mut abi::Registrar, d: *const abi::MenuDesc) {
-    unsafe {
-        let r = reg(r);
-        let owner = r.owner;
-        r.game.menus.push(registry::copy_menu(owner, &*d));
     }
 }
 
@@ -1905,21 +1847,6 @@ unsafe extern "C" fn chat_format_set(args: *mut abi::ChatFormatArgs, key: Str, l
 
 unsafe extern "C" fn game_mode(w: *mut abi::WorldCtx, entity: u64) -> u32 {
     unsafe { dim(w).entities.get(entity).map_or(0, |e| e.mode.0 as u32) }
-}
-
-unsafe extern "C" fn set_player_menu(r: *mut abi::Registrar, menu: Str) {
-    unsafe {
-        let r = reg(r);
-        r.game.player_menu = Some((r.owner, menu.as_str().to_string()));
-    }
-}
-
-unsafe extern "C" fn reg_biome_tint(r: *mut abi::Registrar, biome: Str, kind: Str, color: u32) {
-    unsafe {
-        reg(r)
-            .biome_tints
-            .push((biome.as_str().to_string(), kind.as_str().to_string(), color))
-    }
 }
 
 unsafe extern "C" fn damage_cause_flags(cause: u32) -> u32 {
@@ -2287,16 +2214,6 @@ unsafe extern "C" fn reg_bone_motion(r: *mut abi::Registrar, model: Str, bone: S
         let d = crate::model::BoneMotion { gravity, spring, drag };
         let (model, bone) = (model.as_str().to_string(), bone.as_str().to_string());
         reg(r).game.bone_motions.push((model, bone, d));
-    }
-}
-
-unsafe extern "C" fn reg_item_looks(r: *mut abi::Registrar, item: Str, cb: Callback) {
-    unsafe {
-        let r = reg(r);
-        let owner = r.owner;
-        r.game
-            .item_model_for_stack
-            .push((owner, item.as_str().to_string(), cb));
     }
 }
 

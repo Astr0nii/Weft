@@ -20,7 +20,7 @@
 use crate::abi::BlockPos;
 use std::ops::{Add, Bound, Mul, Neg, RangeBounds, Sub};
 
-use crate::abi::{self, ExprStep as Step, Str, expr as ek, rule_field as rf};
+use crate::abi::{self, ExprStep as Step, expr as ek, rule_field as rf};
 use crate::comps::terrain as t;
 use crate::noise::fixed::{ONE, q4, q12, salt};
 use crate::{Dimension, Gen, Registry, Scatter, WithComponents, callback, host, qualify};
@@ -374,7 +374,7 @@ impl BiomeRule {
         BiomeRule(abi::BiomeRule { fields: rf::BIOME, biome: biome.to_string(), ..BiomeRule::blank().0 })
     }
 
-    pub(crate) fn blank() -> BiomeRule {
+    fn blank() -> BiomeRule {
         BiomeRule(abi::BiomeRule {
             height: [i32::MIN, i32::MAX],
             depth: 3,
@@ -472,27 +472,7 @@ impl BiomeRule {
     }
 }
 
-/// A biome's own rule as its `BiomeDesc` carries it, pointing into `r` and `ranges`.
-pub(crate) fn rule_desc(r: &abi::BiomeRule, ranges: &[abi::FieldRange]) -> abi::BiomeRuleDesc {
-    abi::BiomeRuleDesc {
-        name: Str::new(&r.name),
-        fields: r.fields,
-        biome: Str::new(&r.biome),
-        ranges: abi::Slice::new(ranges),
-        height: r.height,
-        top: Str::new(&r.top),
-        filler: Str::new(&r.filler),
-        depth: r.depth,
-        under: Str::new(&r.under),
-        under_layers: r.under_layers,
-        deep_top: Str::new(&r.deep_top),
-        deep_below: r.deep_below,
-        bare_above: r.bare_above,
-        ice: Str::new(&r.ice),
-    }
-}
-
-fn range_f64(r: impl RangeBounds<f64>) -> (f64, f64) {
+pub(crate) fn range_f64(r: impl RangeBounds<f64>) -> (f64, f64) {
     let at = |b: Bound<&f64>, open: f64| match b {
         Bound::Included(v) | Bound::Excluded(v) => *v,
         Bound::Unbounded => open,
@@ -642,7 +622,6 @@ impl TerrainBuilder<'_> {
 }
 
 impl Dimension {
-    /// Height and biome of columnimpl Dimension {
     /// Height and biome of column (`x`, `z`) for `seed`, generated or not: from the terrain or
     /// the dimension's `column`. A dimension with neither gives height `i32::MIN`.
     pub fn column(&self, seed: u64, x: i32, z: i32) -> Column {

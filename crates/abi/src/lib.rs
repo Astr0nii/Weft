@@ -921,7 +921,7 @@ pub mod comp {
     }
 
     /// Where an ore, scatter, structure, decoration or spawn rule goes; what isn't set doesn't
-    /// limit it. `DIMENSIONS` (`[str]`, full names; none: every one but `dim_flags::BARE` ones),
+    /// limit it. `DIMENSIONS` (`[str]`, full names; none: every one but `dimension::BARE` ones),
     /// `BIOME` (`str`, a tag the biome must carry: `cave`), `Y` (`[i32;2]`, inclusive heights: where
     /// an ore's veins start, a scatter's site, a structure's ground, a spawn spot). A decoration
     /// decides biome and height itself.
@@ -1054,6 +1054,109 @@ pub mod comp {
         pub const RULES: &str = "terrain.rules";
         pub const RULE_EDITS: &str = "terrain.rule_edits";
         pub const CAVE_BIOMES: &str = "terrain.cave_biomes";
+    }
+
+    /// An item's own (`entry_kind::ITEM`), besides the shared ones (`max_stack`, `durability`,
+    /// tools, food ...) that go in its component table: `TEXTURE` (`str`, its flat icon,
+    /// `<ns>:item/<name>`; empty with `BLOCK`: the block's model), `BLOCK` (`str`, the block it
+    /// places), `ON_USE` (`callback`, `ItemUseArgs`), `CONDITION` (`callback`, `ItemModelArgs`:
+    /// how a stack looks by what is in it, asked once per kind of stack).
+    pub mod item {
+        pub const TEXTURE: &str = "item.texture";
+        pub const BLOCK: &str = "item.block";
+        pub const ON_USE: &str = "item.on_use";
+        pub const CONDITION: &str = "item.condition";
+    }
+
+    /// A biome's own climate and surface (`entry_kind::BIOME`), what every terrain rule placing
+    /// it starts from (`BiomeRule` says what each is): `RANGES` (`[RuleRange]`, a field named again
+    /// replaces the earlier range; none: everywhere), `HEIGHT` (`[i32;2]`, any), `TOP`, `FILLER`
+    /// (`str`, none: stone), `DEPTH` (`i32`, 3), `UNDER` (`str`), `UNDER_LAYERS` (`i32`, 0),
+    /// `DEEP_TOP` (`str`), `DEEP_BELOW` (`i32`), `BARE_ABOVE` (`i32`), `ICE` (`str`). `TINTS`
+    /// (`[BiomeTint]`, a kind given again wins; the others keep their default). Any other
+    /// component goes in its component table (`precipitation`, scatters' densities).
+    pub mod biome {
+        pub const RANGES: &str = "biome.ranges";
+        pub const HEIGHT: &str = "biome.height";
+        pub const TOP: &str = "biome.top";
+        pub const FILLER: &str = "biome.filler";
+        pub const DEPTH: &str = "biome.depth";
+        pub const UNDER: &str = "biome.under";
+        pub const UNDER_LAYERS: &str = "biome.under_layers";
+        pub const DEEP_TOP: &str = "biome.deep_top";
+        pub const DEEP_BELOW: &str = "biome.deep_below";
+        pub const BARE_ABOVE: &str = "biome.bare_above";
+        pub const ICE: &str = "biome.ice";
+        pub const TINTS: &str = "biome.tints";
+    }
+
+    /// A dimension's (`entry_kind::DIMENSION`): `GENERATOR` (`callback`, `GenArgs`, called in
+    /// parallel, a pure function of its args), `SPAWN` (`callback`, `SpawnArgs`; none: open ground
+    /// near 0, 0 on its columns, biomes tagged `spawn_biome` first), `COLUMN` (`callback`,
+    /// `ColumnArgs`, pure: surface and biome of a column of a dimension without a terrain, which
+    /// the generator, structures, scatters and the spawn search all stand on), `CUBES`
+    /// (`[i32;2]`, cube-y bounds, inclusive, unbounded), `SKY_ABOVE` (`i32`, cubes from here up are
+    /// empty, so sky light there is full without generating them; unknown), `GRAVITY` (`f32`, 32),
+    /// `DAY_LENGTH` (`u32`, ticks, 24000; 0: time stays at `FIXED_TIME`, `u32`, 6000), `DAYLIGHT`
+    /// (`[DaylightPoint]`, none: vanilla's curve), `SKY_COLOR` and `FOG_COLOR` (`u32` 0xRRGGBB),
+    /// `AMBIENT` (`u32`, light everything gets at least, 0..15, 0), `WEATHERS` (`[str]`, the weathers
+    /// that come after clear weather; none: always clear). Tags: `NO_SKY_LIGHT`, `PLAYER_SPAWN`
+    /// (players start and respawn here; of several, the one of the mod loaded last), `NO_BLOCK_UPDATES`
+    /// (no neighbor updates, scheduled, random or growth ticks), `BARE` (only ores, scatters and
+    /// decorations that name it). Any other component goes in its component table.
+    pub mod dimension {
+        pub const GENERATOR: &str = "dimension.generator";
+        pub const SPAWN: &str = "dimension.spawn";
+        pub const COLUMN: &str = "dimension.column";
+        pub const CUBES: &str = "dimension.cubes";
+        pub const SKY_ABOVE: &str = "dimension.sky_above";
+        pub const GRAVITY: &str = "dimension.gravity";
+        pub const DAY_LENGTH: &str = "dimension.day_length";
+        pub const FIXED_TIME: &str = "dimension.fixed_time";
+        pub const DAYLIGHT: &str = "dimension.daylight";
+        pub const SKY_COLOR: &str = "dimension.sky_color";
+        pub const FOG_COLOR: &str = "dimension.fog_color";
+        pub const AMBIENT: &str = "dimension.ambient";
+        pub const WEATHERS: &str = "dimension.weathers";
+        pub const NO_SKY_LIGHT: &str = "dimension.no_sky_light";
+        pub const PLAYER_SPAWN: &str = "dimension.player_spawn";
+        pub const NO_BLOCK_UPDATES: &str = "dimension.no_block_updates";
+        pub const BARE: &str = "dimension.bare";
+    }
+
+    /// A menu's (`entry_kind::MENU`, screens included): `GROUPS` (`[SlotGroupDef]`, its slots in
+    /// this order), `RECIPES` (`[str]`, recipe kinds its `arrow` bars open in the recipe viewer),
+    /// callbacks `ON_CHANGE` (`MenuArgs`, server: a slot changed), `ON_TAKE` (`MenuArgs` with
+    /// `slot`, server: an output slot was taken), `ON_TICK` (`MenuArgs`, server, every tick while
+    /// open), `SCREEN` (`UiArgs`, client: builds the screen, its slots by group name), `ON_KEY`
+    /// (`ScreenKeyArgs`, every key while its screen is on top, before Escape and the other global
+    /// keys), and a tag per `screen_flags` (`FLAGS`).
+    pub mod menu {
+        use crate::screen_flags as f;
+        pub const GROUPS: &str = "menu.groups";
+        pub const RECIPES: &str = "menu.recipes";
+        pub const ON_CHANGE: &str = "menu.on_change";
+        pub const ON_TAKE: &str = "menu.on_take";
+        pub const ON_TICK: &str = "menu.on_tick";
+        pub const SCREEN: &str = "menu.screen";
+        pub const ON_KEY: &str = "menu.on_key";
+        pub const FLAGS: [(&str, u32); 5] = [
+            ("menu.pauses", f::PAUSES),
+            ("menu.keep_on_escape", f::KEEP_ON_ESCAPE),
+            ("menu.closes_on_respawn", f::CLOSES_ON_RESPAWN),
+            ("menu.keys_first", f::KEYS_FIRST),
+            ("menu.shows_chat", f::SHOWS_CHAT),
+        ];
+    }
+
+    /// The player's, on its kind (`core:player`, an `entry_kind::ENTITY` entry the engine makes):
+    /// `SLOT_GROUPS` (`[SlotGroupDef]`, its inventory as named groups, one `slot_flags::HOTBAR`;
+    /// the engine lays them out, the hotbar first and the equipment slots last; a hotbar of 9 and 27
+    /// more), `INVENTORY_MENU` (`str`, the menu its inventory key opens). Edits in load order, so the
+    /// mod loaded last wins.
+    pub mod entity {
+        pub const SLOT_GROUPS: &str = "entity.slot_groups";
+        pub const INVENTORY_MENU: &str = "entity.inventory_menu";
     }
 
     /// A weather's (`entry_kind::WEATHER`). How it looks, each `f32` 0..1 (rain's unless set):
@@ -1591,48 +1694,6 @@ pub struct PropDesc {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ItemDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    /// Texture for the flat icon. Empty with `block` set means a 3D block icon.
-    pub texture: Str,
-    /// Block placed on use, empty = none.
-    pub block: Str,
-    /// Stack size, durability, tool and weapon numbers, food ... (see `comp`).
-    pub components: Slice<CompValue>,
-    /// `ItemUseArgs`.
-    pub on_use: Callback,
-    /// Non-zero: `Registry::edit`, onto the item of this name: a texture, block or `on_use` given
-    /// replace its own, the components go on top.
-    pub edit: u32,
-}
-defaults!(ItemDesc {
-    name: Str::EMPTY,
-    cell: core::ptr::null(),
-    texture: Str::EMPTY,
-    block: Str::EMPTY,
-    components: Slice::EMPTY,
-    on_use: Callback::NONE,
-    edit: 0,
-});
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct BiomeDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    /// The biome's own climate and surface (`rule.fields` says which are set): every terrain
-    /// rule placing it starts from these, and sets only what differs there.
-    pub rule: BiomeRuleDesc,
-    pub components: Slice<CompValue>,
-    /// Non-zero: `Registry::edit`, onto the biome of this name: what `rule.fields` sets, and the
-    /// components on top.
-    pub edit: u32,
-}
-defaults!(BiomeDesc { name: Str::EMPTY, cell: core::ptr::null(), rule: BiomeRuleDesc::DEFAULT, components: Slice::EMPTY, edit: 0 });
-
-#[repr(C)]
 pub struct GenArgs {
     pub seed: u64,
     pub cube: BlockPos,
@@ -1642,7 +1703,7 @@ pub struct GenArgs {
     pub biomes: *mut u16,
     /// The dimension being generated.
     pub dim: u32,
-    /// The dimension's 256 columns of this cube (from its terrain or `DimensionDesc::column`),
+    /// The dimension's 256 columns of this cube (from its terrain or `comp::dimension::COLUMN`),
     /// index = z * 16 + x. Null for a dimension without either.
     pub columns: *const TerrainColumn,
 }
@@ -1677,79 +1738,6 @@ pub struct SpawnArgs {
     pub seed: u64,
     /// Output, block position the player stands on top of.
     pub pos: BlockPos,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct DimensionDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    /// `GenArgs`, called in parallel from worker threads, must be a pure function of its args.
-    pub generator: Callback,
-    /// `SpawnArgs`. Without one, the engine looks for open ground near 0, 0 (biomes tagged
-    /// `spawn_biome` first) on the dimension's columns, away from scattered things.
-    pub spawn: Callback,
-    /// Inclusive cube-y bounds, `i32::MIN`/`i32::MAX` for unbounded.
-    pub min_cube_y: i32,
-    pub max_cube_y: i32,
-    /// Cubes at or above this y are guaranteed empty by the generator, so sky light there is full
-    /// without generating them. `i32::MAX` if unknown.
-    pub sky_cube_y: i32,
-    pub sky_light: u32,
-    pub gravity: f32,
-    /// Ticks per day, 0 = time does not advance.
-    pub day_length: u32,
-    pub fixed_time: u32,
-    pub sky_color: u32,
-    pub fog_color: u32,
-    /// Light level everything gets at least, 0..15.
-    pub ambient: u32,
-    pub components: Slice<CompValue>,
-    /// `ColumnArgs`: surface height and biome of a column, for a dimension without a terrain.
-    /// The one source of its columns: the generator reads them (`GenArgs::columns`), and
-    /// structures, scatters and the spawn search stand on them. Pure like the generator.
-    pub column: Callback,
-    /// `dim_flags`.
-    pub flags: u32,
-    /// Daylight through the day: points (turn of the sky, level 0..1), the turn 0 at sunrise,
-    /// 0.25 noon, 0.5 sunset, 0.75 midnight, straight lines between them and around. Empty:
-    /// vanilla's curve.
-    pub daylight: Slice<[f32; 2]>,
-    /// The weathers that come here after clear weather (space separated names); empty: always
-    /// clear.
-    pub weathers: Str,
-}
-defaults!(DimensionDesc {
-    weathers: Str::EMPTY,
-    name: Str::EMPTY,
-    cell: core::ptr::null(),
-    generator: Callback::NONE,
-    spawn: Callback::NONE,
-    min_cube_y: i32::MIN,
-    max_cube_y: i32::MAX,
-    sky_cube_y: i32::MAX,
-    sky_light: 1,
-    gravity: 32.0,
-    day_length: 24000,
-    fixed_time: 6000,
-    sky_color: 0x78a7ff,
-    fog_color: 0xc0d8ff,
-    ambient: 0,
-    components: Slice::EMPTY,
-    column: Callback::NONE,
-    flags: 0,
-    daylight: Slice::EMPTY,
-});
-
-pub mod dim_flags {
-    /// Players start here (and respawn without a bed). Of several, the mod loaded last wins.
-    pub const PLAYER_SPAWN: u32 = 1;
-    /// Blocks never update: no neighbor updates (support, liquids), scheduled, random or
-    /// growth ticks. For showcases like the engine's `core:debug_blocks`.
-    pub const NO_BLOCK_UPDATES: u32 = 2;
-    /// Only what names it: ores, scatters and decorations meant for every dimension skip it
-    /// (a superflat test world).
-    pub const BARE: u32 = 4;
 }
 
 #[repr(C)]
@@ -2724,7 +2712,7 @@ pub mod slot_flags {
     pub const OUTPUT: u32 = 1;
     /// Can only be put into, nothing comes back out by hand.
     pub const INPUT: u32 = 2;
-    /// The player's hotbar (a group of `reg_player_inventory`): selected with the number keys,
+    /// The player's hotbar (a group of `comp::entity::SLOT_GROUPS`): selected with the number keys,
     /// shown at the bottom of the screen.
     pub const HOTBAR: u32 = 4;
     /// The other hand: takes any item that can be held in one hand.
@@ -2747,7 +2735,7 @@ pub mod slot_owner {
     pub const HOLDER: u32 = 1;
     /// The player's inventory from `start`.
     pub const PLAYER: u32 = 2;
-    /// The player's main inventory, laid out like `Registry::player_inventory` says.
+    /// The player's main inventory, laid out like `comp::entity::SLOT_GROUPS` says.
     pub const PLAYER_MAIN: u32 = 3;
     pub const PLAYER_HOTBAR: u32 = 4;
     /// Stands for one group per equipment slot, named like the slots, where it is in the list:
@@ -2758,84 +2746,31 @@ pub mod slot_owner {
     pub const WORN: u32 = 6;
 }
 
-/// Slots shown and handled together: a grid of one owner's inventory with the same rules.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SlotGroupDesc {
-    /// The screen and the menu's callbacks find the group by this.
-    pub name: Str,
-    /// `slot_owner`.
-    pub owner: u32,
-    /// First index in the owner's inventory, `u32::MAX`: right after the previous group of the
-    /// same owner.
-    pub start: u32,
-    pub cols: u32,
-    pub rows: u32,
-    /// `slot_flags`.
-    pub flags: u32,
-    /// Only items with this tag or component.
-    pub accepts: Str,
-    /// Most items a slot holds, 0: as many as the item stacks to.
-    pub limit: u32,
-    /// Side of a slot in GUI pixels, 0: 18.
-    pub size: f32,
-    /// GUI texture shown in an empty slot.
-    pub background: Str,
-    /// Translation shown over an empty slot.
-    pub tooltip: Str,
-    /// Shift-clicks from the player's inventory fill groups with a higher priority first.
-    pub priority: i32,
+crate::data! {
+    /// Slots shown and handled together (`comp::menu::GROUPS`, the player's
+    /// `comp::entity::SLOT_GROUPS`): a grid of `cols` by `rows` of one `owner`'s (`slot_owner`)
+    /// inventory with the same rules, found by `name` by the screen and the menu's callbacks.
+    /// `start` is the first index in the owner's inventory (`u32::MAX`: right after the previous
+    /// group of the same owner), `flags` are `slot_flags`; only items with tag or component
+    /// `accepts` go in (empty: any), at most `limit` a slot (0: as many as the item stacks to);
+    /// `size` is a slot's side in GUI pixels (0: 18), `background` a GUI texture and `tooltip` a
+    /// translation shown while it is empty. Shift-clicks from the player's inventory fill groups
+    /// with a higher `priority` first.
+    pub struct SlotGroupDef {
+        pub name: alloc::string::String,
+        pub owner: u32,
+        pub start: u32,
+        pub cols: u32,
+        pub rows: u32,
+        pub flags: u32,
+        pub accepts: alloc::string::String,
+        pub limit: u32,
+        pub size: f32,
+        pub background: alloc::string::String,
+        pub tooltip: alloc::string::String,
+        pub priority: i32,
+    }
 }
-defaults!(SlotGroupDesc {
-    name: Str::EMPTY,
-    owner: 0,
-    start: u32::MAX,
-    cols: 1,
-    rows: 1,
-    flags: 0,
-    accepts: Str::EMPTY,
-    limit: 0,
-    size: 0.0,
-    background: Str::EMPTY,
-    tooltip: Str::EMPTY,
-    priority: 0
-});
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct MenuDesc {
-    pub name: Str,
-    pub cell: *const AtomicU32,
-    /// Its slots, in this order.
-    pub groups: Slice<SlotGroupDesc>,
-    /// Recipe kinds it makes, space separated: its `arrow` bars open them in the recipe viewer.
-    pub recipes: Str,
-    /// `MenuArgs`, server: a slot changed (recompute crafting output).
-    pub on_change: Callback,
-    /// `MenuArgs` with `slot` set, server: an OUTPUT slot was taken (consume ingredients).
-    pub on_take: Callback,
-    /// `MenuArgs`, server, every tick while open.
-    pub on_tick: Callback,
-    /// `UiArgs`, client: build the screen. Slot widgets refer to the groups by name.
-    pub screen: Callback,
-    /// `screen_flags`: how its screen behaves, the same properties the engine's screens have.
-    pub flags: u32,
-    /// `ScreenKeyArgs` for every key pressed while its screen is on top, before Escape and the
-    /// other global keys.
-    pub on_key: Callback,
-}
-defaults!(MenuDesc {
-    name: Str::EMPTY,
-    cell: core::ptr::null(),
-    groups: Slice::EMPTY,
-    recipes: Str::EMPTY,
-    on_change: Callback::NONE,
-    on_take: Callback::NONE,
-    on_tick: Callback::NONE,
-    screen: Callback::NONE,
-    flags: 0,
-    on_key: Callback::NONE,
-});
 
 #[repr(C)]
 pub struct MenuCtx {
@@ -3133,9 +3068,6 @@ pub struct Host {
     pub log_enabled: unsafe extern "C" fn(me: ModId, level: u32, target: Str) -> u32,
 
     pub reg_block: unsafe extern "C" fn(reg: *mut Registrar, desc: *const BlockDesc),
-    pub reg_item: unsafe extern "C" fn(reg: *mut Registrar, desc: *const ItemDesc),
-    pub reg_biome: unsafe extern "C" fn(reg: *mut Registrar, desc: *const BiomeDesc),
-    pub reg_dimension: unsafe extern "C" fn(reg: *mut Registrar, desc: *const DimensionDesc),
     pub reg_entity: unsafe extern "C" fn(reg: *mut Registrar, desc: *const EntityDesc),
     /// The model (parts on a skin of `uv_width` x `uv_height` texels) of a kind of any mod or the engine's
     /// (`core:player`); a later mod's wins.
@@ -3147,9 +3079,6 @@ pub struct Host {
     /// saved with `entity` until then. One per entity and event: a second call moves it. A
     /// timer of a gone entity never fires.
     pub emit_after: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, ticks: u32, event: u32, data: Slice<u8>),
-    pub reg_menu: unsafe extern "C" fn(reg: *mut Registrar, desc: *const MenuDesc),
-    /// Menu opened by the inventory key.
-    pub set_player_menu: unsafe extern "C" fn(reg: *mut Registrar, menu: Str),
     /// Block entity kind created (with the inventory its `inventory` component says) when the block is placed, removed
     /// (dropping its items) when broken.
     pub set_block_entity: unsafe extern "C" fn(reg: *mut Registrar, block: Str, entity: Str),
@@ -3378,7 +3307,6 @@ pub struct Host {
     pub reg_bone_model: unsafe extern "C" fn(reg: *mut Registrar, kind: Str, model: Str, bone: Str),
     /// A bone of `model` hangs and swings by itself.
     pub reg_bone_motion: unsafe extern "C" fn(reg: *mut Registrar, model: Str, bone: Str, gravity: f32, spring: f32, drag: f32),
-    pub reg_item_looks: unsafe extern "C" fn(reg: *mut Registrar, item: Str, cb: Callback),
     /// Moves a bone of what `entity` is or has on, for the next frame: radians about x, y, z, pixels, scale.
     pub client_pose_bone:
         unsafe extern "C" fn(c: *mut ClientCtx, entity: u64, bone: Str, turn: *const [f32; 3], by: *const [f32; 3], scale: *const [f32; 3]),
@@ -3445,7 +3373,7 @@ pub struct Host {
     /// Light the client has at `pos` (sky level in the low byte, then block red, green, blue),
     /// `u32::MAX` if that cube is not loaded there.
     pub client_light: unsafe extern "C" fn(client: *mut ClientCtx, pos: *const BlockPos) -> u32,
-    /// Group `name` of the player inventory (`reg_player_inventory`, equipment slots,
+    /// Group `name` of the player inventory (`comp::entity::SLOT_GROUPS`, equipment slots,
     /// `core:equipment`): first slot and count.
     pub player_inventory_group: unsafe extern "C" fn(name: Str, out: *mut SlotGroup) -> u32,
     /// `container` is a `slot_container`.
@@ -3621,13 +3549,6 @@ pub struct Host {
     /// `damage_flags` of a cause, 0 for one that doesn't exist.
     pub damage_cause_flags: unsafe extern "C" fn(cause: u32) -> u32,
 
-    /// The color of a tint kind in a biome (any mod's of either).
-    pub reg_biome_tint: unsafe extern "C" fn(reg: *mut Registrar, biome: Str, kind: Str, color: u32),
-    /// The player inventory as named groups (one flagged `slot_flags::HOTBAR`); the engine lays
-    /// them out, the hotbar first and the equipment slots last. Of several, the mod loaded last
-    /// wins.
-    pub reg_player_inventory: unsafe extern "C" fn(reg: *mut Registrar, groups: Slice<SlotGroupDesc>),
-
     /// An entity's own box (width, height, eye height) instead of its kind's; `width` <= 0 goes
     /// back to the kind's. Its pose (crouching, swimming) scales whichever applies.
     pub set_entity_size: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, size: EntitySize),
@@ -3655,7 +3576,7 @@ pub struct Host {
     pub body_move_to: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, pos: *const Vec3, ticks: u32),
     /// What a comparator would read of the block at `pos` may be different now.
     pub signal_read_changed: unsafe extern "C" fn(world: *mut WorldCtx, pos: *const BlockPos),
-    /// Column (`x`, `z`) of dimension `dim` for `seed` (its terrain's or `DimensionDesc::column`),
+    /// Column (`x`, `z`) of dimension `dim` for `seed` (its terrain's or `comp::dimension::COLUMN`),
     /// generated or not. Returns 0 if the dimension has neither.
     pub dim_column: unsafe extern "C" fn(dim: u32, seed: u64, x: i32, z: i32, out: *mut TerrainColumn) -> u32,
     /// 1 if caves took the surface block of column (`x`, `z`), so nothing should stand there.
@@ -4404,7 +4325,7 @@ pub struct ClientFrameArgs {
     pub client: *mut ClientCtx,
 }
 
-/// `Host::reg_item_looks`: the model and the texture `stack` shows as, each left
+/// `comp::item::CONDITION`: the model and the texture `stack` shows as, each left
 /// empty for its usual.
 #[repr(C)]
 pub struct ItemModelArgs {
@@ -4775,15 +4696,6 @@ pub mod expr {
     pub const SITE: u32 = 14;
 }
 
-/// A biome rule's condition: the field is in `min <= value < max`.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct FieldRange {
-    pub name: Str,
-    pub min: f64,
-    pub max: f64,
-}
-
 crate::data! {
     /// A named value over a terrain's columns (`comp::terrain::FIELDS`) that rules ask for and
     /// expressions use (`expr::FIELD`); the name is used as written.
@@ -4812,9 +4724,13 @@ crate::data! {
 }
 
 crate::data! {
-    /// Where a biome goes in a terrain (`comp::terrain::RULES`), `BiomeRuleDesc` as data: other
-    /// mods find it by its full `name`; the fields `fields` (`rule_field`) doesn't give come from
-    /// the biome's own.
+    /// Where a biome goes in a terrain (`comp::terrain::RULES`), tried in order: the first that
+    /// fits wins, the last where none does. Other mods find it by its full `name`; what `fields`
+    /// (`rule_field`) doesn't give comes from the biome's own (`comp::biome`). It holds where the
+    /// fields of `ranges` (`temperature`, `humidity`, `continent`, or ones the terrain declares)
+    /// are in range and the surface in `height` (inclusive): `top`, `depth` blocks of `filler`
+    /// (empty: stone), the lowest `under_layers` of them `under`; `deep_top` on columns lower than
+    /// `deep_below`, plain stone above `bare_above`, the water surface frozen into `ice`.
     pub struct BiomeRule {
         pub name: alloc::string::String,
         pub fields: u32,
@@ -4849,8 +4765,18 @@ crate::data! {
     pub struct TerrainCaves { pub lava: alloc::string::String, pub from: i32, pub to: i32 }
 }
 
-/// Which fields of a `BiomeRuleDesc` are given (all of them count for a new rule; an edit
-/// changes only these).
+crate::data! {
+    /// The color (0xRRGGBB) blocks tinted with tint kind `kind` take in a biome (`comp::biome::TINTS`).
+    pub struct BiomeTint { pub kind: alloc::string::String, pub color: u32 }
+}
+
+crate::data! {
+    /// Daylight `level` (0..1) at `turn` of the sky (`comp::dimension::DAYLIGHT`): 0 sunrise, 0.25
+    /// noon, 0.5 sunset, 0.75 midnight, straight lines between the points and around.
+    pub struct DaylightPoint { pub turn: f32, pub level: f32 }
+}
+
+/// Which fields of a `BiomeRule` are given (an edit changes only these).
 pub mod rule_field {
     pub const BIOME: u32 = 1;
     /// `ranges`: in an edit each one replaces the rule's range of that field, or adds one.
@@ -4862,54 +4788,6 @@ pub mod rule_field {
     pub const BARE_ABOVE: u32 = 64;
     pub const FROZEN: u32 = 128;
 }
-
-/// Picks a biome and its surface where its conditions hold. Rules are tried in order; the first
-/// that fits wins and the last one is used where none does. Fields not in `fields` come from
-/// the biome's own (`BiomeDesc::rule`).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct BiomeRuleDesc {
-    /// Full name; other mods' edits find the rule by it.
-    pub name: Str,
-    /// `rule_field`.
-    pub fields: u32,
-    pub biome: Str,
-    /// Where these fields (`temperature`, `humidity`, `continent`, or ones a terrain declares)
-    /// are in range.
-    pub ranges: Slice<FieldRange>,
-    /// Surface height, inclusive.
-    pub height: [i32; 2],
-    /// Top block, `depth` blocks of filler, then stone. Empty: stone.
-    pub top: Str,
-    pub filler: Str,
-    pub depth: i32,
-    /// The lowest `under_layers` of the filler become `under`.
-    pub under: Str,
-    pub under_layers: i32,
-    /// Top block of columns lower than `deep_below`.
-    pub deep_top: Str,
-    pub deep_below: i32,
-    /// Plain stone above this height.
-    pub bare_above: i32,
-    /// The water surface freezes into this block.
-    pub ice: Str,
-}
-defaults!(BiomeRuleDesc {
-    name: Str::EMPTY,
-    fields: 0,
-    biome: Str::EMPTY,
-    ranges: Slice::EMPTY,
-    height: [i32::MIN, i32::MAX],
-    top: Str::EMPTY,
-    filler: Str::EMPTY,
-    depth: 3,
-    under: Str::EMPTY,
-    under_layers: 0,
-    deep_top: Str::EMPTY,
-    deep_below: i32::MIN,
-    bare_above: i32::MAX,
-    ice: Str::EMPTY
-});
 
 /// One command argument; kinds in `command_value`.
 #[repr(C)]

@@ -359,7 +359,7 @@ pub struct Models {
     pub worn_kinds: FxHashMap<u32, (u32, String)>,
     /// Models read from files, by name, also those that aren't there.
     files: FxHashMap<String, Option<u32>>,
-    /// What a mod's `item_model_for_stack` said for a stack.
+    /// What an item's `condition` said for a stack.
     by_stack: FxHashMap<(u32, u32), Option<u32>>,
     stock: FxHashMap<&'static str, Vec<Arc<Animation>>>,
     /// What items bring along: holders of models added later need it.
@@ -1125,7 +1125,7 @@ impl Models {
         gpu.write_buffer(self.corners, 0, bytemuck::cast_slice(corners));
     }
 
-    /// The model `stack` shows as, deciding if nobody has yet (a mod's `item_model_for_stack`).
+    /// The model `stack` shows as, deciding if nobody has yet (its item's `condition`).
     pub fn model_for(&mut self, assets: &Assets, stack: ItemStack) -> Option<u32> {
         let c = content();
         if let Some(&(owner, cb)) = c.game.item_model_for_stack.get(&stack.item) {

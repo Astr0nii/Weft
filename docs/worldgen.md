@@ -91,7 +91,7 @@ r.biome(&DESERT).temperature(0.35..).humidity(..0.0).surface("sand", "sand", 3).
 - `deep_top(block, below)`: a different top block where the ground is lower than `below` (gravel on a sea floor)
 - `bare_above(y)`: plain stone above this height
 - `frozen(block)`: the water surface turns into this block, and the biome gets the tag `frozen` (base grows no flowers there)
-- `tint(&kind, color)`: what blocks tinted with that kind take here, `tints::GRASS`, `FOLIAGE`, `WATER` or a mod's own kind. Kinds you don't give keep their default. To color another mod's biome with your kind, `r.biome_tint(&biome, &kind, color)`.
+- `tint(&kind, color)`: what blocks tinted with that kind take here, `tints::GRASS`, `FOLIAGE`, `WATER` or a mod's own kind. Kinds you don't give keep their default, a kind given again takes the new color. To color another mod's biome with your kind, `r.edit(&PLAINS).tint(&kind, color)`.
 - `snows()`: rain falls as snow here
 
 Tags (`tag("animals")`) are how everything else asks what a biome is, since spawns, ores and structures look at tags and never at names. `set(&COMPONENT, value)` attaches data, like how many trees base grows there.
@@ -247,7 +247,7 @@ r.edit(OVERWORLD.terrain())
     .feature(Feature::new(needle).named("needle"));
 r.decoration(boulders).dimension(&OVERWORLD);
 ```
-Because rules are tried in order, a new biome goes in next to the rule it takes space from: `rule_before` takes the place where both would fit, `rule_after` only what the other leaves. A biome's climate and surface are its own, wherever it goes: `r.edit(&DESERT).temperature(0.5..)` changes them in every dimension. The rest of the edits:
+Because rules are tried in order, a new biome goes in next to the rule it takes space from: `rule_before` takes the place where both would fit, `rule_after` only what the other leaves. A biome's climate and surface are its own, wherever it goes: `r.edit(&DESERT).temperature(0.5..)` changes them in every dimension (each is a component, `comps::biome`, and a range of a field given again replaces the old one). The rest of the edits:
 
 | call | what it does |
 |---|---|

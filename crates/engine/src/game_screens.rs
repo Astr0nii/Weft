@@ -126,9 +126,9 @@ impl Screen for MenuScreen {
                     creative_panel(ui, cx, &self.search, &self.tab);
                 }
                 if let Some(def) = c.game.menus.get(self.kind as usize) {
-                    if let Some(cb) = def.screen {
+                    if let Some((by, cb)) = def.screen {
                         let first = ui.nodes.len();
-                        modui::build(ui, cx.lang, Some(cx.input), def.owner, cb, cx.client);
+                        modui::build(ui, cx.lang, Some(cx.input), by, cb, cx.client);
                         // The arrows of a menu that makes recipes open them.
                         if !def.recipes.is_empty() {
                             let tip = cx.t("recipes.show", &[]);

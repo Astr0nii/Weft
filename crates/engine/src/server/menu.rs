@@ -121,10 +121,10 @@ fn call(
     c: &Content,
     player: u64,
     slot: u32,
-    pick: impl Fn(&crate::registry::MenuDef) -> Option<abi::Callback>,
+    pick: impl Fn(&crate::registry::MenuDef) -> Option<(abi::ModId, abi::Callback)>,
 ) {
     let def = &c.game.menus[m.kind as usize];
-    let Some(cb) = pick(def) else { return };
+    let Some((by, cb)) = pick(def) else { return };
     let owner = match m.on {
         None => abi::Holder::NONE,
         Some(Inv { at: At::Entity(id), storage }) => abi::Holder { storage, ..abi::Holder::entity(id) },
@@ -133,7 +133,7 @@ fn call(
     let mut call = MenuCall { menu: m as *mut OpenMenu, dim: dim as *mut Dim, player };
     let mut ctx = host::CallCtx { dim: dim as *mut Dim };
     let mut args = abi::MenuArgs { world: ctx.raw(), menu: &mut call as *mut MenuCall as *mut abi::MenuCtx, player, owner, slot };
-    host::invoke(def.owner, cb, &mut args);
+    host::invoke(by, cb, &mut args);
 }
 
 /// The slots of menu `kind` opened on `on`, from its groups. `worn`: the equipment slots of the

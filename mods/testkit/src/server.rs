@@ -124,6 +124,7 @@ pub fn register(r: &mut Registry) {
         .flow_delay(12)
         .block(|b| b.tag("testkit:edited"));
     let off = |at: i32, of: Expr| (of - Expr::blocks(at as f64)).abs();
+    r.edit(&MARS).tag("testkit:edited");
     r.edit(MARS.terrain())
         .field(
             "testkit:probe",
@@ -145,6 +146,7 @@ pub fn register(r: &mut Registry) {
             ui.player_inventory(true);
         });
     });
+    r.edit(&GEAR).group("extra", Slots::row(2));
     r.attach_storage(&PLAYER, &STASH);
     r.config(&COUNT_MARKS).bool(false).world();
     // While the rule is on, every marked pig counts up once a tick.
@@ -748,7 +750,7 @@ const OPS: &[(&str, &str, Run)] = &[
         let oil = Tag::named("testkit:edited");
         let probe = |dx: i32| name_of(ek::BIOME, MARS.column(w.seed(), PROBE[0] + dx, PROBE[1]).biome) == "base:plains";
         Ok(format!(
-            "{} {} {} {} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {} {} {} {}",
             MAX_STACK.on_item(i).unwrap_or(0),
             ATTACK_DAMAGE.on_item(i).unwrap_or(0.0),
             WARMTH.on_biome(b).unwrap_or(0.0),
@@ -760,6 +762,7 @@ const OPS: &[(&str, &str, Run)] = &[
             liquid_of(OIL.id()) == Some(OIL.liquid().id()),
             oil.on_block(OIL.id()) && oil.on_item(Item::generated(OIL.name().to_string()).id()),
             (probe(0), probe(4)) == (true, false),
+            oil.on_dimension(MARS.id()),
         ))
     }),
     ("look", "", |w, _, player, _| {

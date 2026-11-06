@@ -2,8 +2,7 @@ use crate::abi::{self, Holder, ItemStack, Slice, Str};
 use crate::abi::{BlockPos, Vec3};
 use crate::component::{Component, Storage, Value};
 use crate::content::{
-    Biome, Block, Declaration, EntityCategory, EntityKind, EquipmentSlot, GizmoGroup, HudElement, Menu, Pending, RecipeKind, TintKind,
-    WordSet,
+    Block, Declaration, EntityCategory, EntityKind, EquipmentSlot, GizmoGroup, HudElement, Menu, Pending, RecipeKind, TintKind, WordSet,
 };
 use crate::ui::{Ui, ui_cb};
 use crate::{Id, Registry, WithComponents, World, callback, comps, host, qualify};
@@ -594,27 +593,32 @@ impl SlotGroup<'_> {
 // ---------------------------------------------------------------- recipes
 
 pub struct PlayerInventoryBuilder<'a> {
-    raw: *mut abi::Registrar,
-    groups: GroupList,
-    _p: std::marker::PhantomData<&'a mut Registry>,
+    reg: &'a mut Registry,
+    groups: Vec<abi::SlotGroupDef>,
 }
 
 impl PlayerInventoryBuilder<'_> {
     /// A group of the player's inventory: its size from `slots` (`Slots::row(9).hotbar()`).
     pub fn group(mut self, name: &str, slots: Slots) -> Self {
-        self.groups.push("", name, slots, abi::slot_owner::PLAYER);
+        self.groups.push(slots.def(name, abi::slot_owner::PLAYER));
         self
     }
 }
 
 impl Drop for PlayerInventoryBuilder<'_> {
     fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let descs = self.groups.descs();
-        unsafe { (host().reg_player_inventory)(self.raw, Slice::new(&descs)) }
+        let groups = std::mem::take(&mut self.groups);
+        let schema = <Vec<abi::SlotGroupDef> as crate::component::Data>::schema();
+        edit_player(self.reg, Pending::value(abi::comp::entity::SLOT_GROUPS, schema, abi::data::bytes_of(&groups)));
     }
+}
+
+/// An edit of the player's kind (`abi::comp::entity`): in load order, so the mod loaded last wins.
+fn edit_player(reg: &mut Registry, value: Pending) {
+    let mut e = crate::entry::Entry::new(abi::entry_kind::ENTITY, PLAYER.name().to_string());
+    e.mode = abi::entry_mode::EDIT;
+    e.ops.push(value);
+    e.send(reg);
 }
 
 pub fn recipe_grid_output(kind: &RecipeKind, grid: &[ItemStack], width: u32, height: u32) -> ItemStack {
@@ -1401,57 +1405,23 @@ impl Slots {
         self.priority = p;
         self
     }
-}
 
-/// Owned strings of the groups while their descriptors are sent.
-struct GroupList {
-    names: Vec<String>,
-    groups: Vec<Slots>,
-    strings: Vec<[String; 3]>,
-}
-
-impl GroupList {
-    fn new() -> GroupList {
-        GroupList { names: Vec::new(), groups: Vec::new(), strings: Vec::new() }
-    }
-    fn push(&mut self, ns: &str, name: &str, s: Slots, default_owner: u32) {
-        let s = Slots { owner: Some(s.owner.unwrap_or(default_owner)), ..s };
-        let q = |t: &str| if t.is_empty() || t.contains(':') { t.to_string() } else { qualify(ns, t) };
-        self.strings
-            .push([s.accepts.clone(), q(&s.background), s.tooltip.clone()]);
-        self.names.push(name.to_string());
-        self.groups.push(s);
-    }
-    fn player_inventory(&mut self) {
-        self.names.push(INVENTORY_GROUP.into());
-        self.groups
-            .push(Slots { owner: Some(abi::slot_owner::PLAYER_MAIN), ..Slots::single() });
-        self.strings.push(Default::default());
-        self.names.push(HOTBAR_GROUP.into());
-        self.groups
-            .push(Slots { owner: Some(abi::slot_owner::PLAYER_HOTBAR), ..Slots::single() });
-        self.strings.push(Default::default());
-    }
-    fn descs(&self) -> Vec<abi::SlotGroupDesc> {
-        self.groups
-            .iter()
-            .zip(&self.names)
-            .zip(&self.strings)
-            .map(|((g, name), [accepts, background, tooltip])| abi::SlotGroupDesc {
-                name: Str::new(name),
-                owner: g.owner.unwrap_or(0),
-                start: g.start,
-                cols: g.cols,
-                rows: g.rows,
-                flags: g.flags,
-                accepts: Str::new(accepts),
-                limit: g.limit,
-                size: g.size,
-                background: Str::new(background),
-                tooltip: Str::new(tooltip),
-                priority: g.priority,
-            })
-            .collect()
+    /// As a menu or the player's inventory has it, owned by `default` unless it says.
+    fn def(self, name: &str, default: u32) -> abi::SlotGroupDef {
+        abi::SlotGroupDef {
+            name: name.to_string(),
+            owner: self.owner.unwrap_or(default),
+            start: self.start,
+            cols: self.cols,
+            rows: self.rows,
+            flags: self.flags,
+            accepts: self.accepts,
+            limit: self.limit,
+            size: self.size,
+            background: self.background,
+            tooltip: self.tooltip,
+            priority: self.priority,
+        }
     }
 }
 
@@ -1461,122 +1431,104 @@ fn menu_cb(f: impl Fn(&MenuCtx) + Send + Sync + 'static) -> abi::Callback {
 
 pub struct MenuBuilder<'a> {
     reg: &'a mut Registry,
-    name: String,
-    handle: Option<&'static Menu>,
-    desc: abi::MenuDesc,
-    groups: GroupList,
-    recipes: Vec<String>,
+    e: crate::entry::Entry,
+    /// Its own groups (the menu's and the holder's), for `default_screen`.
+    own: Vec<String>,
     plain_screen: bool,
 }
+
+crate::entry::entry_builder!(Menu => MenuBuilder, menu, finish;);
 
 impl MenuBuilder<'_> {
     /// A group of slots, by default the menu's own (`Slots::menu`). Groups come in this order.
     pub fn group(mut self, name: &str, slots: Slots) -> Self {
-        self.groups
-            .push(self.reg.ns, name, slots, abi::slot_owner::MENU);
-        self
+        let g = slots.def(name, abi::slot_owner::MENU);
+        if g.owner < abi::slot_owner::PLAYER {
+            self.own.push(name.to_string());
+        }
+        self.push(&comps::menu::GROUPS, g)
     }
     /// The player's inventory and hotbar as two groups (`INVENTORY_GROUP`, `HOTBAR_GROUP`), shown
     /// with `ui.player_inventory(..)`.
-    pub fn player_inventory(mut self) -> Self {
-        self.groups.player_inventory();
-        self
+    pub fn player_inventory(self) -> Self {
+        let group = |name, owner| Slots::single().def(name, owner);
+        self.push(&comps::menu::GROUPS, group(INVENTORY_GROUP, abi::slot_owner::PLAYER_MAIN))
+            .push(&comps::menu::GROUPS, group(HOTBAR_GROUP, abi::slot_owner::PLAYER_HOTBAR))
     }
     /// The equipment slots, here among the groups, each named like its slot: of the entity the
     /// menu is open on when it wears (`EntityBuilder::equipment`, a mob's), else the player's.
     /// Only the slots: `ui.equipment()` draws them where the screen wants.
-    pub fn equipment(mut self) -> Self {
-        self.groups.push(
-            "",
-            EQUIPMENT_GROUP,
-            Slots { owner: Some(abi::slot_owner::EQUIPMENT), ..Slots::single() },
-            abi::slot_owner::EQUIPMENT,
-        );
-        self
+    pub fn equipment(self) -> Self {
+        let g = Slots::single().def(EQUIPMENT_GROUP, abi::slot_owner::EQUIPMENT);
+        self.push(&comps::menu::GROUPS, g)
     }
     /// Recipes of this kind are made here: clicking an `arrow` bar of the screen shows them.
-    pub fn recipes(mut self, kind: &RecipeKind) -> Self {
-        self.recipes.push(kind.name().to_string());
-        self
+    pub fn recipes(self, kind: &RecipeKind) -> Self {
+        self.push(&comps::menu::RECIPES, kind.name().to_string())
     }
-    pub fn on_change(mut self, f: impl Fn(&MenuCtx) + Send + Sync + 'static) -> Self {
-        self.desc.on_change = menu_cb(f);
-        self
+    pub fn on_change(self, f: impl Fn(&MenuCtx) + Send + Sync + 'static) -> Self {
+        self.set(&comps::menu::ON_CHANGE, menu_cb(f))
     }
-    pub fn on_take(mut self, f: impl Fn(&MenuCtx) + Send + Sync + 'static) -> Self {
-        self.desc.on_take = menu_cb(f);
-        self
+    pub fn on_take(self, f: impl Fn(&MenuCtx) + Send + Sync + 'static) -> Self {
+        self.set(&comps::menu::ON_TAKE, menu_cb(f))
     }
-    pub fn on_tick(mut self, f: impl Fn(&MenuCtx) + Send + Sync + 'static) -> Self {
-        self.desc.on_tick = menu_cb(f);
-        self
+    pub fn on_tick(self, f: impl Fn(&MenuCtx) + Send + Sync + 'static) -> Self {
+        self.set(&comps::menu::ON_TICK, menu_cb(f))
     }
-    pub fn screen(mut self, f: impl Fn(&mut Ui) + Send + Sync + 'static) -> Self {
-        self.desc.screen = ui_cb(f);
-        self
+    pub fn screen(self, f: impl Fn(&mut Ui) + Send + Sync + 'static) -> Self {
+        self.set(&comps::menu::SCREEN, ui_cb(f))
+    }
+    /// These `screen_flags` on: how its screen behaves.
+    pub fn with(self, flags: u32) -> Self {
+        abi::comp::menu::FLAGS
+            .iter()
+            .filter(|f| flags & f.1 != 0)
+            .fold(self, |b, f| b.tag(f.0))
     }
     /// Single player stops while it is open (the pause and settings screens).
-    pub fn pauses(mut self) -> Self {
-        self.desc.flags |= abi::screen_flags::PAUSES;
-        self
+    pub fn pauses(self) -> Self {
+        self.with(abi::screen_flags::PAUSES)
     }
     /// Escape doesn't close it (the death screen).
-    pub fn keep_on_escape(mut self) -> Self {
-        self.desc.flags |= abi::screen_flags::KEEP_ON_ESCAPE;
-        self
+    pub fn keep_on_escape(self) -> Self {
+        self.with(abi::screen_flags::KEEP_ON_ESCAPE)
     }
     /// It closes when the player respawns.
-    pub fn closes_on_respawn(mut self) -> Self {
-        self.desc.flags |= abi::screen_flags::CLOSES_ON_RESPAWN;
-        self
+    pub fn closes_on_respawn(self) -> Self {
+        self.with(abi::screen_flags::CLOSES_ON_RESPAWN)
     }
     /// Like the chat screen: the HUD leaves the messages to it and Enter sends the text of its
     /// input of class `chat`.
-    pub fn shows_chat(mut self) -> Self {
-        self.desc.flags |= abi::screen_flags::SHOWS_CHAT;
-        self
+    pub fn shows_chat(self) -> Self {
+        self.with(abi::screen_flags::SHOWS_CHAT)
     }
     /// Keys pressed while it is on top, by their settings name (`Enter`, `KeyE`, `mouse3`), before
     /// Escape and the other global keys.
-    pub fn on_key(mut self, f: impl Fn(&crate::ClientView, &str) + Send + Sync + 'static) -> Self {
-        self.desc.on_key =
-            crate::callback(move |a: &mut abi::ScreenKeyArgs| f(&crate::ClientView::from_raw(a.client), unsafe { a.key.as_str() }));
-        self
+    pub fn on_key(self, f: impl Fn(&crate::ClientView, &str) + Send + Sync + 'static) -> Self {
+        let cb = crate::callback(move |a: &mut abi::ScreenKeyArgs| f(&crate::ClientView::from_raw(a.client), unsafe { a.key.as_str() }));
+        self.set(&comps::menu::ON_KEY, cb)
     }
     /// The usual screen: its title, its own groups in order, the player's inventory.
     pub fn default_screen(mut self) -> Self {
         self.plain_screen = true;
         self.player_inventory()
     }
-}
 
-impl Drop for MenuBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
+    fn finish(&mut self) {
+        if !self.plain_screen {
             return;
         }
-        self.desc.name = Str::new(&self.name);
-        self.desc.cell = self.handle.map_or(std::ptr::null(), |h| h.id_cell());
-        let groups = self.groups.descs();
-        self.desc.groups = Slice::new(&groups);
-        if self.plain_screen {
-            let names: Vec<String> = (self.groups.names.iter().zip(&self.groups.groups))
-                .filter(|(_, g)| g.owner.is_some_and(|o| o < abi::slot_owner::PLAYER))
-                .map(|(n, _)| n.clone())
-                .collect();
-            self.desc.screen = ui_cb(move |ui| {
-                ui.panel("panel", crate::ui::S::column().pad(7.0).gap(4.0), |ui| {
-                    ui.title();
-                    for name in &names {
-                        ui.group(name);
-                    }
-                    ui.player_inventory(true);
-                });
+        let names = std::mem::take(&mut self.own);
+        let screen = ui_cb(move |ui| {
+            ui.panel("panel", crate::ui::S::column().pad(7.0).gap(4.0), |ui| {
+                ui.title();
+                for name in &names {
+                    ui.group(name);
+                }
+                ui.player_inventory(true);
             });
-        }
-        let recipes = self.recipes.join(" ");
-        self.desc.recipes = Str::new(&recipes);
-        unsafe { (host().reg_menu)(self.reg.raw, &self.desc) }
+        });
+        self.e.ops.push(comps::menu::SCREEN.raw_value(&screen));
     }
 }
 
@@ -1647,15 +1599,7 @@ impl Registry {
     }
 
     pub fn menu<'a>(&'a mut self, menu: &'static Menu) -> MenuBuilder<'a> {
-        MenuBuilder {
-            name: menu.name().to_string(),
-            reg: self,
-            handle: Some(menu),
-            desc: abi::MenuDesc::DEFAULT,
-            groups: GroupList::new(),
-            plain_screen: false,
-            recipes: Vec::new(),
-        }
+        MenuBuilder { reg: self, e: crate::entry::Entry::of(menu), own: Vec::new(), plain_screen: false }
     }
 
     /// The player inventory as named groups, one of them `.hotbar()`:
@@ -1664,7 +1608,7 @@ impl Registry {
     /// everything; `w.inventory(player).group(name)` reads a group, `core:equipment` all of the
     /// equipment. The mod loaded last wins.
     pub fn player_slots(&mut self) -> PlayerInventoryBuilder<'_> {
-        PlayerInventoryBuilder { raw: self.raw, groups: GroupList::new(), _p: std::marker::PhantomData }
+        PlayerInventoryBuilder { reg: self, groups: Vec::new() }
     }
 
     /// An equipment slot of players (head, chest...): what is worn there covers the bones named
@@ -1684,9 +1628,9 @@ impl Registry {
         EquipmentSlotBuilder { reg: self, e: crate::entry::Entry::of(slot) }
     }
 
-    /// The menu the inventory key opens.
+    /// The menu the inventory key opens. The mod loaded last wins.
     pub fn player_menu(&mut self, menu: &Menu) {
-        unsafe { (host().set_player_menu)(self.raw, Str::new(menu.name())) }
+        edit_player(self, Pending::text(abi::comp::entity::INVENTORY_MENU, menu.name()));
     }
 
     /// Gives `block` a block entity of a kind of its own, named like the block (`BlockBuilder::entity`).
@@ -1814,7 +1758,8 @@ impl Registry {
     }
 
     /// A tint kind: blocks with `.tint(&KIND)` take its color from the biome they stand in
-    /// (`biome_tint`), `default` (0xRRGGBB) elsewhere and on items.
+    /// (`BiomeBuilder::tint`, `r.edit(&BIOME).tint(..)` for another mod's), `default` (0xRRGGBB)
+    /// elsewhere and on items.
     pub fn tint_kind(&mut self, kind: &'static TintKind, default: u32) -> TintKindBuilder<'_> {
         self.tint_kind_entry(kind)
             .set(&crate::comps::tint_kind::DEFAULT, default)
@@ -1822,11 +1767,6 @@ impl Registry {
 
     fn tint_kind_entry(&mut self, kind: &'static TintKind) -> TintKindBuilder<'_> {
         TintKindBuilder { reg: self, e: crate::entry::Entry::of(kind) }
-    }
-
-    /// The color of a tint kind in a biome; either may be another mod's.
-    pub fn biome_tint(&mut self, biome: &Biome, kind: &TintKind, color: u32) {
-        unsafe { (host().reg_biome_tint)(self.raw, Str::new(biome.name()), Str::new(kind.name()), color) }
     }
 
     /// An entity category: at most `cap` of it spawn naturally near a player; with `despawn` > 0

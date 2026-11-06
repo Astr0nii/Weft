@@ -292,9 +292,9 @@ impl DimSet {
     pub fn spawn_point(&self, c: &Content) -> DVec3 {
         let def = &c.dims[self.id as usize];
         let mut pos = def.spawn_at;
-        if let Some(cb) = def.spawn {
+        if let Some((by, cb)) = def.spawn {
             let mut args = abi::SpawnArgs { seed: self.seed, pos: pos.into() };
-            host::invoke(def.owner, cb, &mut args);
+            host::invoke(by, cb, &mut args);
             pos = args.pos.to_array();
         } else if let Some(p) = search_spawn(c, def, self.seed) {
             pos = p;

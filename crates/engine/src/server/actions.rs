@@ -141,8 +141,8 @@ impl Server {
                     used = true;
                 }
             }
-        } else if let Some(cb) = def.on_use {
-            let a = r.call(def.owner, cb, |w| abi::ItemUseArgs {
+        } else if let Some((by, cb)) = def.on_use {
+            let a = r.call(by, cb, |w| abi::ItemUseArgs {
                 world: w,
                 player: entity,
                 stack: held,

@@ -163,22 +163,22 @@ pub struct ComponentDef {
 
 pub struct MenuDef {
     pub name: String,
-    pub owner: ModId,
     /// Slots of the menu's own inventory (its `slot_owner::MENU` groups).
     pub temp_slots: u32,
     pub groups: Vec<GroupDef>,
     /// Recipe kinds its `arrow` bars open.
     pub recipes: Vec<String>,
-    pub on_change: Option<Callback>,
-    pub on_take: Option<Callback>,
-    pub on_tick: Option<Callback>,
-    pub screen: Option<Callback>,
-    /// How its screen behaves, `abi::screen_flags`, and its keys (`MenuDesc::on_key`).
+    /// The callbacks (`abi::comp::menu`) and the mods they run as.
+    pub on_change: Option<(ModId, Callback)>,
+    pub on_take: Option<(ModId, Callback)>,
+    pub on_tick: Option<(ModId, Callback)>,
+    pub screen: Option<(ModId, Callback)>,
+    pub on_key: Option<(ModId, Callback)>,
+    /// How its screen behaves, `abi::screen_flags`.
     pub flags: u32,
-    pub on_key: Callback,
 }
 
-/// A slot group (`abi::SlotGroupDesc`), its start resolved.
+/// A slot group (`abi::SlotGroupDef`), its start resolved.
 #[derive(Clone, Debug)]
 pub struct GroupDef {
     pub name: String,
@@ -373,7 +373,7 @@ pub struct Game {
     pub attached_models: Vec<(String, String, String)>,
     /// (model, bone, how it moves).
     pub bone_motions: Vec<(String, String, crate::model::BoneMotion)>,
-    /// Who says which model a stack of an item shows as.
+    /// Who says which model a stack of an item shows as (`comp::item::CONDITION`).
     pub item_model_for_stack: FxHashMap<u32, (ModId, Callback)>,
     /// Mod message channels by id (sorted by name, so both sides agree).
     pub packets: Vec<PacketDef>,
@@ -730,17 +730,12 @@ pub struct RawGame {
     /// (owner, kind, hook, callback); hook 0 is the tick.
     /// (owner, callback) run once per tick in every region (`Host::reg_world_tick`).
     pub world_ticks: Vec<(ModId, Callback)>,
-    pub menus: Vec<(usize, MenuDef)>,
     pub chat_format: Option<(ModId, Callback)>,
     /// (owner, name, usage, callback).
     pub commands: Vec<(ModId, String, String, Callback)>,
     /// Commands that run on the client: (owner, name, usage, callback).
     pub client_commands: Vec<(ModId, String, String, Callback)>,
     pub command_extensions: Vec<(ModId, CommandExtension)>,
-    /// (mod, menu): of several, the mod loaded last wins.
-    pub player_menu: Option<(ModId, String)>,
-    /// (mod, groups (name, cols, rows, flags)): likewise.
-    pub player_inventory: Option<(ModId, Vec<(String, u32, u32, u32)>)>,
     pub block_entities: Vec<(String, String)>,
     /// (kind, component, its starting value on that kind).
     pub attach: Vec<(String, String, Option<Vec<u8>>)>,
@@ -753,7 +748,6 @@ pub struct RawGame {
     pub entity_models: Vec<(String, Vec<Part>, [u32; 2])>,
     pub attached_models: Vec<(String, String, String)>,
     pub bone_motions: Vec<(String, String, crate::model::BoneMotion)>,
-    pub item_model_for_stack: Vec<(ModId, String, Callback)>,
     /// (owner, name, side, callback).
     /// (owner, channel, schema, side, callback).
     pub packets: Vec<(ModId, String, String, u32, Callback)>,
@@ -1501,62 +1495,59 @@ pub(crate) unsafe fn copy_entity(owner: ModId, d: &abi::EntityDesc) -> RawEntity
     }
 }
 
-pub(crate) unsafe fn copy_menu(owner: ModId, d: &abi::MenuDesc) -> (usize, MenuDef) {
-    unsafe {
-        // Groups without a start take the slots right after the previous one of their owner.
-        let mut next = [0u32; 5];
-        let text = |s: abi::Str| (s.len > 0).then(|| s.as_str().to_string());
-        let groups: Vec<GroupDef> = d
-            .groups
-            .as_slice()
+/// A menu as its entry says (`abi::comp::menu`).
+fn bake_menu(e: &Entry) -> MenuDef {
+    use abi::comp::menu as m;
+    // Groups without a start take the slots right after the previous one of their owner.
+    let mut next = [0u32; 5];
+    let text = |s: String| (!s.is_empty()).then_some(s);
+    let groups: Vec<GroupDef> = e
+        .or::<Vec<abi::SlotGroupDef>>(m::GROUPS, Vec::new())
+        .into_iter()
+        .map(|g| {
+            let o = (g.owner as usize).min(4);
+            let start = if g.start == u32::MAX { next[o] } else { g.start };
+            next[o] = next[o].max(start + g.cols * g.rows);
+            GroupDef {
+                name: g.name,
+                owner: g.owner,
+                start,
+                cols: g.cols.max(1),
+                rows: g.rows.max(1),
+                flags: g.flags,
+                accepts: g.accepts,
+                limit: g.limit,
+                size: if g.size > 0.0 { g.size } else { 18.0 },
+                background: text(g.background),
+                tooltip: text(g.tooltip),
+                priority: g.priority,
+            }
+        })
+        .collect();
+    MenuDef {
+        name: e.name.clone(),
+        temp_slots: groups
             .iter()
-            .map(|g| {
-                let o = (g.owner as usize).min(4);
-                let start = if g.start == u32::MAX { next[o] } else { g.start };
-                next[o] = next[o].max(start + g.cols * g.rows);
-                GroupDef {
-                    name: g.name.as_str().to_string(),
-                    owner: g.owner,
-                    start,
-                    cols: g.cols.max(1),
-                    rows: g.rows.max(1),
-                    flags: g.flags,
-                    accepts: g.accepts.as_str().to_string(),
-                    limit: g.limit,
-                    size: if g.size > 0.0 { g.size } else { 18.0 },
-                    background: text(g.background),
-                    tooltip: text(g.tooltip),
-                    priority: g.priority,
-                }
-            })
-            .collect();
-        (
-            d.cell as usize,
-            MenuDef {
-                name: d.name.as_str().to_string(),
-                owner,
-                temp_slots: groups
-                    .iter()
-                    .filter(|g| g.owner == weft_abi::slot_owner::MENU)
-                    .map(|g| g.start + g.cols * g.rows)
-                    .max()
-                    .unwrap_or(0),
-                groups,
-                recipes: d
-                    .recipes
-                    .as_str()
-                    .split_whitespace()
-                    .map(str::to_string)
-                    .collect(),
-                on_change: opt(d.on_change),
-                on_take: opt(d.on_take),
-                on_tick: opt(d.on_tick),
-                screen: opt(d.screen),
-                flags: d.flags,
-                on_key: d.on_key,
-            },
-        )
+            .filter(|g| g.owner == weft_abi::slot_owner::MENU)
+            .map(|g| g.start + g.cols * g.rows)
+            .max()
+            .unwrap_or(0),
+        groups,
+        recipes: e.or(m::RECIPES, Vec::new()),
+        on_change: e.callback(m::ON_CHANGE),
+        on_take: e.callback(m::ON_TAKE),
+        on_tick: e.callback(m::ON_TICK),
+        screen: e.callback(m::SCREEN),
+        on_key: e.callback(m::ON_KEY),
+        flags: e.flags(&m::FLAGS),
     }
+}
+
+/// The engine's player kind as an entry, for what of it is one already (`abi::comp::entity`).
+fn engine_player() -> RawEntry {
+    let group = |name: &str, rows, flags| abi::SlotGroupDef { name: name.into(), cols: 9, rows, flags, ..Default::default() };
+    let groups = vec![group("hotbar", 1, weft_abi::slot_flags::HOTBAR), group("main", 3, 0)];
+    RawEntry::engine(ek::ENTITY, PLAYER).set(abi::comp::entity::SLOT_GROUPS, groups)
 }
 
 /// A recipe from its entry; the components that aren't `recipe.*` are values it carries.
@@ -1777,9 +1768,6 @@ pub fn freeze(
 ) -> Game {
     let mut g = Game::default();
     let mut world_ticks = Vec::new();
-    let mut menus = Vec::new();
-    let mut player_menu = None;
-    let mut player_inventory: Option<(ModId, Vec<(String, u32, u32, u32)>)> = None;
     let mut block_entities = Vec::new();
     let mut attach: Vec<(String, String, Option<Vec<u8>>)> = Vec::new();
     let mut packets: Vec<(ModId, String, String, u32, Callback)> = Vec::new();
@@ -1793,12 +1781,10 @@ pub fn freeze(
         .collect();
     let mut entity_watchers: Vec<(ModId, String, Callback)> = Vec::new();
     let mut attached_models: Vec<(String, String, String)> = Vec::new();
-    let mut item_models: Vec<(ModId, String, Callback)> = Vec::new();
     for r in raws {
         entity_watchers.extend(r.client_entity_watchers);
         attached_models.extend(r.attached_models);
         g.bone_motions.extend(r.bone_motions);
-        item_models.extend(r.item_model_for_stack);
         g.client_frames.extend(r.client_frames);
         packets.extend(r.packets);
         event_handlers.extend(r.event_handlers);
@@ -1806,24 +1792,7 @@ pub fn freeze(
         interceptors.extend(r.interceptors);
         modifiers.extend(r.modifiers);
         world_ticks.extend(r.world_ticks);
-        menus.extend(r.menus);
         g.chat_format = r.chat_format.or(g.chat_format);
-        if let Some((owner, name)) = r.player_menu {
-            if player_menu
-                .as_ref()
-                .is_none_or(|(o, _): &(ModId, String)| order(owner) >= order(*o))
-            {
-                player_menu = Some((owner, name));
-            }
-        }
-        if let Some((owner, l)) = r.player_inventory {
-            if player_inventory
-                .as_ref()
-                .is_none_or(|(o, _)| order(owner) >= order(*o))
-            {
-                player_inventory = Some((owner, l));
-            }
-        }
         block_entities.extend(r.block_entities);
         attach.extend(r.attach);
     }
@@ -1853,15 +1822,6 @@ pub fn freeze(
             errors.push(format!("model {} attached to unknown entity {}", a.1, a.0));
         }
     }
-    item_models.sort_by_key(|t| order(t.0));
-    for (owner, item, cb) in item_models {
-        match item_names.get(&item) {
-            Some(&i) => {
-                g.item_model_for_stack.insert(i, (owner, cb));
-            }
-            None => errors.push(format!("item_model_for_stack for unknown item {item}")),
-        }
-    }
     let configs = take_kind(&mut entries, ek::CONFIG);
     let builtin = |kind: u32| -> Vec<RawEntry> {
         match kind {
@@ -1877,6 +1837,7 @@ pub fn freeze(
             ek::PRECIPITATION => engine_precipitations(),
             ek::TEXT_PLACE => crate::hud::engine_places(),
             ek::WEATHER => engine_weathers(),
+            ek::ENTITY => vec![engine_player()],
             ek::ENTITY_EFFECT => abi::entity_effect::NAMES
                 .iter()
                 .map(|n| RawEntry::engine(kind, n))
@@ -2211,26 +2172,24 @@ pub fn freeze(
     world_ticks.sort_by_key(|h: &(ModId, Callback)| order(h.0));
     g.world_ticks = world_ticks;
 
-    menus.sort_by(|a, b| a.1.name.cmp(&b.1.name));
-    for (i, (cell, m)) in menus.into_iter().enumerate() {
-        write_cell(cell, i as u32);
-        g.menu_names.insert(m.name.clone(), i as u32);
-        g.menus.push(m);
+    (g.menus, g.menu_names) = bake_by(kind(ek::MENU), ek::MENU, mod_name, errors, |e| e.name.clone(), |e, _| bake_menu(e));
+    // Of the player's kind, only its inventory and menu are an entry yet.
+    let mut player = crate::entries::fold(ek::NAMES[ek::ENTITY as usize], kind(ek::ENTITY), mod_name, errors);
+    player.apply_patterns(errors);
+    let player = player.entries.iter().find(|e| e.name == PLAYER);
+    let groups: Vec<(String, u32, u32, u32)> = player
+        .map_or(Vec::new(), |p| p.or::<Vec<abi::SlotGroupDef>>(abi::comp::entity::SLOT_GROUPS, Vec::new()))
+        .into_iter()
+        .map(|g| (g.name, g.cols.max(1), g.rows.max(1), g.flags))
+        .collect();
+    if !groups
+        .iter()
+        .any(|g| g.3 & weft_abi::slot_flags::HOTBAR != 0)
+    {
+        errors.push("player inventory: no group is the hotbar (`.hotbar()`)".into());
     }
-    g.player_layout = match player_inventory {
-        Some((_, groups)) => {
-            if !groups
-                .iter()
-                .any(|g| g.3 & weft_abi::slot_flags::HOTBAR != 0)
-            {
-                errors.push("player inventory: no group is the hotbar (`.hotbar()`)".into());
-            }
-            PlayerLayout::new(&groups, equipment)
-        }
-        None => PlayerLayout {
-            ..PlayerLayout::new(&[("hotbar".into(), 9, 1, weft_abi::slot_flags::HOTBAR), ("main".into(), 9, 3, 0)], equipment)
-        },
-    };
+    g.player_layout = PlayerLayout::new(&groups, equipment);
+    let player_menu = player.and_then(|p| p.text(abi::comp::entity::INVENTORY_MENU));
     // Their `inventory` component is the slots each one carries; kinds that wear get the
     // equipment slots after those, the player where its layout says.
     let inventory = c.id(weft_abi::comp::INVENTORY);
@@ -2281,8 +2240,8 @@ pub fn freeze(
             );
         }
     }
-    g.player_menu = player_menu.and_then(|(_, n)| {
-        let m = g.menu_names.get(&n).copied();
+    g.player_menu = player_menu.and_then(|n| {
+        let m = g.menu_names.get(n).copied();
         if m.is_none() {
             errors.push(format!("player menu {n} is not registered"));
         }

@@ -390,10 +390,8 @@ impl Screen for ModScreen {
     }
 
     fn key(&mut self, key: Key, ctx: &mut Ctx) -> bool {
-        let d = self.def();
-        if d.on_key.is_some() {
-            ctx.requests
-                .push(Request::ModKey(d.owner, d.on_key, key.id()));
+        if let Some((by, cb)) = self.def().on_key {
+            ctx.requests.push(Request::ModKey(by, cb, key.id()));
         }
         false
     }
@@ -402,8 +400,9 @@ impl Screen for ModScreen {
         let bg = if cx.in_game { "overlay" } else { "background" };
         ui.root_style(Style::default().stretch());
         ui.panel(bg, Style::default().grow().center(), |ui| {
-            let d = self.def();
-            crate::client::modui::build(ui, cx.lang, Some(cx.input), d.owner, d.screen.unwrap_or_default(), cx.client);
+            if let Some((by, cb)) = self.def().screen {
+                crate::client::modui::build(ui, cx.lang, Some(cx.input), by, cb, cx.client);
+            }
         });
     }
 }

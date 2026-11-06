@@ -949,7 +949,7 @@ macro_rules! with_components {
     };
 }
 
-with_components!(BlockBuilder: Block, ItemBuilder: Item, BiomeBuilder: Biome, DimensionBuilder: Dimension);
+with_components!(BlockBuilder: Block);
 
 /// What carries items: entity kinds (block entities among them) and item stacks.
 pub trait Holds: WithComponents {
@@ -1066,41 +1066,25 @@ impl kind::Edits for kind::Block {
         b
     }
 }
-impl kind::Edits for kind::Item {
-    type Builder<'a> = ItemBuilder<'a>;
-    fn edit<'a>(r: &'a mut Registry, h: &'static Item) -> ItemBuilder<'a> {
-        let mut b = r.item(h);
-        (b.edit, b.texture) = (true, String::new());
+impl kind::Builds for kind::Block {
+    type Builder<'a> = BlockBuilder<'a>;
+    fn builder<'a>(r: &'a mut Registry, h: &'static Block) -> BlockBuilder<'a> {
+        r.block(h)
+    }
+    /// Its item replaces theirs too.
+    fn replace<'a>(r: &'a mut Registry, h: &'static Block) -> BlockBuilder<'a> {
+        unsafe { (host().reg_override)(r.raw, abi::entry_kind::BLOCK, Str::new(h.name()), 0) };
+        let mut b = r.block(h);
+        b.replacing = true;
         b
     }
 }
-impl kind::Edits for kind::Biome {
-    type Builder<'a> = BiomeBuilder<'a>;
-    fn edit<'a>(r: &'a mut Registry, h: &'static Biome) -> BiomeBuilder<'a> {
-        let mut b = r.biome(h);
-        b.edit = true;
-        b
+impl kind::Builds for kind::Entity {
+    type Builder<'a> = crate::game::EntityBuilder<'a>;
+    fn builder<'a>(r: &'a mut Registry, h: &'static crate::EntityKind) -> crate::game::EntityBuilder<'a> {
+        r.entity(h)
     }
 }
-
-macro_rules! builds {
-    ($($k:ident => $b:ty, $f:ident;)*) => {
-        $(impl kind::Builds for kind::$k {
-            type Builder<'a> = $b;
-            fn builder<'a>(r: &'a mut Registry, h: &'static Handle<Self>) -> $b {
-                r.$f(h)
-            }
-        })*
-    };
-}
-builds!(
-    Block => BlockBuilder<'a>, block;
-    Item => ItemBuilder<'a>, item;
-    Entity => crate::game::EntityBuilder<'a>, entity;
-    Biome => BiomeBuilder<'a>, biome;
-    Dimension => DimensionBuilder<'a>, dimension;
-    Menu => crate::game::MenuBuilder<'a>, menu;
-);
 
 impl Registry {
     pub fn namespace(&self) -> &'static str {
@@ -1120,9 +1104,9 @@ impl Registry {
 
     /// Changes only what the builder sets of something registered already, another mod's or
     /// this one's; the rest stays. Blocks (`r.edit(&base::CACTUS).light(5)`: without
-    /// `.states(...)` its states stay, the components set go on top), items, biomes, ores
-    /// (`IRON_ORE.ore()`), liquids (`WATER.liquid()`), terrains (`OVERWORLD.terrain()`), loot
-    /// tables (`ZOMBIE.loot()`) and the rest by their handles.
+    /// `.states(...)` its states stay, the components set go on top), items, biomes, dimensions,
+    /// menus, ores (`IRON_ORE.ore()`), liquids (`WATER.liquid()`), terrains
+    /// (`OVERWORLD.terrain()`), loot tables (`ZOMBIE.loot()`) and the rest by their handles.
     pub fn edit<K: kind::Edits>(&mut self, handle: &'static Handle<K>) -> K::Builder<'_> {
         K::edit(self, handle)
     }
@@ -1140,6 +1124,9 @@ impl Registry {
         let mut e = crate::entry::Entry::of(handle);
         e.mode = abi::entry_mode::REMOVE;
         e.send(self);
+        if K::KIND == abi::entry_kind::BLOCK {
+            drop(self.block_item(handle.name(), String::new(), abi::entry_mode::REMOVE));
+        }
     }
 
     /// Registers a block and, unless `.no_item()` is called, an item that places it (and carries
@@ -1158,6 +1145,7 @@ impl Registry {
             item_texture: String::new(),
             callbacks: BlockCallbacks::default(),
             replace: false,
+            replacing: false,
             own_states: false,
             retexture: Vec::new(),
             props: Vec::new(),
@@ -1178,49 +1166,24 @@ impl Registry {
 
     /// Texture defaults to `item/<name>`.
     pub fn item<'a>(&'a mut self, item: &'static Item) -> ItemBuilder<'a> {
-        ItemBuilder {
-            _p: PhantomData,
-            raw: self.raw,
-            name: item.name().to_string(),
-            texture: crate::asset("item", item.name()),
-            handle: Some(item),
-            block: String::new(),
-            components: Vec::new(),
-            on_use: abi::Callback::NONE,
-            condition: abi::Callback::NONE,
-            edit: false,
-        }
+        ItemBuilder { reg: self, e: crate::entry::Entry::of(item) }
     }
 
-    /// The item placing `block`, named like it: the engine gives it the block's components, and
-    /// without `texture` it shows the block's model.
-    fn block_item(&mut self, block: &str, texture: String) -> ItemBuilder<'_> {
-        ItemBuilder {
-            _p: PhantomData,
-            raw: self.raw,
-            name: block.to_string(),
-            texture,
-            handle: None,
-            block: block.to_string(),
-            components: Vec::new(),
-            on_use: abi::Callback::NONE,
-            condition: abi::Callback::NONE,
-            edit: false,
+    /// The item placing `block`, named like it, registered as `mode` says (`entry_mode`): the
+    /// engine gives it the block's components, and without `texture` it shows the block's model.
+    fn block_item(&mut self, block: &str, texture: String, mode: u32) -> ItemBuilder<'_> {
+        let mut e = crate::entry::Entry::new(abi::entry_kind::ITEM, block.to_string());
+        e.mode = mode;
+        if mode == abi::entry_mode::REMOVE {
+            return ItemBuilder { reg: self, e };
         }
+        ItemBuilder { reg: self, e }
+            .set_text(&crate::comps::item::BLOCK, block)
+            .set_text(&crate::comps::item::TEXTURE, &texture)
     }
 
     pub fn biome<'a>(&'a mut self, biome: &'static Biome) -> BiomeBuilder<'a> {
-        BiomeBuilder {
-            _p: PhantomData,
-            raw: self.raw,
-            ns: self.ns,
-            name: biome.name().to_string(),
-            handle: Some(biome),
-            rule: crate::terrain::BiomeRule::blank(),
-            tints: Vec::new(),
-            components: Vec::new(),
-            edit: false,
-        }
+        BiomeBuilder { reg: self, e: crate::entry::Entry::of(biome) }
     }
 
     /// Creative inventory tab named `tab.<ns>.<name>` in the language files, shown with `icon`.
@@ -1262,16 +1225,7 @@ impl Registry {
     }
 
     pub fn dimension<'a>(&'a mut self, dimension: &'static Dimension) -> DimensionBuilder<'a> {
-        DimensionBuilder {
-            raw: self.raw,
-            name: dimension.name().to_string(),
-            handle: Some(dimension),
-            desc: abi::DimensionDesc::DEFAULT,
-            components: Vec::new(),
-            daylight: Vec::new(),
-            weathers: String::new(),
-            _p: PhantomData,
-        }
+        DimensionBuilder { reg: self, e: crate::entry::Entry::of(dimension) }
     }
 
     /// Sets a component on blocks and items of any mod, by reference: `r.set("base:coal", &FUEL,
@@ -1857,6 +1811,8 @@ pub struct BlockBuilder<'a> {
     item_texture: String,
     callbacks: BlockCallbacks,
     replace: bool,
+    /// `Registry::replace`: its item replaces theirs.
+    replacing: bool,
     own_states: bool,
     retexture: Vec<(String, String)>,
     props: Vec<(String, Vec<String>)>,
@@ -2720,11 +2676,14 @@ impl Drop for BlockBuilder<'_> {
             (true, true) if !texture.is_empty() => drop(
                 self.reg
                     .edit(Item::generated(self.name.clone()))
-                    .texture_raw(texture),
+                    .set_text(&crate::comps::item::TEXTURE, &texture),
             ),
             (true, true) => {}
             (true, false) => self.reg.remove(Item::generated(self.name.clone())),
-            (false, true) => drop(self.reg.block_item(&self.name, texture)),
+            (false, true) => {
+                let mode = if self.replacing { abi::entry_mode::REPLACE } else { abi::entry_mode::NEW };
+                drop(self.reg.block_item(&self.name, texture, mode))
+            }
             (false, false) => {}
         }
         if let Some((item, count)) = self.drops.take() {
@@ -2746,28 +2705,22 @@ impl Drop for BlockBuilder<'_> {
 }
 
 pub struct ItemBuilder<'a> {
-    _p: PhantomData<&'a mut Registry>,
-    raw: *mut abi::Registrar,
-    name: String,
-    texture: String,
-    handle: Option<&'static Item>,
-    block: String,
-    components: Vec<Pending>,
-    on_use: abi::Callback,
-    condition: abi::Callback,
-    edit: bool,
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
 
+crate::entry::entry_builder!(
+    Item => ItemBuilder, item;
+    Biome => BiomeBuilder, biome;
+    Dimension => DimensionBuilder, dimension;
+);
+
 impl ItemBuilder<'_> {
-    fn texture_raw(mut self, t: String) -> Self {
-        self.texture = t;
-        self
-    }
     /// How a stack of it looks by what is in it, decided once per kind of stack (its data):
     /// `.condition(|s, v| if s.wear() > 0 { v.texture("can_empty"); })`. Other players' hands
     /// show the usual look: their stacks aren't sent.
-    pub fn condition(mut self, f: impl Fn(&abi::ItemStack, &mut Looks) + Send + Sync + 'static) -> Self {
-        self.condition = callback(move |a: &mut abi::ItemModelArgs| {
+    pub fn condition(self, f: impl Fn(&abi::ItemStack, &mut Looks) + Send + Sync + 'static) -> Self {
+        let cb = callback(move |a: &mut abi::ItemModelArgs| {
             let mut v = Looks::default();
             f(&a.stack, &mut v);
             LOOKS.with(|l| {
@@ -2776,11 +2729,11 @@ impl ItemBuilder<'_> {
                 (a.model, a.texture) = (Str::new(&l.model), Str::new(&l.texture));
             });
         });
-        self
+        self.set(&crate::comps::item::CONDITION, cb)
     }
-    pub fn texture(mut self, t: &str) -> Self {
-        self.texture = crate::asset("item", t);
-        self
+    pub fn texture(self, t: &str) -> Self {
+        let t = crate::asset("item", t);
+        self.set_text(&crate::comps::item::TEXTURE, &t)
     }
     /// Stack size (`max_stack`).
     pub fn max_stack(self, n: u32) -> Self {
@@ -2788,11 +2741,9 @@ impl ItemBuilder<'_> {
     }
     /// Its clips, from `animations/<name>.animation.json`; a file named after the item is used
     /// even without this. They play on whoever holds it.
-    pub fn animations(mut self, name: &str) -> Self {
+    pub fn animations(self, name: &str) -> Self {
         let name = crate::asset("", name);
-        self.components
-            .push(Pending::text(abi::comp::ANIMATIONS, &name));
-        self
+        self.set_text(&c::ANIMATIONS, &name)
     }
     /// Needs both hands: while the other holds something it does nothing, and it can't go in
     /// the other hand. Its `hold` action shows the two.
@@ -2802,7 +2753,8 @@ impl ItemBuilder<'_> {
     /// A `two_handed` item may be held in one hand after all, playing this action. It goes in
     /// the other hand then too.
     pub fn one_handed_action(mut self, action: &str) -> Self {
-        self.components
+        self.e
+            .ops
             .push(Pending::text(abi::comp::ONE_HANDED, action));
         self.tag(abi::comp::TWO_HANDED)
     }
@@ -2851,9 +2803,8 @@ impl ItemBuilder<'_> {
     pub fn attack_damage(self, damage: f32) -> Self {
         self.set(&c::ATTACK_DAMAGE, damage)
     }
-    pub fn places(mut self, block: &Block) -> Self {
-        self.block = block.name().to_string();
-        self
+    pub fn places(self, block: &Block) -> Self {
+        self.set_text(&crate::comps::item::BLOCK, block.name())
     }
     /// Worn in equipment `slot`, where it shows as `model` on the wearer's bone `bone`, moved by
     /// what plays on the wearer, like `Registry::bone_model`: a tail only those who wear it have.
@@ -2881,7 +2832,8 @@ impl ItemBuilder<'_> {
     /// Used on a block, puts `entity` on that side of it. One is used up, outside creative. Entities
     /// have an egg of their own without this; it is for something else that hatches one.
     pub fn spawns(mut self, entity: &'static crate::EntityKind) -> Self {
-        self.components
+        self.e
+            .ops
             .push(Pending::text(abi::comp::SPAWN_EGG, entity.name()));
         self.on_use(move |u| {
             let Some((p, face)) = u.target_block() else { return false };
@@ -2894,36 +2846,12 @@ impl ItemBuilder<'_> {
         })
     }
 
-    pub fn on_use(mut self, f: impl Fn(&mut ItemUse) -> bool + Send + Sync + 'static) -> Self {
-        self.on_use = callback(move |a: &mut abi::ItemUseArgs| {
+    pub fn on_use(self, f: impl Fn(&mut ItemUse) -> bool + Send + Sync + 'static) -> Self {
+        let cb = callback(move |a: &mut abi::ItemUseArgs| {
             let handled = f(ItemUse::wrap(a));
             a.handled = handled as u32;
         });
-        self
-    }
-}
-
-impl Drop for ItemBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let mut scratch = Vec::new();
-        let values = raw_values(&self.components, &mut scratch);
-        let desc = abi::ItemDesc {
-            name: Str::new(&self.name),
-            cell: cell(self.handle),
-            texture: Str::new(&self.texture),
-            block: Str::new(&self.block),
-            components: Slice::new(&values),
-            on_use: self.on_use,
-            edit: self.edit as u32,
-            ..abi::ItemDesc::DEFAULT
-        };
-        unsafe { (host().reg_item)(self.raw, &desc) }
-        if self.condition.is_some() {
-            unsafe { (host().reg_item_looks)(self.raw, Str::new(&self.name), self.condition) }
-        }
+        self.set(&crate::comps::item::ON_USE, cb)
     }
 }
 
@@ -2952,52 +2880,55 @@ thread_local! {
 }
 
 pub struct BiomeBuilder<'a> {
-    _p: PhantomData<&'a mut Registry>,
-    raw: *mut abi::Registrar,
-    ns: &'static str,
-    name: String,
-    handle: Option<&'static Biome>,
-    rule: crate::terrain::BiomeRule,
-    tints: Vec<(&'static TintKind, u32)>,
-    components: Vec<Pending>,
-    edit: bool,
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
 
-/// A biome's climate and surface. Terrain rules placing it start from these
+/// A biome's climate and surface (`comps::biome`). Terrain rules placing it start from these
 /// (`BiomeRule::new("desert")` needs nothing else) and may change them there.
 impl BiomeBuilder<'_> {
-    fn edit(mut self, f: impl FnOnce(crate::terrain::BiomeRule) -> crate::terrain::BiomeRule) -> Self {
-        self.rule = f(std::mem::replace(&mut self.rule, crate::terrain::BiomeRule::blank()));
-        self
+    /// Where field `name` of the terrain fits it; given again, the new range replaces the old.
+    fn range(self, name: &str, range: impl std::ops::RangeBounds<f64>) -> Self {
+        let (min, max) = crate::terrain::range_f64(range);
+        self.push(&crate::comps::biome::RANGES, abi::RuleRange { name: name.to_string(), min, max })
     }
     /// Where the climate fits it, like `0.35..` or `..-0.45` (from inclusive, to exclusive);
     /// the terrain's fields are about -1.4..1.4. Without one it fits everywhere.
     pub fn temperature(self, range: impl std::ops::RangeBounds<f64>) -> Self {
-        self.edit(|r| r.temperature(range))
+        self.range("temperature", range)
     }
     pub fn humidity(self, range: impl std::ops::RangeBounds<f64>) -> Self {
-        self.edit(|r| r.humidity(range))
+        self.range("humidity", range)
     }
     /// Top block, then `depth` blocks of filler, then the terrain's stone.
     pub fn surface(self, top: &str, filler: &str, depth: i32) -> Self {
-        self.edit(|r| r.surface(top, filler, depth))
+        let (top, filler) = (qualify(self.reg.ns, top), qualify(self.reg.ns, filler));
+        self.set_text(&crate::comps::biome::TOP, &top)
+            .set_text(&crate::comps::biome::FILLER, &filler)
+            .set(&crate::comps::biome::DEPTH, depth)
     }
     /// The lowest `layers` of the filler become `block` (sandstone under sand).
     pub fn under(self, block: &str, layers: i32) -> Self {
-        self.edit(|r| r.under(block, layers))
+        let block = qualify(self.reg.ns, block);
+        self.set_text(&crate::comps::biome::UNDER, &block)
+            .set(&crate::comps::biome::UNDER_LAYERS, layers)
     }
     /// Top block for columns lower than `below` (gravel on deep sea floors).
     pub fn deep_top(self, block: &str, below: i32) -> Self {
-        self.edit(|r| r.deep_top(block, below))
+        let block = qualify(self.reg.ns, block);
+        self.set_text(&crate::comps::biome::DEEP_TOP, &block)
+            .set(&crate::comps::biome::DEEP_BELOW, below)
     }
     /// Plain stone above this height (bare peaks).
     pub fn bare_above(self, y: i32) -> Self {
-        self.edit(|r| r.bare_above(y))
+        self.set(&crate::comps::biome::BARE_ABOVE, y)
     }
     /// A frozen biome: the water surface freezes into `block`, and it has the tag `frozen`
     /// (decorations put no flowers there).
     pub fn frozen(self, block: &str) -> Self {
-        self.edit(|r| r.frozen(block)).tag("frozen")
+        let block = qualify(self.reg.ns, block);
+        self.set_text(&crate::comps::biome::ICE, &block)
+            .tag("frozen")
     }
     /// Rain falls as snow here: `precipitation(&precipitations::SNOW)`.
     pub fn snows(self) -> Self {
@@ -3009,158 +2940,93 @@ impl BiomeBuilder<'_> {
     }
     /// The color (`0xRRGGBB`) blocks tinted with `kind` take here (`tints::GRASS`, or a mod's
     /// own kind). Kinds not given keep their default.
-    pub fn tint(mut self, kind: &'static TintKind, color: u32) -> Self {
-        self.tints.push((kind, color));
-        self
-    }
-}
-
-impl Drop for BiomeBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let mut scratch = Vec::new();
-        let values = raw_values(&self.components, &mut scratch);
-        let rule = self.rule.qualified(self.ns);
-        let ranges: Vec<abi::FieldRange> = rule
-            .ranges
-            .iter()
-            .map(|r| abi::FieldRange { name: Str::new(&r.name), min: r.min, max: r.max })
-            .collect();
-        let desc = abi::BiomeDesc {
-            name: Str::new(&self.name),
-            cell: cell(self.handle),
-            rule: crate::terrain::rule_desc(&rule, &ranges),
-            components: Slice::new(&values),
-            edit: self.edit as u32,
-        };
-        unsafe { (host().reg_biome)(self.raw, &desc) }
-        for (kind, color) in &self.tints {
-            unsafe { (host().reg_biome_tint)(self.raw, Str::new(&self.name), Str::new(kind.name()), *color) }
-        }
+    pub fn tint(self, kind: &'static TintKind, color: u32) -> Self {
+        self.push(&crate::comps::biome::TINTS, abi::BiomeTint { kind: kind.name().to_string(), color })
     }
 }
 
 pub struct DimensionBuilder<'a> {
-    raw: *mut abi::Registrar,
-    name: String,
-    handle: Option<&'static Dimension>,
-    desc: abi::DimensionDesc,
-    components: Vec<Pending>,
-    daylight: Vec<[f32; 2]>,
-    weathers: String,
-    _p: PhantomData<&'a mut Registry>,
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
 }
 
 impl DimensionBuilder<'_> {
     /// Must be a pure function of its input: it runs in parallel and must give the same cube for the
     /// same seed and position on every machine.
-    pub fn generator(mut self, f: impl Fn(&mut Gen) + Send + Sync + 'static) -> Self {
-        self.desc.generator = callback(move |a: &mut abi::GenArgs| f(Gen::wrap(a)));
-        self
+    pub fn generator(self, f: impl Fn(&mut Gen) + Send + Sync + 'static) -> Self {
+        self.set(&crate::comps::dimension::GENERATOR, callback(move |a: &mut abi::GenArgs| f(Gen::wrap(a))))
     }
     /// The block a player starts on top of in this dimension, for a seed. Without one the engine
     /// finds open ground near 0, 0 on the dimension's columns (biomes tagged `spawn_biome`
     /// first), out of caves and trees.
-    pub fn spawn_point(mut self, f: impl Fn(u64) -> BlockPos + Send + Sync + 'static) -> Self {
-        self.desc.spawn = callback(move |a: &mut abi::SpawnArgs| a.pos = f(a.seed));
-        self
+    pub fn spawn_point(self, f: impl Fn(u64) -> BlockPos + Send + Sync + 'static) -> Self {
+        self.set(&crate::comps::dimension::SPAWN, callback(move |a: &mut abi::SpawnArgs| a.pos = f(a.seed)))
     }
     /// Players start here and respawn here. When several mods claim it, the one loaded last
     /// wins; without any, the first dimension registered is used.
-    pub fn player_spawn(mut self) -> Self {
-        self.desc.flags |= abi::dim_flags::PLAYER_SPAWN;
-        self
+    pub fn player_spawn(self) -> Self {
+        self.tag(abi::comp::dimension::PLAYER_SPAWN)
     }
     /// Blocks never update here (no neighbor updates, block ticks or growth).
-    pub fn no_block_updates(mut self) -> Self {
-        self.desc.flags |= abi::dim_flags::NO_BLOCK_UPDATES;
-        self
+    pub fn no_block_updates(self) -> Self {
+        self.tag(abi::comp::dimension::NO_BLOCK_UPDATES)
     }
     /// Only what names it: ores, scatters and decorations meant for every dimension stay out
     /// (a superflat test world).
-    pub fn bare(mut self) -> Self {
-        self.desc.flags |= abi::dim_flags::BARE;
-        self
+    pub fn bare(self) -> Self {
+        self.tag(abi::comp::dimension::BARE)
     }
     /// Surface height and biome id of column (x, z) for (seed, x, z), for a dimension without a
     /// terrain. The generator reads them from `g.columns()` instead of working them out again,
     /// and structures, scatters (trees) and the spawn search stand on them.
-    pub fn column(mut self, f: impl Fn(u64, i32, i32) -> (i32, u32) + Send + Sync + 'static) -> Self {
-        self.desc.column = callback(move |a: &mut abi::ColumnArgs| (a.height, a.biome) = f(a.seed, a.x, a.z));
-        self
+    pub fn column(self, f: impl Fn(u64, i32, i32) -> (i32, u32) + Send + Sync + 'static) -> Self {
+        let cb = callback(move |a: &mut abi::ColumnArgs| (a.height, a.biome) = f(a.seed, a.x, a.z));
+        self.set(&crate::comps::dimension::COLUMN, cb)
     }
     /// Inclusive limits in cubes (16 blocks).
-    pub fn height_cubes(mut self, min_cube: i32, max_cube: i32) -> Self {
-        self.desc.min_cube_y = min_cube;
-        self.desc.max_cube_y = max_cube;
-        self
+    pub fn height_cubes(self, min_cube: i32, max_cube: i32) -> Self {
+        self.set(&crate::comps::dimension::CUBES, [min_cube, max_cube])
     }
     /// Everything at or above this cube y is empty, so sky light there needs no generation.
-    pub fn sky_above(mut self, cube_y: i32) -> Self {
-        self.desc.sky_cube_y = cube_y;
-        self
+    pub fn sky_above(self, cube_y: i32) -> Self {
+        self.set(&crate::comps::dimension::SKY_ABOVE, cube_y)
     }
     /// The weathers that come here now and then after clear weather, each by its weight and
     /// duration (`&[&weathers::RAIN, &weathers::THUNDER]` is vanilla's). Without, always clear.
-    pub fn weathers(mut self, list: &[&Weather]) -> Self {
-        self.weathers = list.iter().map(|w| w.name()).collect::<Vec<_>>().join(" ");
-        self
+    pub fn weathers(self, list: &[&Weather]) -> Self {
+        self.set(&crate::comps::dimension::WEATHERS, list.iter().map(|w| w.name().to_string()).collect())
     }
-    pub fn no_sky_light(mut self) -> Self {
-        self.desc.sky_light = 0;
-        self
+    pub fn no_sky_light(self) -> Self {
+        self.tag(abi::comp::dimension::NO_SKY_LIGHT)
     }
     /// Blocks per second squared.
-    pub fn gravity(mut self, g: f32) -> Self {
-        self.desc.gravity = g;
-        self
+    pub fn gravity(self, g: f32) -> Self {
+        self.set(&crate::comps::dimension::GRAVITY, g)
     }
-    pub fn day_length(mut self, ticks: u32) -> Self {
-        self.desc.day_length = ticks;
-        self
+    pub fn day_length(self, ticks: u32) -> Self {
+        self.set(&crate::comps::dimension::DAY_LENGTH, ticks)
     }
     /// Daylight through the day as points (turn of the sky, level 0..1): the turn 0 is sunrise,
     /// 0.25 noon, 0.5 sunset, 0.75 midnight, with straight lines between. Endless dusk is
     /// `&[(0.0, 0.4)]`, a long polar day `&[(0.0, 1.0), (0.6, 1.0), (0.7, 0.0), (0.95, 0.0)]`.
     /// Spawning, growth, burning in the sun and the sky all follow it.
-    pub fn daylight(mut self, points: &[(f32, f32)]) -> Self {
-        self.daylight = points.iter().map(|&(t, l)| [t, l]).collect();
-        self
+    pub fn daylight(self, points: &[(f32, f32)]) -> Self {
+        let points = points
+            .iter()
+            .map(|&(turn, level)| abi::DaylightPoint { turn, level })
+            .collect();
+        self.set(&crate::comps::dimension::DAYLIGHT, points)
     }
-    pub fn fixed_time(mut self, time: u32) -> Self {
-        self.desc.day_length = 0;
-        self.desc.fixed_time = time;
-        self
+    pub fn fixed_time(self, time: u32) -> Self {
+        self.set(&crate::comps::dimension::DAY_LENGTH, 0)
+            .set(&crate::comps::dimension::FIXED_TIME, time)
     }
-    pub fn sky_color(mut self, sky: u32, fog: u32) -> Self {
-        self.desc.sky_color = sky;
-        self.desc.fog_color = fog;
-        self
+    pub fn sky_color(self, sky: u32, fog: u32) -> Self {
+        self.set(&crate::comps::dimension::SKY_COLOR, sky)
+            .set(&crate::comps::dimension::FOG_COLOR, fog)
     }
-    pub fn ambient_light(mut self, level: u32) -> Self {
-        self.desc.ambient = level;
-        self
-    }
-}
-
-impl Drop for DimensionBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let mut scratch = Vec::new();
-        let values = raw_values(&self.components, &mut scratch);
-        let desc = abi::DimensionDesc {
-            name: Str::new(&self.name),
-            cell: cell(self.handle),
-            components: Slice::new(&values),
-            daylight: Slice::new(&self.daylight),
-            weathers: Str::new(&self.weathers),
-            ..self.desc
-        };
-        unsafe { (host().reg_dimension)(self.raw, &desc) }
+    pub fn ambient_light(self, level: u32) -> Self {
+        self.set(&crate::comps::dimension::AMBIENT, level)
     }
 }
 
@@ -3837,18 +3703,15 @@ impl LiquidBuilder<'_> {
             drop(b);
             let item = Item::generated(name.clone());
             let mut it = match texture {
-                Some(texture) => {
-                    let mut it = self
-                        .reg
-                        .item(item)
-                        .set_text(&c::FLUID, &name)
-                        .max_stack(u32::MAX);
-                    it.texture = texture;
-                    it
-                }
+                Some(texture) => self
+                    .reg
+                    .item(item)
+                    .set_text(&c::FLUID, &name)
+                    .max_stack(u32::MAX)
+                    .set_text(&crate::comps::item::TEXTURE, &texture),
                 None => self.reg.edit(item),
             };
-            it.components.extend(tags);
+            it.e.ops.extend(tags);
         }
         if let Some((item, empty, tab)) = self.bucket.take() {
             self.reg

@@ -417,3 +417,68 @@ pub mod terrain {
     pub static RULE_EDITS: Component<Vec<abi::BiomeRule>, Terrain> = Component::named(t::RULE_EDITS);
     pub static CAVE_BIOMES: Component<Vec<abi::CaveBiome>, Terrain> = Component::named(t::CAVE_BIOMES);
 }
+
+/// An item's own (`abi::comp::item`), besides the shared ones (`component::MAX_STACK`..).
+pub mod item {
+    use crate::abi::comp::item as i;
+    use crate::kind::Item;
+    use crate::{Component, Text};
+    pub static TEXTURE: Component<Text, Item> = Component::named(i::TEXTURE);
+    pub static BLOCK: Component<Text, Item> = Component::named(i::BLOCK);
+    pub static ON_USE: Component<crate::abi::Callback, Item> = Component::named(i::ON_USE);
+    pub static CONDITION: Component<crate::abi::Callback, Item> = Component::named(i::CONDITION);
+}
+
+/// A biome's own climate and surface (`abi::comp::biome`), what terrain rules placing it start
+/// from, and its tints.
+pub mod biome {
+    use crate::abi::{self, comp::biome as b};
+    use crate::kind::Biome;
+    use crate::{Component, Text};
+    pub static RANGES: Component<Vec<abi::RuleRange>, Biome> = Component::named(b::RANGES);
+    pub static HEIGHT: Component<[i32; 2], Biome> = Component::named(b::HEIGHT);
+    pub static TOP: Component<Text, Biome> = Component::named(b::TOP);
+    pub static FILLER: Component<Text, Biome> = Component::named(b::FILLER);
+    pub static DEPTH: Component<i32, Biome> = Component::named(b::DEPTH);
+    pub static UNDER: Component<Text, Biome> = Component::named(b::UNDER);
+    pub static UNDER_LAYERS: Component<i32, Biome> = Component::named(b::UNDER_LAYERS);
+    pub static DEEP_TOP: Component<Text, Biome> = Component::named(b::DEEP_TOP);
+    pub static DEEP_BELOW: Component<i32, Biome> = Component::named(b::DEEP_BELOW);
+    pub static BARE_ABOVE: Component<i32, Biome> = Component::named(b::BARE_ABOVE);
+    pub static ICE: Component<Text, Biome> = Component::named(b::ICE);
+    pub static TINTS: Component<Vec<abi::BiomeTint>, Biome> = Component::named(b::TINTS);
+}
+
+/// What a dimension is made of: tags for its flags (`abi::comp::dimension`) and these.
+pub mod dimension {
+    use crate::Component;
+    use crate::abi::{self, comp::dimension as d};
+    use crate::kind::Dimension;
+    pub static GENERATOR: Component<abi::Callback, Dimension> = Component::named(d::GENERATOR);
+    pub static SPAWN: Component<abi::Callback, Dimension> = Component::named(d::SPAWN);
+    pub static COLUMN: Component<abi::Callback, Dimension> = Component::named(d::COLUMN);
+    pub static CUBES: Component<[i32; 2], Dimension> = Component::named(d::CUBES);
+    pub static SKY_ABOVE: Component<i32, Dimension> = Component::named(d::SKY_ABOVE);
+    pub static GRAVITY: Component<f32, Dimension> = Component::named(d::GRAVITY);
+    pub static DAY_LENGTH: Component<u32, Dimension> = Component::named(d::DAY_LENGTH);
+    pub static FIXED_TIME: Component<u32, Dimension> = Component::named(d::FIXED_TIME);
+    pub static DAYLIGHT: Component<Vec<abi::DaylightPoint>, Dimension> = Component::named(d::DAYLIGHT);
+    pub static SKY_COLOR: Component<u32, Dimension> = Component::named(d::SKY_COLOR);
+    pub static FOG_COLOR: Component<u32, Dimension> = Component::named(d::FOG_COLOR);
+    pub static AMBIENT: Component<u32, Dimension> = Component::named(d::AMBIENT);
+    pub static WEATHERS: Component<Vec<String>, Dimension> = Component::named(d::WEATHERS);
+}
+
+/// What a menu is made of: tags for how its screen behaves (`abi::comp::menu::FLAGS`) and these.
+pub mod menu {
+    use crate::Component;
+    use crate::abi::{self, comp::menu as m};
+    use crate::kind::Menu;
+    pub static GROUPS: Component<Vec<abi::SlotGroupDef>, Menu> = Component::named(m::GROUPS);
+    pub static RECIPES: Component<Vec<String>, Menu> = Component::named(m::RECIPES);
+    pub static ON_CHANGE: Component<abi::Callback, Menu> = Component::named(m::ON_CHANGE);
+    pub static ON_TAKE: Component<abi::Callback, Menu> = Component::named(m::ON_TAKE);
+    pub static ON_TICK: Component<abi::Callback, Menu> = Component::named(m::ON_TICK);
+    pub static SCREEN: Component<abi::Callback, Menu> = Component::named(m::SCREEN);
+    pub static ON_KEY: Component<abi::Callback, Menu> = Component::named(m::ON_KEY);
+}
