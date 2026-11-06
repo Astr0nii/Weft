@@ -446,17 +446,10 @@ pub fn register(r: &mut Registry) {
         .light_rgb(15, 13, 10)
         .hardness(0.0)
         .tab(&crate::tabs::FUNCTIONAL);
-    // Facing away from the solid wall it hangs on.
+    // On walls only, up to four in one block.
     r.block(&LADDER)
         .sound_group("wood")
-        .facing(Facings::HORIZONTAL, Toward::Face)
-        .states(|p, s| {
-            let d = p.facing();
-            // Against the wall to the north when it faces south.
-            s.oriented(weft_sdk::signal::Orientation::new(Dir::Down, d.opposite()))
-                .model_box([0.0, 0.0, 0.0], [16.0, 16.0, 1.0])
-                .needs(d.opposite(), "")
-        })
+        .on_sides(Facings::HORIZONTAL)
         .climbable()
         .not_solid()
         .hardness(0.4)

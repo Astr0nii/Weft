@@ -90,6 +90,7 @@ pub fn all() -> Vec<TestDef> {
         gameplay::sneak_edge,
         gameplay::movement_attributes,
         gameplay::mob_physics,
+        gameplay::ladder_sides,
         gameplay::player_box,
         gameplay::food,
         gameplay::drop_and_pickup,

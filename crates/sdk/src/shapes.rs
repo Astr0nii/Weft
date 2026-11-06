@@ -205,3 +205,85 @@ pub fn torch_state<'a>(d: Dir, s: State<'a>, texture: &str) -> State<'a> {
             .hitbox([6.0, 0.0, 6.0], [10.0, 10.0, 10.0])
     }
 }
+
+impl BlockBuilder<'_> {
+    /// A layer one pixel thick against sides of its cell (vines, ladders, glow lichen, a wall
+    /// sign's plate): a property per side in `allowed` (`north` .. `down`, `"true"` where it lies).
+    /// It goes against the face clicked, or the allowed side nearest the look when that one
+    /// isn't; its own item put into its cell adds a side, up to every allowed one. A side whose
+    /// block goes falls off, and with none left so does the rest. `Facings::HORIZONTAL` for
+    /// ladders (walls only), `Facings::ALL` for vines everywhere.
+    pub fn on_sides(self, allowed: Facings) -> Self {
+        let sides: Vec<Dir> = allowed.dirs().collect();
+        // The first state, the item's, lies on the first side.
+        let mut b = sides.iter().enumerate().fold(self, |b, (i, d)| {
+            let values = if i == 0 { ["true", "false"] } else { ["false", "true"] };
+            b.prop(d.name(), values)
+        });
+        for &d in &sides {
+            let (min, max) = plate(d);
+            b = b.state_where(&format!("{}=true", d.name()), move |s| s.model_box(min, max));
+        }
+        let none = sides
+            .iter()
+            .map(|d| format!("{}=false", d.name()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let side_of = move |p: &Place| {
+            let d = p.face().opposite();
+            if allowed.allows(d) {
+                d
+            } else {
+                {
+                    let v = p.look_dir();
+                    Dir::nearest([v.x as f32, v.y as f32, v.z as f32], allowed)
+                }
+            }
+        };
+        b.state_where(&none, |s| s.air())
+            .placement(move |p, props| {
+                let on = side_of(p);
+                for d in allowed.dirs() {
+                    props.set(d.name(), if d == on { "true" } else { "false" });
+                }
+            })
+            .merge(move |p, props| {
+                if let Some(d) = allowed.dirs().find(|d| p.placed(d.name()) == Some("true")) {
+                    props.set(d.name(), "true");
+                }
+            })
+            .on_place(move |w, c| fall_off(w, c.pos, allowed))
+            .on_neighbor(move |e| fall_off(&e.world(), e.pos(), allowed))
+    }
+}
+
+/// The plate against side `d`, in 1/16 of a block.
+fn plate(d: Dir) -> ([f32; 3], [f32; 3]) {
+    let (mut min, mut max) = ([0.0; 3], [16.0; 3]);
+    let axis = d.face() as usize / 2;
+    if d.face() % 2 == 0 {
+        max[axis] = 1.0;
+    } else {
+        min[axis] = 15.0;
+    }
+    (min, max)
+}
+
+/// Takes off the sides of an `on_sides` block at `pos` with nothing solid behind them, and the
+/// block when none is left.
+fn fall_off(w: &crate::World, pos: BlockPos, allowed: Facings) {
+    let mut left = 0;
+    for d in allowed.dirs() {
+        if w.prop(pos, d.name()) != Some("true") {
+            continue;
+        }
+        if w.block_flags(pos_step(pos, d)) & crate::abi::block_flags::SOLID == 0 {
+            w.prop_set(pos, d.name(), "false");
+        } else {
+            left += 1;
+        }
+    }
+    if left == 0 {
+        w.break_block(pos, crate::abi::ItemStack::EMPTY, 0, true);
+    }
+}

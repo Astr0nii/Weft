@@ -474,6 +474,11 @@ const OPS: &[(&str, &str, Run)] = &[
         if missed > 0 { Err(format!("{missed} blocks not loaded")) } else { Ok(volume.to_string()) }
     }),
     ("get", "<pos:pos>", |w, cmd, _, _| Ok(block_name(w.block(pos(cmd, "pos")?)).to_string())),
+    ("prop", "<pos:pos> <name:word>", |w, cmd, _, _| {
+        Ok(w.prop(pos(cmd, "pos")?, word(cmd, "name")?)
+            .unwrap_or("none")
+            .to_string())
+    }),
     ("parts", "<pos:pos>", |w, cmd, _, _| {
         Ok(w.parts(pos(cmd, "pos")?)
             .into_iter()
