@@ -344,7 +344,7 @@ fn clock(w: &World, p: [i32; 3]) -> Result<String, String> {
         }
         Ok(s)
     };
-    let wire = Block::lookup("base:redstone").ok_or("no redstone")? + (1 << 2);
+    let wire = state_with(Block::lookup("base:redstone").ok_or("no redstone")?, "down", "true").ok_or("no redstone on a floor")?;
     let at = |x: i32, z: i32| [p[0] + x, p[1], p[2] + z];
     w.set_block(at(0, 0), state("base:stone", &[])?);
     w.set_block(at(1, 0), state("base:redstone_torch", &[("attach", "west")])?);
@@ -416,7 +416,7 @@ const OPS: &[(&str, &str, Run)] = &[
     ("rsbuild", "<at:pos> <seed:int>", |w, cmd, _, _| crate::tests::redstone::build_turned(w, int::<u64>(cmd, "seed")?, pos(cmd, "at")?)),
     ("rsfill", "<at:pos> <half:int>", |w, cmd, _, _| {
         let (p, half) = (pos(cmd, "at")?, int::<i32>(cmd, "half")?);
-        let s = Block::lookup("base:redstone").ok_or("no redstone")? + (1 << 2);
+        let s = state_with(Block::lookup("base:redstone").ok_or("no redstone")?, "down", "true").ok_or("no redstone on a floor")?;
         for x in -half..half {
             for z in -half..half {
                 w.set_block([p[0] + x, p[1], p[2] + z], s);

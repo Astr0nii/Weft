@@ -2668,7 +2668,7 @@ impl Dim {
 
     /// A part of the cell at `p` hears of a change at `from`.
     fn neighbor_changed(&mut self, c: &'static Content, p: IVec3, state: u32, from: IVec3) {
-        if c.states[state as usize].signal.kind == abi::signal_kind::WIRE && self.wire_support(c, p, state) {
+        if c.states[state as usize].sides != 0 && self.sides_support(c, p, state) {
             return;
         }
         if !self.supported(c, p, state) {
@@ -2945,7 +2945,7 @@ impl Dim {
                 .all(|&s| c.states[s as usize].flags & bf::REPLACEABLE != 0);
         let mut point = hit;
         point[axis] = if replacing { if up { OUTSIDE } else { 1.0 - OUTSIDE } } else { hit[axis] + if up { OUTSIDE } else { -OUTSIDE } };
-        let is_wire = c.states[state as usize].signal.kind == abi::signal_kind::WIRE;
+        let is_wire = c.block_of(state).sides != 0;
         let inside = !is_wire && (0.0..1.0).contains(&point[axis]) && !replacing;
         let beside = |off: IVec3| std::array::from_fn(|a| point[a] - off[a] as f32);
         if replacing || inside {
@@ -2977,12 +2977,12 @@ impl Dim {
         player: u64,
         item: u32,
     ) -> bool {
-        // Wire goes on the clicked face, next to any already in the cell.
+        // What lies on sides of its cell goes on the clicked face, next to any already there.
         if self.get(p).is_none() || self.space.signals.reserved(p) {
             return false;
         }
-        let is_wire = c.states[state as usize].signal.kind == abi::signal_kind::WIRE;
-        let on_wire = if is_wire { self.wire_placed(c, p, face, state) } else { None };
+        let is_wire = c.block_of(state).sides != 0;
+        let on_wire = if is_wire { self.sides_placed(c, p, face, look, state) } else { None };
         if is_wire && (on_wire.is_none() || !self.space.extras(p).is_empty()) {
             return false;
         }

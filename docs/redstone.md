@@ -13,7 +13,7 @@ Vanilla circuits that rely on those quirks behave differently. That's on purpose
 
 ## The rules
 
-**Wire** lies on any face of a solid block, several faces in one cell if you like. A piece connects to the next over each of its edges: into the corner of a wall in the same cell, on along the same plane, or around the edge of the block it lies on. Going up a step means going floor, wall, top. Power drops by one with each piece, so it reaches fifteen pieces.
+**Wire** lies on any face of a solid block, several faces in one cell if you like (it is an `on_sides` block, `west`..`south` properties saying where it lies). A piece connects to the next over each of its edges: into the corner of a wall in the same cell, on along the same plane, or around the edge of the block it lies on. Going up a step means going floor, wall, top. Power drops by one with each piece, so it reaches fifteen pieces.
 
 Only wire of the same block connects, so another wire block is an insulated wire.
 

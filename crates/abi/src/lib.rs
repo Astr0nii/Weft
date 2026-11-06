@@ -1084,6 +1084,7 @@ pub mod comp {
     /// its own.
     pub mod block {
         use crate::block_flags as f;
+        pub const ON_SIDES: &str = "on_sides";
         pub const PROPS: &str = "block.props";
         pub const ON_USE: &str = "block.on_use";
         pub const ON_NEIGHBOR: &str = "block.on_neighbor";

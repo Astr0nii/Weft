@@ -210,50 +210,35 @@ impl BlockBuilder<'_> {
     /// A layer one pixel thick against sides of its cell (vines, ladders, glow lichen, a wall
     /// sign's plate): a property per side in `allowed` (`north` .. `down`, `"true"` where it lies).
     /// It goes against the face clicked, or the allowed side nearest the look when that one
-    /// isn't; its own item put into its cell adds a side, up to every allowed one. A side whose
-    /// block goes falls off, and with none left so does the rest. `Facings::HORIZONTAL` for
-    /// ladders (walls only), `Facings::ALL` for vines everywhere.
+    /// isn't; its own item put into its cell adds a side, up to every allowed one; a side with
+    /// nothing solid behind it falls off, and breaking takes one side at a time. Redstone wire
+    /// is the same with a drawing of its own. `Facings::HORIZONTAL` for ladders (walls only),
+    /// `Facings::ALL` for vines everywhere.
     pub fn on_sides(self, allowed: Facings) -> Self {
+        self.sides(allowed, true)
+    }
+
+    /// `on_sides`, with a plate of the block's textures on each side or not (wire draws itself).
+    pub(crate) fn sides(self, allowed: Facings, plates: bool) -> Self {
         let sides: Vec<Dir> = allowed.dirs().collect();
-        // The first state, the item's, lies on the first side.
+        // With plates, the first state, the item's, lies on the first side.
         let mut b = sides.iter().enumerate().fold(self, |b, (i, d)| {
-            let values = if i == 0 { ["true", "false"] } else { ["false", "true"] };
+            let values = if plates && i == 0 { ["true", "false"] } else { ["false", "true"] };
             b.prop(d.name(), values)
         });
-        for &d in &sides {
-            let (min, max) = plate(d);
-            b = b.state_where(&format!("{}=true", d.name()), move |s| s.model_box(min, max));
-        }
-        let none = sides
-            .iter()
-            .map(|d| format!("{}=false", d.name()))
-            .collect::<Vec<_>>()
-            .join(",");
-        let side_of = move |p: &Place| {
-            let d = p.face().opposite();
-            if allowed.allows(d) {
-                d
-            } else {
-                {
-                    let v = p.look_dir();
-                    Dir::nearest([v.x as f32, v.y as f32, v.z as f32], allowed)
-                }
+        if plates {
+            for &d in &sides {
+                let (min, max) = plate(d);
+                b = b.state_where(&format!("{}=true", d.name()), move |s| s.model_box(min, max));
             }
-        };
-        b.state_where(&none, |s| s.air())
-            .placement(move |p, props| {
-                let on = side_of(p);
-                for d in allowed.dirs() {
-                    props.set(d.name(), if d == on { "true" } else { "false" });
-                }
-            })
-            .merge(move |p, props| {
-                if let Some(d) = allowed.dirs().find(|d| p.placed(d.name()) == Some("true")) {
-                    props.set(d.name(), "true");
-                }
-            })
-            .on_place(move |w, c| fall_off(w, c.pos, allowed))
-            .on_neighbor(move |e| fall_off(&e.world(), e.pos(), allowed))
+            let none = sides
+                .iter()
+                .map(|d| format!("{}=false", d.name()))
+                .collect::<Vec<_>>()
+                .join(",");
+            b = b.state_where(&none, |s| s.air());
+        }
+        b.tag(crate::abi::comp::block::ON_SIDES)
     }
 }
 
@@ -267,23 +252,4 @@ fn plate(d: Dir) -> ([f32; 3], [f32; 3]) {
         min[axis] = 15.0;
     }
     (min, max)
-}
-
-/// Takes off the sides of an `on_sides` block at `pos` with nothing solid behind them, and the
-/// block when none is left.
-fn fall_off(w: &crate::World, pos: BlockPos, allowed: Facings) {
-    let mut left = 0;
-    for d in allowed.dirs() {
-        if w.prop(pos, d.name()) != Some("true") {
-            continue;
-        }
-        if w.block_flags(pos_step(pos, d)) & crate::abi::block_flags::SOLID == 0 {
-            w.prop_set(pos, d.name(), "false");
-        } else {
-            left += 1;
-        }
-    }
-    if left == 0 {
-        w.break_block(pos, crate::abi::ItemStack::EMPTY, 0, true);
-    }
 }

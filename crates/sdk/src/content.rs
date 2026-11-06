@@ -2108,14 +2108,15 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// Wire that lies on any face of a block, connecting to wire of the same block only; textures
-    /// are the dot on top and the line on the sides. A property `faces` holds where it lies.
+    /// are the dot on top and the line on the sides. It lies on sides of its cell like `on_sides`
+    /// (`west`..`south` properties).
     pub fn wire(mut self) -> Self {
         self.signal = Some(SignalBuild { kind: abi::signal_kind::WIRE, ..SignalBuild::default() });
         self.not_solid()
             .set(&bc::MODEL, BlockModel::Wire as u32)
             .cutout()
             .hardness(0.0)
-            .prop("faces", 0..=63)
+            .sides(crate::Facings::ALL, false)
     }
 
     fn signal_props(mut self, kind: u32, levels: u32, attach: bool, front: bool) -> Self {
@@ -3019,7 +3020,9 @@ impl SignalBuild {
         }
         s = s.set(&bc::SIGNAL, sig);
         if self.kind == abi::signal_kind::WIRE {
-            let mask = p.int("faces");
+            let mask = (0..6)
+                .filter(|&f| p.is(abi::FACE_NAMES[f], "true"))
+                .fold(0, |m, f| m | 1 << f);
             // A thin plate on each face it lies on.
             const PLATES: [([f32; 3], [f32; 3]); 6] = [
                 ([0.0, 0.0, 0.0], [1.0, 16.0, 16.0]),

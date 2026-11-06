@@ -84,6 +84,7 @@ pub(crate) fn freeze(
             props: Vec::new(),
             opens: None,
             cb: BlockCallbacks::default(),
+            sides: 0,
         }],
         block_values: vec![(crate::registry::ENGINE, vec![Vec::new()])],
         opens_names: Vec::new(),
@@ -135,6 +136,25 @@ pub(crate) fn freeze(
                     .collect(),
             );
         }
+        // On its sides: which ones each state lies on, from its `west`..`south` properties.
+        let on_sides = state_values
+            .first()
+            .is_some_and(|v: &Vec<RawValue>| v.iter().any(|x| x.name == abi::comp::block::ON_SIDES));
+        let side_props: Vec<(u8, &Prop)> = props
+            .iter()
+            .filter(|_| on_sides)
+            .filter_map(|p| {
+                let f = abi::FACE_NAMES.iter().position(|n| *n == p.name)?;
+                (p.values.len() == 2 && p.values.iter().any(|v| v == "true")).then_some((f as u8, p))
+            })
+            .collect();
+        let sides = side_props.iter().fold(0u8, |m, (f, _)| m | 1 << f);
+        for (i, st) in out.states[first as usize..].iter_mut().enumerate() {
+            st.sides = side_props
+                .iter()
+                .filter(|(_, p)| p.values[(i as u32 / p.stride) as usize % 2] == "true")
+                .fold(0, |m, (f, _)| m | 1 << f);
+        }
         // What a state gives, from its `power` property: two values are off and full.
         let power = props
             .iter()
@@ -182,7 +202,7 @@ pub(crate) fn freeze(
             signal_gate: e.callback(b::SIGNAL_GATE),
         };
         out.block_defs
-            .push(BlockDef { name: e.name, owner: e.owner, first_state: first, states: count, props, cb, opens: None });
+            .push(BlockDef { name: e.name, owner: e.owner, first_state: first, states: count, props, cb, opens: None, sides });
     }
     out.block_names = out
         .block_defs
@@ -642,6 +662,7 @@ fn bake_state(
     let info = StateInfo {
         liquid_walls: s.or(b::LIQUID_WALLS, u8::MAX),
         block,
+        sides: 0,
         flags,
         // Light, tint, hardness, friction, drag and support come from components.
         light: [0; 3],
@@ -684,6 +705,7 @@ fn bake_state(
 
 fn air() -> StateInfo {
     StateInfo {
+        sides: 0,
         liquid_walls: u8::MAX,
         grow: None,
         signal: Signal::default(),

@@ -55,6 +55,8 @@ pub struct Signal {
 
 pub struct StateInfo {
     pub block: u32,
+    /// An `on_sides` block's sides it lies on, a bit per face.
+    pub sides: u8,
     pub flags: u32,
     /// Emission per channel (r, g, b).
     pub light: [u8; 3],
@@ -140,6 +142,8 @@ pub struct BlockDef {
     pub cb: BlockCallbacks,
     /// The menu using the block opens.
     pub opens: Option<u32>,
+    /// `on_sides`: the faces it may lie on, a bit each; 0 for other blocks.
+    pub sides: u8,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -164,6 +168,21 @@ impl BlockDef {
         let i = state - self.first_state;
         let cur = (i / p.stride) % p.values.len() as u32;
         self.first_state + i - cur * p.stride + v * p.stride
+    }
+
+    /// Its state lying on the `sides` (a bit per face) of an `on_sides` block, the rest as `state`.
+    pub fn with_sides(&self, state: u32, sides: u8) -> u32 {
+        self.props
+            .iter()
+            .enumerate()
+            .fold(state, |st, (i, p)| match weft_abi::FACE_NAMES.iter().position(|n| *n == p.name) {
+                Some(f) if self.sides & (1 << f) != 0 => {
+                    let want = if sides & (1 << f) != 0 { "true" } else { "false" };
+                    let v = p.values.iter().position(|v| v == want).unwrap_or(0);
+                    self.with_value(st, i, v as u32)
+                }
+                _ => st,
+            })
     }
 
     /// `name` or `name[a=x,b=y]` with every property.

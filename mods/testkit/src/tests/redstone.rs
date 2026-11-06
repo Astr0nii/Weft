@@ -17,7 +17,13 @@ const NAMES: [&str; 6] = ["west", "east", "down", "up", "north", "south"];
 const VECS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
 
 fn wire(faces: &[u8]) -> String {
-    format!("base:redstone[faces={}]", faces.iter().fold(0, |m, f| m | 1 << f))
+    let sides: Vec<String> = faces.iter().map(|&f| format!("{}=true", NAMES[f as usize])).collect();
+    format!("base:redstone[{}]", sides.join(","))
+}
+
+/// The sides a state of wire lies on, a bit per face.
+fn wire_sides(state: u32) -> u8 {
+    (0..6u8).filter(|&f| state_prop(state, NAMES[f as usize]) == Some("true")).fold(0, |m, f| m | 1 << f)
 }
 
 fn on_floor(name: &str, front: u8, rest: &str) -> String {
@@ -1636,7 +1642,7 @@ pub async fn redstone_by_hand(t: T) -> R {
     t.until("dust on the wall", Duration::from_secs(2), |t| {
         t.c()
             .block(cell)
-            .is_some_and(|s| state_prop(s, "faces") == Some("16"))
+            .is_some_and(|s| wire_sides(s) == 16)
     })
     .await?;
     t.look_at(add(cell, [0, -1, 0]));
@@ -1645,7 +1651,7 @@ pub async fn redstone_by_hand(t: T) -> R {
     t.until("dust on the floor as well", Duration::from_secs(2), |t| {
         t.c()
             .block(cell)
-            .is_some_and(|s| state_prop(s, "faces") == Some("20"))
+            .is_some_and(|s| wire_sides(s) == 20)
     })
     .await?;
     t.look_at(wall);
@@ -1654,7 +1660,7 @@ pub async fn redstone_by_hand(t: T) -> R {
     t.until("the wall's piece gone", Duration::from_secs(2), |t| {
         t.c()
             .block(cell)
-            .is_some_and(|s| state_prop(s, "faces") == Some("4"))
+            .is_some_and(|s| wire_sides(s) == 4)
     })
     .await?;
     // The one left goes with its floor.
@@ -1948,10 +1954,9 @@ fn state_of(part: Part, way: ([usize; 3], [i32; 3])) -> Option<u32> {
     Some(match part {
         Part::Solid(n) | Part::Plain(n) => first(n)?,
         Part::Wire(mask) => {
-            let m = (0..6u8)
+            (0..6u8)
                 .filter(|d| mask & (1 << d) != 0)
-                .fold(0u32, |m, d| m | 1 << turned_dir(way, d));
-            first("base:redstone")? + m
+                .try_fold(first("base:redstone")?, |s, d| state_with(s, NAMES[turned_dir(way, d) as usize], "true"))?
         }
         Part::Device(n, attach, front, prop) => {
             let mut s = first(n)?;
@@ -2016,7 +2021,7 @@ pub async fn redstone_on_a_structure(t: T) -> R {
     // Added by what mods can do.
     let structure_set = |x: i32, block: &str| format!("structureset {id} {x} 1 0 {block}");
     t.op(&structure_set(0, "base:redstone_block")).await?;
-    t.op(&structure_set(1, "base:redstone[faces=4]")).await?;
+    t.op(&structure_set(1, "base:redstone[down=true]")).await?;
     t.frames(5).await?;
     let name = format!("test-{}", t.name());
     t.c().world_leave();
@@ -2035,7 +2040,7 @@ pub async fn redstone_on_a_structure(t: T) -> R {
         .ok_or(format!("no lift among {list}"))?
         .to_string();
     // Wire next to what was saved, which is what used to be fatal.
-    t.op(&format!("structureset {id} 2 1 0 base:redstone[faces=4]"))
+    t.op(&format!("structureset {id} 2 1 0 base:redstone[down=true]"))
         .await?;
     settle(&t).await?;
     t.check(t.state().frame > 0, "still here");
@@ -2043,7 +2048,7 @@ pub async fn redstone_on_a_structure(t: T) -> R {
     // Wire on it is drawn, in its power's color, where the structure is.
     t.op(&format!("structureset {id} 0 0 -1 base:stone"))
         .await?;
-    t.op(&format!("structureset {id} 0 1 -1 base:redstone[faces=4]"))
+    t.op(&format!("structureset {id} 0 1 -1 base:redstone[down=true]"))
         .await?;
     let uid: u64 = id.parse().map_err(|_| "not an id".to_string())?;
     // From above.
