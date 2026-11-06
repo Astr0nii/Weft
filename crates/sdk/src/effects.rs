@@ -326,7 +326,7 @@ impl Registry {
         let cb = callback(move |a: &mut abi::ConditionArgs| a.result = f(&ConditionCtx(*a)) as u32);
         let mut e = crate::entry::Entry::of(condition);
         e.ops
-            .push(crate::content::Pending::value(abi::comp::CONDITION_CALL, "callback".into(), abi::data::bytes_of(&cb)));
+            .push(crate::content::Pending::value(abi::comp::CONDITION_CALL, "callback", abi::data::bytes_of(&cb)));
         e.send(self);
     }
 }

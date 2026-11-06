@@ -8,7 +8,7 @@ use std::time::Instant;
 use glam::{DVec3, IVec3};
 use weft_abi::{self as abi, Callback, Host, ItemStack, ModId, Str};
 
-use crate::content::{self, RawRegistrar, content, try_content};
+use crate::content::{RawRegistrar, content, try_content};
 use crate::registry;
 use crate::server::Dim;
 use crate::server::menu::MenuCall;
@@ -17,11 +17,9 @@ pub static HOST: Host = Host {
     log: host_log,
     log_at,
     log_enabled,
-    reg_block,
     reg_world_tick,
     emit_after,
     reg_command,
-    reg_set,
     find,
     block_of,
     state_prop,
@@ -167,7 +165,6 @@ pub static HOST: Host = Host {
     attribute_add_modifier,
     attribute_remove_modifier,
     attribute_explain,
-    reg_override,
     reg_entry,
     roll_loot,
     break_block,
@@ -1666,18 +1663,6 @@ unsafe fn reg<'a>(r: *mut abi::Registrar) -> &'a mut RawRegistrar {
     unsafe { &mut *(r as *mut RawRegistrar) }
 }
 
-unsafe extern "C" fn reg_block(r: *mut abi::Registrar, d: *const abi::BlockDesc) {
-    unsafe {
-        let b = content::copy_block(&*d);
-        let r = reg(r);
-        if b.states.is_empty() {
-            r.errors.push(format!("block {} has no states", b.name));
-            return;
-        }
-        r.blocks.push(b);
-    }
-}
-
 unsafe extern "C" fn reg_world_tick(r: *mut abi::Registrar, cb: Callback) {
     unsafe {
         let r = reg(r);
@@ -1712,32 +1697,6 @@ unsafe extern "C" fn emit_after(w: *mut abi::WorldCtx, entity: u64, ticks: u32, 
         }
         crate::server::dim::push_timer(&mut v, until, &def.name, data.as_slice());
         *list = v.into_boxed_slice();
-    }
-}
-
-unsafe extern "C" fn reg_set(r: *mut abi::Registrar, d: *const abi::SetDesc) {
-    use crate::components::Target;
-    unsafe {
-        let d = *d;
-        let r = reg(r);
-        let name = d.target.as_str().to_string();
-        let target = match d.target_kind {
-            // A reference: `#pattern` for everything tagged, else a name.
-            abi::set_target::NAME if name.starts_with('#') => Target::Tagged(name[1..].to_string()),
-            abi::set_target::NAME => Target::Name(name),
-            abi::set_target::TAGGED => Target::Tagged(name),
-            abi::set_target::BIOME => Target::Biome(name),
-            abi::set_target::DIMENSION => Target::Dimension(name),
-            k => {
-                r.errors
-                    .push(format!("set {}: unknown target kind {k}", d.value.name.as_str()));
-                return;
-            }
-        };
-        let value = crate::components::RawValue::copy(&d.value);
-        r.game
-            .sets
-            .push(crate::components::RawSet { owner: r.owner, target, value, remove: d.remove != 0 });
     }
 }
 
@@ -1952,14 +1911,6 @@ unsafe extern "C" fn reg_entry(r: *mut abi::Registrar, d: *const abi::EntryDesc)
         let r = reg(r);
         let e = crate::entries::RawEntry::copy(r.owner, &*d);
         r.game.entries.push(e);
-    }
-}
-
-unsafe extern "C" fn reg_override(r: *mut abi::Registrar, kind: u32, name: Str, removed: u32) {
-    unsafe {
-        reg(r)
-            .overrides
-            .push((kind, name.as_str().to_string(), removed != 0))
     }
 }
 

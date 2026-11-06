@@ -1388,8 +1388,8 @@ impl Dim {
                         self.set(c, p, new);
                     }
                     let block = c.block_of(state);
-                    if let (Some(cb), true) = (block.cb.on_signal, was != u8::MAX) {
-                        self.call(block.owner, cb, |w| abi::SignalArgs {
+                    if let (Some((owner, cb)), true) = (block.cb.on_signal, was != u8::MAX) {
+                        self.call(owner, cb, |w| abi::SignalArgs {
                             world: w,
                             pos: p.to_array().into(),
                             state: new,
@@ -1417,13 +1417,9 @@ impl Dim {
                     };
                     let info = c.states[state as usize].signal;
                     let block = c.block_of(there);
-                    let Some(cb) = block.cb.signal_read else { continue };
-                    let out = self.call(block.owner, cb, |w| abi::SignalReadArgs {
-                        world: w,
-                        pos: behind.to_array().into(),
-                        state: there,
-                        output: 0,
-                    });
+                    let Some((owner, cb)) = block.cb.signal_read else { continue };
+                    let out =
+                        self.call(owner, cb, |w| abi::SignalReadArgs { world: w, pos: behind.to_array().into(), state: there, output: 0 });
                     let want = compared(info.flags, out.output.min(15) as u8, side);
                     if want != info.level {
                         self.space.signals.schedule(p, want, info.delay, self.time);
@@ -1445,8 +1441,8 @@ impl Dim {
                     let Some(state) = self.space.signals.devices.get(&p).map(|d| d.state) else { continue };
                     let info = c.states[state as usize].signal;
                     let block = c.block_of(state);
-                    let Some(cb) = block.cb.signal_gate else { continue };
-                    let out = self.call(block.owner, cb, |w| abi::GateArgs {
+                    let Some((owner, cb)) = block.cb.signal_gate else { continue };
+                    let out = self.call(owner, cb, |w| abi::GateArgs {
                         world: w,
                         pos: p.to_array().into(),
                         state,

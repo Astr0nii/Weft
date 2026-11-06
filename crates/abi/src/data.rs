@@ -332,5 +332,6 @@ schema_data!(
     Energy,
     Vec3,
     ModelCuboid,
-    MeshVertex
+    MeshVertex,
+    BoxTilt
 );

@@ -1453,7 +1453,7 @@ impl Running {
     }
 }
 
-/// `{if:name}`: `debug` and `dev`, else a registered condition (`Host::reg_condition`, game
+/// `{if:name}`: `debug` and `dev`, else a registered condition (`entry_kind::CONDITION`, game
 /// modes by name); unknown ones are false.
 fn text_condition(name: &str, client: Option<&Client>, debug: bool, dev: bool) -> bool {
     match name {

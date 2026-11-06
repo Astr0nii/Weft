@@ -98,6 +98,10 @@ fn blocks(_r: &mut Registry) {
     // for color in ["red", "blue"] {
     //     r.block(Block::generated(format!("{color}_brick"))).hardness(2.0);
     // }
+    //
+    // Another mod's block changed: what you set goes on every state, `state_where` on some.
+    // static FURNACE: Block = Block::named("base:furnace");
+    // r.edit(&FURNACE).hardness(5.0).state_where("lit=true", |s| s.light(15));
 }
 
 /// Your items, texture is `item/<name>.png`, translation is `item.examplemod.<name>`

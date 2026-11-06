@@ -329,7 +329,7 @@ impl Lookup {
         // Text is kept as a `Str`, other packed values as a `Slice` of their bytes.
         let (ptr, len) = unsafe { std::ptr::read_unaligned(at as *const (*const u8, usize)) };
         let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-        if abi::data::is_text(&T::schema()) {
+        if abi::data::is_text(schema_of::<T>()) {
             let mut packed = (len as u32).to_le_bytes().to_vec();
             packed.extend_from_slice(bytes);
             return T::read(&mut packed.as_slice());
@@ -426,8 +426,20 @@ impl<T: Data, K> Component<T, K> {
             .flatten()
     }
     pub(crate) fn raw_value(&self, v: &T) -> crate::content::Pending {
-        crate::content::Pending::value(self.name, T::schema(), abi::data::bytes_of(v))
+        crate::content::Pending::value(self.name, schema_of::<T>(), abi::data::bytes_of(v))
     }
+}
+
+/// `T::schema()`, worked out once per type: a packed struct's is built of its fields' every time.
+pub(crate) fn schema_of<T: Data>() -> &'static str {
+    thread_local! {
+        static KNOWN: std::cell::RefCell<std::collections::HashMap<std::any::TypeId, &'static str>> = Default::default();
+    }
+    KNOWN.with(|k| {
+        *k.borrow_mut()
+            .entry(std::any::TypeId::of::<T>())
+            .or_insert_with(|| T::schema().leak())
+    })
 }
 
 fn tag_schema() -> String {

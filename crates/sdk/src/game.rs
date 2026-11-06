@@ -943,7 +943,7 @@ impl EntityBuilder<'_> {
     fn attribute(mut self, name: &str, v: f64) -> Self {
         self.e
             .ops
-            .push(Pending::value(name, "f64".into(), crate::component::value_bytes(&v)));
+            .push(Pending::value(name, "f64", crate::component::value_bytes(&v)));
         self
     }
     pub fn walk_speed(self, s: f32) -> Self {

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use rustc_hash::FxHashMap;
 use weft_abi::{self as abi, Callback, ModId, entity_flags as ef, entry_kind as ek};
 
-use crate::components::{self as comps, Components, RawSet, RawValue};
+use crate::components::{self as comps, Components, RawValue};
 use crate::entries::{Entry, RawEntry, bake, bake_by};
 
 pub const ENGINE: ModId = ModId(u32::MAX);
@@ -726,8 +726,6 @@ pub struct RawGame {
     /// Commands that run on the client: (owner, name, usage, callback).
     pub client_commands: Vec<(ModId, String, String, Callback)>,
     pub command_extensions: Vec<(ModId, CommandExtension)>,
-    /// Components and tags set on other mods' entries.
-    pub sets: Vec<RawSet>,
     pub client_frames: Vec<(ModId, Callback)>,
     /// (owner, name, side, callback).
     /// (owner, channel, schema, side, callback).

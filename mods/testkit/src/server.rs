@@ -38,6 +38,10 @@ static GRIT: Attribute = Attribute::named("grit");
 static TIN_ORE: Block = Block::named("testmod:tin_ore");
 static OIL: Block = Block::named("testmod:oil");
 static MARS: Dimension = Dimension::named("testmod:mars");
+/// Lit by `.states`, then edited: its light on every state, its opacity on the lit one.
+static LAMP: Block = Block::named("lamp");
+/// Made by base's stairs template, edited like any block.
+static OAK_STAIRS: Block = Block::named("base:oak_planks_stairs");
 /// A column of Mars, far from what other tests look at, that an edit of its terrain gives base's
 /// plains.
 const PROBE: [i32; 2] = [-20000, 20000];
@@ -97,7 +101,8 @@ pub fn register(r: &mut Registry) {
         .no_item();
     r.entity_component(&MARK, 0, component_flags::SYNC_WATCHERS);
     // A suit to swim in lava with (`swimming`).
-    r.set_text_on(Target::Name("base:diamond_chestplate"), &SWIMS_IN, "#lava");
+    r.edit(Item::generated("base:diamond_chestplate".into()))
+        .set_text(&SWIMS_IN, "#lava");
     r.edit(&PIG).attach(&MARK);
     r.storage(&STASH, 54);
     // What an edit sets wins, the rest stays; the testmod ones load after or before this mod
@@ -120,6 +125,17 @@ pub fn register(r: &mut Registry) {
         .set(&WARMTH, 3.0)
         .attach(&MARK);
     r.edit(TIN_ORE.ore()).veins(7);
+    r.block(&LAMP)
+        .prop("lit", ["false", "true"])
+        .states(|p, s| if p.is("lit", "true") { s.light(13) } else { s })
+        .tag("testkit:lamps")
+        .no_item();
+    r.edit(&LAMP)
+        .light(4)
+        .state_where("lit=true", |s| s.light_opacity(3));
+    r.edit(&OAK_STAIRS).light(7);
+    r.set("#testkit:lamp*", &WARMTH, 1.5);
+    r.tag("testkit:lit", &["lamp[lit=true]"]);
     r.shapeless(&base_api::SMELTING, "base:stick", 1, &["edited"], 200)
         .named("smelt_edited");
     r.remove(&Recipe::named("smelt_edited"));
@@ -762,8 +778,18 @@ const OPS: &[(&str, &str, Run)] = &[
         let size = w
             .kind_size(EDITED_KIND.name())
             .map_or([0.0; 3], |s| [s.width, s.height, s.eye]);
+        // Each state of the lamp: light, opacity, warmth, lit tag.
+        let lit = Tag::named("testkit:lit");
+        let lamp: Vec<String> = (LAMP.id()..LAMP.id() + 2)
+            .map(|s| {
+                let i = block_info(s).map_or(([0; 3], 0), |i| (i.light, i.opacity));
+                format!("{}/{}/{}/{}", i.0[0], i.1, WARMTH.on_block(s).unwrap_or(0.0), lit.on_block(s))
+            })
+            .collect();
+        let stairs = block_info(OAK_STAIRS.id()).map_or(0, |i| i.states);
+        let stairs_lit = (OAK_STAIRS.id()..OAK_STAIRS.id() + stairs).all(|s| block_info(s).is_some_and(|i| i.light == [7; 3]));
         Ok(format!(
-            "{} {} {} {} {} {} {} {} {} {} {} {} {:?} {}",
+            "{} {} {} {} {} {} {} {} {} {} {} {} {:?} {} {} {} {}",
             MAX_STACK.on_item(i).unwrap_or(0),
             ATTACK_DAMAGE.on_item(i).unwrap_or(0.0),
             WARMTH.on_biome(b).unwrap_or(0.0),
@@ -778,6 +804,9 @@ const OPS: &[(&str, &str, Run)] = &[
             oil.on_dimension(MARS.id()),
             size,
             WARMTH.on_entity(EDITED_KIND.id()).unwrap_or(0.0),
+            lamp.join(","),
+            stairs,
+            stairs_lit,
         ))
     }),
     ("look", "", |w, _, player, _| {

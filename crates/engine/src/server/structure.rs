@@ -712,8 +712,7 @@ impl Dim {
             }
         }
         for (at, state) in blocks {
-            if let Some(cb) = c.block_of(state).cb.on_carried {
-                let owner = c.block_of(state).owner;
+            if let Some((owner, cb)) = c.block_of(state).cb.on_carried {
                 let cell = at + now;
                 self.call(owner, cb, |w| abi::BlockEventArgs {
                     world: w,

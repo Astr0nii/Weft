@@ -13,7 +13,7 @@ pub struct Entry {
     pub(crate) cell: *const AtomicU32,
     pub(crate) mode: u32,
     pub(crate) ops: Vec<Pending>,
-    /// Blocks: operations on the states a key (`prop=value,..`) picks.
+    /// Blocks: operations on the states a key (`prop=value,..`) picks, in order.
     pub(crate) parts: Vec<(String, Vec<Pending>)>,
 }
 
@@ -25,17 +25,6 @@ impl Entry {
     /// One no handle stands for (a sky object of a dimension, a block's loot).
     pub(crate) fn new(kind: u32, name: String) -> Entry {
         Entry { kind, name, cell: std::ptr::null(), mode: em::NEW, ops: Vec::new(), parts: Vec::new() }
-    }
-
-    /// What a part of the registration says about the states `key` picks.
-    pub(crate) fn part(&mut self, key: &str) -> &mut Vec<Pending> {
-        match self.parts.iter().position(|p| p.0 == key) {
-            Some(i) => &mut self.parts[i].1,
-            None => {
-                self.parts.push((key.to_string(), Vec::new()));
-                &mut self.parts.last_mut().unwrap().1
-            }
-        }
     }
 
     pub(crate) fn send(&mut self, reg: &Registry) {
@@ -77,22 +66,11 @@ fn value_ops<'a>(list: &'a [Pending], scratch: &'a mut Vec<Vec<u8>>) -> Vec<abi:
         .collect()
 }
 
-/// A builder that is one entry: what `Registry::edit`, `replace` and `remove` work on.
-pub trait Registers {
-    #[doc(hidden)]
-    fn entry(&mut self) -> &mut Entry;
-}
-
 /// Declares a builder as an entry of a kind: `Registry` makes it (`$make`), `edit` and `replace`
 /// start it in that mode, and dropping it sends it, after its `$finish` if it has one.
 macro_rules! entry_builder {
     ($($k:ident => $b:ident, $make:ident $(, $finish:ident)?;)*) => {
-        $(impl $crate::entry::Registers for $b<'_> {
-            fn entry(&mut self) -> &mut $crate::entry::Entry {
-                &mut self.e
-            }
-        }
-        impl $crate::WithComponents for $b<'_> {
+        $(impl $crate::WithComponents for $b<'_> {
             type Kind = $crate::kind::$k;
             fn pending(&mut self) -> &mut Vec<$crate::Pending> {
                 &mut self.e.ops
@@ -106,20 +84,9 @@ macro_rules! entry_builder {
         }
         impl $crate::kind::Builds for $crate::kind::$k {
             type Builder<'a> = $b<'a>;
-            fn builder<'a>(r: &'a mut $crate::Registry, h: &'static $crate::Handle<Self>) -> $b<'a> {
-                r.$make(h)
-            }
-            fn replace<'a>(r: &'a mut $crate::Registry, h: &'static $crate::Handle<Self>) -> $b<'a> {
+            fn builder<'a>(r: &'a mut $crate::Registry, h: &'static $crate::Handle<Self>, mode: u32) -> $b<'a> {
                 let mut b = r.$make(h);
-                b.e.mode = $crate::abi::entry_mode::REPLACE;
-                b
-            }
-        }
-        impl $crate::kind::Edits for $crate::kind::$k {
-            type Builder<'a> = $b<'a>;
-            fn edit<'a>(r: &'a mut $crate::Registry, h: &'static $crate::Handle<Self>) -> $b<'a> {
-                let mut b = r.$make(h);
-                b.e.mode = $crate::abi::entry_mode::EDIT;
+                b.e.mode = mode;
                 b
             }
         })*

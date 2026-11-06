@@ -233,13 +233,15 @@ pub async fn camera(t: T) -> R {
 /// fall it reads, then the look, the hand, flight and fire set from outside.
 /// `r.edit` of an item and a biome: the edit's values win, the rest stays (testkit's own, see
 /// its registration; its ore, liquid, dimension and terrain edits of testmod's would fail the load
-/// if they found nothing).
+/// if they found nothing). A block's edit reaches every state, or the states of a key, and a
+/// template's blocks; `r.set` and `r.tag` by tag and by state.
 pub async fn edits(t: T) -> R {
     t.flat().await?;
     t.check_eq(
         t.op("edited").await?,
-        "8 3 2 true 7 4 true base:cobblestonex2,testkit:editedx1 true true true true [0.9, 2.5, 1.0] 3".to_string(),
-        "max stack, damage, warmth, tag, a weather's flags, an attribute's default, a recipe removed, a loot table's pools, a liquid's id, its block's and item's tag, a column of Mars, Mars' tag, an entity kind's size and eye, its value after the edits",
+        "8 3 2 true 7 4 true base:cobblestonex2,testkit:editedx1 true true true true [0.9, 2.5, 1.0] 3 4/15/1.5/false,4/3/1.5/true 40 true"
+            .to_string(),
+        "max stack, damage, warmth, tag, a weather's flags, an attribute's default, a recipe removed, a loot table's pools, a liquid's id, its block's and item's tag, a column of Mars, Mars' tag, an entity kind's size and eye, its value after the edits, a block's states after an edit of every state and one of a key (light, opacity, a value set by tag, a tag set on one state), a stair's states and their edited light",
     );
     // The edit of the menu adds two slots to the equipment (four and the other hand) and the
     // player's 36.

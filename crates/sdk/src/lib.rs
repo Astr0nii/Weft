@@ -36,7 +36,6 @@ pub use component::*;
 pub use config::*;
 pub use content::*;
 pub use effects::*;
-pub use entry::Registers;
 pub use extend::*;
 pub use facing::{Dir, Facings, Toward};
 pub use game::*;

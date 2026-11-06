@@ -6,6 +6,7 @@ pub mod kv;
 
 pub mod bench;
 pub mod block_model;
+pub mod blocks;
 pub mod client;
 pub mod clipboard;
 pub mod commands;

@@ -9,7 +9,7 @@
 //! same tables directly through `abi::ComponentTable`.
 
 use rustc_hash::FxHashMap;
-use weft_abi::{self as abi, ModId, Str, entry_kind as ek};
+use weft_abi::{self as abi, Str, entry_kind as ek};
 
 pub const BLOCK: usize = ek::BLOCK as usize;
 pub const ITEM: usize = ek::ITEM as usize;
@@ -84,29 +84,6 @@ impl RawValue {
     pub fn tag(name: &str) -> RawValue {
         RawValue { name: name.to_string(), schema: String::new(), bytes: Vec::new(), text: None }
     }
-
-    /// # Safety
-    /// The slice must hold valid values for this call.
-    pub unsafe fn list(s: abi::Slice<abi::CompValue>) -> Vec<RawValue> {
-        unsafe { s.as_slice().iter().map(|v| RawValue::copy(v)).collect() }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum Target {
-    /// Block (all states, or those with `[prop=value]`) and item of that name.
-    Name(String),
-    /// Blocks and items with a tag matching the pattern (`*` matches any text).
-    Tagged(String),
-    Biome(String),
-    Dimension(String),
-}
-
-pub struct RawSet {
-    pub owner: ModId,
-    pub target: Target,
-    pub value: RawValue,
-    pub remove: bool,
 }
 
 /// Schemas a mod writes as text: `str` stays text; references (`block`: one block or state,
@@ -330,8 +307,6 @@ pub struct Builder {
     texts: Vec<Box<str>>,
     /// Bytes of packed values (lists, `<..>` structs) the tables point into.
     blobs: Vec<Box<[u8]>>,
-    /// Mod that last set a value through `r.set`, for override logs.
-    setters: FxHashMap<(usize, u32, u32), String>,
     /// Values that could not be stored (freeze errors).
     pub errors: Vec<String>,
     /// Turns the text of a reference value (`block`, `blocks`) into its bytes.
@@ -347,7 +322,6 @@ impl Default for Builder {
             tables: Vec::new(),
             texts: Vec::new(),
             blobs: Vec::new(),
-            setters: FxHashMap::default(),
             errors: Vec::new(),
             refs: None,
         };
@@ -417,27 +391,6 @@ impl Builder {
         self.ids.get(name).copied()
     }
 
-    pub fn names(&self) -> &[String] {
-        &self.names
-    }
-
-    /// Entries of `kind` carrying any of `comps`: one masked compare per row word.
-    pub fn entries_with_any(&self, kind: usize, comps: &[u32]) -> Vec<u32> {
-        let t = &self.tables[kind];
-        let mut mask = vec![0u64; t.words as usize];
-        for &c in comps {
-            mask[(c / 64) as usize] |= 1 << (c % 64);
-        }
-        (0..t.entries)
-            .filter(|&e| {
-                t.bits[(e * t.words) as usize..((e + 1) * t.words) as usize]
-                    .iter()
-                    .zip(&mask)
-                    .any(|(b, m)| b & m != 0)
-            })
-            .collect()
-    }
-
     fn encode<'v>(&mut self, v: &'v RawValue) -> Result<std::borrow::Cow<'v, [u8]>, String> {
         match &v.text {
             Some(t) if v.schema == "tag" => {
@@ -474,9 +427,8 @@ impl Builder {
         }
     }
 
-    /// Sets a value (or tag) on an entry. `setter` is the mod of an `r.set` (None for an entry's own
-    /// registration); replacing another mod's different value is logged.
-    pub fn put(&mut self, kind: usize, entry: u32, v: &RawValue, setter: Option<(ModId, &str)>, label: &dyn Fn() -> String) {
+    /// Sets a value (or tag) on an entry.
+    pub fn put(&mut self, kind: usize, entry: u32, v: &RawValue, label: &dyn Fn() -> String) {
         let Some(comp) = self.id(&v.name) else { return };
         let bytes = match self.encode(v) {
             Ok(b) => b,
@@ -489,20 +441,6 @@ impl Builder {
         if entry >= t.entries {
             return;
         }
-        let had = t.has(entry, comp);
-        if let Some((_, mod_name)) = setter {
-            let changed = t.value(entry, comp).is_some_and(|old| old != &*bytes);
-            if had && changed {
-                let before = self
-                    .setters
-                    .get(&(kind, entry, comp))
-                    .map_or("its registration", String::as_str);
-                log::info!("{mod_name} overrides {} on {} (was set by {before})", v.name, label());
-            }
-            self.setters
-                .insert((kind, entry, comp), mod_name.to_string());
-        }
-        let t = &mut self.tables[kind];
         if !bytes.is_empty() {
             let (stride, data) = &mut t.cols[comp as usize];
             if *stride == 0 {
@@ -520,14 +458,6 @@ impl Builder {
         }
         let w = (entry * t.words + comp / 64) as usize;
         t.bits[w] |= 1 << (comp % 64);
-    }
-
-    pub fn remove(&mut self, kind: usize, entry: u32, name: &str) {
-        let Some(comp) = self.id(name) else { return };
-        let t = &mut self.tables[kind];
-        if entry < t.entries {
-            t.bits[(entry * t.words + comp / 64) as usize] &= !(1 << (comp % 64));
-        }
     }
 
     /// Copies every component of `from` that `to` lacks (block items get their block's).
@@ -648,8 +578,8 @@ mod tests {
         b.refs =
             Some(Box::new(|_, t| if t == "a:oak_leaves" { Ok(7u32.to_le_bytes().to_vec()) } else { Err(format!("unknown block {t}")) }));
         let v = |t: &str| RawValue { name: "leaves".into(), schema: "block".into(), bytes: vec![], text: Some(t.into()) };
-        b.put(BLOCK, 0, &v("a:oak_leaves"), None, &|| "log".into());
-        b.put(BLOCK, 0, &v("a:oak_leafs"), None, &|| "log".into());
+        b.put(BLOCK, 0, &v("a:oak_leaves"), &|| "log".into());
+        b.put(BLOCK, 0, &v("a:oak_leafs"), &|| "log".into());
         assert_eq!(b.errors, vec!["log: leaves: unknown block a:oak_leafs".to_string()]);
         let c = b.finish();
         assert_eq!(c.get::<u32>(BLOCK, 0, c.id("leaves").unwrap()), Some(7));
@@ -663,13 +593,11 @@ mod tests {
         b.declare("plant_soil", "", Some(0), &|| "a".into(), &mut errors);
         b.declare("label", "str", None, &|| "a".into(), &mut errors);
         b.start([3, 2, 0, 0, 0]);
-        b.put(BLOCK, 1, &value("fuel", "u32", 300), None, &|| "x".into());
-        b.put(BLOCK, 2, &RawValue::tag("plant_soil"), None, &|| "x".into());
-        b.put(ITEM, 0, &RawValue { name: "label".into(), schema: "str".into(), bytes: vec![], text: Some("hi".into()) }, None, &|| {
-            "x".into()
-        });
+        b.put(BLOCK, 1, &value("fuel", "u32", 300), &|| "x".into());
+        b.put(BLOCK, 2, &RawValue::tag("plant_soil"), &|| "x".into());
+        b.put(ITEM, 0, &RawValue { name: "label".into(), schema: "str".into(), bytes: vec![], text: Some("hi".into()) }, &|| "x".into());
         b.inherit((BLOCK, 1), (ITEM, 1));
-        b.put(BLOCK, 1, &value("fuel", "u32", 100), Some((ModId(1), "testmod")), &|| "x".into());
+        b.put(BLOCK, 1, &value("fuel", "u32", 100), &|| "x".into());
         let c = b.finish();
         let (fuel, soil, label) = (c.id("fuel").unwrap(), c.id("plant_soil").unwrap(), c.id("label").unwrap());
         assert_eq!(c.get::<u32>(BLOCK, 1, fuel), Some(100));

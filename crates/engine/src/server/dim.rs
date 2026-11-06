@@ -1429,12 +1429,11 @@ impl Dim {
         &mut self,
         c: &'static Content,
         state: u32,
-        pick: impl Fn(&crate::content::BlockCallbacks) -> Option<abi::Callback>,
+        pick: impl Fn(&crate::content::BlockCallbacks) -> Option<(abi::ModId, abi::Callback)>,
         args: impl FnOnce(*mut abi::WorldCtx) -> A,
     ) -> Option<A> {
-        let block = c.block_of(state);
-        let cb = pick(&block.cb)?;
-        Some(self.call(block.owner, cb, args))
+        let (owner, cb) = pick(&c.block_of(state).cb)?;
+        Some(self.call(owner, cb, args))
     }
 
     /// A melee hit of `attacker` on `target`, the same for players and mobs: the `ATTACK`
@@ -2989,7 +2988,7 @@ impl Dim {
         }
         let def = c.block_of(state);
         let mut chosen = on_wire.unwrap_or(def.first_state);
-        if let (Some(cb), false) = (def.cb.placement, is_wire) {
+        if let (Some((owner, cb)), false) = (def.cb.placement, is_wire) {
             let mut args = abi::PlaceArgs {
                 pos: p.to_array().into(),
                 face: face as u32,
@@ -2999,7 +2998,7 @@ impl Dim {
                 hit,
                 placed: 0,
             };
-            host::invoke(def.owner, cb, &mut args);
+            host::invoke(owner, cb, &mut args);
             if args.state >= def.first_state && args.state < def.first_state + def.states {
                 chosen = args.state;
             } else {
@@ -3009,7 +3008,7 @@ impl Dim {
         let parts = self.parts(p);
         // The same block may take it in.
         let mut merged = None;
-        if !is_wire && let Some(cb) = def.cb.merge {
+        if !is_wire && let Some((owner, cb)) = def.cb.merge {
             for &part in parts
                 .iter()
                 .filter(|&&s| c.states[s as usize].block == c.states[chosen as usize].block)
@@ -3023,7 +3022,7 @@ impl Dim {
                     hit,
                     placed: chosen,
                 };
-                host::invoke(def.owner, cb, &mut args);
+                host::invoke(owner, cb, &mut args);
                 if args.state != part && args.state >= def.first_state && args.state < def.first_state + def.states {
                     merged = Some((part, args.state));
                     break;

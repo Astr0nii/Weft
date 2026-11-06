@@ -314,8 +314,9 @@ pub mod entry_mode {
     /// A new one; a second of the same name is an error.
     pub const NEW: u32 = 0;
     /// Its operations go onto the one of that name, whoever registered it, in load order. The
-    /// name may be a pattern: `#tag` (every entry with the tag), `*` in it (any text there),
-    /// `name[prop=value]` (those states of a block).
+    /// name may be a pattern: `#tag` (every entry with the tag, a block's states by their own),
+    /// `*` in it (any text there), `name[prop=value]` (those states of a block, `name[]` all of
+    /// them or the entry of that name of another kind): matching nothing isn't an error then.
     pub const EDIT: u32 = 1;
     /// Registered from scratch over what was there.
     pub const REPLACE: u32 = 2;
@@ -478,33 +479,6 @@ pub mod entry_kind {
         "bone motion",
     ];
 }
-
-/// What a `SetDesc` applies to.
-pub mod set_target {
-    /// The block (all states, or one with `name#3`) and the item of that name, whichever exist.
-    pub const NAME: u32 = 0;
-    /// Blocks and items carrying a tag; `*` in it matches any text (`ingots/*`).
-    pub const TAGGED: u32 = 1;
-    pub const BIOME: u32 = 3;
-    pub const DIMENSION: u32 = 4;
-}
-
-/// Sets (or with `remove` takes away) a component on entries any mod registered. Applied after
-/// every mod registered, in mod load order; the last one wins and overrides are logged.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SetDesc {
-    pub target_kind: u32,
-    pub target: Str,
-    pub value: CompValue,
-    pub remove: u32,
-}
-defaults!(SetDesc {
-    target_kind: 0,
-    target: Str::EMPTY,
-    value: CompValue { name: Str::EMPTY, schema: Str::EMPTY, value: Slice::EMPTY },
-    remove: 0
-});
 
 /// Frozen components of one entry kind, readable directly by mods: whether entry `e` has
 /// component `c` is bit `c % 64` of `bits[e * words + c / 64]`; its value (if the component has
@@ -1074,6 +1048,92 @@ pub mod comp {
         pub const CONDITION: &str = "item.condition";
     }
 
+    /// A block's (`entry_kind::BLOCK`). Its states are every combination of `PROPS`
+    /// (`[BlockProp]`, the first value the default, the last property changing fastest; none: one
+    /// state). Each state gets the block's ops, then those of each part (`EntryDesc::parts`) whose
+    /// key fits it, in order; an edit's ops come after the parts before it, so they win on every
+    /// state. The block's own: callbacks `ON_USE` (`UseArgs`, `handled = 1` consumes the click),
+    /// `ON_NEIGHBOR`, `ON_SCHEDULED`, `ON_CARRIED` (`BlockEventArgs`; on a moving body it came to
+    /// another cell of the world: `pos` that cell, `other` where it is on the body), `ON_GROW`
+    /// (`BlockEventArgs`, a growth step; without, a step moves to the next state and the last one
+    /// stops growing), `PLACEMENT` (`PlaceArgs`, the state a player places), `MERGE` (`PlaceArgs`,
+    /// its own item placed in its cell: another state in `state` takes the item, the same one
+    /// leaves it to be placed as usual), `ON_SIGNAL` (`SignalArgs`, the power around a
+    /// `signal_kind::SINK` changed), `SIGNAL_GATE` (`GateArgs`, a `signal_kind::GATE`'s output),
+    /// `SIGNAL_READ` (`SignalReadArgs`, what a comparator behind it reads instead of how full it
+    /// is); `OPENS` (`str`, a menu using it opens, on its block entity if it has one: a station of
+    /// the menu's recipe kinds), `SHARES_CELL` (`[str]`, names and `#tags` that may share its cell
+    /// though their shapes overlap), `MODEL_FILE` (`str`, `models/block/<path>.json` of the named
+    /// mod instead of the one named like the block), `MODEL_TEXTURES` (`[ModelTexture]`),
+    /// `SHAPES_OF` (`ShapesOf`: no block of its own but a template, one for each full cube among
+    /// the sources), `RETEXTURE` (`[Retexture]`, textures renamed on its states and its item). Per
+    /// state: a tag per `block_flags` (`FLAGS`) and `NOT_SOLID`; `LIGHT_FILTER` (`[u8;3]`,
+    /// absorption on top of the opacity, colored glass), `LIGHT_OPACITY` (`u8`, light it takes
+    /// away, 15 for an opaque one, else 0), `LAYER` (`u32`, `RenderLayer`: cutout for boxes, else
+    /// opaque), `MODEL` (`u32`, `BlockModel`, a cube), `TEXTURES` (`[str;6]`, by face,
+    /// `<ns>:block/<name>`), `TURNS` (`[u8;6]`, quarter turns of a cube's face pictures), `BOXES`
+    /// (`[ModelBox]`), `HITBOX` (`[[f32;6]]`, min and max in sixteenths: what stops a walker if it
+    /// is solid and what the crosshair picks; none: the boxes, else a plant's cross, else the
+    /// whole block) and `OUTLINE` (likewise, what is outlined and cracked when it isn't the
+    /// hitbox), `SIGNAL` (`SignalDesc`), `LIQUID_WALLS` (`u8`, a bit per `FACE_DIRS` side a liquid
+    /// in its cell can't pass; none: the sides its hitbox covers whole). It is opaque (hides its
+    /// neighbors' faces, gets ambient occlusion) as a cube on the opaque layer. Any other component
+    /// goes in its component table, per state; its item gets the first state's unless it sets
+    /// its own.
+    pub mod block {
+        use crate::block_flags as f;
+        pub const PROPS: &str = "block.props";
+        pub const ON_USE: &str = "block.on_use";
+        pub const ON_NEIGHBOR: &str = "block.on_neighbor";
+        pub const ON_SCHEDULED: &str = "block.on_scheduled";
+        pub const ON_CARRIED: &str = "block.on_carried";
+        pub const ON_GROW: &str = "block.on_grow";
+        pub const PLACEMENT: &str = "block.placement";
+        pub const MERGE: &str = "block.merge";
+        pub const ON_SIGNAL: &str = "block.on_signal";
+        pub const SIGNAL_GATE: &str = "block.signal_gate";
+        pub const SIGNAL_READ: &str = "block.signal_read";
+        pub const OPENS: &str = "block.opens";
+        pub const SHARES_CELL: &str = "block.shares_cell";
+        pub const MODEL_FILE: &str = "block.model_file";
+        pub const MODEL_TEXTURES: &str = "block.model_textures";
+        pub const SHAPES_OF: &str = "block.shapes_of";
+        pub const RETEXTURE: &str = "block.retexture";
+        pub const LIGHT_FILTER: &str = "block.light_filter";
+        pub const LIGHT_OPACITY: &str = "block.light_opacity";
+        pub const LAYER: &str = "block.layer";
+        pub const MODEL: &str = "block.model";
+        pub const TEXTURES: &str = "block.textures";
+        pub const TURNS: &str = "block.turns";
+        pub const BOXES: &str = "block.boxes";
+        pub const HITBOX: &str = "block.hitbox";
+        pub const OUTLINE: &str = "block.outline";
+        pub const SIGNAL: &str = "block.signal";
+        pub const LIQUID_WALLS: &str = "block.liquid_walls";
+        pub const NOT_SOLID: &str = "block.not_solid";
+        pub const REPLACEABLE: &str = "block.replaceable";
+        pub const CLIMBABLE: &str = "block.climbable";
+        pub const NOT_TARGETABLE: &str = "block.not_targetable";
+        pub const CULL_SAME: &str = "block.cull_same";
+        pub const IMMOVABLE: &str = "block.immovable";
+        pub const SIGNAL_BLOCKER: &str = "block.signal_blocker";
+        pub const STICKY: &str = "block.sticky";
+        pub const NOT_STOOD_ON: &str = "block.not_stood_on";
+        pub const HOLDS_LIQUID: &str = "block.holds_liquid";
+        /// The tags as `block_flags`.
+        pub const FLAGS: [(&str, u32); 9] = [
+            (REPLACEABLE, f::REPLACEABLE),
+            (CLIMBABLE, f::CLIMBABLE),
+            (NOT_TARGETABLE, f::NOT_TARGETABLE),
+            (CULL_SAME, f::CULL_SAME),
+            (IMMOVABLE, f::IMMOVABLE),
+            (SIGNAL_BLOCKER, f::SIGNAL_BLOCKER),
+            (STICKY, f::STICKY),
+            (NOT_STOOD_ON, f::NOT_STOOD_ON),
+            (HOLDS_LIQUID, f::HOLDS_LIQUID),
+        ];
+    }
+
     /// A biome's own climate and surface (`entry_kind::BIOME`), what every terrain rule placing
     /// it starts from (`BiomeRule` says what each is): `RANGES` (`[RuleRange]`, a field named again
     /// replaces the earlier range; none: everywhere), `HEIGHT` (`[i32;2]`, any), `TOP`, `FILLER`
@@ -1489,21 +1549,31 @@ impl BoxTilt {
     pub const NONE: BoxTilt = BoxTilt { origin: [0.0; 3], axis: [0.0, 1.0, 0.0], degrees: 0.0 };
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ModelBox {
-    /// In 1/16 block units.
-    pub min: [f32; 3],
-    pub max: [f32; 3],
-    /// Per face; empty takes the state's texture of that face.
-    pub textures: [Str; 6],
-    /// Per face texel rectangle (u0, v0, u1, v1, 0..16), `UV_FROM_BOX` or `UV_NO_FACE`.
-    pub uv: [[f32; 4]; 6],
-    /// Per face quarter turns of the picture (`FACE_CORNERS`).
-    pub turn: [u8; 6],
-    pub tilt: BoxTilt,
+impl Default for BoxTilt {
+    fn default() -> BoxTilt {
+        BoxTilt::NONE
+    }
 }
-defaults!(ModelBox { min: [0.0; 3], max: [16.0; 3], textures: [Str::EMPTY; 6], uv: [UV_FROM_BOX; 6], turn: [0; 6], tilt: BoxTilt::NONE });
+
+impl Schema for BoxTilt {
+    const SCHEMA: &'static str = "{origin:[f32;3],axis:[f32;3],degrees:f32}";
+}
+
+crate::data! {
+    /// A box of a block state's model (`comp::block::BOXES`).
+    pub struct ModelBox {
+        /// In 1/16 block units.
+        pub min: [f32; 3],
+        pub max: [f32; 3],
+        /// Per face; empty takes the state's texture of that face.
+        pub textures: [alloc::string::String; 6],
+        /// Per face texel rectangle (u0, v0, u1, v1, 0..16), `UV_FROM_BOX` or `UV_NO_FACE`.
+        pub uv: [[f32; 4]; 6],
+        /// Per face quarter turns of the picture (`FACE_CORNERS`).
+        pub turn: [u8; 6],
+        pub tilt: BoxTilt,
+    }
+}
 
 /// A box's texel rectangle saying to take it from where the box is, as a cube's face would.
 pub const UV_FROM_BOX: [f32; 4] = [-1.0, 0.0, 0.0, 0.0];
@@ -1553,9 +1623,9 @@ pub mod signal_kind {
     pub const COMPARATOR: u32 = 5;
     /// A pulse out of its back when the block at `front` changes.
     pub const OBSERVER: u32 = 6;
-    /// `BlockDesc::signal_gate` works out what comes out of `front` from its `inputs`.
+    /// `comp::block::SIGNAL_GATE` works out what comes out of `front` from its `inputs`.
     pub const GATE: u32 = 7;
-    /// `power` and `BlockDesc::on_signal` follow the power around it.
+    /// `power` and `comp::block::ON_SIGNAL` follow the power around it.
     pub const SINK: u32 = 8;
     /// Pushes blocks at `front` with power from any other side; `STICKY` pulls them back.
     pub const PISTON: u32 = 9;
@@ -1585,25 +1655,48 @@ pub mod gate_side {
     pub const BOTTOM: u32 = 5;
 }
 
-/// Per state. A property named `power` holds its level: two values are off and full.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct SignalDesc {
-    pub kind: u32,
-    /// Direction of what holds it (-X, +X, -Y, +Y, -Z, +Z), 6 for none.
-    pub attach: u32,
-    /// Direction it gives or looks, 6 for none.
-    pub front: u32,
-    /// Game ticks.
-    pub delay: u32,
-    /// `signal_flags`.
-    pub flags: u32,
-    /// A gate's input faces, `1 << gate_side::*`.
-    pub inputs: u32,
-    /// A piston's head block.
-    pub head: Str,
+crate::data! {
+    /// What a block state is to redstone (`comp::block::SIGNAL`). A property named `power` holds
+    /// its level: two values are off and full.
+    pub struct SignalDesc {
+        pub kind: u32,
+        /// Direction of what holds it (-X, +X, -Y, +Y, -Z, +Z), 6 for none.
+        pub attach: u32,
+        /// Direction it gives or looks, 6 for none.
+        pub front: u32,
+        /// Game ticks.
+        pub delay: u32,
+        /// `signal_flags`.
+        pub flags: u32,
+        /// A gate's input faces, `1 << gate_side::*`.
+        pub inputs: u32,
+        /// A piston's head block.
+        pub head: alloc::string::String,
+    }
 }
-defaults!(SignalDesc { kind: signal_kind::NONE, attach: 6, front: 6, delay: 2, flags: 0, inputs: 0, head: Str::EMPTY });
+defaults!(SignalDesc { kind: signal_kind::NONE, attach: 6, front: 6, delay: 2, flags: 0, inputs: 0, head: alloc::string::String::new() });
+
+crate::data! {
+    /// A property of a block (`comp::block::PROPS`): `facing`, `lit`, `age`, each with its values.
+    pub struct BlockProp { pub name: alloc::string::String, pub values: alloc::vec::Vec<alloc::string::String> }
+}
+
+crate::data! {
+    /// The texture a block puts where its model file says `#name` (`comp::block::MODEL_TEXTURES`):
+    /// one model, each block its own pictures.
+    pub struct ModelTexture { pub name: alloc::string::String, pub texture: alloc::string::String }
+}
+
+crate::data! {
+    /// A template of blocks (`comp::block::SHAPES_OF`): one for each full cube among `sources`
+    /// (names and `#tags`, space separated), named as that one plus `suffix`.
+    pub struct ShapesOf { pub sources: alloc::string::String, pub suffix: alloc::string::String }
+}
+
+crate::data! {
+    /// A texture renamed, full names (`comp::block::RETEXTURE`).
+    pub struct Retexture { pub from: alloc::string::String, pub to: alloc::string::String }
+}
 
 #[repr(C)]
 pub struct SignalArgs {
@@ -1615,7 +1708,7 @@ pub struct SignalArgs {
     pub before: u32,
 }
 
-/// What a comparator behind this block reads, `BlockDesc::signal_read`: set `output`, 0..15.
+/// What a comparator behind this block reads, `comp::block::SIGNAL_READ`: set `output`, 0..15.
 #[repr(C)]
 pub struct SignalReadArgs {
     pub world: *mut WorldCtx,
@@ -1633,146 +1726,6 @@ pub struct GateArgs {
     pub state: u32,
     pub inputs: [u32; 6],
     pub output: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct StateDesc {
-    pub flags: u32,
-    /// Extra per-channel absorption on top of `opacity`, for colored glass.
-    pub filter: [u8; 3],
-    /// How much light it absorbs per block, 0 for air/glass, 15 or more blocks it fully.
-    pub opacity: u8,
-    pub layer: RenderLayer,
-    pub model: BlockModel,
-    pub textures: [Str; 6],
-    /// Cube model: quarter turns of each face's picture, as a model box's `turn` (a log on its side).
-    pub turns: [u8; 6],
-    pub boxes: Slice<ModelBox>,
-    /// Its shape in fractions of a block: what stops a walker if it is solid, and what the
-    /// crosshair picks, outlines and cracks. Empty: the model's boxes, else a plant's cross, else
-    /// the whole block.
-    pub hitbox: Slice<[f32; 6]>,
-    /// What the crosshair outlines and cracks, in fractions of a block, when it isn't `hitbox`
-    /// (a hollow log stopping walkers by its walls, outlined whole). Empty: as `hitbox` says.
-    pub outline: Slice<[f32; 6]>,
-    /// Components of this state only, on top of the block's (hardness, light, support and tint
-    /// are components too, `comp::HARDNESS` ...).
-    pub components: Slice<CompValue>,
-    pub signal: SignalDesc,
-    /// Sides a liquid in its cell can't pass, a bit per `FACE_DIRS` direction; `u8::MAX`: the
-    /// ones its hitbox covers whole.
-    pub liquid_walls: u8,
-}
-defaults!(StateDesc {
-    flags: block_flags::SOLID | block_flags::OPAQUE,
-    filter: [0; 3],
-    opacity: 15,
-    layer: RenderLayer::Opaque,
-    model: BlockModel::Cube,
-    textures: [Str::EMPTY; 6],
-    turns: [0; 6],
-    boxes: Slice::EMPTY,
-    hitbox: Slice::EMPTY,
-    outline: Slice::EMPTY,
-    components: Slice::EMPTY,
-    signal: SignalDesc::DEFAULT,
-    liquid_walls: u8::MAX,
-});
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct BlockDesc {
-    pub name: Str,
-    /// Receives the id of the first state once registries are frozen (null = no handle).
-    pub cell: *const AtomicU32,
-    /// One per combination of `props` values, the last property changing fastest (with no
-    /// properties, one state).
-    pub states: Slice<StateDesc>,
-    /// Named properties (`facing`, `lit`, `age`), each with its values; the first value is the
-    /// default.
-    pub props: Slice<PropDesc>,
-    /// Components of every state (tags, mining, fuel ...). Its item gets them too unless it sets
-    /// its own.
-    pub components: Slice<CompValue>,
-    /// `UseArgs`; return `handled = 1` to consume the click.
-    pub on_use: Callback,
-    pub on_neighbor: Callback,
-    pub on_scheduled: Callback,
-    /// On a moving body, it came to another cell of the world: `pos` that cell, `other` where it is
-    /// on the body, `entity` the body. In the world's coordinates, for what it does there.
-    pub on_carried: Callback,
-    /// `PlaceArgs`: choose the state from the player's facing/hit face.
-    pub placement: Callback,
-    /// Non-zero: `Registry::edit`, on top of the block of this name registered already.
-    pub edit: u32,
-    /// `BlockEventArgs`, a growth step; without it a step moves to the next state and the last
-    /// state stops growing.
-    pub on_grow: Callback,
-    /// 0: a replacement (`replace`) without states of its own, which keeps the replaced block's.
-    pub own_states: u32,
-    /// Replacements keeping the replaced block's states: (old texture, new texture) pairs, full
-    /// names, applied to those states and the block's item.
-    pub retexture: Slice<Str>,
-    /// A menu using the block opens (on its block entity, if it has one). A block opening a
-    /// menu with recipe kinds is a station of those kinds in the recipe viewer.
-    pub opens: Str,
-    /// `SignalArgs`: the power around a `signal_kind::SINK` changed.
-    pub on_signal: Callback,
-    /// `GateArgs`, for a `signal_kind::GATE`.
-    pub signal_gate: Callback,
-    /// `SignalReadArgs`: what a comparator behind it reads, instead of how full it is.
-    pub signal_read: Callback,
-    /// `PlaceArgs`: its own item placed in its cell, as `placed`. Another state in `state` takes
-    /// the item (a second slab making the block whole), the same one leaves it to be placed as
-    /// usual.
-    pub merge: Callback,
-    /// What may share a cell with it though their shapes overlap (`#tags`, names).
-    pub shares_cell: Slice<Str>,
-    /// The model file (`models/block/<path>.json` of the named mod) instead of the one named
-    /// like the block: several blocks, any mod's, on one model. Empty: its own name.
-    pub model_file: Str,
-    /// Pairs of a model file's texture name (its `#name`) and the texture this block puts there:
-    /// one model, each block's own pictures.
-    pub model_textures: Slice<Str>,
-    /// Non-empty: no block of its own but a template, one for each full cube among these names
-    /// and `#tags`, named as that one plus `shapes_suffix`, see `Registry::shapes_of`.
-    pub shapes_of: Str,
-    pub shapes_suffix: Str,
-}
-defaults!(BlockDesc {
-    name: Str::EMPTY,
-    cell: core::ptr::null(),
-    states: Slice::EMPTY,
-    props: Slice::EMPTY,
-    components: Slice::EMPTY,
-    on_use: Callback::NONE,
-
-    on_neighbor: Callback::NONE,
-    on_scheduled: Callback::NONE,
-    on_carried: Callback::NONE,
-    placement: Callback::NONE,
-    edit: 0,
-    on_grow: Callback::NONE,
-    own_states: 1,
-    retexture: Slice::EMPTY,
-    opens: Str::EMPTY,
-    on_signal: Callback::NONE,
-    signal_gate: Callback::NONE,
-    signal_read: Callback::NONE,
-    merge: Callback::NONE,
-    shapes_of: Str::EMPTY,
-    shapes_suffix: Str::EMPTY,
-    shares_cell: Slice::EMPTY,
-    model_file: Str::EMPTY,
-    model_textures: Slice::EMPTY,
-});
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct PropDesc {
-    pub name: Str,
-    pub values: Slice<Str>,
 }
 
 #[repr(C)]
@@ -1866,14 +1819,14 @@ pub struct PlaceArgs {
     pub face: u32,
     /// Player look direction.
     pub look: [f32; 3],
-    /// In/out: starts as the first state (for `BlockDesc::merge`, the state there now).
+    /// In/out: starts as the first state (for `comp::block::MERGE`, the state there now).
     pub state: u32,
     /// The block's first state.
     pub first: u32,
     /// Just outside where it was clicked, from `pos`'s corner: 0..1 inside this cell, past that
     /// when it had no room and goes in the next.
     pub hit: [f32; 3],
-    /// For `BlockDesc::merge`: the state its item would be placed in.
+    /// For `comp::block::MERGE`: the state its item would be placed in.
     pub placed: u32,
 }
 
@@ -2508,7 +2461,7 @@ pub struct WeatherLook {
     pub darkness: f32,
 }
 
-/// The engine's poses (`Host::reg_pose`), registered first in this order; `EntityState::pose`
+/// The engine's poses (`entry_kind::POSE`), registered first in this order; `EntityState::pose`
 /// holds one of them or a mod's.
 pub mod pose {
     pub const STAND: u32 = 0;
@@ -2529,7 +2482,7 @@ pub mod pose_tilt {
     pub const ON_BACK: u32 = 3;
 }
 
-/// When a pose may be taken, all of those given (`PoseDesc::when`).
+/// When a pose may be taken, all of those given (`comp::pose::WHEN`).
 pub mod pose_when {
     /// In a liquid it swims in (`comp::SWIMS_IN`): at its eyes, or at its feet once it is low.
     pub const SWIM_LIQUID: u32 = 1;
@@ -3106,7 +3059,6 @@ pub struct Host {
     /// costly diagnostics.
     pub log_enabled: unsafe extern "C" fn(me: ModId, level: u32, target: Str) -> u32,
 
-    pub reg_block: unsafe extern "C" fn(reg: *mut Registrar, desc: *const BlockDesc),
     /// `cb` (`WorldTickArgs`) once per tick in every region of every dimension, for logic that
     /// isn't one entity's or block's (a dimension's loaded parts are regions run in parallel).
     pub reg_world_tick: unsafe extern "C" fn(reg: *mut Registrar, cb: Callback),
@@ -3119,9 +3071,6 @@ pub struct Host {
     /// `client` non-zero: it runs on the client that types it, never sent to the server, `cb` getting
     /// `CommandArgs` with `client` set.
     pub reg_command: unsafe extern "C" fn(reg: *mut Registrar, name: Str, usage: Str, client: u32, cb: Callback),
-
-    /// Sets or removes a component (or tag) on entries of any mod, see `SetDesc`.
-    pub reg_set: unsafe extern "C" fn(reg: *mut Registrar, desc: *const SetDesc),
 
     /// Looks up a frozen id by full name ("base:stone"), `u32::MAX` if missing. Blocks give their
     /// first state and write the state count to `count` (others write 1). `kind` is `entry_kind`.
@@ -3475,9 +3424,6 @@ pub struct Host {
     pub attribute_remove_modifier: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str, id: Str),
     /// Fills `explanation` with how the value came about; returns the value.
     pub attribute_explain: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str) -> f64,
-    /// What other mods register as `name` of `kind` (`entry_kind`) is dropped: this mod's own
-    /// registration of it replaces theirs, or with `removed` nobody's stays.
-    pub reg_override: unsafe extern "C" fn(reg: *mut Registrar, kind: u32, name: Str, removed: u32),
     /// An entry: a new one, an edit, a replacement or a removal (`EntryDesc::mode`).
     pub reg_entry: unsafe extern "C" fn(reg: *mut Registrar, entry: *const EntryDesc),
     /// Rolls table `name`; writes at most `max` stacks to `out` and returns how many it made.
@@ -3719,11 +3665,9 @@ pub struct Rect {
     pub h: f32,
 }
 
-/// `Host::reg_entity_hook`.
-
 /// Tint kinds of block faces: color from the biome. The engine has `core:grass`,
 /// `core:foliage` and `core:water`; mods add their own (`entry_kind::TINT_KIND`) and name them
-/// in `StateDesc::tint_name`.
+/// in `comp::TINT`.
 pub mod tint {
     /// Kinds that fit the face and quad records, the engine's three included.
     pub const MAX_KINDS: u32 = 15;
@@ -3770,7 +3714,7 @@ pub struct ConditionArgs {
     pub result: u32,
 }
 
-/// The engine's conditions (`Host::reg_condition`), registered first in this order.
+/// The engine's conditions (`entry_kind::CONDITION`), registered first in this order.
 pub mod condition {
     pub const DAY: u32 = 0;
     pub const NIGHT: u32 = 1;
@@ -4270,7 +4214,7 @@ pub mod loot_cond {
     pub const HARVESTED: u32 = 6;
     /// The block's state has what `text` says, a property and its value: `age=7`.
     pub const BLOCK_STATE: u32 = 7;
-    /// Condition `text` (`Host::reg_condition`) holds there, asked about the killer or breaker.
+    /// Condition `text` (`entry_kind::CONDITION`) holds there, asked about the killer or breaker.
     pub const CONDITION: u32 = 8;
 }
 

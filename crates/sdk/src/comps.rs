@@ -469,6 +469,43 @@ pub mod dimension {
     pub static WEATHERS: Component<Vec<String>, Dimension> = Component::named(d::WEATHERS);
 }
 
+/// What a block is made of (`abi::comp::block`): its properties and callbacks, and per state its
+/// look and shape, tags for its flags (`abi::comp::block::FLAGS`, `NOT_SOLID`). The builder's
+/// setters set them; the engine's defaults stand where nothing is set.
+pub mod block {
+    use crate::abi::{self, Callback, comp::block as b};
+    use crate::kind::Block;
+    use crate::{Component, Text};
+    pub static PROPS: Component<Vec<abi::BlockProp>, Block> = Component::named(b::PROPS);
+    pub static ON_USE: Component<Callback, Block> = Component::named(b::ON_USE);
+    pub static ON_NEIGHBOR: Component<Callback, Block> = Component::named(b::ON_NEIGHBOR);
+    pub static ON_SCHEDULED: Component<Callback, Block> = Component::named(b::ON_SCHEDULED);
+    pub static ON_CARRIED: Component<Callback, Block> = Component::named(b::ON_CARRIED);
+    pub static ON_GROW: Component<Callback, Block> = Component::named(b::ON_GROW);
+    pub static PLACEMENT: Component<Callback, Block> = Component::named(b::PLACEMENT);
+    pub static MERGE: Component<Callback, Block> = Component::named(b::MERGE);
+    pub static ON_SIGNAL: Component<Callback, Block> = Component::named(b::ON_SIGNAL);
+    pub static SIGNAL_GATE: Component<Callback, Block> = Component::named(b::SIGNAL_GATE);
+    pub static SIGNAL_READ: Component<Callback, Block> = Component::named(b::SIGNAL_READ);
+    pub static OPENS: Component<Text, Block> = Component::named(b::OPENS);
+    pub static SHARES_CELL: Component<Vec<String>, Block> = Component::named(b::SHARES_CELL);
+    pub static MODEL_FILE: Component<Text, Block> = Component::named(b::MODEL_FILE);
+    pub static MODEL_TEXTURES: Component<Vec<abi::ModelTexture>, Block> = Component::named(b::MODEL_TEXTURES);
+    pub static SHAPES_OF: Component<abi::ShapesOf, Block> = Component::named(b::SHAPES_OF);
+    pub static RETEXTURE: Component<Vec<abi::Retexture>, Block> = Component::named(b::RETEXTURE);
+    pub static LIGHT_FILTER: Component<[u8; 3], Block> = Component::named(b::LIGHT_FILTER);
+    pub static LIGHT_OPACITY: Component<u8, Block> = Component::named(b::LIGHT_OPACITY);
+    pub static LAYER: Component<u32, Block> = Component::named(b::LAYER);
+    pub static MODEL: Component<u32, Block> = Component::named(b::MODEL);
+    pub static TEXTURES: Component<[String; 6], Block> = Component::named(b::TEXTURES);
+    pub static TURNS: Component<[u8; 6], Block> = Component::named(b::TURNS);
+    pub static BOXES: Component<Vec<abi::ModelBox>, Block> = Component::named(b::BOXES);
+    pub static HITBOX: Component<Vec<[f32; 6]>, Block> = Component::named(b::HITBOX);
+    pub static OUTLINE: Component<Vec<[f32; 6]>, Block> = Component::named(b::OUTLINE);
+    pub static SIGNAL: Component<abi::SignalDesc, Block> = Component::named(b::SIGNAL);
+    pub static LIQUID_WALLS: Component<u8, Block> = Component::named(b::LIQUID_WALLS);
+}
+
 /// What an entity kind is made of: tags for its flags (`abi::comp::entity::FLAGS`, `OFF`) and
 /// these; the player's inventory layout and menu too.
 pub mod entity {

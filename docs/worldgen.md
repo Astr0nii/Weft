@@ -236,7 +236,7 @@ for z in 0..16usize { for x in 0..16usize {
     }
 }}
 ```
-`g.column(x, z)` gives any other column in world coordinates, and `g.surface_carved(x, z)` says whether a cave opened the ground there. `g.get` only sees this cube, so when `y` is 0 the ground is out of its reach: `g.surface_block(x, z)` (world coordinates) says what the terrain left at the top of a column, 0 if nothing. How much grows where is data on the biome (the components `grass` and `flowers`), which another mod can attach to any biome with `r.set_on(Target::Biome("base:forest"), &COMPONENT, value)`.
+`g.column(x, z)` gives any other column in world coordinates, and `g.surface_carved(x, z)` says whether a cave opened the ground there. `g.get` only sees this cube, so when `y` is 0 the ground is out of its reach: `g.surface_block(x, z)` (world coordinates) says what the terrain left at the top of a column, 0 if nothing. How much grows where is data on the biome (the components `grass` and `flowers`), which another mod can attach to any biome with an edit, `r.edit(&FOREST).set(&COMPONENT, value)`.
 
 ## Changing another mod's terrain
 `r.edit(OVERWORLD.terrain())` with `OVERWORLD = Dimension::named("base:overworld")` takes the same calls as your own terrain. Whatever you call on it is applied after the owner's description, and edits from several mods go in load order, so the result is the same on every machine. Testmod puts a hot, dry biome (`r.biome(&SCORCHED).temperature(0.4..).humidity(..-0.1)...`) into base's deserts like this:

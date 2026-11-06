@@ -72,6 +72,18 @@ impl RawEntry {
     }
 }
 
+/// `T::schema()`, worked out once: a packed struct's is built of its fields' every time.
+pub fn schema<T: data::Data>() -> &'static str {
+    thread_local! {
+        static KNOWN: std::cell::RefCell<FxHashMap<std::any::TypeId, &'static str>> = Default::default();
+    }
+    KNOWN.with(|k| {
+        *k.borrow_mut()
+            .entry(std::any::TypeId::of::<T>())
+            .or_insert_with(|| T::schema().leak())
+    })
+}
+
 /// `v` as the value of component `name`.
 fn value<T: data::Data>(name: &str, v: T) -> RawValue {
     let bytes = data::bytes_of(&v);
@@ -109,7 +121,7 @@ impl Entry {
     /// The value of `name` as `T`, if it is there with `T`'s schema.
     pub fn get<T: data::Data>(&self, name: &str) -> Option<T> {
         self.value(name)
-            .filter(|v| v.schema == T::schema())
+            .filter(|v| v.schema == schema::<T>())
             .and_then(|v| data::from_bytes(&v.bytes))
     }
 
@@ -209,6 +221,13 @@ pub fn apply(values: &mut Vec<RawValue>, op: &RawOp, what: &str, errors: &mut Ve
                 errors.push(format!("{what}: {name} is {}, not a list of {}", v.schema, op.value.schema));
                 return;
             }
+            // At the end: the count one up, no element read.
+            if op.op == vo::PUSH && v.bytes.len() >= 4 {
+                let n = u32::from_le_bytes(v.bytes[..4].try_into().unwrap()) + 1;
+                v.bytes[..4].copy_from_slice(&n.to_le_bytes());
+                v.bytes.extend_from_slice(&op.value.bytes);
+                return;
+            }
             let Some(mut items) = data::items(&v.schema, &v.bytes) else {
                 errors.push(format!("{what}: {name}: bad list"));
                 return;
@@ -285,6 +304,7 @@ pub fn finish<D, K: Ord>(
     key: impl FnMut(&Entry) -> K,
     mut make: impl FnMut(&Entry, &mut Vec<String>) -> D,
 ) -> (Vec<D>, FxHashMap<String, u32>) {
+    f.report_missing(errors);
     f.entries.sort_by_cached_key(key);
     f.apply_patterns(errors);
     f.write_cells();
@@ -302,16 +322,35 @@ pub fn is_pattern(name: &str) -> bool {
     name.starts_with('#') || name.contains('*') || name.contains('[')
 }
 
+/// A pattern's name and the `prop=value,..` inside its brackets, if it has them.
+pub fn split_pattern(name: &str) -> (&str, Option<&str>) {
+    match name.split_once('[') {
+        Some((n, rest)) => (n, Some(rest.trim_end_matches(']'))),
+        None => (name, None),
+    }
+}
+
 /// Folds one kind's entries, in load order, into one per name, in the order they were first
 /// registered (the engine's own first). `kind` names it in errors. Edits naming a pattern are
-/// left in `patterns` for the kind to apply, as only it knows its tags and states.
+/// left in `patterns` for the kind to apply, as only it knows its tags and states; edits naming
+/// nothing are left in `missing`. A block's operations are its first part (an edit's after the
+/// parts before it, so they go on every state in their order), but for what is the block's own.
 pub fn fold(kind: &str, raw: Vec<RawEntry>, mod_name: &dyn Fn(ModId) -> String, errors: &mut Vec<String>) -> Folded {
     // Name -> (place, entry); a replacement keeps the place.
     let mut by: FxHashMap<String, (usize, Entry)> = FxHashMap::default();
     let mut late: Vec<RawEntry> = Vec::new();
     let mut patterns: Vec<RawEntry> = Vec::new();
     let mut gone_cells: Vec<usize> = Vec::new();
-    for (seq, e) in raw.into_iter().enumerate() {
+    for (seq, mut e) in raw.into_iter().enumerate() {
+        if e.kind == abi::entry_kind::BLOCK && e.mode != em::REMOVE && !is_pattern(&e.name) {
+            let ops = std::mem::take(&mut e.ops);
+            e.ops = ops
+                .iter()
+                .filter(|o| crate::blocks::block_only(&o.value.name))
+                .cloned()
+                .collect();
+            e.parts.insert(0, (String::new(), ops));
+        }
         match e.mode {
             em::NEW | em::REPLACE => {
                 if let (em::NEW, Some((_, old))) = (e.mode, by.get(&e.name)) {
@@ -343,18 +382,23 @@ pub fn fold(kind: &str, raw: Vec<RawEntry>, mod_name: &dyn Fn(ModId) -> String, 
             m => errors.push(format!("{kind} {}: unknown mode {m}", e.name)),
         }
     }
+    let mut missing = Vec::new();
     for e in late {
         match by.get_mut(&e.name) {
             Some((_, entry)) => edit(entry, e, errors),
-            None => errors.push(format!("{}: edit of {kind} {}: no such {kind}", mod_name(e.owner), e.name)),
+            None => {
+                let why = format!("{}: edit of {kind} {}: no such {kind}", mod_name(e.owner), e.name);
+                missing.push((e, why));
+            }
         }
     }
     let mut entries: Vec<(usize, Entry)> = by.into_values().collect();
     entries.sort_by_key(|e| e.0);
-    Folded { entries: entries.into_iter().map(|e| e.1).collect(), patterns, gone_cells }
+    Folded { entries: entries.into_iter().map(|e| e.1).collect(), patterns, gone_cells, missing }
 }
 
-fn edit(entry: &mut Entry, e: RawEntry, errors: &mut Vec<String>) {
+/// An edit's operations and parts onto its entry.
+pub fn edit(entry: &mut Entry, e: RawEntry, errors: &mut Vec<String>) {
     entry.cells.push(e.cell);
     for op in &e.ops {
         entry.apply(op, e.owner, errors);
@@ -368,29 +412,44 @@ pub struct Folded {
     pub patterns: Vec<RawEntry>,
     /// Cells of removed entries: their handles stay unknown.
     pub gone_cells: Vec<usize>,
+    /// Edits of a name nothing registered, and the error they are unless something makes it.
+    pub missing: Vec<(RawEntry, String)>,
 }
 
 impl Folded {
-    /// Applies the pattern edits matching by name (`*`) or by a tag value (`#tag`): what fits
-    /// every kind. Blocks handle `[prop=value]` themselves.
-    pub fn apply_patterns(&mut self, errors: &mut Vec<String>) {
+    pub fn report_missing(&mut self, errors: &mut Vec<String>) {
+        errors.extend(std::mem::take(&mut self.missing).into_iter().map(|m| m.1));
+    }
+
+    /// Applies the pattern edits matching by name (`*`, `name[]`) or by a tag value (`#tag`):
+    /// what fits every kind. Blocks handle states (`[prop=value]`) themselves, other kinds leave
+    /// those out. Gives each pattern's mod and name, and whether it matched anything.
+    pub fn apply_patterns(&mut self, errors: &mut Vec<String>) -> Vec<(ModId, String, bool)> {
+        let mut out = Vec::new();
         for p in std::mem::take(&mut self.patterns) {
-            let tag = p.name.strip_prefix('#');
-            for e in &mut self.entries {
-                let hit = match tag {
-                    Some(t) => e
-                        .values
-                        .iter()
-                        .any(|v| v.schema.is_empty() && crate::components::matches(t, &v.name)),
-                    None => crate::components::matches(&p.name, &e.name),
-                };
-                if hit {
-                    for op in &p.ops {
-                        e.apply(op, p.owner, errors);
+            let (name, props) = split_pattern(&p.name);
+            let mut hit_any = false;
+            if props.is_none_or(|k| k.trim().is_empty()) {
+                let tag = name.strip_prefix('#');
+                for e in &mut self.entries {
+                    let hit = match tag {
+                        Some(t) => e
+                            .values
+                            .iter()
+                            .any(|v| v.schema.is_empty() && crate::components::matches(t, &v.name)),
+                        None => crate::components::matches(name, &e.name),
+                    };
+                    if hit {
+                        hit_any = true;
+                        for op in &p.ops {
+                            e.apply(op, p.owner, errors);
+                        }
                     }
                 }
             }
+            out.push((p.owner, p.name, hit_any));
         }
+        out
     }
 
     /// Writes every entry's id (its place, by name) into its handles' cells.
@@ -422,7 +481,7 @@ mod tests {
     }
 
     fn entry(owner: u32, name: &str, mode: u32, ops: Vec<RawOp>) -> RawEntry {
-        RawEntry { owner: ModId(owner), kind: 0, name: name.into(), cell: 0, mode, ops, parts: Vec::new() }
+        RawEntry { owner: ModId(owner), kind: abi::entry_kind::ITEM, name: name.into(), cell: 0, mode, ops, parts: Vec::new() }
     }
 
     #[test]

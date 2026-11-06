@@ -1,4 +1,4 @@
-//! Conditions (`Host::reg_condition`): one predicate that music, `{if:..}` in text, loot tables
+//! Conditions (`entry_kind::CONDITION`): one predicate that music, `{if:..}` in text, loot tables
 //! and natural spawning all take. The engine's own and game modes' are answered here; a mod's is
 //! its callback, asked with the side it runs on.
 
