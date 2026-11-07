@@ -65,8 +65,11 @@ shared! {
         Z_SHIFT = 11,
         DIR_SHIFT = 22,
         TINT_SHIFT = 25,
+        EXTRUDE_SHIFT = 30,
+        PARTIAL_SHIFT = 31,
         HALF_SHIFT = 16,
         HALF_MASK = 0xFFFF,
+        SIZE_BITS = 6,
     }
     /// Tint kinds of faces and quads (0 none); mods' kinds follow the engine's.
     tint {
@@ -371,7 +374,8 @@ fn records() -> String {
         "    return vec3<f32>(f32(w0 & LOD_FACE_POS_MASK), f32(bitcast<i32>(w2 << LOD_FACE_HALF_SHIFT) >> LOD_FACE_HALF_SHIFT), f32((w0 >> LOD_FACE_Z_SHIFT) & LOD_FACE_POS_MASK));\n",
         "}\n",
         "fn lod_size(w2: u32, w3: u32) -> vec3<f32> {\n",
-        "    return vec3<f32>(f32(w3 & LOD_FACE_HALF_MASK), f32(w2 >> LOD_FACE_HALF_SHIFT), f32((w3 >> LOD_FACE_HALF_SHIFT) & 255u));\n",
+        "    let s = (1u << LOD_FACE_SIZE_BITS) - 1u;\n",
+        "    return vec3<f32>(f32(w3 & s), f32((w2 >> LOD_FACE_HALF_SHIFT) & 1023u), f32((w3 >> LOD_FACE_HALF_SHIFT) & s));\n",
         "}\n",
         "fn lod_ao(w3: u32) -> vec4<u32> {\n",
         "    let a = w3 >> 24u;\n",

@@ -353,15 +353,38 @@ fn vs_lod(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V
     if a.x + a.z < a.y + a.w {
         c = (c + 1u) % 4u;
     }
-    let lo = lod_pos(w0, w2) - vec3(0.0, 0.125, 0.0);
-    let size = lod_size(w2, w3);
-    let local = lo + CORNERS[dir * 4u + c] * size;
+    let corner = CORNERS[dir * 4u + c];
+    let origin = lod_pos(w0, w2);
+    let partial = (w0 >> LOD_FACE_PARTIAL_SHIFT) != 0u;
+    var local: vec3<f32>;
+    if partial {
+        let minx = f32(w3 & 31u) / 16.0;
+        let maxx = f32((w3 >> 5u) & 31u) / 16.0;
+        let minz = f32((w3 >> 10u) & 31u) / 16.0;
+        let maxz = f32((w3 >> 15u) & 31u) / 16.0;
+        var y0: f32;
+        var y1: f32;
+        if ((w0 >> LOD_FACE_EXTRUDE_SHIFT) & 1u) != 0u {
+            y0 = 0.0;
+            y1 = f32((w2 >> 16u) & 1023u);
+        } else {
+            y0 = f32((w2 >> 16u) & 31u) / 16.0;
+            y1 = f32((w2 >> 21u) & 31u) / 16.0;
+        }
+        let mn = vec3<f32>(minx, y0, minz);
+        let mx = vec3<f32>(maxx, y1, maxz);
+        local = origin + mn + corner * (mx - mn);
+    } else {
+        local = origin + corner * lod_size(w2, w3);
+    }
+
+    local -= vec3<f32>(0.0, 0.125, 0.0);
     let pos = finish(local, origins[ii]);
     var out: VOut;
     out.clip = scene.view_proj * pos;
     out.dist = length(pos.xyz);
     let o = origins[ii] + g.cam_cube;
-    let world = vec3<f32>(o.xyz * 16) + local + vec3(0.0, 0.125, 0.0);
+    let world = vec3<f32>(o.xyz * 16) + local + vec3<f32>(0.0, 0.125, 0.0);
     out.uv = lod_uv(dir, world);
     out.pos = world - vec3(0.0, 0.125, 0.0);
     let tex_id = w1 & FACE_TEX_MASK;
@@ -372,7 +395,22 @@ fn vs_lod(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V
     out.blend = fr.blend;
     out.glow = 0xffffffffu;
     out.slot = 0u;
-    out.light = vec4(1.0, 0.0, 0.0, 0.0);
+
+    var rq: u32;
+    var gq: u32;
+    var bq: u32;
+    if partial {
+        rq = ((w2 >> 26u) & 7u) * 2u;
+        gq = ((w2 >> 29u) & 7u) * 2u;
+        bq = (((w0 >> 29u) & 1u) | (((w3 >> 22u) & 3u) << 1u)) * 2u;
+    } else {
+        rq = (w3 >> 6u) & 15u;
+        gq = (w3 >> 10u) & 15u;
+        bq = ((w3 >> 14u) & 3u) | (((w3 >> 22u) & 3u) << 2u);
+    }
+
+    let block = vec3<f32>(f32(rq), f32(gq), f32(bq)) / 15.0;
+    out.light = vec4<f32>(1.0, block);
     let kind = lod_tint(w0);
     var tint = vec3(1.0);
     if kind != 0u {
