@@ -468,7 +468,26 @@ impl Storage {
                 crate::server::lod_tops::DimTops::read(&dir.join("lod.bin"), c, dim as u32, meta.seed, &mut |w| ids.runtime_id(w))
             })
             .collect();
-        Storage { meta, ids, regions: FxHashMap::default(), dim_dirs, on_disk, saved, last_written: FxHashMap::default(), lod }
+        let mut storage =
+            Storage { meta, ids, regions: FxHashMap::default(), dim_dirs, on_disk, saved, last_written: FxHashMap::default(), lod };
+        storage.rebuild_spans(c);
+        storage
+    }
+
+    fn rebuild_spans(&mut self, c: &Content) {
+        let seed = self.meta.seed;
+        for dim in 0..self.lod.len() {
+            let positions = self.lod[dim].take_rebuild(c, dim as u32, seed);
+            if positions.is_empty() {
+                continue;
+            }
+            log::info!("distant structures: reading {} saved cubes", positions.len());
+            for pos in positions {
+                let Some((cube, _)) = self.load(dim as u32, pos) else { continue };
+                self.lod[dim].saved(c, dim as u32, seed, pos, &cube);
+            }
+            let _ = self.lod[dim].take_changed();
+        }
     }
 
     fn region(&mut self, dim: u32, r: IVec3) -> Option<&mut Region> {

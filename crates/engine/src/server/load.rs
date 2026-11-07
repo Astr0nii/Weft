@@ -108,7 +108,8 @@ impl Server {
             pending.remove(&(g.dim, g.pos));
             self.wanted.remove(&(g.dim, g.pos));
             let t = Instant::now();
-            self.dims[g.dim as usize].insert(c, g.pos, g.cube.unwrap(), &g.entities, g.conn, true);
+            let (dim, pos) = (g.dim, g.pos);
+            self.dims[dim as usize].insert(c, pos, g.cube.unwrap(), &g.entities, g.conn, true);
             self.shared
                 .insert_ns
                 .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);

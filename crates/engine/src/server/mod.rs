@@ -21,6 +21,7 @@ mod sync;
 pub use builtin::COMMANDS as BUILTIN_COMMANDS;
 pub use extend::{JUMP_STRENGTH, MAX_HEALTH, MOVEMENT_SPEED, explanation};
 use load::send_far;
+use lod_tops::Span;
 use player_file::save_player;
 pub mod menu;
 pub mod persist;
@@ -1443,6 +1444,7 @@ fn void_note(c: &Content) -> Msg {
     Msg::new(if c.spawn_dim == c.void_dim { "void.no_dimension" } else { "void.here" }, Vec::new())
 }
 
-fn lod_columns<'a>(cols: impl Iterator<Item = &'a lod_tops::LodColumn>) -> Vec<(i32, i32, i32, u32, u32)> {
-    cols.map(|c| (c.x, c.z, c.y, c.top, c.under)).collect()
+fn lod_columns<'a>(cols: impl Iterator<Item = &'a lod_tops::LodColumn>) -> Vec<(i32, i32, i32, u32, u32, Vec<Span>)> {
+    cols.map(|c| (c.x, c.z, c.y, c.top, c.under, c.spans.clone()))
+        .collect()
 }

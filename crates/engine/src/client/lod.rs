@@ -15,11 +15,20 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 use glam::{DVec3, IVec2};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-/// Columns whose top isn't the terrain's: height, top block, the one under it.
-pub type Columns = FxHashMap<IVec2, (i32, u32, u32)>;
-
 use crate::content::{Content, content};
 use crate::gpu_layout::face;
+use crate::server::lod_tops::{Span, drawn};
+
+#[derive(Clone)]
+pub struct Column {
+    pub y: i32,
+    pub top: u32,
+    pub under: u32,
+    pub spans: Vec<Span>,
+}
+
+/// Columns whose top isn't the terrain's: height, top block, the one under it.
+pub type Columns = FxHashMap<IVec2, Column>;
 
 /// Cells a tile side.
 pub const CELLS: i32 = 32;
@@ -102,9 +111,9 @@ pub fn made(job: LodJob, mut words: Vec<u32>) {
             for k in 0..SAMPLES {
                 let (i, j) = ((k as i32 % SIDE) - 1, (k as i32 / SIDE) - 1);
                 let col = o + IVec2::new(i * s + s / 2, j * s + s / 2);
-                if let Some(&(y, top, under)) = job.columns.get(&col) {
-                    words[k * 2] = (y as u32 & 0xFFFF) | (top << 16);
-                    words[k * 2 + 1] = (words[k * 2 + 1] & 0xFFFF) | (under << 16);
+                if let Some(col) = job.columns.get(&col) {
+                    words[k * 2] = (col.y as u32 & 0xFFFF) | (col.top << 16);
+                    words[k * 2 + 1] = (words[k * 2 + 1] & 0xFFFF) | (col.under << 16);
                 }
             }
         }
@@ -322,19 +331,26 @@ impl Lod {
     }
 
     /// `ToClient::LodColumns`: tiles with those columns are made again.
-    pub fn set_columns(&mut self, dim: u32, all: bool, cols: &[(i32, i32, i32, u32, u32)]) {
+    pub fn set_columns(&mut self, dim: u32, all: bool, cols: &[(i32, i32, i32, u32, u32, Vec<Span>)]) {
         if all || dim != self.columns_dim {
             self.columns = Arc::default();
             self.columns_dim = dim;
             self.stale.extend(self.ready.iter().copied());
+            self.stale.extend(self.pending.iter().copied());
         }
+        let blocks = content();
         let map = Arc::make_mut(&mut self.columns);
-        for &(x, z, y, top, under) in cols {
-            let p = IVec2::new(x, z);
-            if top == u32::MAX {
+        for (x, z, y, top, under, spans) in cols {
+            let p = IVec2::new(*x, *z);
+            let spans: Vec<Span> = spans
+                .iter()
+                .copied()
+                .filter(|s| drawn(blocks, s.block))
+                .collect();
+            if *top == u32::MAX || (*top == 0 && spans.is_empty()) {
                 map.remove(&p);
             } else {
-                map.insert(p, (y, top, under));
+                map.insert(p, Column { y: *y, top: *top, under: *under, spans });
             }
             if !all {
                 // Every level's tile with it, and the ones beside that sample it for their walls.
@@ -347,7 +363,7 @@ impl Lod {
                                 x: (x + dx * (size / CELLS)).div_euclid(size),
                                 z: (z + dz * (size / CELLS)).div_euclid(size),
                             };
-                            if self.ready.contains(&key) {
+                            if self.ready.contains(&key) || self.pending.contains(&key) {
                                 self.stale.insert(key);
                             }
                         }
@@ -590,8 +606,11 @@ impl Lod {
             if self.pending.len() >= IN_FLIGHT {
                 break;
             }
+            if self.pending.contains(&key) {
+                continue;
+            }
             let again = self.stale.remove(&key);
-            if (self.ready.contains(&key) && !again) || self.pending.contains(&key) {
+            if self.ready.contains(&key) && !again {
                 continue;
             }
             self.pending.insert(key);
@@ -599,6 +618,7 @@ impl Lod {
                 .jobs
                 .send(LodJob { dim: self.dim, seed: self.seed, key, done: self.done.0.clone(), columns: columns.clone() });
         }
-        self.stale.retain(|k| self.ready.contains(k));
+        self.stale
+            .retain(|k| self.ready.contains(k) || self.pending.contains(k));
     }
 }

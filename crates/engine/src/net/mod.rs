@@ -9,6 +9,7 @@ use glam::{DVec3, IVec3};
 
 use weft_abi::ItemStack;
 
+use crate::server::lod_tops::Span;
 use crate::world::Cube;
 use codec::Wire;
 
@@ -295,8 +296,7 @@ messages! {
         /// otherwise they come after it. Clients make them on what they generate.
         Edits { dim: u32, specs: Vec<String>, all: bool },
         /// Columns of dimension `dim` whose top isn't the terrain's, for distant terrain: (x, z,
-        /// height, top, under), `top` `u32::MAX` for one that is again; `all`: every one there is.
-        LodColumns { dim: u32, all: bool, cols: Vec<(i32, i32, i32, u32, u32)> },
+        LodColumns { dim: u32, all: bool, cols: Vec<(i32, i32, i32, u32, u32, Vec<Span>)> },
         /// Of the world, or of body `frame`.
         /// `extras`: what else is in cells, after `changes` (which take it away).
         Blocks { dim: u32, frame: u64, changes: Vec<(IVec3, u32)>, extras: Vec<(IVec3, Vec<u32>)> },
