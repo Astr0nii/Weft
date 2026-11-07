@@ -1,6 +1,8 @@
 //! What distant terrain needs of the cubes that are saved: the rest generates the same again, so
 //! the client's tiles take it from the terrain formula, and only columns whose saved cubes make
 //! their top differ from it (a town, a crater, a tower) are kept here and sent. Per saved cube,
+//! each of its columns' highest solid block and the runs of block above the ground; a column's
+//! top then comes from those and the formula for the cubes of it that aren't saved.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -15,6 +17,7 @@ use crate::content::Content;
 use crate::world::Cube;
 use crate::world::cube::index;
 
+/// One block's vertical run, inclusive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
     pub bottom: i32,
@@ -43,17 +46,23 @@ struct Top {
     under: u32,
 }
 
+/// A saved cube's columns: the highest block of each, and the runs that make it.
+/// A run's `bottom` and `top` are local to the cube, 0..15.
 #[derive(Clone, PartialEq, Eq)]
 struct CubeTops {
     tops: Box<[Top; 256]>,
+    /// `at[i]..at[i + 1]` of `runs` is column `i`, low to high.
     at: Box<[u16; 257]>,
     runs: Vec<Span>,
 }
 
 const NONE: u8 = u8::MAX;
+/// Runs kept per column of one cube. A wall is one run; the rest is trim and a roof.
 const MAX_RUNS: usize = 6;
+/// Spans sent for one column, the highest of them.
 const MAX_SPANS: usize = 8;
 const MAGIC: &[u8] = b"LOD3";
+/// Spans of opaque cubes only. Read, then built again from the saved cubes.
 const MAGIC_V2: &[u8] = b"LOD2";
 
 /// A dimension's saved cubes' tops, by cube column then cube height.
@@ -65,14 +74,18 @@ pub struct DimTops {
     /// Columns that changed since `take_changed`.
     changed: Vec<IVec2>,
     dirty: bool,
+    /// The file had no spans. `take_rebuild` reads those cubes once.
     rebuild: bool,
 }
 
+/// Solid and opaque, or a liquid: the heightfield's top. A window or a stair is not.
 pub fn shows(c: &Content, s: u32) -> bool {
     let Some(st) = c.states.get(s as usize) else { return false };
     s != 0 && (st.liquid.is_some() || (st.flags & bf::SOLID != 0 && st.flags & bf::OPAQUE != 0))
 }
 
+/// A cube or a model box the distance can draw. A cross, a wire, an empty model, or a
+/// block a placement replaces is not.
 pub fn drawn(c: &Content, s: u32) -> bool {
     let Some(st) = c.states.get(s as usize) else { return false };
     if st.liquid.is_some() {
@@ -203,6 +216,8 @@ impl DimTops {
                     }
                 }
             }
+            // Anything that rises above the ground is kept from the ground up. The part at or
+            // under the surface stays the heightfield, for every block.
             let mut above = Vec::new();
             for span in spans {
                 if span.top <= fy {
@@ -227,6 +242,8 @@ impl DimTops {
                         self.changed.push(p);
                     }
                 }
+                // Glass, stairs and the like never move the opaque top, and still stand above
+                // the ground.
                 None if !spans.is_empty() => {
                     let now = LodColumn { x, z, y: fy, top: 0, under: 0, spans };
                     if before.as_ref() != Some(&now) {
@@ -356,6 +373,8 @@ impl DimTops {
         d
     }
 
+    /// Cubes to read again so columns saved before spans existed get them. Above the ground
+    /// only: a mine under it does not change the shape from afar.
     pub fn take_rebuild(&mut self, c: &Content, dim: u32, seed: u64) -> Vec<IVec3> {
         if !self.rebuild {
             return Vec::new();

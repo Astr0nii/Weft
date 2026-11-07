@@ -474,6 +474,7 @@ impl Storage {
         storage
     }
 
+    /// Columns saved before spans existed: read those cubes once so a building keeps its shape.
     fn rebuild_spans(&mut self, c: &Content) {
         let seed = self.meta.seed;
         for dim in 0..self.lod.len() {

@@ -296,6 +296,7 @@ messages! {
         /// otherwise they come after it. Clients make them on what they generate.
         Edits { dim: u32, specs: Vec<String>, all: bool },
         /// Columns of dimension `dim` whose top isn't the terrain's, for distant terrain: (x, z,
+        /// height, top, under, spans). `top` `u32::MAX` for one that is again. `all`: every one there is.
         LodColumns { dim: u32, all: bool, cols: Vec<(i32, i32, i32, u32, u32, Vec<Span>)> },
         /// Of the world, or of body `frame`.
         /// `extras`: what else is in cells, after `changes` (which take it away).

@@ -3,6 +3,8 @@
 //! kilobytes a tile. A tile is 32x32 cells of 2^level blocks; each cell is the column at its
 //! middle: its top block, the one under it, its biome, and tree canopies over it. Where saved
 //! cubes made a column's top other than the terrain's (a town, a crater), the server says so
+//! (`server::lod_tops`) and that column is taken instead. What stands above the ground is drawn
+//! as its own spans, so a building keeps its roof and its walls.
 //! Tiles are picked by distance, nearer ones split into the four of the level below; one is
 //! shown once made, its parent or children standing in until then. Where a column of real cubes
 //! shows its ground the tiles' pixels are dropped (`fs_lod`, `Lod::mask`), so they fill in for
@@ -31,6 +33,7 @@ pub struct Column {
     pub spans: Vec<Span>,
 }
 
+/// Columns whose top isn't the terrain's.
 pub type Columns = FxHashMap<IVec2, Column>;
 
 /// Cells a tile side.
@@ -49,8 +52,11 @@ const SPLIT: f64 = 4.0;
 const UNDERGROUND: i32 = 32;
 /// Tiles asked for and not back yet, at most.
 const IN_FLIGHT: usize = 256;
+/// Quads a tile may hold. Past this the index buffer does not cover the draw.
 const MAX_QUADS: usize = 48_000;
+/// More model boxes than this become one box around all of them.
 const MAX_MODEL_BOXES: usize = 6;
+/// Where a block shines, and its color, each channel 0..15.
 type Glow = (i32, i32, i32, [u8; 3]);
 
 /// A tile: its level and place in the grid of its level's tiles.
@@ -109,12 +115,15 @@ pub struct LodMesh {
     pub y: (i32, i32),
 }
 
+/// An opaque cube takes the ground's face. A slab, a stair, glass, or a torch stays on top of it.
 fn cuts_ground(c: &Content, block: u32) -> bool {
     c.states
         .get(block as usize)
         .is_some_and(|s| s.model == BlockModel::Cube && s.flags & bf::OPAQUE != 0)
 }
 
+/// Where the noise ground stops. A full cube keeps the ground under its lowest block, so the
+/// surface cannot fill the rooms above that block. `cuts` are inclusive spans, bottoms first.
 fn ground_top(gy: i32, cuts: &[(i32, i32)]) -> i32 {
     match cuts.iter().map(|c| c.0).min() {
         Some(lo) => gy.min(lo - 1),
@@ -122,6 +131,8 @@ fn ground_top(gy: i32, cuts: &[(i32, i32)]) -> i32 {
     }
 }
 
+/// Faces for the gaps in `[from, to)` that `taken` leaves open. Where a gap crosses `cap_at`,
+/// that one block uses `cap` and the rest uses `under`. `taken` is sorted by its bottom.
 fn push_gap(
     out: &mut Vec<[u32; 4]>,
     dir: u32,
@@ -174,6 +185,7 @@ fn push_gap(
     }
 }
 
+/// The ground the terrain formula would show, before a canopy replaced it.
 fn ground_sample(def: &DimensionDef, seed: u64, x: i32, z: i32) -> Option<(i32, u32, u32)> {
     let terrain = def.terrain.as_ref()?;
     let cols = terrain.columns(seed, x.div_euclid(16), z.div_euclid(16));
@@ -215,6 +227,7 @@ pub fn made(job: LodJob, mut words: Vec<u32>) {
         if !job.columns.is_empty() {
             let blocks = content();
             let (s, o) = (1 << job.key.level, job.key.origin());
+            // Scatter cover on this cell would hide whatever was saved there.
             let mut uncanopy: FxHashSet<(i32, i32)> = FxHashSet::default();
             for (p, col) in job.columns.iter() {
                 if col.spans.is_empty() {
@@ -228,6 +241,9 @@ pub fn made(job: LodJob, mut words: Vec<u32>) {
                 let (i, j) = ((k as i32 % SIDE) - 1, (k as i32 / SIDE) - 1);
                 let at = o + IVec2::new(i * s + s / 2, j * s + s / 2);
                 if let Some(col) = job.columns.get(&at) {
+                    // One saved column must not repaint a coarse cell: that is a patch of dirt
+                    // or stone the width of the cell. Up close the cell is two blocks, and a
+                    // dug column is that wide. A building has spans and stays out of this.
                     if s <= 2 && col.top != 0 && col.spans.is_empty() {
                         words[k * 2] = (col.y as u32 & 0xFFFF) | (col.top << 16);
                         words[k * 2 + 1] = (words[k * 2 + 1] & 0xFFFF) | (col.under << 16);
@@ -256,6 +272,8 @@ pub fn made(job: LodJob, mut words: Vec<u32>) {
 /// (sx, sy, sz) blocks, drawn with texture `tex`, tinted for `biome` when `tint`, corners in `ao`.
 fn quad(dir: u32, x: i32, y: i32, z: i32, size: (i32, i32, i32), tex: u32, tint: u32, biome: u32, ao: u32, light: [u8; 3]) -> [u32; 4] {
     let mut r = lod_record(dir, [x, y, z], [size.0, size.1, size.2], tex, tint, biome);
+    // A whole face keeps each channel 0..15 above the 6-bit width. A partial face keeps even
+    // levels in the flag bits, because its box uses the width word.
     let sy = (size.1.max(0) as u32).min(1023);
     r[2] = (r[2] & 0xFFFF) | (sy << 16);
     r[3] |= (ao & 0xFF) << 24;
@@ -267,6 +285,9 @@ fn quad(dir: u32, x: i32, y: i32, z: i32, size: (i32, i32, i32), tex: u32, tint:
     r
 }
 
+/// The top of the ground. Up close the cell is small, so one light is enough. Farther away a
+/// light's reach is smaller than the cell: the blocks it touches are split so the falloff shows,
+/// and the rest of the cell stays one dark quad.
 fn push_top(
     out: &mut Vec<[u32; 4]>,
     lights: &[Glow],
@@ -341,6 +362,8 @@ fn push_top(
     }
 }
 
+/// Block light near `(x, y, z)`, each channel 0..15. The block keeps its color and contributes
+/// what is left of that color after the steps to the face.
 fn face_light(lights: &[Glow], x: i32, y0: i32, y1: i32, z: i32) -> [u8; 3] {
     let mut best = [0i32; 3];
     for &(lx, ly, lz, rgb) in lights {
@@ -569,6 +592,7 @@ pub fn mesh(c: &Content, key: TileKey, words: &[u32], columns: &Columns) -> (Vec
                 let skirt = ny.min(y - 1) - s - 2;
                 let (wx, wz) = (origin.x + i * s + s / 2, origin.y + j * s + s / 2);
                 let light_at = |y0: i32, y1: i32| face_light(&lights, wx, y0, y1, wz);
+                // The positive face owns an equal-height wall.
                 if ny == y && (dir == 0 || dir == 4) {
                     continue;
                 }
@@ -750,6 +774,7 @@ fn ao_span(h: &[[i32; GRID]; GRID], i: i32, j: i32, dir: usize, top: i32, bot: i
     bits
 }
 
+/// `lo..=hi` with the ranges in `cover` taken out.
 fn exposed(lo: i32, hi: i32, cover: &[Span]) -> Vec<(i32, i32)> {
     let mut segs = vec![(lo, hi)];
     for span in cover {
@@ -772,6 +797,8 @@ fn exposed(lo: i32, hi: i32, cover: &[Span]) -> Vec<(i32, i32)> {
     segs
 }
 
+/// A model's boxes in sixteenths, or one box around them when there are many. Tilt is dropped:
+/// the distant shape is the box as it was placed.
 fn model_boxes(st: &StateInfo) -> Vec<([u32; 3], [u32; 3], [u32; 6])> {
     let mut raw: Vec<([u32; 3], [u32; 3], [u32; 6])> = st
         .boxes
@@ -797,6 +824,8 @@ fn model_boxes(st: &StateInfo) -> Vec<([u32; 3], [u32; 3], [u32; 6])> {
     raw
 }
 
+/// `neighbor` covers a face of `block`. An opaque cube does. The same block does when it culls
+/// itself, and a torch covers nothing: the wall behind it still shows.
 fn hides_face(c: &Content, block: u32, neighbor: u32) -> bool {
     let Some(n) = c.states.get(neighbor as usize) else { return false };
     if n.flags & bf::OPAQUE != 0 {
@@ -828,13 +857,17 @@ fn push_partial(
     if extrude {
         r[0] |= 1 << lod_face::EXTRUDE_SHIFT;
     } else {
+        // Bits 26..31 are the block light packed by `quad`. The box's vertical edges take the rest.
         r[2] = (r[2] & 0xFC000000) | (r[2] & 0xFFFF) | mn[1] << 16 | mx[1] << 21;
     }
+    // The box edges replace the size word, so the blue channel packed there has to be put back.
     let lit = r[3] & (3 << 22);
     r[3] = mn[0] | mx[0] << 5 | mn[2] << 10 | mx[2] << 15 | lit | (ao & 0xFF) << 24;
     out.push(r);
 }
 
+/// Saved spans in this tile, one box per run of block, at the column itself. The heightfield
+/// is left at the ground, so a roof is not smoothed into the neighbors.
 fn add_structures(
     out: &mut Vec<[u32; 4]>,
     lo: &mut i32,
@@ -1079,6 +1112,7 @@ impl Lod {
         if all || dim != self.columns_dim {
             self.columns = Arc::default();
             self.columns_dim = dim;
+            // One still being made has the columns from before this, so it is made again too.
             self.stale.extend(self.ready.iter().copied());
             self.stale.extend(self.pending.iter().copied());
         }
@@ -1350,6 +1384,7 @@ impl Lod {
             if self.pending.len() >= IN_FLIGHT {
                 break;
             }
+            // Leave the mark: the one in flight still has the old columns.
             if self.pending.contains(&key) {
                 continue;
             }
