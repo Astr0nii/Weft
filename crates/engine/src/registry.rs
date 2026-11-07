@@ -274,10 +274,9 @@ pub struct Recipe {
     /// The main result first.
     pub outputs: Vec<RecipeOutput>,
     pub time: u32,
-    /// (component, value) the recipe carries.
-    pub values: Vec<(u32, Vec<u8>)>,
-    /// Not shown in the recipe viewer.
-    pub hidden: bool,
+    /// Its entry, whose component table row has what else it carries (`comp::recipe::HIDDEN`, a
+    /// mod's values).
+    pub entry: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -294,13 +293,6 @@ impl Recipe {
             Some(RecipeOutput { what: Ingredient::Item(i), count, .. }) => weft_abi::ItemStack::new(*i, *count),
             _ => weft_abi::ItemStack::EMPTY,
         }
-    }
-
-    pub fn value(&self, comp: u32) -> Option<&[u8]> {
-        self.values
-            .iter()
-            .find(|v| v.0 == comp)
-            .map(|v| v.1.as_slice())
     }
 }
 
@@ -710,8 +702,8 @@ pub struct RawRecipe {
     pub time: u32,
     /// (item, count, chance) after the main output; a liquid is its item.
     pub outputs: Vec<(String, u32, f32)>,
-    pub values: Vec<crate::components::RawValue>,
-    pub flags: u32,
+    /// Its entry: recipes expanded from one share it.
+    pub entry: u32,
 }
 
 #[derive(Default)]
@@ -1575,7 +1567,7 @@ fn engine_entities() -> Vec<RawEntry> {
     ]
 }
 
-/// A recipe from its entry; the components that aren't `recipe.*` are values it carries.
+/// A recipe from its entry; what else it carries stays in the entry's component table row.
 fn raw_recipe(e: &Entry) -> RawRecipe {
     use abi::comp::recipe as r;
     let text = |name: &str| e.text(name).unwrap_or_default().to_string();
@@ -1597,13 +1589,7 @@ fn raw_recipe(e: &Entry) -> RawRecipe {
             .into_iter()
             .map(|o| (o.item, o.count.max(1), o.chance))
             .collect(),
-        values: e
-            .values
-            .iter()
-            .filter(|v| !v.name.starts_with("recipe."))
-            .cloned()
-            .collect(),
-        flags: if e.has(r::HIDDEN) { abi::recipe_flags::HIDDEN } else { 0 },
+        entry: 0,
     }
 }
 
@@ -1772,7 +1758,7 @@ pub fn freeze(
     let (particles, names) = tables.bake_by(kind(ek::PARTICLE), ek::PARTICLE, mod_name, errors, |e| e.name.clone(), |e, _| e.clone());
     g.particle_names = names;
     freeze_particles(&mut g, &particles, errors);
-    let (sky, _) = bake(kind(ek::SKY), ek::SKY, mod_name, errors, |e, errors| bake_sky(e, dim_names, errors));
+    let (sky, _) = tables.bake(kind(ek::SKY), ek::SKY, mod_name, errors, |e, errors| bake_sky(e, dim_names, errors));
     g.sky = (0..dim_names.len()).map(|_| Vec::new()).collect();
     for (dim, s) in sky.into_iter().flatten() {
         g.sky[dim as usize].push(s);
@@ -1792,14 +1778,17 @@ pub fn freeze(
         let motion = crate::model::BoneMotion { gravity: e.or(b::GRAVITY, 0.0), spring: e.or(b::SPRING, 0.0), drag: e.or(b::DRAG, 0.0) };
         (model.to_string(), bone.to_string(), motion)
     });
-    (g.screen_parts, _) = bake(kind(ek::SCREEN_PART), ek::SCREEN_PART, mod_name, errors, |e, _| {
+    (g.screen_parts, _) = tables.bake(kind(ek::SCREEN_PART), ek::SCREEN_PART, mod_name, errors, |e, _| {
         use abi::comp::screen_part as s;
         let (owner, cb) = e.callback(s::CALL).unwrap_or((e.owner, Callback::NONE));
         let text = |name: &str| e.text(name).unwrap_or_default().to_string();
         ScreenPart { screen: text(s::SCREEN), area: text(s::AREA), order: e.or(s::ORDER, 0), owner, cb }
     });
     g.screen_parts.sort_by_key(|p| (p.order, order(p.owner)));
-    let (recipes, _) = bake(kind(ek::RECIPE), ek::RECIPE, mod_name, errors, |e, _| raw_recipe(e));
+    let (mut recipes, _) = tables.bake(kind(ek::RECIPE), ek::RECIPE, mod_name, errors, |e, _| raw_recipe(e));
+    for (i, r) in recipes.iter_mut().enumerate() {
+        r.entry = i as u32;
+    }
     (g.sound_categories, _) = tables.bake(kind(ek::SOUND_CATEGORY), ek::SOUND_CATEGORY, mod_name, errors, |e, _| {
         SoundCategory::new(&e.name, e.has(abi::comp::SOUND_CATEGORY_WORLD))
     });
@@ -1970,7 +1959,7 @@ pub fn freeze(
     g.pose_order = (0..g.poses.len() as u16).map(crate::world::Pose).collect();
     g.pose_order
         .sort_by_key(|p| std::cmp::Reverse(g.poses[p.0 as usize].priority));
-    let (spawns, _) = bake(kind(ek::SPAWN), ek::SPAWN, mod_name, errors, |e, errors| {
+    let (spawns, _) = tables.bake(kind(ek::SPAWN), ek::SPAWN, mod_name, errors, |e, errors| {
         let ground = |text: &str| matchers.add(text, block_names, block_defs, c);
         bake_spawn(e, &g, c, ground, dim_names, errors)
     });
@@ -2282,16 +2271,10 @@ pub fn freeze(
                 Err(e) => errors.push(format!("recipe for {}: output: {e}", r.output)),
             }
         }
-        let values = r
-            .values
-            .iter()
-            .filter_map(|v| c.id(&v.name).map(|id| (id, v.bytes.clone())))
-            .collect();
-        let hidden = r.flags & weft_abi::recipe_flags::HIDDEN != 0;
         g.recipes
             .entry(r.kind)
             .or_default()
-            .push(Recipe { shaped, inputs, input_counts, outputs, time: r.time, values, hidden });
+            .push(Recipe { shaped, inputs, input_counts, outputs, time: r.time, entry: r.entry });
     }
     g
 }
@@ -2641,8 +2624,7 @@ fn expand_variables(r: RawRecipe, tags: &FxHashMap<&str, u32>) -> Result<Vec<Raw
                 count: r.count,
                 time: r.time,
                 outputs: r.outputs.iter().map(|o| (sub(&o.0), o.1, o.2)).collect(),
-                values: r.values.clone(),
-                flags: r.flags,
+                entry: r.entry,
             });
         }
     }

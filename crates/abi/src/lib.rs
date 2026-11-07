@@ -431,8 +431,8 @@ pub mod entry_kind {
     pub const TERRAIN: u32 = 42;
     /// How a bone of a model file moves by itself, named `<model>/<bone>`.
     pub const BONE_MOTION: u32 = 43;
-    /// How many kinds there are; each has a component table (`ComponentTable`), empty for the
-    /// kinds whose entries aren't numbered one to one (recipes, ores, sky objects ...).
+    /// How many kinds there are; each has a component table (`ComponentTable`), empty for word
+    /// sets and component declarations.
     pub const COUNT: usize = NAMES.len();
     /// Each kind's name for messages, by value.
     pub const NAMES: [&str; 44] = [
@@ -2787,11 +2787,6 @@ crate::data! {
     pub struct RecipeKey { pub name: alloc::string::String, pub item: alloc::string::String }
 }
 
-pub mod recipe_flags {
-    /// Works, but the recipe viewer doesn't show it.
-    pub const HIDDEN: u32 = 1;
-}
-
 crate::data! {
     /// A result of a recipe after its output: an item, or a liquid by its name and millibuckets,
     /// coming out with `chance` (0..1) each time.
@@ -2815,7 +2810,8 @@ pub struct RecipeInfo {
     pub time: u32,
     pub inputs: u32,
     pub outputs: u32,
-    pub flags: u32,
+    /// Its entry (`entry_kind::RECIPE`), whose component table row holds what else it carries.
+    pub entry: u32,
 }
 
 pub mod slot_flags {
@@ -3339,9 +3335,6 @@ pub struct Host {
     pub recipe_info: unsafe extern "C" fn(kind: Str, recipe: u32, out: *mut RecipeInfo) -> u32,
     /// Output `index` of a recipe, a liquid's as its item by the millibucket, and its chance.
     pub recipe_output: unsafe extern "C" fn(kind: Str, recipe: u32, index: u32, stack: *mut ItemStack, chance: *mut f32) -> u32,
-    /// A value the recipe carries: its bytes into `out` (up to `cap`); returns the value's size,
-    /// 0 if it has none.
-    pub recipe_value: unsafe extern "C" fn(kind: Str, recipe: u32, component: Str, out: *mut u8, cap: u32) -> u32,
     /// Takes the recipe's inputs out of `stacks` (counts, the matching stacks); 0 if they are not
     /// all there, then nothing changes.
     pub recipe_consume: unsafe extern "C" fn(kind: Str, recipe: u32, stacks: *mut ItemStack, count: u32) -> u32,

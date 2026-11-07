@@ -1393,27 +1393,27 @@ fn picture_exists(mods: &[ModMeta], name: &str) -> bool {
     })
 }
 
-/// No handle cells: a tab's number is its place among the tabs shown (`Host::find`).
+/// A tab's number is its entry's, the engine's spawn egg tab after them.
+#[allow(clippy::too_many_arguments)]
 fn creative_tabs(
     mods: &[ModMeta],
     raw: Vec<RawEntry>,
     items: &[ItemDef],
     item_names: &FxHashMap<String, u32>,
     c: &Components,
+    tables: &mut crate::entries::Tables,
     mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) -> Vec<CreativeTab> {
-    let mut tabs: Vec<CreativeTab> = Vec::new();
-    let mut f = crate::entries::fold("creative tab", raw, mod_name, errors);
-    f.apply_patterns(errors);
-    for e in &f.entries {
+    let (made, _) = tables.bake(raw, abi::entry_kind::CREATIVE_TAB, mod_name, errors, |e, errors| {
         let icon = e.text(abi::comp::CREATIVE_TAB_ICON).unwrap_or_default();
         let Some(&icon) = item_names.get(icon) else {
             errors.push(format!("creative tab {}: unknown icon item {icon}", e.name));
-            continue;
+            return None;
         };
-        tabs.push(CreativeTab { name: e.name.clone(), icon, items: Vec::new() });
-    }
+        Some(CreativeTab { name: e.name.clone(), icon, items: Vec::new() })
+    });
+    let mut tabs: Vec<CreativeTab> = made.into_iter().flatten().collect();
     // Every entity's egg goes here, whichever mod's it is. Its icon is the first of them.
     tabs.push(CreativeTab { name: "core:spawn_eggs".into(), icon: 0, items: Vec::new() });
     // The tag `tab/<name>` of each tab, by component id.
@@ -1558,7 +1558,8 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         .filter(|e| e.or(abi::comp::liquid::HEAT, 300u32) >= BURNING)
         .map(|e| e.name.clone())
         .collect();
-    let tint_kinds = freeze_tints(entries_of(&mut games, abi::entry_kind::TINT_KIND), &mod_name, &mut errors);
+    let mut tables = crate::entries::Tables::default();
+    let tint_kinds = freeze_tints(entries_of(&mut games, abi::entry_kind::TINT_KIND), &mut tables, &mod_name, &mut errors);
 
     let mut textures = TextureList::new();
     let crack_textures: [u32; 10] = std::array::from_fn(|i| textures.intern(&format!("core:block/destroy_{i}")));
@@ -1601,6 +1602,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         &biome_tables,
         &dim_tables,
         &liquids,
+        &tables,
         &mut errors,
     );
     if !errors.is_empty() {
@@ -1640,11 +1642,10 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let tool_classes = tool_classes(&components);
 
     let look = Lookups { block_defs: &block_defs, block_names: &block_names, dim_names: &dim_names, components: &components };
-    place_features(&mut games, &mut dim_defs, look, &mut matchers, &mod_name, &mut errors);
-    let mut tables = crate::entries::Tables::default();
+    place_features(&mut games, &mut dim_defs, look, &mut matchers, &mut tables, &mod_name, &mut errors);
     let (templates, template_names) = freeze_templates(&mut games, look, &mut tables, &mod_name, &mut errors);
-    place_structures(&mut games, &mut dim_defs, &templates, &template_names, look, &mod_name, &mut errors);
-    build_terrains(&mut games, &mut dim_defs, &biome_names, &biome_rules, look, &mod_name, &mut errors);
+    place_structures(&mut games, &mut dim_defs, &templates, &template_names, look, &mut tables, &mod_name, &mut errors);
+    build_terrains(&mut games, &mut dim_defs, &biome_names, &biome_rules, look, &mut tables, &mod_name, &mut errors);
     let commands = freeze_commands(&mods, &mut games, &mut errors);
     let mut word_sets = collect_word_sets(&mut games, &mod_name, &mut errors);
     let (liquids, reactions) = freeze_liquids(liquids, &mut games, &mut states, look, &mut matchers, &mut tables, &mod_name, &mut errors);
@@ -1658,11 +1659,11 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let (item_liquid, containers) = item_containers(&item_defs, &liquids, &components, &mut errors);
     let (fluid_items, item_fluid) = fluid_items(&item_defs, &liquids, &components, &mut errors);
     let tabs = entries_of(&mut games, abi::entry_kind::CREATIVE_TAB);
-    let creative_tabs = creative_tabs(&mods, tabs, &item_defs, &item_names, &components, &mod_name, &mut errors);
+    let creative_tabs = creative_tabs(&mods, tabs, &item_defs, &item_names, &components, &mut tables, &mod_name, &mut errors);
     let mut ordered_items: Vec<u32> = (1..item_defs.len() as u32).collect();
     ordered_items.sort_by_key(|&i| item_defs[i as usize].order);
     let tag_items = crate::refs::tag_items(&components, &ordered_items);
-    let loot = freeze_loot(&mut games, &item_defs, &item_names, &tag_items, look, &mod_name, &mut errors);
+    let loot = freeze_loot(&mut games, &item_defs, &item_names, &tag_items, look, &mut tables, &mod_name, &mut errors);
     let stack_flags = collect_stack_flags(&decls, &components);
     let order_of = |m: ModId| mods.get(m.0 as usize).map_or(u32::MAX, |m| m.order);
     let mut game = crate::registry::freeze(
@@ -1863,15 +1864,19 @@ fn model_file(mods: &[ModMeta], name: &str) -> Option<String> {
     std::fs::read_to_string(dir.join("models").join(format!("{path}.json"))).ok()
 }
 
-fn freeze_tints(raw: Vec<RawEntry>, mod_name: &dyn Fn(ModId) -> String, errors: &mut Vec<String>) -> Vec<(String, u32)> {
+fn freeze_tints(
+    raw: Vec<RawEntry>,
+    tables: &mut crate::entries::Tables,
+    mod_name: &dyn Fn(ModId) -> String,
+    errors: &mut Vec<String>,
+) -> Vec<(String, u32)> {
     let mut all: Vec<RawEntry> = [("core:grass", 0x8db360u32), ("core:foliage", 0x77ab2f), ("core:water", 0x3f76e4)]
         .iter()
         .map(|&(name, color)| RawEntry::engine(abi::entry_kind::TINT_KIND, name).set(abi::comp::TINT_KIND_DEFAULT, color))
         .collect();
     all.extend(raw);
-    let (mut tint_kinds, _) = crate::entries::bake(all, abi::entry_kind::TINT_KIND, mod_name, errors, |e, _| {
-        (e.name.clone(), e.or(abi::comp::TINT_KIND_DEFAULT, 0xFFFFFFu32))
-    });
+    let (mut tint_kinds, _) = tables
+        .bake(all, abi::entry_kind::TINT_KIND, mod_name, errors, |e, _| (e.name.clone(), e.or(abi::comp::TINT_KIND_DEFAULT, 0xFFFFFFu32)));
     if tint_kinds.len() > abi::tint::MAX_KINDS as usize {
         errors.push(format!("{} tint kinds registered, at most {} fit", tint_kinds.len(), abi::tint::MAX_KINDS));
     }
@@ -2080,6 +2085,7 @@ fn declare_components(
     biomes: &BiomeTables,
     dims: &DimTables,
     liquids: &crate::entries::Folded,
+    tables: &crate::entries::Tables,
     errors: &mut Vec<String>,
 ) -> comps::Builder {
     let crate::blocks::Blocks { block_defs, block_values, .. } = blocks;
@@ -2114,8 +2120,7 @@ fn declare_components(
             cb.declare_value(v, &|| who(*owner, &dim_defs[i].name), errors);
         }
     }
-    // The kinds whose tables come later, the engine's entries and settings among them, and the
-    // values recipes carry (`recipe_value`), which may be on nothing else.
+    // The kinds whose tables come later, the engine's entries and settings among them.
     let engine: Vec<RawEntry> = (0..abi::entry_kind::COUNT as u32)
         .flat_map(crate::registry::engine_entries)
         .chain(crate::config::engine_configs(&[]))
@@ -2125,14 +2130,10 @@ fn declare_components(
         .iter()
         .flat_map(|g| &g.entries)
         .chain(&engine)
-        .filter(|e| later(e.kind) || e.kind == abi::entry_kind::RECIPE)
+        .filter(|e| later(e.kind))
     {
         let who = || who(e.owner, &format!("{} {}", abi::entry_kind::NAMES[e.kind as usize], e.name));
-        for o in e
-            .ops
-            .iter()
-            .filter(|o| !o.value.name.starts_with("recipe."))
-        {
+        for o in &e.ops {
             use abi::value_op as vo;
             match o.op {
                 vo::SET => cb.declare_value(&o.value, &who, errors),
@@ -2146,6 +2147,14 @@ fn declare_components(
     for e in &liquids.entries {
         for v in &e.values {
             cb.declare_value(v, &|| who(e.owner, &format!("liquid {}", e.name)), errors);
+        }
+    }
+    // Kinds baked before this, for what the others needed of them.
+    for (kind, entries) in &tables.0 {
+        for e in entries {
+            for v in &e.values {
+                cb.declare_value(v, &|| who(e.owner, &format!("{} {}", abi::entry_kind::NAMES[*kind as usize], e.name)), errors);
+            }
         }
     }
     for d in decls {
@@ -2449,15 +2458,15 @@ fn place_features(
     dim_defs: &mut [DimensionDef],
     look: Lookups,
     matchers: &mut crate::refs::Matchers,
+    tables: &mut crate::entries::Tables,
     mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) {
-    use crate::entries::{bake, bake_by};
     use abi::comp::{ore as o, scatter as s};
     use abi::entry_kind as ek;
     let Lookups { block_defs, block_names, components, .. } = look;
     let by_name = |e: &Entry| e.name.clone();
-    let (ores, _) = bake_by(entries_of(games, ek::ORE), ek::ORE, mod_name, errors, by_name, |e, errors| {
+    let (ores, _) = tables.bake_by(entries_of(games, ek::ORE), ek::ORE, mod_name, errors, by_name, |e, errors| {
         let what = format!("ore {}", e.name);
         let Some(&b) = block_names.get(&e.name) else {
             errors.push(format!("{what}: unknown block"));
@@ -2504,7 +2513,7 @@ fn place_features(
         Some((dims, def))
     });
     place(dim_defs, ores, |d| &mut d.ores);
-    let (scatters, _) = bake_by(entries_of(games, ek::SCATTER), ek::SCATTER, mod_name, errors, by_name, |e, errors| {
+    let (scatters, _) = tables.bake_by(entries_of(games, ek::SCATTER), ek::SCATTER, mod_name, errors, by_name, |e, errors| {
         let what = format!("scatter {}", e.name);
         let density_name = e.text(s::DENSITY).unwrap_or_default();
         let density = (!density_name.is_empty())
@@ -2539,7 +2548,7 @@ fn place_features(
         Some((look.targets(dim_defs, &what, e, errors), def))
     });
     place(dim_defs, scatters, |d| &mut d.scatters);
-    let (decorations, _) = bake(entries_of(games, ek::DECORATION), ek::DECORATION, mod_name, errors, |e, errors| {
+    let (decorations, _) = tables.bake(entries_of(games, ek::DECORATION), ek::DECORATION, mod_name, errors, |e, errors| {
         let what = format!("decoration {}", e.name);
         if e.has(abi::comp::common::BIOME) || e.has(abi::comp::common::Y) {
             errors.push(format!("{what}: only its dimensions limit it, it decides the rest"));
@@ -2593,12 +2602,13 @@ fn place_structures(
     templates: &[TemplateDef],
     template_names: &FxHashMap<String, u32>,
     look: Lookups,
+    tables: &mut crate::entries::Tables,
     mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) {
     use abi::comp::structure as s;
     let kind = abi::entry_kind::STRUCTURE;
-    let (structures, _) = crate::entries::bake_by(
+    let (structures, _) = tables.bake_by(
         entries_of(games, kind),
         kind,
         mod_name,
@@ -2639,6 +2649,7 @@ fn build_terrains(
     biome_names: &FxHashMap<String, u32>,
     biome_rules: &[abi::BiomeRule],
     look: Lookups,
+    tables: &mut crate::entries::Tables,
     mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) {
@@ -2654,7 +2665,7 @@ fn build_terrains(
         biome: &|n| biome_names.get(n).copied(),
         biome_rule: &|n| biome_names.get(n).map(|&b| &biome_rules[b as usize]),
     };
-    let (terrains, _) = crate::entries::bake(raw, kind, mod_name, errors, |e, errors| {
+    let (terrains, _) = tables.bake(raw, kind, mod_name, errors, |e, errors| {
         let Some(&d) = look.dim_names.get(&e.name) else {
             errors.push(format!("terrain {}: no such dimension", e.name));
             return None;
@@ -2832,6 +2843,7 @@ fn freeze_loot(
     item_names: &FxHashMap<String, u32>,
     tag_items: &FxHashMap<u32, Vec<u32>>,
     look: Lookups,
+    tables: &mut crate::entries::Tables,
     mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) -> FxHashMap<String, crate::loot::Table> {
@@ -2856,9 +2868,8 @@ fn freeze_loot(
         .collect();
     all.extend(raw);
     let resolve = crate::loot::Resolve { items: item_names, tag_items, components };
-    let (tables, _) =
-        crate::entries::bake(all, abi::entry_kind::LOOT, mod_name, errors, |e, errors| (e.name.clone(), resolve.table(e, errors)));
-    tables.into_iter().collect()
+    let (made, _) = tables.bake(all, abi::entry_kind::LOOT, mod_name, errors, |e, errors| (e.name.clone(), resolve.table(e, errors)));
+    made.into_iter().collect()
 }
 
 fn collect_stack_flags(decls: &[crate::registry::ComponentDecl], components: &Components) -> FxHashMap<u32, u32> {

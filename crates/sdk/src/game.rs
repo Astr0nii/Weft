@@ -1885,12 +1885,9 @@ impl RecipeView {
             })
             .collect()
     }
-    /// A value the recipe carries (`r.shaped(..).set(&COMP, v)`).
-    pub fn value<T: Value>(&self, comp: &Component<T>) -> Option<T> {
-        let mut buf = vec![0u8; std::mem::size_of::<T>()];
-        let n =
-            unsafe { (host().recipe_value)(Str::new(&self.kind), self.index, Str::new(comp.name()), buf.as_mut_ptr(), buf.len() as u32) };
-        (n as usize == buf.len()).then(|| unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const T) })
+    /// A value the recipe carries (`r.shaped(..).set(&COMP, v)`): its entry's.
+    pub fn value<T: Value, K>(&self, comp: &Component<T, K>) -> Option<T> {
+        comp.on(abi::entry_kind::RECIPE, self.info().entry)
     }
     /// Takes its inputs out of `stacks` (the ones `recipe_find` was given); false, and nothing
     /// taken, if they are not all there.

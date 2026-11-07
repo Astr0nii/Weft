@@ -325,33 +325,14 @@ fn order<K: Ord>(mut f: Folded, errors: &mut Vec<String>, key: impl FnMut(&Entry
     (f.entries, names)
 }
 
-/// Kinds without a component table: their registered entries aren't what the game numbers
-/// (recipes expand, sky objects go by dimension and screen parts by order, ores and the like go
-/// into each dimension, word sets are merged by name, component declarations are the components),
-/// or nothing reads them by id yet (tint kinds, creative tabs).
-pub const NO_TABLE: [u32; 14] = {
-    use abi::entry_kind as k;
-    [
-        k::SKY,
-        k::SCREEN_PART,
-        k::WORDS,
-        k::COMPONENT,
-        k::RECIPE,
-        k::LOOT,
-        k::ORE,
-        k::SCATTER,
-        k::DECORATION,
-        k::STRUCTURE,
-        k::SPAWN,
-        k::TERRAIN,
-        k::TINT_KIND,
-        k::CREATIVE_TAB,
-    ]
-};
+/// Kinds without a component table. Component declarations are what tables are made of, so
+/// theirs would have to exist before them; word sets are only lists of words for commands.
+/// Everything else has one by entry: what the game makes of an entry (a recipe expanded per
+/// material, an ore copied into each dimension) keeps the entry's number to read it by.
+pub const NO_TABLE: [u32; 2] = [abi::entry_kind::WORDS, abi::entry_kind::COMPONENT];
 
 /// Kinds baked through here keep their entries, in id order, for their component tables
-/// (`Components::add_table`); the others' ids aren't the ones the game uses (recipes expand,
-/// sky objects go by dimension), so they get none.
+/// (`Components::add_table`).
 #[derive(Default)]
 pub struct Tables(pub Vec<(u32, Vec<Entry>)>);
 

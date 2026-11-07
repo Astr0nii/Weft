@@ -85,7 +85,6 @@ pub static HOST: Host = Host {
     recipe_find,
     recipe_info,
     recipe_output,
-    recipe_value,
     recipe_consume,
     item_block,
     ui_open: crate::client::modui::ui_open,
@@ -1423,8 +1422,7 @@ unsafe extern "C" fn recipe_find(kind: Str, stacks: *const ItemStack, count: u32
 
 unsafe extern "C" fn recipe_info(kind: Str, recipe: u32, out: *mut abi::RecipeInfo) -> u32 {
     let Some(r) = recipe_at(kind, recipe) else { return 0 };
-    let flags = if r.hidden { abi::recipe_flags::HIDDEN } else { 0 };
-    unsafe { *out = abi::RecipeInfo { time: r.time, inputs: r.inputs.len() as u32, outputs: r.outputs.len() as u32, flags } };
+    unsafe { *out = abi::RecipeInfo { time: r.time, inputs: r.inputs.len() as u32, outputs: r.outputs.len() as u32, entry: r.entry } };
     1
 }
 
@@ -1438,15 +1436,6 @@ unsafe extern "C" fn recipe_output(kind: Str, recipe: u32, index: u32, stack: *m
         *chance = o.chance;
     }
     1
-}
-
-unsafe extern "C" fn recipe_value(kind: Str, recipe: u32, component: Str, out: *mut u8, cap: u32) -> u32 {
-    let c = content();
-    let Some(id) = c.components.id(unsafe { component.as_str() }) else { return 0 };
-    let Some(v) = recipe_at(kind, recipe).and_then(|r| r.value(id)) else { return 0 };
-    let n = v.len().min(cap as usize);
-    unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), out, n) };
-    v.len() as u32
 }
 
 unsafe extern "C" fn recipe_consume(kind: Str, recipe: u32, stacks: *mut ItemStack, count: u32) -> u32 {
