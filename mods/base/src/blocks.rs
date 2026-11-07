@@ -54,6 +54,8 @@ pub static DIAMOND_BLOCK: Block = Block::named("diamond_block");
 pub static COAL_BLOCK: Block = Block::named("coal_block");
 pub static WOOL: Block = Block::named("wool");
 
+static HOE_TAG: Tag = Tag::named("tools/hoe");
+
 /// A log that grows into a tree of `leaves` (a cone, like a spruce, when `cone`).
 fn log(r: &mut Registry, handle: &'static Block, wood: &str, leaves: &str, cone: bool) {
     let side = format!("log_{wood}");
@@ -153,6 +155,7 @@ pub fn register(r: &mut Registry) {
         .hardness(0.5)
         .mined_by("shovel", tool_tier::HAND)
         .tag("dirt")
+        .tag("tillable")
         .tab(&crate::tabs::NATURAL);
     r.block(&GRASS)
         .sound_group("grass")
@@ -162,6 +165,7 @@ pub fn register(r: &mut Registry) {
         .mined_by("shovel", tool_tier::HAND)
         .drops("dirt", 1)
         .tag("dirt")
+        .tag("tillable")
         // Vanilla's pace: a minute or so under a block, many minutes to cover bare dirt.
         .spreads("#grass_spreads_to", 765.0, 9)
         .smothered_into("dirt", 68.0)
@@ -173,6 +177,7 @@ pub fn register(r: &mut Registry) {
         .mined_by("shovel", tool_tier::HAND)
         .drops("dirt", 1)
         .tag("dirt")
+        .tag("tillable")
         .tab(&crate::tabs::NATURAL);
     r.block(&SAND)
         .sound_group("sand")
@@ -500,6 +505,19 @@ pub fn register(r: &mut Registry) {
     r.tag("crop_soil", &["farmland"]);
     r.tag("grass_spreads_to", &["dirt"]);
     r.tag("animal_spawn", &["grass"]);
+
+    r.edit_pattern::<kind::Block>("#tillable").on_use(till_soil);
+}
+
+fn till_soil(u: &mut Use) -> bool {
+    let (w, pos, player) = (u.world(), u.pos(), u.player());
+    let held = w.inventory(player).get(w.selected_slot(player));
+
+    if HOE_TAG.on_item(held.item) {
+        w.set_block(pos, FARMLAND.id());
+        return true;
+    }
+    false
 }
 
 pub use weft_sdk::shapes::{TORCH_FACINGS, stick_faces, torch_state};
