@@ -36,7 +36,7 @@ r.ore(&TIN_ORE).y(-64, 90).veins(5).vein_size(8).replaces("#stone_ore_replaceabl
 - `replaces(..)`: which blocks the ore may replace ([written like this](modding.md#references))
 - `replaces_with("#granite", &GRANITE_IRON_ORE)`: where the vein meets these, that block goes instead, so a vein doesn't stop at a stone border
 - `exposed(0.5)`: leaves out that share of what would touch a cave, as vanilla's gold and diamonds
-- `biome("#cave")`: only in biomes with this tag, underground ones included
+- `biome("#cave")`: only in these biomes, underground ones included; names and tags like anywhere else, `!` leaving some out
 
 An ore is named like its block, so `r.edit(base::IRON_ORE.ore()).veins(10)` changes base's iron: what you set replaces its own (`replaces` too: a block in `#stone_ore_replaceables` is in every ore's way), and `r.remove(base::IRON_ORE.ore())` takes it out of the world.
 

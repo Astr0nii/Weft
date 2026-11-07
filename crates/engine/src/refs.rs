@@ -132,6 +132,12 @@ pub fn compile_in(
 /// any place taking several of a kind reads, names and tags alike. `what` names the kind in
 /// errors.
 pub fn set(text: &str, kind: usize, names: &FxHashMap<String, u32>, count: u32, c: &Components, what: &str) -> Result<Vec<u32>, String> {
+    let bits = bits(text, kind, names, count, c, what)?;
+    Ok((0..count).filter(|&i| has(&bits, i)).collect())
+}
+
+/// `set` as a bit per entry, for what tests it often (a biome per column).
+pub fn bits(text: &str, kind: usize, names: &FxHashMap<String, u32>, count: u32, c: &Components, what: &str) -> Result<Vec<u64>, String> {
     let name = |n: &str, props: &[(&str, &str)]| -> Result<Vec<u32>, String> {
         if !props.is_empty() {
             return Err(format!("{n}: a {what} has no properties"));
@@ -141,8 +147,7 @@ pub fn set(text: &str, kind: usize, names: &FxHashMap<String, u32>, count: u32, 
             .map(|&i| vec![i])
             .ok_or_else(|| format!("unknown {what} {n}"))
     };
-    let bits = compile_in(text, kind, count, c, &name)?;
-    Ok((0..count).filter(|&i| has(&bits, i)).collect())
+    compile_in(text, kind, count, c, &name)
 }
 
 /// The one entry a name stands for, where only one fits (a recipe's result, a loot line): a tag

@@ -534,8 +534,8 @@ pub struct ScatterDef {
     pub reach_y: [i32; 2],
     /// Biome component (f32) with the chance of a site per cell.
     pub density: Option<u32>,
-    /// Biome tag and heights of the site (`abi::comp::common`).
-    pub biome: Option<u32>,
+    /// Biomes and heights of the site (`abi::comp::common`).
+    pub biome: Option<Box<[u64]>>,
     pub y: [i32; 2],
     /// Matcher of the surface block under the site (`None`: any).
     pub ground: Option<u32>,
@@ -653,8 +653,8 @@ pub struct OreDef {
     pub size: u32,
     /// Derived from the block name, so adding an ore does not move the others.
     pub salt: u64,
-    /// Biome tag the block's column must carry.
-    pub biome: Option<u32>,
+    /// Biomes the block's column must be.
+    pub biome: Option<Box<[u64]>>,
     /// `abi::vein_shape`, and its sizes.
     pub shape: u32,
     pub shape_size: [f32; 2],
@@ -731,7 +731,7 @@ pub struct StructureDef {
     pub extent: glam::IVec3,
     pub spacing: i32,
     pub chance: f32,
-    pub biome: Option<u32>,
+    pub biome: Option<Box<[u64]>>,
     /// Heights its ground may be at.
     pub y: [i32; 2],
     pub sink: i32,
@@ -1522,6 +1522,7 @@ struct Lookups<'a> {
     block_defs: &'a [BlockDef],
     block_names: &'a FxHashMap<String, u32>,
     dim_names: &'a FxHashMap<String, u32>,
+    biome_names: &'a FxHashMap<String, u32>,
     components: &'a Components,
 }
 
@@ -1637,7 +1638,13 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     }
     let tool_classes = tool_classes(&components);
 
-    let look = Lookups { block_defs: &block_defs, block_names: &block_names, dim_names: &dim_names, components: &components };
+    let look = Lookups {
+        block_defs: &block_defs,
+        block_names: &block_names,
+        dim_names: &dim_names,
+        biome_names: &biome_names,
+        components: &components,
+    };
     place_features(&mut games, &mut dim_defs, look, &mut matchers, &mut tables, &mod_name, &mut errors);
     let (templates, template_names) = freeze_templates(&mut games, look, &mut tables, &mod_name, &mut errors);
     place_structures(&mut games, &mut dim_defs, &templates, &template_names, look, &mut tables, &mod_name, &mut errors);
@@ -1668,6 +1675,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         &item_names,
         &item_defs,
         &dim_names,
+        &biome_names,
         &components,
         &decls,
         &order_of,
@@ -1686,11 +1694,14 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     link_entity_templates(&mut game, &templates, &template_names, &mut errors);
     link_equipment(&game, &mut item_defs, &components);
     for d in &mut dim_defs {
-        for n in std::mem::take(&mut d.weather_names) {
-            match game.weather_names.get(&n) {
-                Some(&w) => d.weathers.push(w),
-                None => errors.push(format!("dimension {}: no weather {n}", d.name)),
-            }
+        let names = std::mem::take(&mut d.weather_names);
+        if names.is_empty() {
+            continue;
+        }
+        let count = game.weathers.len() as u32;
+        match crate::refs::set(&names.join(" "), abi::entry_kind::WEATHER as usize, &game.weather_names, count, &components, "weather") {
+            Ok(w) => d.weathers = w,
+            Err(e) => errors.push(format!("dimension {}: {e}", d.name)),
         }
     }
     // `immune/fall`, `immune/mymod:radiation`: the engine's causes go without their namespace.
@@ -2405,25 +2416,33 @@ impl Lookups<'_> {
         if names.is_empty() {
             return (0..dim_defs.len()).filter(|&d| !dim_defs[d].bare).collect();
         }
-        names
-            .iter()
-            .filter_map(|n| {
-                let d = self.dim_names.get(n).map(|&d| d as usize);
-                if d.is_none() {
-                    errors.push(format!("{what}: unknown dimension {n}"));
-                }
-                d
-            })
+        let count = dim_defs.len() as u32;
+        crate::refs::set(&names.join(" "), comps::DIMENSION, self.dim_names, count, self.components, "dimension")
+            .map_err(|err| errors.push(format!("{what}: {err}")))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| d as usize)
             .collect()
+    }
+
+    fn biomes(&self, what: &str, e: &Entry, errors: &mut Vec<String>) -> Result<Option<Box<[u64]>>, ()> {
+        biomes(self.components, self.biome_names, what, e, errors)
     }
 }
 
-/// The biome tag an entry names (`comp::common::BIOME`); `Err` (logged) for an unknown one.
-pub(crate) fn biome_tag(components: &Components, what: &str, e: &Entry, errors: &mut Vec<String>) -> Result<Option<u32>, ()> {
+/// The biomes an entry's sites go in (`comp::common::BIOME`, any reference to biomes), a bit
+/// each; `Err` (logged) for a name that isn't there.
+pub(crate) fn biomes(
+    components: &Components,
+    names: &FxHashMap<String, u32>,
+    what: &str,
+    e: &Entry,
+    errors: &mut Vec<String>,
+) -> Result<Option<Box<[u64]>>, ()> {
     match e.text(abi::comp::common::BIOME).unwrap_or_default() {
         "" => Ok(None),
-        t => crate::refs::tag(components, t)
-            .map(Some)
+        t => crate::refs::bits(t, comps::BIOME, names, names.len() as u32, components, "biome")
+            .map(|b| Some(b.into()))
             .map_err(|err| errors.push(format!("{what}: biome: {err}"))),
     }
 }
@@ -2478,7 +2497,7 @@ fn place_features(
             }
         }
         let dims = look.targets(dim_defs, &what, e, errors);
-        let biome = biome_tag(components, &what, e, errors).ok()?;
+        let biome = look.biomes(&what, e, errors).ok()?;
         // A walk, its starts spread evenly.
         let shape: abi::VeinShape = e.or(o::SHAPE, abi::VeinShape::default());
         let height: abi::OreHeight = e.or(o::HEIGHT, abi::OreHeight::default());
@@ -2522,7 +2541,7 @@ fn place_features(
             errors.push(format!("{what}: cell {cell} and reach {reach} (cell at least 1)"));
             return None;
         }
-        let biome = biome_tag(components, &what, e, errors).ok()?;
+        let biome = look.biomes(&what, e, errors).ok()?;
         let (owner, shape) = e.callback(s::SHAPE).unwrap_or((e.owner, Callback::NONE));
         let def = ScatterDef {
             owner,
@@ -2612,7 +2631,7 @@ fn place_structures(
                 return None;
             };
             let blocks = templates[t as usize].blocks.clone();
-            let biome = biome_tag(look.components, &what, e, errors).ok()?;
+            let biome = look.biomes(&what, e, errors).ok()?;
             let extent = blocks
                 .iter()
                 .fold(IVec3::ZERO, |m, (p, _)| m.max(*p + IVec3::ONE));

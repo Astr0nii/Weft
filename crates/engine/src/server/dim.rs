@@ -259,7 +259,7 @@ pub fn finish_generated(
     }
     let uniform = varied == 0 && top < max;
     let ores = place_ores(c, def, seed, pos, &mut blocks, &biomes, uniform);
-    let built = place_structures(c, def, seed, pos, &mut blocks);
+    let built = place_structures(def, seed, pos, &mut blocks);
     let mut cube =
         if uniform && !ores && !built { Cube::uniform(blocks[0], 0) } else { Cube::from_states(blocks.as_slice().try_into().unwrap()) };
     if biomes.iter().any(|&b| b != 0) {
@@ -328,10 +328,10 @@ fn place_ores(
                             let l = p - o;
                             if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(16)).all() {
                                 let i = local_index(l);
-                                let biome_ok = ore.biome.is_none_or(|t| {
-                                    c.components
-                                        .has(comps::BIOME, biomes[(l.z * 16 + l.x) as usize] as u32, t)
-                                });
+                                let biome_ok = ore
+                                    .biome
+                                    .as_ref()
+                                    .is_none_or(|b| crate::refs::has(b, biomes[(l.z * 16 + l.x) as usize] as u32));
                                 // Vanilla's ores in caves: some of what would touch air is left out.
                                 let bare = ore.exposed > 0.0
                                     && crate::world::DIRS.iter().any(|d| {
@@ -419,13 +419,7 @@ fn vein(ore: &crate::content::OreDef, start: IVec3, h: u64) -> Vec<IVec3> {
 
 /// Where structure `s` stands in its grid cell (`cell` x, z), if it does there: its lowest
 /// corner. Depends only on the seed and the dimension's columns, so every cube agrees.
-pub fn structure_in(
-    def: &crate::content::DimensionDef,
-    c: &Content,
-    s: &crate::content::StructureDef,
-    seed: u64,
-    cell: (i32, i32),
-) -> Option<IVec3> {
+pub fn structure_in(def: &crate::content::DimensionDef, s: &crate::content::StructureDef, seed: u64, cell: (i32, i32)) -> Option<IVec3> {
     let h = hash(seed ^ s.salt, cell.0 as i64, 7, cell.1 as i64);
     if weft_noise::unit(h) >= s.chance as f64 {
         return None;
@@ -434,7 +428,8 @@ pub fn structure_in(
     let (x, z) = (cell.0 * s.spacing + ((h >> 3) % room) as i32, cell.1 * s.spacing + ((h >> 29) % room) as i32);
     let col = def.column(seed, x + s.extent.x / 2, z + s.extent.z / 2)?;
     if s.biome
-        .is_some_and(|t| !c.components.has(comps::BIOME, col.biome, t))
+        .as_ref()
+        .is_some_and(|b| !crate::refs::has(b, col.biome))
         || !(s.y[0]..=s.y[1]).contains(&col.height)
     {
         return None;
@@ -458,7 +453,8 @@ pub fn scatter_site(
         || def.sea_level().is_some_and(|l| col.height < l)
         || !(s.y[0]..=s.y[1]).contains(&(col.height + 1))
         || s.biome
-            .is_some_and(|t| !c.components.has(comps::BIOME, col.biome, t))
+            .as_ref()
+            .is_some_and(|b| !crate::refs::has(b, col.biome))
     {
         return None;
     }
@@ -578,14 +574,14 @@ pub fn scattered_near(def: &crate::content::DimensionDef, c: &Content, seed: u64
 
 /// Structure blocks that fall into this cube.
 /// Returns whether it put anything in.
-fn place_structures(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32]) -> bool {
+fn place_structures(def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32]) -> bool {
     let o = pos * 16;
     let mut built = false;
     for s in &def.structures {
         let cells = |lo: i32, size: i32| (lo - size).div_euclid(s.spacing)..=(lo + 15).div_euclid(s.spacing);
         for cz in cells(o.z, s.extent.z) {
             for cx in cells(o.x, s.extent.x) {
-                let Some(a) = structure_in(def, c, s, seed, (cx, cz)) else { continue };
+                let Some(a) = structure_in(def, s, seed, (cx, cz)) else { continue };
                 if a.y > o.y + 15 || a.y + s.extent.y <= o.y {
                     continue;
                 }
@@ -2116,7 +2112,8 @@ impl Dim {
                     ((s.light[0]..=s.light[1]).contains(&light)
                         && (s.y[0]..=s.y[1]).contains(&y)
                         && s.biome
-                            .is_none_or(|t| c.components.has(comps::BIOME, biome_at(spot), t))
+                            .as_ref()
+                            .is_none_or(|b| crate::refs::has(b, biome_at(spot)))
                         && s.ground.is_none_or(|m| c.matchers.has(m, ground)))
                     .then_some(y)
                 };

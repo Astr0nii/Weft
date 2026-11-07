@@ -737,7 +737,7 @@ pub struct RawGame {
 pub struct SpawnRule {
     pub entity: u32,
     pub category: u32,
-    pub biome: Option<u32>,
+    pub biome: Option<Box<[u64]>>,
     /// Matcher of the block it rests on.
     pub ground: Option<u32>,
     /// `abi::spawn_place`.
@@ -1353,6 +1353,7 @@ fn bake_spawn(
     c: &Components,
     mut matcher: impl FnMut(&str) -> Result<u32, String>,
     dim_names: &FxHashMap<String, u32>,
+    biome_names: &FxHashMap<String, u32>,
     errors: &mut Vec<String>,
 ) -> Option<SpawnRule> {
     use abi::comp::{common as p, spawn as s};
@@ -1370,16 +1371,14 @@ fn bake_spawn(
                 .ok()?,
         ),
     };
-    let biome = crate::content::biome_tag(c, &what, e, errors).ok()?;
+    let biome = crate::content::biomes(c, biome_names, &what, e, errors).ok()?;
     let names: Vec<String> = e.or(p::DIMENSIONS, Vec::new());
-    let dims: Vec<u32> = names
-        .iter()
-        .filter_map(|d| dim_names.get(d).copied())
-        .collect();
-    if dims.len() != names.len() {
-        errors.push(format!("{what}: unknown dimension in {names:?}"));
-        return None;
-    }
+    let dims = match names.is_empty() {
+        true => Vec::new(),
+        false => crate::refs::set(&names.join(" "), comps::DIMENSION, dim_names, dim_names.len() as u32, c, "dimension")
+            .map_err(|err| errors.push(format!("{what}: {err}")))
+            .ok()?,
+    };
     let condition = match e.text(s::WHEN).unwrap_or_default() {
         "" => None,
         n => match g.condition_names.get(n) {
@@ -1711,6 +1710,7 @@ pub fn freeze(
     item_names: &FxHashMap<String, u32>,
     items: &[crate::content::ItemDef],
     dim_names: &FxHashMap<String, u32>,
+    biome_names: &FxHashMap<String, u32>,
     c: &Components,
     decls: &[ComponentDecl],
     order: &dyn Fn(ModId) -> u32,
@@ -1960,7 +1960,7 @@ pub fn freeze(
         .sort_by_key(|p| std::cmp::Reverse(g.poses[p.0 as usize].priority));
     let (spawns, _) = tables.bake(kind(ek::SPAWN), ek::SPAWN, mod_name, errors, |e, errors| {
         let ground = |text: &str| matchers.add(text, block_names, block_defs, c);
-        bake_spawn(e, &g, c, ground, dim_names, errors)
+        bake_spawn(e, &g, c, ground, dim_names, biome_names, errors)
     });
     g.spawns = spawns.into_iter().flatten().collect();
     // Natural spawning (`spawns`) runs while this is on.

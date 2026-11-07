@@ -2673,9 +2673,10 @@ where
     fn dimension(self, dimension: &Dimension) -> Self {
         self.push(&crate::comps::common::DIMENSIONS, dimension.name().to_string())
     }
-    /// Only where the biome has this tag (underground ones too: `#cave`).
-    fn biome(self, tag: &str) -> Self {
-        self.set_text(&crate::comps::common::BIOME, tag)
+    /// Only in these biomes, underground ones too: any reference to them (`#cave`,
+    /// `base:plains`, `#forest !base:birch_forest`).
+    fn biome(self, biomes: &str) -> Self {
+        self.set_text(&crate::comps::common::BIOME, biomes)
     }
     /// Heights, inclusive: where an ore's veins start, a scatter's site, a structure's ground,
     /// a spawn spot.

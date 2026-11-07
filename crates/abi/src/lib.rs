@@ -919,8 +919,9 @@ pub mod comp {
     }
 
     /// Where an ore, scatter, structure, decoration or spawn rule goes; what isn't set doesn't
-    /// limit it. `DIMENSIONS` (`[str]`, full names; none: every one but `dimension::BARE` ones),
-    /// `BIOME` (`str`, a tag the biome must carry: `cave`), `Y` (`[i32;2]`, inclusive heights: where
+    /// limit it. `DIMENSIONS` (`[str]`, references to dimensions; none: every one but
+    /// `dimension::BARE` ones), `BIOME` (`str`, a reference to biomes: `#cave`, `base:plains`,
+    /// `#forest !base:birch_forest`), `Y` (`[i32;2]`, inclusive heights: where
     /// an ore's veins start, a scatter's site, a structure's ground, a spawn spot). A decoration
     /// decides biome and height itself.
     pub mod common {

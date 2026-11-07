@@ -106,12 +106,13 @@ In your own mod you write just `ruby` and it becomes `mymod:ruby`, the same when
 Other mods' things go by their full name: `base:furnace`. The engine's own are `core:..`.
 
 ### References
-Wherever a block, item or biome is named as text (recipes, loot, ore and structure filters, `r.set`, support rules, spawn rules, `.ctm` files, `{block:..}` and `{item:..}`, commands), it is written the same way:
+Wherever something is named as text (recipes, loot, ore and structure filters, `.biome(..)`, dimension lists, `r.set`, support rules, spawn rules, `.ctm` files, `{block:..}` and `{item:..}`, commands), it is written the same way, whatever kind it is:
 - `base:stone` is that thing, `base:furnace[lit=true]` the furnace's states with that value
 - `#logs` is anything with the tag, `#ingots/*` anything with a tag starting with `ingots/`
-- calls that only make sense with a tag (`.biome(..)`, tool conditions) still take it with `#`, so it never looks like a name
+- where one thing goes (a recipe's result, a loot line, a tab's icon, `{item:..}`) it takes a name, as a tag stands for several. A recipe made per material is the one exception: the result of `"#planks/{m}"` is the first item with that tag
+- tool conditions only make sense with a tag and still take it with `#`, so it never looks like a name
 
-Where a rule asks which blocks (support rules, `spreads`, `joins`, `shares_cell_with`, an ore's `replaces`, scatter and spawn `ground`, liquid reactions, `SWIMS_IN`, a fill's `keep` and `only`), it takes several of these apart by spaces, and `!` in front of one leaves out what it names: `"#plant_soil !base:sand"` is any plant soil but sand, `"!#liquids"` anything that isn't a liquid. The engine puts two tags on blocks itself for this: `#liquids` on every liquid's block and `#unbreakable` on blocks of negative hardness. A plain `#tag` no block has yet is fine there and takes nothing, since another mod may bring it; a name nothing has still stops the game.
+Where a rule asks which blocks (support rules, `spreads`, `joins`, `shares_cell_with`, an ore's `replaces`, scatter and spawn `ground`, liquid reactions, `SWIMS_IN`, a fill's `keep` and `only`), it takes several of these apart by spaces, and `!` in front of one leaves out what it names: `"#plant_soil !base:sand"` is any plant soil but sand, `"!#liquids"` anything that isn't a liquid. The engine puts two tags on blocks itself for this: `#liquids` on every liquid's block and `#unbreakable` on blocks of negative hardness. A plain `#tag` no block has yet is fine there and takes nothing, since another mod may bring it; a name nothing has still stops the game. Biomes, dimensions and a dimension's weathers are named the same way: `.biome("#forest !base:birch_forest")`.
 
 A name nothing has, or a tag pattern no tag matches, stops the game at load with your mod's name and what was wrong.\
 Where one item has to come out of a tag (a recipe output, a loot entry), it's the preferred one: the first registered in mod load order.\
