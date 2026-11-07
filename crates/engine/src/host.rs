@@ -132,6 +132,7 @@ pub static HOST: Host = Host {
     client_state: crate::app::api::client_state,
     client_input: crate::app::api::client_input,
     client_key_state: crate::app::api::client_pressed,
+    keys_state: crate::input::keys_state,
     client_control: crate::app::api::client_set_player,
     client_op: crate::app::api::client_command,
     client_text: crate::app::api::client_text,
@@ -168,6 +169,7 @@ pub static HOST: Host = Host {
     attribute_explain,
     reg_entry,
     roll_loot,
+    holds,
     break_block,
     client_menu_owner: crate::client::modui::client_menu_owner,
     reg_system,
@@ -1523,7 +1525,7 @@ unsafe extern "C" fn find(kind: u32, name: Str, count: *mut u32) -> u32 {
         abi::entry_kind::TINT_KIND => at(c.tint_kinds.iter().map(|k| k.0.as_str()), name),
         abi::entry_kind::RECIPE_KIND => c.game.recipe_kinds.get(name).copied(),
         abi::entry_kind::ATTRIBUTE => c.game.attr_names.get(name).copied(),
-        abi::entry_kind::KEY => at(c.game.keys.iter().map(|k| k.0.as_str()), name),
+        abi::entry_kind::KEY => at(c.game.keys.iter().map(|k| k.name.as_str()), name),
         abi::entry_kind::LIQUID => at(c.liquids.iter().map(|l| l.name.as_str()), name),
         _ => None,
     };
@@ -1894,17 +1896,19 @@ unsafe extern "C" fn reg_entry(r: *mut abi::Registrar, d: *const abi::EntryDesc)
     }
 }
 
+unsafe extern "C" fn holds(w: *mut abi::WorldCtx, text: Str, pos: abi::Vec3, entity: u64) -> u32 {
+    unsafe {
+        let c = content();
+        let ask = crate::conditions::Ask { pos: crate::world::dvec(pos), entity, ..Default::default() };
+        c.condition(text.as_str())
+            .is_some_and(|e| crate::conditions::holds_server(dim(w), c, &e, &ask)) as u32
+    }
+}
+
 unsafe extern "C" fn roll_loot(w: *mut abi::WorldCtx, name: Str, ctx: *const abi::LootCtx, out: *mut ItemStack, max: usize) -> usize {
     unsafe {
         let x = if ctx.is_null() { abi::LootCtx::DEFAULT } else { *ctx };
-        let ctx = crate::loot::Ctx {
-            tool: x.tool,
-            by_player: x.by_player != 0,
-            on_fire: x.on_fire != 0,
-            mined: x.mined,
-            state: x.mined,
-            holds: Vec::new(),
-        };
+        let ctx = crate::loot::Ctx { tool: x.tool, by_player: x.by_player != 0, on_fire: x.on_fire != 0, mined: x.mined, state: x.mined };
         let stacks = dim(w).roll_loot(content(), name.as_str(), &ctx, DVec3::ZERO, 0);
         for (i, s) in stacks.iter().take(max).enumerate() {
             *out.add(i) = *s;

@@ -56,7 +56,7 @@ fn effect(g: Glyph) -> Glyph {
 
 ### Conditions
 `{if:name}` shows text while a condition holds.\
-The engine's are every game mode by its name (`creative`, `survival`, `spectator`), `day`, `night`, `underground`, `surface`, `debug` and `dev`. Your own are registered in the mod, and in text they are asked on the client, so they see the local player only:
+The engine's are every game mode by its name (`creative`, `survival`, `spectator`), `day`, `night`, `underground`, `surface`, `light(..7)`, `debug` and `dev`, and they go together with `&`, `|` and `!`: `{if:night & surface}`. Your own are registered in the mod, and in text they are asked on the client, so they see the local player only:
 ```rust
 static CHARGED: Condition = Condition::named("charged");
 r.condition(&CHARGED, |c| c.client().is_some_and(|v| v.component(&CHARGE).is_some_and(|c| c > 0)));

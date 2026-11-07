@@ -83,7 +83,7 @@ impl Server {
             let hit = hit.map(|v| v.clamp(0.0, 1.0));
             let target = d.place_clicked(c, pos, face, state, look, hit, entity, held.item)?;
             // What the stack carries goes onto the block entity it becomes (a renamed chest).
-            if let Some(id) = d.anchored(target) {
+            if let Some(id) = d.anchored_part(c, target, state) {
                 for &comp in &c.game.carried {
                     if let Some(v) = crate::stack::value(held.data, comp) {
                         d.entities.comps.insert((id, comp), v.into());
@@ -318,12 +318,13 @@ impl Server {
             ToServer::Camera(mode) => {
                 let Some(m) = c.game.cameras.get(mode as usize) else { return };
                 let Some((r, entity)) = self.region(pi) else { return };
-                let flies = r
-                    .entities
-                    .get(entity)
-                    .is_some_and(|e| e.mode.has(crate::tag_bits::game_mode::CAN_FLY));
+                let pos = r.entities.get(entity).map_or(DVec3::ZERO, |e| e.pos);
+                let ask = crate::conditions::Ask { pos, entity, ..Default::default() };
                 let mut q = weft_abi::Query { entity, amount: mode as f64, ..weft_abi::Query::DEFAULT };
-                let may = !m.has(crate::tag_bits::camera::ASK) || r.ask_or(c, weft_abi::action::CAMERA, &mut q, flies);
+                let holds = m
+                    .when
+                    .is_none_or(|w| crate::conditions::on_server(r, c, w, &ask));
+                let may = r.ask_or(c, weft_abi::action::CAMERA, &mut q, holds);
                 if may {
                     self.players[pi]
                         .conn
@@ -331,7 +332,7 @@ impl Server {
                 }
             }
 
-            ToServer::Break { pos, part, face, frame } => {
+            ToServer::Break { pos, part, face, hit, frame } => {
                 let Some((r, _)) = self.region(pi) else { return };
                 let (frame, pos) = r.landed_as(frame, pos);
                 let mining = self.players[pi].mining.take();
@@ -359,7 +360,7 @@ impl Server {
                     let done = within(o.to_local(eye), pos, reach)
                         && !too_soon
                         && !keeps
-                        && d.break_face(c, pos, part, face, held, entity, !creative);
+                        && d.break_piece(c, pos, part, face, hit, held, entity, !creative);
                     // The client already shows air: a refused break sends the block back.
                     if !done && d.get(pos).is_some() {
                         d.resend_cell(pos);
@@ -571,11 +572,7 @@ impl Server {
                 if let Some((r, entity)) = self.region(pi) {
                     r.entities.reset_components(c, entity);
                     // The game mode's modifiers went with the rest.
-                    let mode = r
-                        .entities
-                        .get(entity)
-                        .map_or(GameMode::SURVIVAL, |e| e.mode);
-                    mode_modifiers(c, r, entity, mode);
+                    r.keep_sources(c, entity);
                     // After the components: modifiers are gone with them. Sent as any change.
                     let max = r.max_health(c, entity);
                     if let Some(e) = r.entities.get_mut(entity) {

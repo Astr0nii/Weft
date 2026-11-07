@@ -122,18 +122,6 @@ pub fn touches(face: u8, e: u8) -> bool {
     e != face ^ 1
 }
 
-/// What a broken piece leaves behind: `face` is the side of the selection that was hit.
-pub fn after_break(c: &Content, state: u32, face: u8) -> u32 {
-    let m = mask(c, state);
-    if m == 0 {
-        return crate::content::AIR;
-    }
-    // A flat piece is hit on its broad side, which looks away from what holds it up.
-    let hit = if face < 6 && m & (1 << (face ^ 1)) != 0 { face ^ 1 } else { m.trailing_zeros() as u8 };
-    let left = m & !(1 << hit);
-    if left == 0 { crate::content::AIR } else { c.block_of(state).with_sides(state, left) }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

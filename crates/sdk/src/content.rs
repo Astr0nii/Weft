@@ -546,7 +546,7 @@ pub mod poses {
 /// r.pose(&SIT).height(0.7).eye(0.62).speed(0.0).action("sit");
 /// w.set_pose(pet, Some(&SIT), None);
 /// // Taken by the player: a slide while sprinting and holding crawl, above the engine's crawl.
-/// r.pose(&SLIDE).height(0.4).eye(0.35).speed(1.2).key(&keys::CRAWL).when(pose_when::SPRINTING).priority(25);
+/// r.pose(&SLIDE).height(0.4).eye(0.35).speed(1.2).key(&keys::CRAWL).when(Cond::sprinting()).priority(25);
 /// ```
 pub struct PoseBuilder<'a> {
     reg: &'a mut crate::Registry,
@@ -562,6 +562,10 @@ impl crate::Registry {
 }
 
 impl PoseBuilder<'_> {
+    /// An attribute modifier its holder gets while in it (`Modifier`).
+    pub fn modifier(self, m: crate::Modifier) -> Self {
+        self.push(&crate::component::MODIFIERS, m.0)
+    }
     /// Box height as a share of standing (crouching is 1.5 / 1.8).
     pub fn height(self, share: f32) -> Self {
         self.set(&crate::comps::pose::HEIGHT, share)
@@ -596,12 +600,9 @@ impl PoseBuilder<'_> {
         let name = key.name().to_string();
         self.set_text(&crate::comps::pose::KEY, &name)
     }
-    /// And only where these hold (`abi::pose_when`).
-    pub fn when(self, flags: u32) -> Self {
-        abi::comp::pose::WHEN
-            .iter()
-            .filter(|w| flags & w.1 != 0)
-            .fold(self, |b, w| b.tag(w.0))
+    /// And only where this holds (`Cond::in_liquid`, `!Cond::flying()`); again for more.
+    pub fn when(self, c: impl Into<crate::Cond>) -> Self {
+        self.push(&crate::comps::pose::WHEN, c.into().0)
     }
     /// Where it has no room, the first of these that has and whose `when` holds; the last
     /// even without room.
@@ -671,7 +672,7 @@ impl GameModeBuilder<'_> {
     pub fn flight(self, how: Flight) -> Self {
         use abi::comp::game_mode as g;
         match how {
-            Flight::Allowed => self.tag(g::CAN_FLY),
+            Flight::Allowed => self.modifier(&crate::attribute::CAN_FLY, abi::attr_op::ADD, 1.0),
             Flight::Always => self.tag(g::ALWAYS_FLY),
             Flight::None => self,
         }
@@ -709,7 +710,7 @@ impl GameModeBuilder<'_> {
     }
     /// An attribute modifier its players have while in it (longer reach, `visibility` 0).
     pub fn modifier(self, attribute: &crate::Attribute, op: u32, amount: f64) -> Self {
-        let m = abi::ModeModifier { attribute: attribute.name().to_string(), op, amount };
+        let m = abi::Modifier { attribute: attribute.name().to_string(), op, amount, ..Default::default() };
         self.push(&crate::comps::game_mode::MODIFIERS, m)
     }
 }
@@ -1405,15 +1406,28 @@ macro_rules! state_setters {
             self.needs(crate::Dir::Down, what)
         }
         /// Needs the neighbor that way to be one `what` takes (a block matcher), or to be solid
-        /// if `what` is empty.
+        /// if `what` is empty: a rule breaking it off without (`Rule::neighbor`), which also keeps
+        /// it from being placed so. That way is of its own frame, turning with it.
         pub fn needs(self, side: crate::Dir, what: &str) -> Self {
-            let s = self.set(&c::SUPPORT_FACE, side.face() as u8);
-            if what.is_empty() { s } else { s.set_text(&c::SUPPORT, what) }
+            self.rule(
+                crate::Rule::neighbor()
+                    .when(!crate::Cond::side(side, what))
+                    .breaks(),
+            )
         }
-        /// The supporting block must have one `what` takes beside it (a block matcher, sugar
-        /// cane: `#water`), unless it is this same block.
-        pub fn needs_near(self, what: &str) -> Self {
-            self.set_text(&c::SUPPORT_NEAR, what)
+        /// A rule of what happens to it by itself (`Rule`), of this state or every state.
+        pub fn rule(self, r: crate::Rule) -> Self {
+            self.push(&bc::RULES, r.0)
+        }
+        /// What `event` (`break`, `place`, `step`, `hit`, `land`, `sprint`) sounds and shows
+        /// instead of its sound group's and the engine's pieces of it: a sound event and a
+        /// particle kind, `""` for what it would be anyway, `"none"` for nothing.
+        pub fn effect(self, event: &str, sound: &str, particle: &str) -> Self {
+            self.push(&c::EFFECTS, crate::component::effect(event, sound, particle))
+        }
+        /// What it does to entities meeting it (`Hazard`), of this state or every state.
+        pub fn hazard(self, h: crate::Hazard) -> Self {
+            self.push(&bc::HAZARDS, h.0)
         }
         /// A plant: tagged `plantable`, cross model, no collision. Placing a block into it is
         /// refused, as for vanilla's flowers and sugar cane; grass that gives way is `.replaceable()`.
@@ -1423,10 +1437,6 @@ macro_rules! state_setters {
                 .cutout()
                 .hardness(0.0)
                 .tag("plantable")
-        }
-        /// Keeps the liquid source it is placed in, and a bucket fills it: waterlogging.
-        pub fn holds_liquid(self) -> Self {
-            self.tag(abi::comp::block::HOLDS_LIQUID)
         }
         pub fn not_solid(self) -> Self {
             self.tag(abi::comp::block::NOT_SOLID)
@@ -1523,9 +1533,16 @@ macro_rules! state_setters {
         pub fn outline(self, min: [f32; 3], max: [f32; 3]) -> Self {
             self.push(&bc::OUTLINE, [min[0], min[1], min[2], max[0], max[1], max[2]])
         }
-        /// The sides a liquid in it can't pass (`.holds_liquid()`): without this, the ones its
-        /// hitbox covers whole (a stair's back holds water, a hollow log's open ends don't). `&[]`
-        /// lets it out everywhere.
+        /// A piece a player breaks off alone (in 1/16, like the boxes): a hit inside it leaves
+        /// this state with the properties `left` sets and drops what the state with those `alone`
+        /// sets would. A double slab's lower half: `.piece([0.0; 3], [16.0, 8.0, 16.0],
+        /// "type=top", "type=bottom")`. Without pieces a hit breaks all of it.
+        pub fn piece(self, min: [f32; 3], max: [f32; 3], left: &str, alone: &str) -> Self {
+            self.push(&bc::PIECES, abi::Piece { min, max, left: left.into(), alone: alone.into() })
+        }
+        /// The sides a liquid in its cell can't pass (`.shares_cell_with("#water")`): without
+        /// this, the ones its hitbox covers whole (a stair's back holds water, a hollow log's open
+        /// ends don't). `&[]` lets it out everywhere.
         pub fn liquid_walls(self, sides: &[crate::Dir]) -> Self {
             self.set(&bc::LIQUID_WALLS, sides.iter().fold(0u8, |m, d| m | 1 << d.face()))
         }
@@ -1732,7 +1749,7 @@ impl<'a> BlockBuilder<'a> {
 
     /// Tools of `class` (`tools/<class>` items) mine it at their speed (tag `mineable/<class>`),
     /// and it drops nothing unless mined by one of at least `level` (`tool_tier`; `HAND`: drops
-    /// anyway). The level is the `harvest_level` component, checked by `Cond::Harvested`.
+    /// anyway). The level is the `harvest_level` component, checked by `Cond::harvested`.
     pub fn mined_by(self, class: &str, level: u32) -> Self {
         let b = self.tag(&format!("mineable/{class}"));
         if level != abi::tool_tier::HAND { b.set(&c::HARVEST_LEVEL, level) } else { b }
@@ -1757,7 +1774,7 @@ impl<'a> BlockBuilder<'a> {
         self.set_text(&c::SOUND, &prefix)
     }
 
-    /// Its loot table: `count` of `item` when harvested (`Cond::Harvested`). Without it the
+    /// Its loot table: `count` of `item` when harvested (`Cond::harvested`). Without it the
     /// block drops its own item the same way; `r.loot(&BLOCK)` writes any other table.
     pub fn drops(mut self, item: &str, count: u32) -> Self {
         self.drops = Some((item.to_string(), count));
@@ -1791,10 +1808,22 @@ impl<'a> BlockBuilder<'a> {
 
     /// Grows over time, a step every `mean_seconds` on average (spread like random ticks) while
     /// the light is at least `min_light`: by default to the next state until the last. Timed by
-    /// world time, so unloaded plants catch up when their area loads again.
+    /// world time, so unloaded plants catch up when their area loads again. A rule
+    /// (`Rule::random(..).grows()`).
     pub fn grows(self, mean_seconds: f32, min_light: u32) -> Self {
-        self.set(&c::GROW_TIME, mean_seconds)
-            .set(&c::GROW_LIGHT, min_light)
+        let r = crate::Rule::random(mean_seconds).grows();
+        self.rule(if min_light > 0 { r.when(crate::Cond::light(min_light, 15)) } else { r })
+    }
+
+    /// The block it stands on must have one `what` takes beside it (a block matcher, sugar
+    /// cane: `#water`), unless that is this same block.
+    pub fn needs_near(self, what: &str) -> Self {
+        let own = crate::Cond::side(crate::Dir::Down, &self.e.name);
+        self.rule(
+            crate::Rule::neighbor()
+                .when(!own & !crate::Cond::beside(crate::Dir::Down, what))
+                .breaks(),
+        )
     }
 
     /// What a growth step does instead of moving to the next state (growing a tree, a block on
@@ -1825,8 +1854,11 @@ impl<'a> BlockBuilder<'a> {
     /// Turns into `block` in `mean_seconds` on average once something opaque covers it (grass
     /// into dirt).
     pub fn smothered_into(self, block: &str, mean_seconds: f32) -> Self {
-        self.set_text(&c::SMOTHERED_INTO, block)
-            .set(&c::SMOTHER_TIME, mean_seconds)
+        self.rule(
+            crate::Rule::random(mean_seconds)
+                .when(crate::Cond::covered())
+                .becomes(block),
+        )
     }
 
     /// Particles of `kind` clients show around it now and then, near the player (vanilla's
@@ -1978,13 +2010,11 @@ impl<'a> BlockBuilder<'a> {
     /// Falls like sand when nothing holds it up: a block next to it changing checks two ticks
     /// later whether below is free, and if so it drops as a moving block (`World::fall_block`).
     pub fn falling(self) -> Self {
-        self.on_neighbor(|e| e.world().schedule_tick(e.pos(), 2))
-            .on_scheduled(|e| {
-                let (w, p) = (e.world(), e.pos());
-                if w.block_flags([p.x, p.y - 1, p.z]) & abi::block_flags::REPLACEABLE != 0 {
-                    w.fall_block(p);
-                }
-            })
+        self.rule(
+            crate::Rule::after(0.1)
+                .when(crate::Cond::open(crate::Dir::Down))
+                .falls(),
+        )
     }
 
     /// Each placed block gets a block entity, an invisible entity of a kind named like the block
@@ -2161,7 +2191,8 @@ impl<'a> BlockBuilder<'a> {
     }
 
     /// What may be in one cell with it though their shapes overlap (a block matcher): snow on a
-    /// plant. Blocks whose shapes don't overlap share a cell without asking.
+    /// plant, `#water` for a source of water to stay in it and a bucket to fill it (a liquid fills
+    /// its whole cell). Blocks whose shapes don't overlap share a cell without asking.
     pub fn shares_cell_with(self, what: &str) -> Self {
         self.set_text(&bc::SHARES_CELL, what)
     }
@@ -2276,6 +2307,17 @@ impl BlockBuilder<'_> {
             });
             self.e.ops.push(bc::PLACEMENT.raw_value(&cb));
         }
+        // What lies on sides takes in its own item as one more side.
+        let sides = self
+            .sides
+            .map(|allowed| allowed.dirs().map(|d| d.name()).collect::<Vec<_>>());
+        if let Some(sides) = sides.filter(|_| self.merge.is_none()) {
+            self.merge = Some(Box::new(move |p, props| {
+                for d in sides.iter().filter(|d| p.placed(d) == Some("true")) {
+                    props.set(d, "true");
+                }
+            }));
+        }
         if let Some(f) = self.merge.take() {
             let names: Vec<String> = self.props.iter().map(|p| p.0.clone()).collect();
             let cb = callback(move |a: &mut abi::PlaceArgs| {
@@ -2334,7 +2376,7 @@ impl BlockBuilder<'_> {
                 drop(
                     table.pool(
                         crate::extend::Pool::new()
-                            .when(crate::extend::Cond::Harvested)
+                            .when(crate::extend::Cond::harvested())
                             .items(&item, count, count),
                     ),
                 );
@@ -2356,6 +2398,10 @@ crate::entry::entry_builder!(
 );
 
 impl ItemBuilder<'_> {
+    /// An attribute modifier its holder gets while it is in the main hand, or `.worn()` in an equipment slot (`Modifier`).
+    pub fn modifier(self, m: crate::Modifier) -> Self {
+        self.push(&crate::component::MODIFIERS, m.0)
+    }
     /// How a stack of it looks by what is in it, decided once per kind of stack (its data):
     /// `.condition(|s, v| if s.wear() > 0 { v.texture("can_empty"); })`. Other players' hands
     /// show the usual look: their stacks aren't sent.

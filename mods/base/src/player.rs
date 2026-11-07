@@ -13,6 +13,7 @@ pub static INVENTORY: Menu = Menu::named("inventory");
 pub static CRAFTING: Menu = Menu::named("crafting_table");
 static HUD_HEALTH: HudElement = HudElement::named("health");
 static HUD_ARMOR: HudElement = HudElement::named("armor");
+static HUNGRY: Condition = Condition::named("hungry");
 static HUD_FOOD: HudElement = HudElement::named("food");
 static HUD_AIR: HudElement = HudElement::named("air");
 static HUD_ATTACK: HudElement = HudElement::named("attack_indicator");
@@ -49,7 +50,17 @@ pub fn register(r: &mut Registry) {
         Hunger { food: 20.0, saturation: 5.0, exhaustion: 0.0, air: MAX_AIR, food_timer: 0 },
         component_flags::SAVE | component_flags::SYNC_OWNER,
     );
-    r.edit(&PLAYER).attach(&HUNGER);
+    // Too hungry to sprint: modern's 3 drumsticks.
+    r.condition(&HUNGRY, |c| {
+        let w = c.world();
+        w.is_some_and(|w| {
+            w.component(c.entity(), &HUNGER)
+                .is_some_and(|h| h.food <= 6.0)
+        })
+    });
+    r.edit(&PLAYER)
+        .attach(&HUNGER)
+        .modifier(Modifier::add(&attribute::CAN_SPRINT, -1.0).when(&HUNGRY));
     r.world_tick(tick_players);
     // Not hungry, it doesn't start eating; the other way round it would only find out at the end.
     r.before_event(&actions::USE_ITEM, |q| {
@@ -315,11 +326,6 @@ fn tick_players(w: &World) {
         // Jumping tires by a landing's worth of pulling yourself up.
         if st.jumped != 0 {
             tire(w, id, if st.sprinting != 0 { 0.2 } else { 0.05 });
-        }
-        // Too hungry to sprint: modern's 3 drumsticks.
-        let hungry = w.component(id, &HUNGER).is_some_and(|h| h.food <= 6.0);
-        if hungry {
-            w.attribute_add_modifier(id, &attribute::CAN_SPRINT, "base:too_hungry", attr_op::ADD, -1.0, 20);
         }
         let Some(h) = w.component_mut(id, &HUNGER) else { continue };
         // Modern's: 0.1 a block sprinting, 0.01 swimming, 0 walking; jumps are counted from `Move`.

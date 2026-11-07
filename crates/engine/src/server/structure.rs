@@ -110,8 +110,8 @@ impl Dim {
     pub fn take_block(&mut self, c: &'static Content, p: IVec3) -> Option<(u32, Option<u64>, Moved)> {
         let state = self.get(p)?;
         let entity = self.anchored(p);
-        if entity.is_some() {
-            self.entities.anchors.remove(&(self.frame, p));
+        if let Some(id) = entity {
+            self.entities.unanchor((self.frame, p), id);
         }
         let signal = self.space.signals.carry_out(p);
         self.write_block(c, p, AIR, true);
@@ -520,7 +520,7 @@ impl Dim {
         let (all, was) = (b.all_blocks(), b.cell);
         let blocks: Vec<(IVec3, u32, Option<u64>)> = all
             .into_iter()
-            .map(|(local, state)| (local, state, self.entities.anchors.get(&(id, local)).copied()))
+            .map(|(local, state)| (local, state, self.entities.anchored(id, local)))
             .collect();
         self.in_frame(on.unwrap_or(0), |d| {
             let place = Transform::of(d.place.to_local(pos));
@@ -571,7 +571,7 @@ impl Dim {
                 .map_or(Vec::new(), |s| s.extras(b.local).to_vec());
             self.land_block(c, b.to, b.state, b.entity, signal);
             if self.get(b.to) == Some(b.state) {
-                self.set_extras(b.to, extras);
+                self.write_cell(c, b.to, b.state, Some(extras), true);
             }
             if let Some(was) = was.filter(|was| self.get(b.to) != Some(*was)) {
                 cells.push((b.to, was));

@@ -423,8 +423,8 @@ messages! {
         SwapHands,
         /// `frame`: the structure (entity) the block is part of, its position in the structure's
         /// coordinates; 0 for the world. `face`: of its selection that was hit.
-        /// `part`: which of what is in the cell.
-        Break { pos: IVec3, part: u32, face: u8, frame: u64 },
+        /// `part`: which of what is in the cell; `hit`: where on it, from its corner (`Use`'s).
+        Break { pos: IVec3, part: u32, face: u8, hit: [f32; 3], frame: u64 },
         /// Right click on a block: the block reacts first (chests), otherwise the held item is used or
         /// placed against the clicked face. `frame` like `Break`'s; `look` in world space.
         /// `hit`: where on the block, from its corner.

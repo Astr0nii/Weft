@@ -45,6 +45,7 @@ pub mod pose {
     pub static PRIORITY: Component<i32, Pose> = Component::named(p::PRIORITY);
     pub static KEY: Component<Text, Pose> = Component::named(p::KEY);
     pub static FALLBACK: Component<Vec<String>, Pose> = Component::named(p::FALLBACK);
+    pub static WHEN: Component<Vec<String>, Pose> = Component::named(p::WHEN);
 }
 
 /// What a game mode is made of: a tag per ability (`abi::comp::game_mode::FLAGS`) and the
@@ -53,13 +54,12 @@ pub mod game_mode {
     use crate::abi::comp::game_mode as g;
     use crate::kind::GameMode;
     use crate::{Component, Tag};
-    pub static MODIFIERS: Component<Vec<crate::abi::ModeModifier>, GameMode> = Component::named(g::MODIFIERS);
+    pub static MODIFIERS: Component<Vec<crate::abi::Modifier>, GameMode> = Component::named(crate::abi::comp::MODIFIERS);
     pub static INSTANT_BREAK: Tag<GameMode> = Tag::named(g::INSTANT_BREAK);
     pub static NO_BREAK: Tag<GameMode> = Tag::named(g::NO_BREAK);
     pub static NO_PLACE: Tag<GameMode> = Tag::named(g::NO_PLACE);
     pub static NO_COSTS: Tag<GameMode> = Tag::named(g::NO_COSTS);
     pub static INVULNERABLE: Tag<GameMode> = Tag::named(g::INVULNERABLE);
-    pub static CAN_FLY: Tag<GameMode> = Tag::named(g::CAN_FLY);
     pub static ALWAYS_FLY: Tag<GameMode> = Tag::named(g::ALWAYS_FLY);
     pub static NOCLIP: Tag<GameMode> = Tag::named(g::NOCLIP);
     pub static NO_INTERACT: Tag<GameMode> = Tag::named(g::NO_INTERACT);
@@ -138,6 +138,7 @@ pub mod camera {
     pub static CALL: Component<crate::abi::Callback, CameraMode> = Component::named(c::CALL);
     pub static TRANSITION: Component<f32, CameraMode> = Component::named(c::TRANSITION);
     pub static EASING: Component<u32, CameraMode> = Component::named(c::EASING);
+    pub static WHEN: Component<Vec<String>, CameraMode> = Component::named(c::WHEN);
 }
 
 /// What a setting is made of (`abi::comp::config`).
@@ -413,13 +414,11 @@ pub mod spawn {
     use crate::kind::SpawnRule;
     use crate::{Component, Text};
     pub static ENTITY: Component<Text, SpawnRule> = Component::named(s::ENTITY);
-    pub static GROUND: Component<crate::Matcher, SpawnRule> = Component::named(s::GROUND);
     pub static PLACE: Component<u32, SpawnRule> = Component::named(s::PLACE);
     pub static GROUP: Component<[u32; 2], SpawnRule> = Component::named(s::GROUP);
     pub static WEIGHT: Component<u32, SpawnRule> = Component::named(s::WEIGHT);
     pub static CHANCE: Component<f32, SpawnRule> = Component::named(s::CHANCE);
-    pub static LIGHT: Component<[u32; 2], SpawnRule> = Component::named(s::LIGHT);
-    pub static WHEN: Component<Text, SpawnRule> = Component::named(s::WHEN);
+    pub static WHEN: Component<Vec<String>, SpawnRule> = Component::named(s::WHEN);
 }
 
 /// What a terrain is made of (`abi::comp::terrain`): the lists edit like any (`rule_before` is an
@@ -527,6 +526,9 @@ pub mod block {
     pub static OUTLINE: Component<Vec<[f32; 6]>, Block> = Component::named(b::OUTLINE);
     pub static SIGNAL: Component<abi::SignalDesc, Block> = Component::named(b::SIGNAL);
     pub static LIQUID_WALLS: Component<u8, Block> = Component::named(b::LIQUID_WALLS);
+    pub static PIECES: Component<Vec<abi::Piece>, Block> = Component::named(b::PIECES);
+    pub static RULES: Component<Vec<abi::BlockRule>, Block> = Component::named(b::RULES);
+    pub static HAZARDS: Component<Vec<abi::Hazard>, Block> = Component::named(b::HAZARDS);
 }
 
 /// What an entity kind is made of: tags for its flags (`abi::comp::entity::FLAGS`, `OFF`) and

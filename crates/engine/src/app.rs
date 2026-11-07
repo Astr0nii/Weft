@@ -219,8 +219,6 @@ pub(crate) struct Running {
     /// Texture generation the UI quads were built with (icons drawn blank until loaded).
     ui_textures: u64,
     pub(crate) stats: Stats,
-    /// F3 held and used for a combination since it went down (then releasing it does not toggle).
-    f3_combo: Option<bool>,
     /// F1: the world alone, until a screen opens or F1 again.
     hud_off: bool,
     reload_requested: bool,
@@ -410,11 +408,8 @@ impl App {
         let ui = UiRenderer::new(&mut *gpu, &assets)?;
         let post = crate::post::Post::new(&mut *gpu, &assets);
         let mut input = Input::default();
-        for (action, key) in &content().game.keys {
-            match crate::input::Binding::parse_slots(key) {
-                Some(k) => input.register(action, k),
-                None => log::warn!("key binding {action}: unknown key {key}"),
-            }
+        for k in &content().game.keys {
+            input.register(&k.name, k.default, k.contexts);
         }
         settings.apply_binds(&mut input);
         settings.read_only = self.opts.automated;
@@ -468,7 +463,6 @@ impl App {
                 threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
                 ..Default::default()
             },
-            f3_combo: None,
             hud_off: false,
             reload_requested: false,
             packs_pending: false,
@@ -1203,9 +1197,8 @@ impl Running {
         }
     }
 
-    /// Every entity's cosmetics this frame: the engine's unless its kind has its own
-    /// (`entity_flags::OWN_EFFECTS`), and mods' `client_entity_frame`, the local player's too;
-    /// finished deaths go after their last call.
+    /// Every entity's cosmetics this frame: the engine's (`EntityKind::effects`), and mods'
+    /// `client_entity_frame`, the local player's too; finished deaths go after their last call.
     fn entity_ticks(&mut self, dt: f32) {
         let Some(g) = &self.game else { return };
         let c = content();
@@ -1218,8 +1211,7 @@ impl Running {
             .map(|(&id, e)| e.args(id, dt))
             .collect();
         for mut a in all.into_iter().chain([mine]) {
-            let own = c.game.entities[a.kind as usize].flags & crate::tag_bits::entity::OWN_EFFECTS != 0;
-            if !own && a.entity != mine.entity {
+            if a.entity != mine.entity {
                 if let Some(g) = &mut self.game {
                     g.client.entity_effects(&a);
                 }
@@ -1491,22 +1483,16 @@ impl Running {
     }
 }
 
-/// `{if:name}`: `debug` and `dev`, else a registered condition (`entry_kind::CONDITION`, game
-/// modes by name); unknown ones are false.
-fn text_condition(name: &str, client: Option<&Client>, debug: bool, dev: bool) -> bool {
-    match name {
+/// `{if:..}`: `debug` and `dev`, else a condition (`conditions`, `creative`, `night & !surface`)
+/// about the player; a wrong one is false.
+fn text_condition(text: &str, client: Option<&Client>, debug: bool, dev: bool) -> bool {
+    match text {
         "debug" => debug,
         "dev" => dev,
-        _ => {
-            // The engine's go without their namespace: `{if:creative}`.
-            let names = &content().game.condition_names;
-            let id = names.get(name).or_else(|| {
-                (!name.contains(':'))
-                    .then(|| names.get(&format!("core:{name}")))
-                    .flatten()
-            });
-            id.is_some_and(|&id| crate::conditions::on_client(client, id))
-        }
+        _ => content().condition(text).is_some_and(|e| {
+            let pos = client.map_or(glam::DVec3::ZERO, |cl| cl.player.pos);
+            crate::conditions::client_holds(client, &e, &crate::conditions::Ask { pos, ..Default::default() })
+        }),
     }
 }
 
@@ -1586,10 +1572,10 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                r.input.scroll += match delta {
+                r.input.wheel(match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => (p.y / 40.0) as f32,
-                };
+                });
             }
             WindowEvent::CursorMoved { position, .. } => {
                 r.input.cursor = Vec2::new(position.x as f32, position.y as f32);
@@ -1639,7 +1625,7 @@ fn frame(r: &mut Running, opts: &Options) -> bool {
     if !screen_keys_first(r, &mut requests) && r.input.pressed_key(Key::Code(KeyCode::Escape)) {
         escape(r, &mut requests);
     }
-    f3_keys(r);
+    debug_keys(r);
     toggle_keys(r);
     if r.packs_pending
         && !r
@@ -1711,14 +1697,14 @@ fn start_frame(r: &mut Running, opts: &Options, dt: f64) {
     r.frame_dt = dt as f32;
     // Textures first asked for while drawing the last frame.
     r.textures.load_requested(&mut *r.gpu);
+    // The window may not have focus while a mod drives it.
+    if opts.automated && r.screens.is_empty() && r.game.is_some() {
+        r.input.captured = true;
+    }
     r.release_mod_keys();
     r.mod_gizmos.clear();
     r.mod_screen_text.clear();
     r.client_frames();
-    if opts.automated && r.screens.is_empty() && r.game.is_some() {
-        // The window may not have focus while a mod drives it.
-        r.input.captured = true;
-    }
 }
 
 /// Keys the top screen wants first (chat: completion, history; controls: the key to bind).
@@ -1768,76 +1754,42 @@ fn escape(r: &mut Running, requests: &mut Vec<Request>) {
     }
 }
 
-type F3Action = fn(&mut Running);
-
-/// What F3 plus a key does. A new combination is a line here.
-const F3_COMBOS: &[(KeyCode, F3Action)] = &[
-    (KeyCode::KeyT, |r| r.reload_requested = true),
-    // Through the command, so permissions still apply.
-    (KeyCode::F4, |r| {
-        if let Some(g) = &mut r.game {
-            let all: Vec<_> = crate::world::GameMode::all().collect();
-            let next = all[(all.iter().position(|&m| m == g.client.mode).unwrap_or(0) + 1) % all.len()];
-            g.client
-                .send(net::ToServer::Chat(format!("/gamemode {}", next.name())));
-        }
-    }),
-    (KeyCode::F6, |r| {
-        if r.screens.is_empty() {
-            r.open(screens::engine("core:debug_options"));
-        }
-    }),
-    (KeyCode::KeyG, |r| toggle_gizmo(r, "cubes")),
-    (KeyCode::KeyB, |r| toggle_gizmo(r, "hitboxes")),
-];
-
 fn toggle_gizmo(r: &mut Running, group: &str) {
     if let Some(g) = &mut r.game {
         g.client.toggle_gizmo(group);
     }
 }
 
-/// F3 alone toggles the overlay on release; F3 + a key does what `F3_COMBOS` says, F3 + a digit
-/// toggles one group instead.
-fn f3_keys(r: &mut Running) {
-    let f3 = r
-        .input
-        .binding_of("core:debug")
-        .is_some_and(|b| r.input.held_key(b.chord.key));
+/// The debug overlay and what goes with it (F3 and F3 plus a key by default).
+fn debug_keys(r: &mut Running) {
     if r.input.pressed("core:debug") {
-        r.f3_combo = Some(false);
+        r.debug = !r.debug;
+        r.hud.invalidate();
     }
-    if f3 {
-        for (key, action) in F3_COMBOS {
-            if r.input.pressed_key(Key::Code(*key)) {
-                action(r);
-                r.f3_combo = Some(true);
-            }
-        }
-        let digits = [
-            KeyCode::Digit1,
-            KeyCode::Digit2,
-            KeyCode::Digit3,
-            KeyCode::Digit4,
-            KeyCode::Digit5,
-            KeyCode::Digit6,
-            KeyCode::Digit7,
-            KeyCode::Digit8,
-            KeyCode::Digit9,
-        ];
-        let groups = crate::hud::DEBUG_GROUPS.len() + crate::hud::mod_debug_groups().len();
-        for (i, k) in digits.into_iter().take(groups).enumerate() {
-            if r.input.pressed_key(Key::Code(k)) {
-                r.settings
-                    .set("debug_groups", (r.settings.debug_groups() ^ (1 << i)) as f64);
-                r.f3_combo = Some(true);
-                r.debug = true;
-                r.hud.invalidate();
-            }
-        }
-    } else if let Some(combo) = r.f3_combo.take() {
-        if !combo {
-            r.debug = !r.debug;
+    // Through the command, so permissions still apply.
+    if r.input.pressed("core:cycle_game_mode")
+        && let Some(g) = &mut r.game
+    {
+        let all: Vec<_> = crate::world::GameMode::all().collect();
+        let next = all[(all.iter().position(|&m| m == g.client.mode).unwrap_or(0) + 1) % all.len()];
+        g.client
+            .send(net::ToServer::Chat(format!("/gamemode {}", next.name())));
+    }
+    if r.input.pressed("core:debug_options") && r.screens.is_empty() {
+        r.open(screens::engine("core:debug_options"));
+    }
+    if r.input.pressed("core:show_cubes") {
+        toggle_gizmo(r, "cubes");
+    }
+    if r.input.pressed("core:show_hitboxes") {
+        toggle_gizmo(r, "hitboxes");
+    }
+    let groups = crate::hud::DEBUG_GROUPS.len() + crate::hud::mod_debug_groups().len();
+    for i in 0..groups.min(9) {
+        if r.input.pressed(&format!("core:debug_group{}", i + 1)) {
+            r.settings
+                .set("debug_groups", (r.settings.debug_groups() ^ (1 << i)) as f64);
+            r.debug = true;
             r.hud.invalidate();
         }
     }
@@ -1978,11 +1930,7 @@ fn client_events(r: &mut Running) {
 fn world_keys(r: &mut Running) {
     if r.game.is_some() && r.screens.is_empty() {
         let command = r.input.pressed("core:command");
-        let f3_held = r
-            .input
-            .binding_of("core:debug")
-            .is_some_and(|b| r.input.held_key(b.chord.key));
-        if command || (r.input.pressed("core:chat") && !f3_held) {
+        if command || r.input.pressed("core:chat") {
             r.open(Box::new(crate::game_screens::Chat::new(if command { "/" } else { "" })));
             r.input.typed.clear();
         }

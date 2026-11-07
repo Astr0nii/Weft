@@ -210,7 +210,7 @@ impl DimSet {
         self.regions[r].get(p)
     }
 
-    pub fn insert(&mut self, c: &Content, pos: IVec3, mut cube: Cube, entities: &[u8], mut conn: u16, mut prelit: bool) {
+    pub fn insert(&mut self, c: &'static Content, pos: IVec3, mut cube: Cube, entities: &[u8], mut conn: u16, mut prelit: bool) {
         self.generating.remove(&pos);
         // Loaded meanwhile (an area edit loads what it opens up at once).
         if self.has(pos) {

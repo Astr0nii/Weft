@@ -852,6 +852,10 @@ pub struct EntityBuilder<'a> {
 crate::entry::entry_builder!(Entity => EntityBuilder, entity, finish;);
 
 impl EntityBuilder<'_> {
+    /// An attribute modifier its entities have, `.when(..)` while conditions hold (`Modifier`).
+    pub fn modifier(self, m: crate::Modifier) -> Self {
+        self.push(&crate::component::MODIFIERS, m.0)
+    }
     /// Every entity of this kind carries `component` (declared with `r.entity_component`, by any
     /// mod), starting at its declared value; another mod's kind with `r.edit(&PLAYER).attach(..)`.
     /// Not `.set`: that is one value of the kind itself, `.attach` gives each entity its own,
@@ -914,7 +918,15 @@ impl EntityBuilder<'_> {
     /// The client makes no steps, idle noises or death smoke for it: `r.client_entity_frame`
     /// does its effects instead.
     pub fn own_effects(self) -> Self {
-        self.tag(abi::comp::entity::OWN_EFFECTS)
+        self.effect("step", "none", "none")
+            .effect("ambient", "none", "none")
+            .effect("death", "", "none")
+    }
+    /// What `event` (`hurt`, `death`, `ambient`, `step`) sounds and shows instead of its
+    /// `.sound(..)` and the engine's (smoke when it dies): a sound event and a particle kind,
+    /// `""` for what it would be anyway, `"none"` for nothing.
+    pub fn effect(self, event: &str, sound: &str, particle: &str) -> Self {
+        self.push(&crate::component::EFFECTS, crate::component::effect(event, sound, particle))
     }
     /// It has the player's equipment slots (`Registry::equipment_slot`) after its own: what it
     /// wears shows on its model and counts like a player's armor; `group(EQUIPMENT_GROUP)` or a
@@ -1067,7 +1079,7 @@ impl EntityBuilder<'_> {
     }
     /// How the keys of a player in a seat that steers move it (`steer::*`, or your own).
     pub fn steering(self, s: crate::riding::Steering) -> Self {
-        let cb = callback(move |a: &mut abi::SteerArgs| a.out = (s.0)(&a.input, &a.mount));
+        let cb = callback(move |a: &mut abi::SteerArgs| a.out = (s.0)(&crate::client::Keys::of(a.keys, a.yaw, a.pitch), &a.mount));
         self.set(&comps::entity::STEER, cb)
     }
     /// What its riders may do (`RiderRules`).
@@ -1955,9 +1967,9 @@ impl SpawnBuilder<'_> {
         self
     }
     /// Only on blocks `what` takes (a block matcher; under the spot, what `place` says it rests
-    /// on).
+    /// on): `when(Cond::block(what))`.
     pub fn ground(self, what: &str) -> Self {
-        self.set_text(&comps::spawn::GROUND, what)
+        self.when(crate::Cond::block(what))
     }
     /// What kind of spot it takes: on the ground (the default), in a liquid, under a ceiling.
     /// The mob's height decides how much room it needs.
@@ -1968,13 +1980,13 @@ impl SpawnBuilder<'_> {
             None => b,
         }
     }
-    /// Only where this condition holds too.
-    pub fn when(self, condition: &crate::Condition) -> Self {
-        self.set_text(&comps::spawn::WHEN, condition.name())
+    /// Only where this holds too (asked about the spot and the block it rests on).
+    pub fn when(self, c: impl Into<crate::Cond>) -> Self {
+        self.push(&comps::spawn::WHEN, c.into().0)
     }
-    /// Light at the spot, inclusive (0..15).
+    /// Light at the spot, inclusive (0..15): `when(Cond::light(min, max))`.
     pub fn light(self, min: u32, max: u32) -> Self {
-        self.set(&comps::spawn::LIGHT, [min, max])
+        self.when(crate::Cond::light(min, max))
     }
     pub fn pack_size(self, min: u32, max: u32) -> Self {
         self.set(&comps::spawn::GROUP, [min, max])

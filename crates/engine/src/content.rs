@@ -125,22 +125,106 @@ pub struct StateInfo {
     pub conductor: bool,
     /// Liquid id (`Content::liquids`) for liquid blocks.
     pub liquid: Option<u16>,
-    /// Face whose neighbor must hold it up, and the matcher that neighbor needs (`None`: solid).
-    pub support: Option<(u8, Option<u32>)>,
-    /// Matcher a horizontal neighbor of the support needs (unless the support is the same block).
-    pub support_near: Option<u32>,
+
     /// Spreads onto what a matcher takes (`abi::comp::SPREADS_TO`).
     pub spread: Option<Spread>,
-    /// Mean ticks between growth steps and the light one needs.
-    pub grow: Option<(f64, u32)>,
-    /// Turns into this state when covered (`abi::comp::SMOTHERED_INTO`), in mean ticks.
-    pub smother: Option<(u32, f64)>,
-    /// Sound events break, place, step, hit (`u32::MAX` none), from its `sound` component.
-    pub sounds: [u32; 4],
+    /// What happens to it by itself (`abi::comp::block::RULES`).
+    pub rules: Vec<Rule>,
+    /// What it does to entities meeting it (`abi::comp::block::HAZARDS`).
+    pub hazards: Vec<Hazard>,
+    /// What its events sound and show (`block_event`).
+    pub effects: [Fx; 6],
     pub signal: Signal,
+    /// What a hit breaks off alone (`abi::comp::block::PIECES`), turned like the boxes.
+    pub pieces: Vec<Piece>,
+}
+
+/// An attribute modifier something gives (`abi::Modifier`) resolved.
+#[derive(Clone, Copy, Debug)]
+pub struct SourceMod {
+    pub attr: u32,
+    pub op: u32,
+    pub amount: f64,
+    pub worn: bool,
+    pub when: Option<u32>,
+}
+
+/// What game modes, items, entity kinds and poses give by their `MODIFIERS`, by id.
+#[derive(Default)]
+pub struct SourceMods {
+    pub modes: FxHashMap<u32, Vec<SourceMod>>,
+    pub items: FxHashMap<u32, Vec<SourceMod>>,
+    pub kinds: FxHashMap<u32, Vec<SourceMod>>,
+    pub poses: FxHashMap<u32, Vec<SourceMod>>,
+}
+
+impl SourceMods {
+    pub fn is_empty(&self) -> bool {
+        self.modes.is_empty() && self.items.is_empty() && self.kinds.is_empty() && self.poses.is_empty()
+    }
+}
+
+/// A hazard (`abi::Hazard`) resolved.
+#[derive(Clone, Copy, Debug)]
+pub struct Hazard {
+    /// `abi::hazard_at`.
+    pub at: u32,
+    pub damage: f32,
+    /// Damage cause id, `None` for no damage.
+    pub cause: Option<u32>,
+    pub fire: u32,
+    pub every: u32,
+    pub when: Option<u32>,
+}
+
+/// A block rule (`abi::BlockRule`) resolved: its condition is in `Content::conds`.
+#[derive(Clone, Copy, Debug)]
+pub struct Rule {
+    pub when: When,
+    pub cond: Option<u32>,
+    pub then: Then,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum When {
+    /// A neighbor changed, so many ticks ago.
+    Neighbor(u32),
+    /// Mean ticks between tries.
+    Random(f64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Then {
+    Become(u32),
+    Grow,
+    Break,
+    Fall,
+}
+
+/// A piece of a state: in `bounds` (block units), leaving `left` and dropping what `alone` does.
+#[derive(Clone, Copy, Debug)]
+pub struct Piece {
+    pub bounds: [f32; 6],
+    pub left: u32,
+    pub alone: u32,
 }
 
 impl StateInfo {
+    /// The piece a hit at `point` (from the cell's corner) on `face` breaks off; `None`: all of it.
+    pub fn piece_hit(&self, point: [f32; 3], face: u8) -> Option<&Piece> {
+        let n = weft_abi::FACE_DIRS[face as usize % 6];
+        // Just under the surface hit, else the piece nearest to it.
+        let at: [f32; 3] = std::array::from_fn(|i| point[i] - n[i] as f32 * 1e-3);
+        let far = |b: &[f32; 6]| {
+            (0..3)
+                .map(|i| (b[i] - at[i]).max(at[i] - b[i + 3]).max(0.0))
+                .sum::<f32>()
+        };
+        self.pieces
+            .iter()
+            .min_by(|a, b| far(&a.bounds).total_cmp(&far(&b.bounds)))
+    }
+
     /// The block texture an item of this block shows as a flat sprite (vanilla's generated item
     /// models): plants and liquids. Other shapes are drawn as their model.
     pub fn item_sprite(&self) -> Option<u32> {
@@ -237,7 +321,16 @@ impl BlockDef {
 
     /// The state with `props` (`a=x` pairs), the others at their defaults.
     pub fn state_of(&self, props: &[(&str, &str)]) -> Result<u32, String> {
-        let mut state = self.first_state;
+        self.changed(self.first_state, props)
+    }
+
+    /// `state` with the properties `text` sets (`a=x,b=y`).
+    pub fn changed_text(&self, state: u32, text: &str) -> Result<u32, String> {
+        self.changed(state, &prop_pairs(text)?)
+    }
+
+    /// `state` with `props` (`a=x` pairs) set.
+    pub fn changed(&self, mut state: u32, props: &[(&str, &str)]) -> Result<u32, String> {
         for (k, v) in props {
             let pi = self
                 .props
@@ -288,12 +381,20 @@ impl BlockDef {
 pub fn split_state(text: &str) -> Result<(&str, Vec<(&str, &str)>), String> {
     let Some((name, rest)) = text.split_once('[') else { return Ok((text, Vec::new())) };
     let Some(inner) = rest.strip_suffix(']') else { return Err(format!("{text}: missing ]")) };
-    let mut pairs = Vec::new();
-    for kv in inner.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        let Some((k, v)) = kv.split_once('=') else { return Err(format!("{text}: {kv} is not property=value")) };
-        pairs.push((k.trim(), v.trim()));
-    }
-    Ok((name, pairs))
+    Ok((name, prop_pairs(inner).map_err(|e| format!("{text}: {e}"))?))
+}
+
+/// `a=x,b=y` as pairs.
+pub fn prop_pairs(text: &str) -> Result<Vec<(&str, &str)>, String> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|kv| {
+            kv.split_once('=')
+                .map(|(k, v)| (k.trim(), v.trim()))
+                .ok_or_else(|| format!("{kv} is not property=value"))
+        })
+        .collect()
 }
 
 pub struct ItemDef {
@@ -415,12 +516,26 @@ pub fn face_paint(s: &StateInfo, face: usize, has_overlay: bool) -> FacePaint {
     FacePaint { base_tinted: tints && !has_overlay && s.tint_faces & (1 << face) != 0, overlay_tinted: tints && has_overlay }
 }
 
-/// What a block's `sounds` hold.
-pub mod block_sound {
+/// A block state's events, by `StateInfo::effects` index (`abi::comp::EFFECTS` names them).
+pub mod block_event {
     pub const BREAK: usize = 0;
     pub const PLACE: usize = 1;
     pub const STEP: usize = 2;
     pub const HIT: usize = 3;
+    pub const LAND: usize = 4;
+    pub const SPRINT: usize = 5;
+    pub const NAMES: [&str; 6] = ["break", "place", "step", "hit", "land", "sprint"];
+}
+
+/// What an event sounds (a sound event) and shows (a particle kind), `u32::MAX` for nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct Fx {
+    pub sound: u32,
+    pub particle: u32,
+}
+
+impl Fx {
+    pub const NONE: Fx = Fx { sound: u32::MAX, particle: u32::MAX };
 }
 
 /// Whether changing from one to the other leaves a swing as it was: the same item, whatever its
@@ -887,6 +1002,12 @@ pub struct Content {
     pub shares_cell: FxHashMap<u32, u32>,
     /// Every block matcher the content names (`refs`).
     pub matchers: crate::refs::Matchers,
+    /// Attribute modifiers that come with items, kinds and poses.
+    pub source_mods: SourceMods,
+    /// Conditions by the ids their users keep (`conditions::Texts`).
+    pub conds: Vec<crate::conditions::Expr>,
+    /// Those met at run time (`{if:..}` in text, mods asking), compiled once each.
+    cond_cache: std::sync::Mutex<FxHashMap<String, Option<std::sync::Arc<crate::conditions::Expr>>>>,
     /// (`mineable/<class>`, `tools/<class>`) component ids per tool class.
     pub tool_classes: Vec<(u32, Option<u32>)>,
     /// Every texture by name (`<ns>:block/..`, `<ns>:item/..`, `<ns>:particle/..`); blocks, items
@@ -985,20 +1106,49 @@ impl Content {
             .unwrap_or(state)
     }
 
-    /// Whether a block in `state` has growth steps ahead of it: (mean ticks, light needed).
-    pub fn grows(&self, state: u32) -> Option<(f64, u32)> {
-        let b = self.block_of(state);
-        self.states[state as usize]
-            .grow
-            .filter(|_| b.cb.on_grow.is_some() || self.grown(state).is_some())
+    /// Whether a rule doing `then` has something to do for a block in `state`: a growth step
+    /// ahead of it.
+    pub fn acts(&self, state: u32, then: Then) -> bool {
+        then != Then::Grow || self.block_of(state).cb.on_grow.is_some() || self.grown(state).is_some()
     }
 
-    /// Whether something may happen to a block in `state` with time: it grows, something could
-    /// spread onto it, or it turns when covered. Such blocks keep the time they were simulated
-    /// to when saved, to catch up later.
+    /// Whether something may happen to a block in `state` with time: a rule now and then, or
+    /// something spreading onto it. Such blocks keep the time they were simulated to when saved,
+    /// to catch up later.
     pub fn lives(&self, state: u32) -> bool {
-        let s = &self.states[state as usize];
-        self.grows(state).is_some() || s.smother.is_some() || self.spread_target(state)
+        self.states[state as usize]
+            .rules
+            .iter()
+            .any(|r| matches!(r.when, When::Random(_)) && self.acts(state, r.then))
+            || self.spread_target(state)
+    }
+
+    /// Whether `state` grows by itself: it has growth steps ahead it takes now and then.
+    pub fn grows(&self, state: u32) -> bool {
+        self.states[state as usize]
+            .rules
+            .iter()
+            .any(|r| matches!(r.when, When::Random(_)) && r.then == Then::Grow && self.acts(state, r.then))
+    }
+
+    /// The side whose block holds it up, if a rule breaks it without one (a torch's wall), turned
+    /// as the state is.
+    pub fn held_by(&self, state: u32) -> Option<u8> {
+        fn side(e: &crate::conditions::Expr) -> Option<u8> {
+            use crate::conditions::{Arg, Expr};
+            match e {
+                Expr::Is(weft_abi::condition::SIDE, Arg::Side(f, _)) => Some(*f),
+                Expr::All(v) | Expr::Any(v) => v.iter().find_map(side),
+                Expr::Not(e) => side(e),
+                _ => None,
+            }
+        }
+        self.states[state as usize]
+            .rules
+            .iter()
+            .filter(|r| r.then == Then::Break)
+            .find_map(|r| side(self.conds.get(r.cond? as usize)?))
+            .map(|f| self.states[state as usize].turn.face(f as usize) as u8)
     }
 
     /// Some block spreads onto this state.
@@ -1030,6 +1180,29 @@ impl Content {
                 .iter()
                 .any(|y| (0..3).all(|i| x[i] + TOUCHING < y[i + 3] && y[i] + TOUCHING < x[i + 3]))
         })
+    }
+
+    /// A condition met at run time, compiled the first time; `None` (said once) for a wrong one.
+    pub fn condition(&self, text: &str) -> Option<std::sync::Arc<crate::conditions::Expr>> {
+        let mut cache = self.cond_cache.lock().unwrap();
+        if let Some(e) = cache.get(text) {
+            return e.clone();
+        }
+        cache
+            .entry(text.to_string())
+            .or_insert_with(|| {
+                let look = crate::conditions::Look {
+                    game: &self.game,
+                    block_names: &self.block_names,
+                    blocks: &self.blocks,
+                    components: &self.components,
+                };
+                crate::conditions::compile(text, &look)
+                    .map_err(|e| log::warn!("{e}"))
+                    .ok()
+                    .map(std::sync::Arc::new)
+            })
+            .clone()
     }
 
     /// Whether either of two states said it may be in a cell with the other.
@@ -1078,15 +1251,6 @@ impl Content {
 
     pub fn block_value<T: Copy>(&self, state: u32, comp: Option<u32>) -> Option<T> {
         self.components.get(comps::BLOCK, state, comp?)
-    }
-
-    /// Whether `neighbor`, on the face the state rests on, holds it up.
-    pub fn supports(&self, state: u32, neighbor: u32) -> bool {
-        match &self.states[state as usize].support {
-            None => true,
-            Some((_, Some(m))) => self.matchers.has(*m, neighbor),
-            Some((_, None)) => self.states[neighbor as usize].flags & abi::block_flags::SOLID != 0,
-        }
     }
 
     /// Worn look of an item: inflation and texture.
@@ -1624,15 +1788,22 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             errors.push(format!("{}: {pattern} matches no tag", mod_name(m)));
         }
     }
-    let crate::blocks::Blocks { mut states, mut block_defs, opens_names, block_names, .. } = block_tables;
+    let crate::blocks::Blocks { mut states, mut block_defs, opens_names, block_names, rules: raw_rules, hazards: raw_hazards, .. } =
+        block_tables;
     let ItemTables { mut item_defs, item_names, .. } = item_tables;
     let BiomeTables { biome_defs, biome_rules, biome_names, .. } = biome_tables;
     let DimTables { mut dim_defs, dim_names, spawn_dim, void_dim, .. } = dim_tables;
     let ids = component_ids(&components);
     flatten_components(&mut states, &mut item_defs, &components, &ids);
-    // Known only now: `r.set` can make a block grow.
+    let mut conds = crate::conditions::Texts::default();
+    resolve_rules(&mut states, &block_defs, &block_names, raw_rules, &mut conds, &mut errors);
     for b in &block_defs {
-        let grows = (b.first_state..b.first_state + b.states).any(|s| states[s as usize].grow.is_some());
+        let grows = (b.first_state..b.first_state + b.states).any(|s| {
+            states[s as usize]
+                .rules
+                .iter()
+                .any(|r| r.then == Then::Grow)
+        });
         if grows && b.cb.on_grow.is_none() && !b.props.iter().any(|p| p.name == "age") {
             let owner = mods
                 .get(b.owner.0 as usize)
@@ -1667,15 +1838,13 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let (fluid_items, item_fluid) = fluid_items(&item_defs, &liquids, &components, &mut errors);
     let tabs = entries_of(&mut games, abi::entry_kind::CREATIVE_TAB);
     let creative_tabs = creative_tabs(&mods, tabs, &item_defs, &item_names, &components, &mut tables, &mod_name, &mut errors);
-    let loot = freeze_loot(&mut games, &item_defs, &item_names, look, &mut tables, &mod_name, &mut errors);
+    let loot = freeze_loot(&mut games, &item_defs, &item_names, look, &mut tables, &mut conds, &mod_name, &mut errors);
     let stack_flags = collect_stack_flags(&decls, &components);
     let order_of = |m: ModId| mods.get(m.0 as usize).map_or(u32::MAX, |m| m.order);
     let mut game = crate::registry::freeze(
         games,
         entities,
         &block_names,
-        &block_defs,
-        &mut matchers,
         &item_names,
         &item_defs,
         &dim_names,
@@ -1684,7 +1853,15 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         &decls,
         &order_of,
         &mut tables,
+        &mut conds,
         &mod_name,
+        &mut errors,
+    );
+    resolve_hazards(&mut states, raw_hazards, &game, &components, &mut conds, &mut errors);
+    let source_mods = resolve_source_mods(&game, &components, item_defs.len(), &mut conds, &mut errors);
+    let conds = crate::conditions::compile_all(
+        &conds,
+        &crate::conditions::Look { game: &game, block_names: &block_names, blocks: &block_defs, components: &components },
         &mut errors,
     );
     for (kind, entries) in &tables.0 {
@@ -1753,7 +1930,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
             .map(|d| d.name.clone()),
     );
     check_loot_smelting(&loot, &game, &mut errors);
-    resolve_sounds(&mut states, &mut game, &block_defs, &components, &mut errors);
+    resolve_effects(&mut states, &mut game, &block_defs, &components, &mut errors);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -1798,6 +1975,9 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         shapes: shapes.into_iter().map(|(n, s, k)| (n, (s, k))).collect(),
         shares_cell,
         matchers,
+        conds,
+        cond_cache: Default::default(),
+        source_mods,
         tool_classes,
         textures: textures.names,
         crack_textures,
@@ -2325,9 +2505,6 @@ fn flatten_components(states: &mut [StateInfo], item_defs: &mut [ItemDef], compo
             .conductor
             .is_some_and(|c| components.has(comps::BLOCK, st, c));
         s.hardness = f32_of(st, abi::comp::HARDNESS).unwrap_or(s.hardness);
-        s.grow = f32_of(st, abi::comp::GROW_TIME)
-            .filter(|&t| t > 0.0)
-            .map(|t| (t as f64 * crate::world::TPS as f64, u32_of(st, abi::comp::GROW_LIGHT).unwrap_or(0)));
         s.friction = f32_of(st, abi::comp::FRICTION).unwrap_or(s.friction);
         s.drag = f32_of(st, abi::comp::DRAG).unwrap_or(s.drag);
         if let Some(l) = get(st, abi::comp::LIGHT) {
@@ -2361,16 +2538,6 @@ fn flatten_components(states: &mut [StateInfo], item_defs: &mut [ItemDef], compo
                 max,
                 open_top: !id(abi::comp::SPREADS_COVERED).is_some_and(|t| components.has(comps::BLOCK, st, t)),
             });
-        }
-        if let Some(into) = u32_of(st, abi::comp::SMOTHERED_INTO) {
-            s.smother = Some((into, f32_of(st, abi::comp::SMOTHER_TIME).unwrap_or(68.0) as f64 * crate::world::TPS as f64));
-        }
-        if let Some(face) = get(st, abi::comp::SUPPORT_FACE)
-            .map(|f| f[0])
-            .filter(|&f| f < 6)
-        {
-            s.support = Some((s.turn.face(face as usize) as u8, u32_of(st, abi::comp::SUPPORT)));
-            s.support_near = u32_of(st, abi::comp::SUPPORT_NEAR);
         }
     }
     for (i, d) in item_defs.iter_mut().enumerate() {
@@ -2851,16 +3018,152 @@ fn item_containers(
     (item_liquid, containers)
 }
 
+/// Every state's rules (`blocks::Blocks::rules`) with their conditions and what they become
+/// resolved: `into` sets properties of the state (`age=0`) or names a block (`base:dirt`).
+fn resolve_rules(
+    states: &mut [StateInfo],
+    blocks: &[BlockDef],
+    names: &FxHashMap<String, u32>,
+    raw: Vec<(usize, Vec<abi::BlockRule>)>,
+    conds: &mut crate::conditions::Texts,
+    errors: &mut Vec<String>,
+) {
+    for (state, rules) in raw {
+        let def = &blocks[states[state].block as usize];
+        for r in rules {
+            let then = match r.then {
+                // Properties of its own (`age=0`), else a block (`base:dirt`, `base:farmland[moisture=0]`).
+                abi::rule_then::BECOME if r.into.contains('=') && !r.into.contains('[') => {
+                    def.changed_text(state as u32, &r.into).map(Then::Become)
+                }
+                abi::rule_then::BECOME => crate::refs::state(&r.into, names, blocks).map(Then::Become),
+                abi::rule_then::GROW => Ok(Then::Grow),
+                abi::rule_then::BREAK => Ok(Then::Break),
+                abi::rule_then::FALL => Ok(Then::Fall),
+                t => Err(format!("no rule_then {t}")),
+            };
+            let ticks = r.secs.max(0.0) as f64 * crate::world::TPS as f64;
+            let when = match r.when {
+                abi::rule_when::NEIGHBOR => Ok(When::Neighbor(ticks.round() as u32)),
+                abi::rule_when::RANDOM => Ok(When::Random(ticks.max(1.0))),
+                w => Err(format!("no rule_when {w}")),
+            };
+            match (when, then) {
+                (Ok(when), Ok(then)) => states[state]
+                    .rules
+                    .push(Rule { when, cond: conds.all(&r.conditions), then }),
+                (Err(e), _) | (_, Err(e)) => errors.push(format!("block {} rule: {e}", def.name)),
+            }
+        }
+    }
+}
+
+/// Every state's hazards with their causes and conditions resolved, and the engine's: an opaque
+/// full block suffocates at the head, a `hot` one without its own burns like lava.
+fn resolve_hazards(
+    states: &mut [StateInfo],
+    raw: Vec<(usize, Vec<abi::Hazard>)>,
+    game: &crate::registry::Game,
+    components: &Components,
+    conds: &mut crate::conditions::Texts,
+    errors: &mut Vec<String>,
+) {
+    use abi::hazard_at as at;
+    let cause = |name: &str, errors: &mut Vec<String>| {
+        if name.is_empty() {
+            return None;
+        }
+        let id = game.damage_cause_names.get(name).copied();
+        if id.is_none() {
+            errors.push(format!("hazard: no damage cause {name}"));
+        }
+        id
+    };
+    for (state, list) in raw {
+        for h in list {
+            let cause = cause(&h.cause, errors);
+            states[state].hazards.push(Hazard {
+                at: h.at,
+                damage: h.damage,
+                cause,
+                fire: h.fire,
+                every: h.every,
+                when: conds.all(&h.when),
+            });
+        }
+    }
+    let hot = components.id(abi::comp::HOT);
+    let not_flying = conds.all(&["!flying".to_string()]);
+    for (i, s) in states.iter_mut().enumerate() {
+        if s.hazards.is_empty() && hot.is_some_and(|t| components.has(comps::BLOCK, i as u32, t)) {
+            let lava = Some(abi::damage_cause::LAVA);
+            s.hazards
+                .push(Hazard { at: at::INSIDE, damage: 4.0, cause: lava, fire: 300, every: 0, when: None });
+        }
+        if s.flags & abi::block_flags::SOLID != 0 && s.opacity >= 15 {
+            let choke = Some(abi::damage_cause::SUFFOCATE);
+            s.hazards
+                .push(Hazard { at: at::HEAD, damage: 1.0, cause: choke, fire: 0, every: 10, when: not_flying });
+        }
+    }
+}
+
+/// The `MODIFIERS` of items, entity kinds and poses, attributes and conditions resolved.
+fn resolve_source_mods(
+    game: &crate::registry::Game,
+    components: &Components,
+    items: usize,
+    conds: &mut crate::conditions::Texts,
+    errors: &mut Vec<String>,
+) -> SourceMods {
+    let mut out = SourceMods::default();
+    let mut resolve = |list: Vec<abi::Modifier>| -> Vec<SourceMod> {
+        list.into_iter()
+            .filter_map(|m| match game.attr_names.get(&m.attribute) {
+                Some(&attr) => Some(SourceMod { attr, op: m.op, amount: m.amount, worn: m.worn, when: conds.all(&m.when) }),
+                None => {
+                    errors.push(format!("modifier: no attribute {}", m.attribute));
+                    None
+                }
+            })
+            .collect()
+    };
+    for (i, m) in game
+        .game_modes
+        .iter()
+        .enumerate()
+        .filter(|m| !m.1.modifiers.is_empty())
+    {
+        out.modes.insert(i as u32, resolve(m.modifiers.clone()));
+    }
+    let Some(id) = components.id(abi::comp::MODIFIERS) else { return out };
+    let mut of = |kind: usize, count: usize, into: &mut FxHashMap<u32, Vec<SourceMod>>| {
+        for i in 0..count as u32 {
+            if let Some(list) = components
+                .bytes(kind, i, id)
+                .and_then(abi::data::from_bytes::<Vec<abi::Modifier>>)
+            {
+                into.insert(i, resolve(list));
+            }
+        }
+    };
+    of(comps::ITEM, items, &mut out.items);
+    of(comps::ENTITY, game.entities.len(), &mut out.kinds);
+    of(abi::entry_kind::POSE as usize, game.poses.len(), &mut out.poses);
+    out
+}
+
 fn freeze_loot(
     games: &mut [crate::registry::RawGame],
     item_defs: &[ItemDef],
     item_names: &FxHashMap<String, u32>,
     look: Lookups,
     tables: &mut crate::entries::Tables,
+    conds: &mut crate::conditions::Texts,
     mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) -> FxHashMap<String, crate::loot::Table> {
-    let Lookups { block_defs, components, .. } = look;
+    let Lookups { block_defs, .. } = look;
     let raw = entries_of(games, abi::entry_kind::LOOT);
     // A block without a table of its own drops its item when harvested: a table of the engine's,
     // which mods edit like any.
@@ -2880,7 +3183,7 @@ fn freeze_loot(
         })
         .collect();
     all.extend(raw);
-    let resolve = crate::loot::Resolve { items: item_names, components };
+    let mut resolve = crate::loot::Resolve { items: item_names, conds };
     let (made, _) = tables.bake(all, abi::entry_kind::LOOT, mod_name, errors, |e, errors| (e.name.clone(), resolve.table(e, errors)));
     made.into_iter().collect()
 }
@@ -3012,48 +3315,76 @@ fn check_loot_smelting(loot: &FxHashMap<String, crate::loot::Table>, game: &crat
     }
 }
 
-/// Sound events named by `sound` prefixes, resolved once.
-fn resolve_sounds(
+/// What each block state's and entity kind's events sound and show: its sound group's events
+/// (`SOUND`, `<prefix>.break` ...), the engine's pieces of a block and death smoke, then what its
+/// `EFFECTS` say instead.
+fn resolve_effects(
     states: &mut [StateInfo],
     game: &mut crate::registry::Game,
     block_defs: &[BlockDef],
     components: &Components,
     errors: &mut Vec<String>,
 ) {
-    if let Some(sc) = components.id(abi::comp::SOUND) {
-        let resolve = |prefix: Option<&str>, parts: [&str; 4]| -> [u32; 4] {
-            parts.map(|p| {
-                prefix
-                    .and_then(|pre| game.sound_names.get(&format!("{pre}.{p}")).copied())
-                    .unwrap_or(u32::MAX)
-            })
-        };
-        // A prefix with none of its events registered is a typo (`.sounds("stnoe")`).
-        let mut unknown: Vec<(String, String)> = Vec::new();
-        let mut check = |sounds: [u32; 4], prefix: Option<&str>, what: &str| {
-            if let Some(p) = prefix.filter(|_| sounds.iter().all(|&s| s == u32::MAX)) {
-                if !unknown.iter().any(|u| u.0 == p) {
-                    unknown.push((p.to_string(), what.to_string()));
-                }
+    let sc = components.id(abi::comp::SOUND);
+    let fx = components.id(abi::comp::EFFECTS);
+    let particle = |name: &str| game.particle_names.get(name).copied().unwrap_or(u32::MAX);
+    let (pieces, smoke) = (particle(abi::particle::BLOCK), particle(abi::particle::POOF));
+    // A prefix with none of its events registered is a typo (`.sounds("stnoe")`).
+    let mut unknown: Vec<(String, String)> = Vec::new();
+    let mut fill = |kind: usize, id: u32, events: &[&str], out: &mut [Fx], what: &str, errors: &mut Vec<String>| {
+        let prefix = sc.and_then(|sc| components.text(kind, id, sc));
+        if let Some(pre) = prefix {
+            for (e, f) in events.iter().zip(out.iter_mut()) {
+                f.sound = game
+                    .sound_names
+                    .get(&format!("{pre}.{e}"))
+                    .copied()
+                    .unwrap_or(u32::MAX);
             }
-            sounds
+            if out.iter().all(|f| f.sound == u32::MAX) && !unknown.iter().any(|u| u.0 == pre) {
+                unknown.push((pre.to_string(), what.to_string()));
+            }
+        }
+        let Some(list) = fx
+            .and_then(|fx| components.bytes(kind, id, fx))
+            .and_then(abi::data::from_bytes::<Vec<abi::Effect>>)
+        else {
+            return;
         };
-        for (i, s) in states.iter_mut().enumerate() {
-            let prefix = components.text(comps::BLOCK, i as u32, sc);
-            s.sounds = check(resolve(prefix, ["break", "place", "step", "hit"]), prefix, &block_defs[s.block as usize].name);
+        for e in list {
+            let Some(i) = events.iter().position(|n| *n == e.event) else {
+                errors.push(format!("{what}: no event {} (it has {})", e.event, events.join(", ")));
+                continue;
+            };
+            let mut set = |text: &str, names: &FxHashMap<String, u32>, to: &mut u32| match text {
+                "" => {}
+                "none" => *to = u32::MAX,
+                n => match names.get(n) {
+                    Some(&id) => *to = id,
+                    None => errors.push(format!("{what}: {} has no {n}", e.event)),
+                },
+            };
+            set(&e.sound, &game.sound_names, &mut out[i].sound);
+            set(&e.particle, &game.particle_names, &mut out[i].particle);
         }
-        let kinds: Vec<[u32; 4]> = (0..game.entities.len() as u32)
-            .map(|k| {
-                let prefix = components.text(comps::ENTITY, k, sc);
-                check(resolve(prefix, ["hurt", "death", "ambient", "step"]), prefix, &game.entities[k as usize].name)
-            })
-            .collect();
-        for (k, s) in game.entities.iter_mut().zip(kinds) {
-            k.sounds = s;
+    };
+    for (i, s) in states.iter_mut().enumerate() {
+        use block_event as b;
+        for e in [b::BREAK, b::HIT, b::LAND, b::SPRINT] {
+            s.effects[e].particle = pieces;
         }
-        for (prefix, what) in unknown {
-            errors.push(format!("{what}: no sound events named {prefix}.*"));
-        }
+        let what = &block_defs[s.block as usize].name;
+        fill(comps::BLOCK, i as u32, &b::NAMES, &mut s.effects, what, errors);
+    }
+    for k in 0..game.entities.len() {
+        let mut out = [Fx::NONE; 4];
+        out[crate::registry::entity_event::DEATH].particle = smoke;
+        let what = game.entities[k].name.clone();
+        fill(comps::ENTITY, k as u32, &crate::registry::entity_event::NAMES, &mut out, &what, errors);
+        game.entities[k].effects = out;
+    }
+    for (prefix, what) in unknown {
+        errors.push(format!("{what}: no sound events named {prefix}.*"));
     }
 }
 

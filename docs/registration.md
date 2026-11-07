@@ -52,7 +52,7 @@ Block-level components (`comps::block`):
 | `RETEXTURE` | `[Retexture]` | none | texture renamed on its states and item (`.retexture`) |
 | `SHAPES_OF` | `ShapesOf` | none | makes it a template (`r.shapes_of`) |
 
-Shared components it carries per state: `HARDNESS` (`f32`, 1; `.hardness`, `.unbreakable`), `LIGHT` (`[u8;3]`; `.light`, `.light_rgb`), `FRICTION` (0.6), `DRAG` (1), `TINT` and `TINT_FACES` (`.tint`, `.tint_top`), `SUPPORT_FACE`, `SUPPORT`, `SUPPORT_NEAR` (`.needs_below`, `.needs`, `.needs_near`), `HARVEST_LEVEL` (`.mined_by`), `LOOT_ROLLS`, `GROW_TIME`/`GROW_LIGHT` (`.grows`), `SPREADS_TO` and the other spread ones (`.spreads`, `.spread_reach`), `SMOTHERED_INTO`/`SMOTHER_TIME` (`.smothered_into`), `AMBIENT_PARTICLE`, `SHADER`, `SOUND` (`.sound_group`).
+Shared components it carries per state: `HARDNESS` (`f32`, 1; `.hardness`, `.unbreakable`), `LIGHT` (`[u8;3]`; `.light`, `.light_rgb`), `FRICTION` (0.6), `DRAG` (1), `TINT` and `TINT_FACES` (`.tint`, `.tint_top`), `HARVEST_LEVEL` (`.mined_by`), `LOOT_ROLLS`, `SPREADS_TO` and the other spread ones (`.spreads`, `.spread_reach`), `AMBIENT_PARTICLE`, `SHADER`, `SOUND` (`.sound_group`).
 
 Tags it carries: `mineable/<class>` (`.mined_by`), `tab/<tab>` (`.tab`), `plantable` (`.plant`), and anything you tag.
 
@@ -83,8 +83,10 @@ Per-state components (`comps::block`):
 | `HITBOX`, `OUTLINE` | `[[f32;6]]` | the boxes | `.hitbox`, `.outline` |
 | `SIGNAL` | `SignalDesc` | none | set by the `signal_*` presets |
 | `LIQUID_WALLS` | `u8` | sides the hitbox covers | `.liquid_walls` |
+| `PIECES` | `[Piece]` | none: a hit breaks all of it | `.piece` |
+| `RULES` | `[BlockRule]` | none | what happens to it by itself: `.rule`, and `.grows`, `.smothered_into`, `.needs_below`, `.needs`, `.needs_near`, `.falling` |
 
-Tags per state (`abi::comp::block`): `NOT_SOLID`, `REPLACEABLE`, `CLIMBABLE`, `NOT_TARGETABLE`, `CULL_SAME`, `IMMOVABLE`, `SIGNAL_BLOCKER`, `STICKY`, `NOT_STOOD_ON`, `HOLDS_LIQUID`. Presets set them (`.not_solid()`, `.replaceable()`, `.holds_liquid()`...), `.tag(..)` sets any.
+Tags per state (`abi::comp::block`): `NOT_SOLID`, `REPLACEABLE`, `CLIMBABLE`, `NOT_TARGETABLE`, `CULL_SAME`, `IMMOVABLE`, `SIGNAL_BLOCKER`, `STICKY`, `NOT_STOOD_ON`. Presets set them (`.not_solid()`, `.replaceable()`...), `.tag(..)` sets any.
 
 ```rust
 static LAMP: Block = Block::named("base:redstone_lamp");
@@ -133,7 +135,7 @@ A kind of entity: mobs, players, projectiles, moving platforms, block entities. 
 | `FRAMES` | `[callback]` | none | client frame hooks (`r.client_entity_frame`) |
 | `SLOT_GROUPS`, `INVENTORY_MENU` | `[SlotGroupDef]`, `str` | 9 + 27 | the player's inventory (`r.player_slots`, `r.player_menu`) |
 
-Shared ones: `MODEL`, `ANIMATIONS`, `SOUND`, `SHADER`, `SWIMS_IN`, `INVENTORY_SLOTS`, attributes (`.max_health`, `.reach`). Tags (`abi::comp::entity`): `NO_GRAVITY`, `INVULNERABLE`, `BURNS_IN_SUN`, `SWIMS`, `SOLID`, `KINEMATIC`, `CRUSHES`, `RIDERS_FALL`, `WEARS` (`.equipment()`), `OWN_EFFECTS`, and `NO_FALL_DAMAGE`, `UNPUSHABLE` turning off what every kind does; `immune/<cause>` against a damage cause.
+Shared ones: `MODEL`, `ANIMATIONS`, `SOUND`, `SHADER`, `SWIMS_IN`, `INVENTORY_SLOTS`, attributes (`.max_health`, `.reach`). Tags (`abi::comp::entity`): `NO_GRAVITY`, `INVULNERABLE`, `BURNS_IN_SUN`, `SWIMS`, `SOLID`, `KINEMATIC`, `CRUSHES`, `RIDERS_FALL`, `WEARS` (`.equipment()`), and `NO_FALL_DAMAGE`, `UNPUSHABLE` turning off what every kind does; `immune/<cause>` against a damage cause.
 
 ```rust
 static ZOMBIE: EntityKind = EntityKind::named("base:zombie");
@@ -322,13 +324,11 @@ Where a mob shows up by itself, named `<mod>:<entity>`, `/2`.. unless `.named`. 
 | component (`comps::spawn`) | schema | default | what |
 |---|---|---|---|
 | `ENTITY` | `str` | | the mob |
-| `GROUND` | `match` | any | which blocks (`.ground`, `.place(SpawnPlace::in_liquid(..))`) |
 | `PLACE` | `u32` | ground | `.place` |
 | `GROUP` | `[u32;2]` | 1, 1 | `.pack_size` |
 | `WEIGHT` | `u32` | 1 | `.weight` |
 | `CHANCE` | `f32` | 1 | `.chance` |
-| `LIGHT` | `[u32;2]` | 0..15 | `.light` |
-| `WHEN` | `str` | none | a condition (`.when`) |
+| `WHEN` | `[str]` | none | conditions, all of which hold for the spot and the block it rests on (`.when`, `.light` is `light(a..b)`, `.ground` and `.place(SpawnPlace::in_liquid(..))` are `block(..)`) |
 
 ```rust
 static SPIDER: SpawnRule = SpawnRule::named("base:spider");
@@ -459,14 +459,14 @@ r.edit(&precipitations::SNOW).speed(0.2);
 ```
 
 ## Pose
-A way to hold a body. `r.pose(&P)`, the engine's in `poses::*`. `comps::pose`: `HEIGHT`, `EYE`, `SPEED` (`f32`, shares of standing, 1), `TILT` (`u32`, `pose_tilt`), `ACTION` (`str`), `PRIORITY` (`i32`), `KEY` (`str`), `FALLBACK` (`[str]`, `.fallback` sets the list); tags `pose.no_bob` (`.no_bob()`) and `pose.in_liquid`, `pose.not_flying`, `pose.sprinting` (`.when(pose_when::..)`).
+A way to hold a body. `r.pose(&P)`, the engine's in `poses::*`. `comps::pose`: `HEIGHT`, `EYE`, `SPEED` (`f32`, shares of standing, 1), `TILT` (`u32`, `pose_tilt`), `ACTION` (`str`), `PRIORITY` (`i32`), `KEY` (`str`), `FALLBACK` (`[str]`, `.fallback` sets the list), `WHEN` (`[str]` conditions, `.when(Cond::in_liquid())`); tag `pose.no_bob` (`.no_bob()`).
 
 ```rust
 r.edit(&poses::CROUCH).speed(0.4);
 ```
 
 ## Game mode
-A set of abilities. `r.game_mode(&M)`, the engine's in `game_modes::*`. `comps::game_mode::MODIFIERS` (`[ModeModifier]`, `.modifier` pushes); tags `game_mode.instant_break`, `no_break`, `no_place`, `no_costs`, `invulnerable`, `can_fly`, `always_fly`, `noclip`, `no_interact`, `hidden`, `no_hud`, `creative_inventory` (presets `.breaks`, `.flight`, `.no_placing`...).
+A set of abilities. `r.game_mode(&M)`, the engine's in `game_modes::*`. `comps::game_mode::MODIFIERS` (`[Modifier]`, `.modifier` pushes; flight is `attribute::CAN_FLY`); tags `game_mode.instant_break`, `no_break`, `no_place`, `no_costs`, `invulnerable`, `always_fly`, `noclip`, `no_interact`, `hidden`, `no_hud`, `creative_inventory` (presets `.breaks`, `.flight`, `.no_placing`...).
 
 ```rust
 r.edit(&game_modes::SURVIVAL).modifier(&attribute::MAX_HEALTH, abi::attr_op::ADD, 4.0);
@@ -494,21 +494,21 @@ r.edit(&text_places::HINT).scale(1.5);
 ```
 
 ## Condition
-One predicate for music, text, loot and spawning. `r.condition(&C, |c| ..)`, the engine's in `conditions::*`. Its callback is `abi::comp::CONDITION_CALL`; there is no builder, so it is registered or removed, not edited.
+One predicate for music, text, loot, spawning, poses and cameras (`abi::condition` has the language). `r.condition(&C, |c| ..)`, the engine's in `conditions::*`. Its callback is `abi::comp::CONDITION_CALL`; there is no builder, so it is registered or removed, not edited.
 
 ```rust
 r.remove(&conditions::NIGHT);
 ```
 
 ## Camera
-A camera mode. `r.camera(&MODE)`, the engine's in `cameras::*`. `comps::camera`: `KEY` (`str`, `.key`), `CALL` (callback, `.shot`), `TRANSITION` (`f32`), `EASING` (`u32`) (`.transition`); tags `camera.body`, `hand`, `hud`, `effects`, `clip`, `solid`, `cycle`, `detached`, `aim`, `no_interact`, `ask` (a shot's own, `.in_cycle()`, `.ask()`, `.tag(..)` and `.untag(..)`).
+A camera mode. `r.camera(&MODE)`, the engine's in `cameras::*`. `comps::camera`: `KEY` (`str`, `.key`), `CALL` (callback, `.shot`), `TRANSITION` (`f32`), `EASING` (`u32`) (`.transition`), `WHEN` (`[str]` conditions the server checks for the player, `.when(Cond::attribute(&attribute::CAN_FLY, 1.0, f64::MAX))`); tags `camera.body`, `hand`, `hud`, `effects`, `clip`, `solid`, `cycle`, `detached`, `aim`, `no_interact` (a shot's own, `.in_cycle()`, `.tag(..)` and `.untag(..)`).
 
 ```rust
 r.edit(&cameras::FRONT).untag(abi::comp::camera::CYCLE);
 ```
 
 ## Key
-A key binding. `r.key(&KEY, "R")` with `.on_client`/`.on_server`, the engine's in `keys::*`. `comps::key::DEFAULT` (`str`, the binding).
+A key binding. `r.key(&KEY, "R")` with `.on_client`/`.on_server`, the engine's in `keys::*`. `comps::key::DEFAULT` (`str`, the binding); tags `abi::comp::key::MOVEMENT`, `HANDS`, `RIDING`, `DEBUG`, `SCREEN` say where it acts (none: anywhere in the world).
 
 ```rust
 r.edit(&keys::CRAWL).set_text(&comps::key::DEFAULT, "KeyC");

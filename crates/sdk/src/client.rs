@@ -145,14 +145,21 @@ impl Client {
         self.input(abi::client_input::RELEASE_ALL, "", 0.0, 0.0);
     }
 
-    /// The key (yours from `Registry::key`, or one of `keys::*`) was pressed this frame. Keys
-    /// belong to the world: while a screen has the input they are up.
+    /// What the key (yours from `Registry::key`, or one of `keys::*`) does now: pressed this
+    /// frame, held, for how many ticks. Keys belong to the world: while a screen has the input
+    /// they are up.
+    pub fn key(&self, key: &Key) -> abi::KeyState {
+        let mut out = abi::KeyState::default();
+        unsafe { (host().client_key_state)(self.raw, abi_str(key.name()), &mut out) };
+        out
+    }
+
     pub fn key_pressed(&self, key: &Key) -> bool {
-        unsafe { (host().client_key_state)(self.raw, abi_str(key.name())) & 1 != 0 }
+        self.key(key).pressed != 0
     }
 
     pub fn key_held(&self, key: &Key) -> bool {
-        unsafe { (host().client_key_state)(self.raw, abi_str(key.name())) & 2 != 0 }
+        self.key(key).held != 0
     }
 
     pub fn control(&self, c: &abi::PlayerControl) {
@@ -587,7 +594,7 @@ impl Registry {
 
     /// Every frame on the client for each entity of `kind`, the local player too: its effects
     /// (wing flaps, sparks, purring), any number of mods on one kind. The engine's steps, idle
-    /// noises and death smoke go on unless the kind has `.own_effects()`.
+    /// noises and death smoke go on unless the kind says otherwise (`.effect(..)`, `.own_effects()`).
     pub fn client_entity_frame(&mut self, kind: &crate::EntityKind, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
         drop(
             self.edit_entity(kind.name())
@@ -666,6 +673,36 @@ impl KeyBuilder<'_> {
     }
 }
 
+/// The keys as a mount's steering or a camera mode reads them, any action by its handle, and
+/// where the player looks (radians; a detached camera's own look).
+pub struct Keys {
+    raw: *const abi::KeysCtx,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl Keys {
+    pub(crate) fn of(raw: *const abi::KeysCtx, yaw: f32, pitch: f32) -> Keys {
+        Keys { raw, yaw, pitch }
+    }
+
+    /// Pressed, held and its charge: ticks held, and held before being let go this tick.
+    pub fn state(&self, key: &Key) -> abi::KeyState {
+        let mut out = abi::KeyState::default();
+        unsafe { (host().keys_state)(self.raw, abi_str(key.name()), &mut out) };
+        out
+    }
+
+    pub fn held(&self, key: &Key) -> bool {
+        self.state(key).held != 0
+    }
+
+    /// -1..1 from `minus` held to `plus` held: `axis(&keys::FORWARD, &keys::BACK)`.
+    pub fn axis(&self, plus: &Key, minus: &Key) -> f32 {
+        self.held(plus) as i32 as f32 - self.held(minus) as i32 as f32
+    }
+}
+
 /// The engine's key bindings.
 pub mod keys {
     use crate::Key;
@@ -680,6 +717,12 @@ pub mod keys {
     pub static FLY: Key = Key::named("core:fly");
     pub static INVENTORY: Key = Key::named("core:inventory");
     pub static DROP: Key = Key::named("core:drop");
+    pub static DROP_ALL: Key = Key::named("core:drop_all");
+    pub static DISMOUNT: Key = Key::named("core:dismount");
+    pub static FLY_FASTER: Key = Key::named("core:fly_faster");
+    pub static FLY_SLOWER: Key = Key::named("core:fly_slower");
+    pub static HOTBAR_NEXT: Key = Key::named("core:hotbar_next");
+    pub static HOTBAR_PREV: Key = Key::named("core:hotbar_prev");
     pub static COMMAND: Key = Key::named("core:command");
     pub static CHAT: Key = Key::named("core:chat");
     pub static DEBUG: Key = Key::named("core:debug");

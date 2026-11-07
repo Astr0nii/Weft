@@ -318,10 +318,11 @@ impl Registry {
         ParticleBuilder { reg: self, e: crate::entry::Entry::of(particle) }
     }
 
-    /// A condition music (`.when`), text (`{if:<ns>:<name>}`), loot (`Cond::Condition`) and
-    /// spawning (`.when`) can ask. `f` is answered on whichever side asks: on the server
-    /// (`c.world()`) for loot and spawning, on the client (`c.client()`) for music and text, every
-    /// frame such a text is on screen. Every game mode is a condition too, by its name.
+    /// A condition music, text (`{if:<ns>:<name>}`), loot, spawning, poses and cameras (`.when`,
+    /// `Cond::from(&C)`) can ask, with an argument if written so (`mymod:near(lava)`, `c.arg()`).
+    /// `f` is answered on whichever side asks: on the server (`c.world()`) for loot and spawning,
+    /// on the client (`c.client()`) for music and text, every frame such a text is on screen.
+    /// Every game mode is a condition too, by its name.
     pub fn condition(&mut self, condition: &'static crate::Condition, f: impl Fn(&ConditionCtx) -> bool + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::ConditionArgs| a.result = f(&ConditionCtx(*a)) as u32);
         let mut e = crate::entry::Entry::of(condition);
@@ -350,6 +351,10 @@ impl ConditionCtx {
     /// Who it is about (the killer or breaker for loot), 0 for nobody.
     pub fn entity(&self) -> u64 {
         self.0.entity
+    }
+    /// What is between its parentheses where it is used, empty for none.
+    pub fn arg(&self) -> &str {
+        unsafe { self.0.arg.as_str() }
     }
 }
 
@@ -551,10 +556,10 @@ impl MusicBuilder<'_> {
     pub fn dimension(self, dimension: &crate::Dimension) -> Self {
         self.set_text(&crate::comps::music::DIMENSION, dimension.name())
     }
-    /// Plays only while this condition holds (`conditions::NIGHT`, a mod's own); call again
+    /// Plays only while this holds (`&conditions::NIGHT`, a mod's own, any `Cond`); call again
     /// for more, all of which have to hold.
-    pub fn when(self, condition: &crate::Condition) -> Self {
-        self.push(&crate::comps::music::WHEN, condition.name().to_string())
+    pub fn when(self, c: impl Into<crate::Cond>) -> Self {
+        self.push(&crate::comps::music::WHEN, c.into().0)
     }
 }
 

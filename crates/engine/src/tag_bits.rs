@@ -17,15 +17,15 @@ macro_rules! tag_bits {
 
 tag_bits! {
     screen of menu { PAUSES, KEEP_ON_ESCAPE, CLOSES_ON_RESPAWN, KEYS_FIRST, SHOWS_CHAT }
-    camera of camera { BODY, HAND, HUD, EFFECTS, CLIP, SOLID, CYCLE, DETACHED, AIM, NO_INTERACT, ASK }
+    camera of camera { BODY, HAND, HUD, EFFECTS, CLIP, SOLID, CYCLE, DETACHED, AIM, NO_INTERACT }
     damage of damage_cause { BYPASSES_ARMOR, PIERCES_INVULNERABLE, IGNORES_COOLDOWN, BURNING, NO_KNOCKBACK, SILENT }
     game_mode of game_mode {
-        INSTANT_BREAK, NO_BREAK, NO_PLACE, NO_COSTS, INVULNERABLE, CAN_FLY, ALWAYS_FLY, NOCLIP, NO_INTERACT, HIDDEN, NO_HUD,
+        INSTANT_BREAK, NO_BREAK, NO_PLACE, NO_COSTS, INVULNERABLE, ALWAYS_FLY, NOCLIP, NO_INTERACT, HIDDEN, NO_HUD,
         CREATIVE_INVENTORY,
     }
     particle of particle { COLLIDE, FULLBRIGHT, TRANSLUCENT, SHRINK }
     config of config { RESTART_REQUIRED }
-    entity of entity { NO_GRAVITY, INVULNERABLE, BURNS_IN_SUN, SWIMS, SOLID, KINEMATIC, CRUSHES, RIDERS_FALL, WEARS, OWN_EFFECTS } [
+    entity of entity { NO_GRAVITY, INVULNERABLE, BURNS_IN_SUN, SWIMS, SOLID, KINEMATIC, CRUSHES, RIDERS_FALL, WEARS } [
         /// What every kind does unless a tag in `OFF` takes it away.
         pub const FALL_DAMAGE: u32 = 1 << 20;
         pub const PUSHABLE: u32 = 1 << 21;
@@ -53,6 +53,5 @@ pub mod block {
         (b::SIGNAL_BLOCKER, f::SIGNAL_BLOCKER),
         (b::STICKY, f::STICKY),
         (b::NOT_STOOD_ON, f::NOT_STOOD_ON),
-        (b::HOLDS_LIQUID, f::HOLDS_LIQUID),
     ];
 }

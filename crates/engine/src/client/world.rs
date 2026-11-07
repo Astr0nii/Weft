@@ -584,13 +584,18 @@ impl ClientWorld {
         if !self.bounded {
             let sky = c.dims[self.dim as usize].sky_light;
             let changed = crate::world::light::block_changed(&mut LitCubes(&mut self.cubes), c, sky, &self.body_glow, p, was);
-            for n in changed {
-                self.next_rev += 1;
-                if let Some(slot) = self.cubes.get_mut(&n) {
-                    (slot.rev, slot.stamp) = (self.next_rev, self.next_rev);
-                }
-                self.touch(n, ALL_AROUND);
+            self.relit(changed);
+        }
+    }
+
+    /// Cubes whose light the client changed, to draw again.
+    fn relit(&mut self, changed: Vec<IVec3>) {
+        for n in changed {
+            self.next_rev += 1;
+            if let Some(slot) = self.cubes.get_mut(&n) {
+                (slot.rev, slot.stamp) = (self.next_rev, self.next_rev);
             }
+            self.touch(n, ALL_AROUND);
         }
     }
 
@@ -608,11 +613,19 @@ impl ClientWorld {
         if slot.cube.extras(local_index(p)) == extras {
             return;
         }
+        let c = content();
+        let glows = |parts: &[u32]| parts.iter().any(|&s| c.states[s as usize].light != [0; 3]);
+        let relight = glows(slot.cube.extras(local_index(p))) || glows(&extras);
         Arc::make_mut(&mut slot.cube).set_extras(local_index(p), extras);
         self.next_rev += 1;
         (slot.rev, slot.stamp) = (self.next_rev, self.next_rev);
         let l = p & 15;
         self.touch(cp, around_mask(l.x, l.y, l.z));
+        if relight && !self.bounded {
+            let sky = c.dims[self.dim as usize].sky_light;
+            let changed = crate::world::light::parts_changed(&mut LitCubes(&mut self.cubes), c, sky, &self.body_glow, p);
+            self.relit(changed);
+        }
     }
 
     /// One block of the cell at `p` becomes another state, as the server does it (`Dim::replace_part`):

@@ -117,8 +117,8 @@ pub struct EntityKind {
     /// Its equipment slots in that inventory (`entity_flags::WEARS`, the player's): never filled
     /// by pickups, worn on the model. Laid out at freeze.
     pub worn: std::ops::Range<u32>,
-    /// Sound events hurt, death, ambient, step (`u32::MAX` none), from its `sound` component.
-    pub sounds: [u32; 4],
+    /// What its events sound and show (`entity_event`).
+    pub effects: [crate::content::Fx; 4],
     /// Solid bodies: riders up to this high above it move with it.
     pub carry_height: f32,
     /// A moving structure: its template (`Content::templates`), by name until the freeze.
@@ -371,8 +371,8 @@ pub struct Game {
     /// Mod message channels by id (sorted by name, so both sides agree).
     pub packets: Vec<PacketDef>,
     pub packet_names: FxHashMap<String, u32>,
-    /// Mod key bindings: (action, default key).
-    pub keys: Vec<(String, String)>,
+    /// Key bindings, the engine's and the mods'.
+    pub keys: Vec<KeyDef>,
     pub events: Vec<EventDef>,
     pub event_names: FxHashMap<String, u32>,
     pub interceptors: FxHashMap<String, Vec<(ModId, Callback)>>,
@@ -450,8 +450,8 @@ pub struct MusicDef {
     pub name: String,
     pub tracks: Vec<String>,
     pub dimension: Option<u32>,
-    /// Conditions that all hold while it may play.
-    pub when: Vec<u32>,
+    /// A condition (`Content::conds`) that holds while it may play.
+    pub when: Option<u32>,
 }
 
 /// A condition and who answers it.
@@ -739,17 +739,14 @@ pub struct SpawnRule {
     pub entity: u32,
     pub category: u32,
     pub biome: Option<Box<[u64]>>,
-    /// Matcher of the block it rests on.
-    pub ground: Option<u32>,
     /// `abi::spawn_place`.
     pub place: u32,
-    /// A condition the spot must meet.
-    pub condition: Option<u32>,
+    /// A condition (`Content::conds`) the spot and the block it rests on meet.
+    pub when: Option<u32>,
     /// Blocks of room the mob needs up.
     pub height: i32,
     /// Dimensions it spawns in, empty: any.
     pub dims: Vec<u32>,
-    pub light: [u32; 2],
     pub y: [i32; 2],
     pub group: [u32; 2],
     pub weight: u32,
@@ -1058,8 +1055,8 @@ pub struct PoseDef {
     pub priority: i32,
     /// The action held for it, empty for none.
     pub key: String,
-    /// `abi::pose_when`.
-    pub when: u32,
+    /// A condition (`Content::conds`) it is taken under.
+    pub when: Option<u32>,
     /// Names as registered, then the poses they are (`fallback`).
     pub fallback_names: String,
     pub fallback: Vec<crate::world::Pose>,
@@ -1078,28 +1075,25 @@ fn engine_poses() -> Vec<RawEntry> {
             .set(p::PRIORITY, priority)
     };
     let fallback = |e: RawEntry, poses: &[&str]| e.set(p::FALLBACK, poses.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-    let (in_liquid, not_flying, sprinting) = (p::WHEN[0].0, p::WHEN[1].0, p::WHEN[2].0);
+    let when = |e: RawEntry, c: &str| e.set(p::WHEN, vec![c.to_string()]);
     // Modern vanilla's: the player's 1.8 and 1.62 standing. Under a low ceiling it crouches, and
     // where that has no room either it swims in a liquid and crawls out of one.
     vec![
         fallback(pose("stand", 1.0, 1.0, 1.0, t::UPRIGHT, "", 0), &["core:crouch", "core:swim", "core:crawl"]),
-        fallback(pose("crouch", 1.5 / 1.8, 1.27 / 1.62, 0.3, t::UPRIGHT, "sneak", 10), &["core:swim", "core:crawl"])
-            .set(p::KEY, "core:sneak".to_string())
-            .tag(not_flying),
-        fallback(pose("swim", 0.6 / 1.8, 0.4 / 1.62, 1.0, t::ALONG_LOOK, "swim", 30), &["core:crouch", "core:crawl"])
-            .tag(p::NO_BOB)
-            .tag(sprinting)
-            .tag(in_liquid)
-            .tag(not_flying),
-        pose("crawl", 0.6 / 1.8, 0.4 / 1.62, 0.3, t::FACE_DOWN, "crawl", 20)
-            .set(p::KEY, "core:crawl".to_string())
-            .tag(not_flying),
+        when(fallback(pose("crouch", 1.5 / 1.8, 1.27 / 1.62, 0.3, t::UPRIGHT, "sneak", 10), &["core:swim", "core:crawl"]), "!flying")
+            .set(p::KEY, "core:sneak".to_string()),
+        when(
+            fallback(pose("swim", 0.6 / 1.8, 0.4 / 1.62, 1.0, t::ALONG_LOOK, "swim", 30), &["core:crouch", "core:crawl"]),
+            "sprinting & in_liquid & !flying",
+        )
+        .tag(p::NO_BOB),
+        when(pose("crawl", 0.6 / 1.8, 0.4 / 1.62, 0.3, t::FACE_DOWN, "crawl", 20), "!flying").set(p::KEY, "core:crawl".to_string()),
         // Only where a mod holds it.
         pose("sleep", 0.2 / 1.8, 0.45 / 1.62, 0.0, t::ON_BACK, "", i32::MIN).tag(p::NO_BOB),
     ]
 }
 
-fn bake_pose(e: &Entry) -> PoseDef {
+fn bake_pose(e: &Entry, conds: &mut crate::conditions::Texts) -> PoseDef {
     use abi::comp::pose as p;
     let share = |c: &str| {
         e.get::<f32>(c)
@@ -1116,7 +1110,7 @@ fn bake_pose(e: &Entry) -> PoseDef {
         bob: !e.has(p::NO_BOB),
         priority: e.or(p::PRIORITY, 0),
         key: e.text(p::KEY).unwrap_or_default().to_string(),
-        when: e.flags(&p::WHEN),
+        when: conds.all(&e.or::<Vec<String>>(p::WHEN, Vec::new())),
         fallback_names: e.or::<Vec<String>>(p::FALLBACK, Vec::new()).join(" "),
         fallback: Vec::new(),
     }
@@ -1125,8 +1119,9 @@ fn bake_pose(e: &Entry) -> PoseDef {
 pub fn engine_pose_defs() -> &'static [PoseDef] {
     static DEFS: std::sync::OnceLock<Vec<PoseDef>> = std::sync::OnceLock::new();
     DEFS.get_or_init(|| {
-        let (mut defs, _) =
-            crate::entries::bake(engine_poses(), abi::entry_kind::POSE, &|_| String::new(), &mut Vec::new(), |e, _| bake_pose(e));
+        let (mut defs, _) = crate::entries::bake(engine_poses(), abi::entry_kind::POSE, &|_| String::new(), &mut Vec::new(), |e, _| {
+            bake_pose(e, &mut Default::default())
+        });
         let names: Vec<String> = defs.iter().map(|d| d.name.clone()).collect();
         for d in &mut defs {
             d.fallback = d
@@ -1146,11 +1141,11 @@ pub fn engine_pose_defs() -> &'static [PoseDef] {
 pub struct GameModeDef {
     pub name: String,
     pub flags: u32,
-    pub modifiers: Vec<(String, u32, f64)>,
+    /// What its players get (`content::SourceMods`).
+    pub modifiers: Vec<abi::Modifier>,
 }
 
 fn engine_game_modes() -> Vec<RawEntry> {
-    use abi::comp::game_mode as m;
     let tag = |f: u32| {
         crate::tag_bits::game_mode::TAGS
             .iter()
@@ -1158,13 +1153,15 @@ fn engine_game_modes() -> Vec<RawEntry> {
             .unwrap()
             .0
     };
-    let modifier = |attribute: &str, op: u32, amount: f64| abi::ModeModifier { attribute: attribute.to_string(), op, amount };
-    let mode = |name: &str, flags: &[u32], modifiers: Vec<abi::ModeModifier>| {
+    let modifier =
+        |attribute: &str, op: u32, amount: f64| abi::Modifier { attribute: attribute.to_string(), op, amount, ..Default::default() };
+    let mode = |name: &str, flags: &[u32], modifiers: Vec<abi::Modifier>| {
         flags
             .iter()
             .fold(RawEntry::engine(abi::entry_kind::GAME_MODE, name), |e, f| e.tag(tag(*f)))
-            .set(m::MODIFIERS, modifiers)
+            .set(abi::comp::MODIFIERS, modifiers)
     };
+    let flies = || modifier(abi::attribute::CAN_FLY, abi::attr_op::ADD, 1.0);
     use crate::tag_bits::game_mode as f;
     // Unseen by mobs outside survival; creative reaches further.
     let unseen = || modifier(abi::attribute::VISIBILITY, abi::attr_op::MULTIPLY_TOTAL, -1.0);
@@ -1172,31 +1169,27 @@ fn engine_game_modes() -> Vec<RawEntry> {
         mode("core:survival", &[], Vec::new()),
         mode(
             "core:creative",
-            &[f::INSTANT_BREAK, f::NO_COSTS, f::INVULNERABLE, f::CAN_FLY, f::CREATIVE_INVENTORY],
+            &[f::INSTANT_BREAK, f::NO_COSTS, f::INVULNERABLE, f::CREATIVE_INVENTORY],
             vec![
                 modifier(abi::attribute::BLOCK_REACH, abi::attr_op::ADD, 0.5),
                 modifier(abi::attribute::ENTITY_REACH, abi::attr_op::ADD, 2.0),
                 unseen(),
+                flies(),
             ],
         ),
         mode(
             "core:spectator",
             &[f::INVULNERABLE, f::ALWAYS_FLY, f::NOCLIP, f::NO_INTERACT, f::HIDDEN, f::NO_HUD, f::NO_COSTS],
-            vec![unseen()],
+            vec![unseen(), flies()],
         ),
     ]
 }
 
 fn bake_game_mode(e: &Entry) -> GameModeDef {
-    use abi::comp::game_mode as m;
     GameModeDef {
         name: e.name.clone(),
         flags: e.flags(crate::tag_bits::game_mode::TAGS),
-        modifiers: e
-            .or::<Vec<abi::ModeModifier>>(m::MODIFIERS, Vec::new())
-            .into_iter()
-            .map(|m| (m.attribute, m.op, m.amount))
-            .collect(),
+        modifiers: e.or(abi::comp::MODIFIERS, Vec::new()),
     }
 }
 
@@ -1289,6 +1282,7 @@ fn engine_attributes() -> Vec<RawEntry> {
         (a::ENTITY_REACH, 3.0, 0.0, 1024.0),
         (a::MINING_SPEED, 1.0, 0.0, 1024.0),
         (a::FOV, 1.0, 0.05, 8.0),
+        (a::CAN_FLY, 0.0, 0.0, 1.0),
     ]
     .iter()
     .map(|&(name, default, min, max)| {
@@ -1330,6 +1324,7 @@ pub fn engine_entries(kind: u32) -> Vec<RawEntry> {
         ek::SOUND => engine_sounds(),
         ek::ENTITY_CATEGORY => engine_categories(),
         ek::CAMERA => engine_cameras(),
+        ek::KEY => engine_keys(),
         ek::ATTRIBUTE => engine_attributes(),
         ek::DAMAGE_CAUSE => engine_damage_causes(),
         ek::GAME_MODE => engine_game_modes(),
@@ -1349,6 +1344,26 @@ pub fn engine_entries(kind: u32) -> Vec<RawEntry> {
     }
 }
 
+/// An action players bind keys to (`entry_kind::KEY`).
+pub struct KeyDef {
+    pub name: String,
+    pub default: crate::input::Slots,
+    /// `input::context` bits.
+    pub contexts: u32,
+}
+
+fn engine_keys() -> Vec<RawEntry> {
+    crate::input::ENGINE_KEYS
+        .iter()
+        .map(|&(name, keys, contexts)| {
+            crate::input::context::TAGS
+                .iter()
+                .filter(|t| contexts & t.1 != 0)
+                .fold(RawEntry::engine(ek::KEY, name).set(abi::comp::KEY_DEFAULT, keys.to_string()), |e, t| e.tag(t.0))
+        })
+        .collect()
+}
+
 /// FNV-1a, for names stored in saves.
 pub fn name_hash(s: &str) -> u64 {
     weft_noise::fnv(s.as_bytes())
@@ -1359,7 +1374,7 @@ fn bake_spawn(
     e: &Entry,
     g: &Game,
     c: &Components,
-    mut matcher: impl FnMut(&str) -> Result<u32, String>,
+    conds: &mut crate::conditions::Texts,
     dim_names: &FxHashMap<String, u32>,
     biome_names: &FxHashMap<String, u32>,
     errors: &mut Vec<String>,
@@ -1371,14 +1386,6 @@ fn bake_spawn(
         errors.push(format!("{what}: unknown entity {name:?}"));
         return None;
     };
-    let ground = match e.text(s::GROUND).unwrap_or_default() {
-        "" => None,
-        t => Some(
-            matcher(t)
-                .map_err(|err| errors.push(format!("{what}: ground: {err}")))
-                .ok()?,
-        ),
-    };
     let biome = crate::content::biomes(c, biome_names, &what, e, errors).ok()?;
     let names: Vec<String> = e.or(p::DIMENSIONS, Vec::new());
     let dims = match names.is_empty() {
@@ -1387,30 +1394,18 @@ fn bake_spawn(
             .map_err(|err| errors.push(format!("{what}: {err}")))
             .ok()?,
     };
-    let condition = match e.text(s::WHEN).unwrap_or_default() {
-        "" => None,
-        n => match g.condition_names.get(n) {
-            Some(&id) => Some(id),
-            None => {
-                errors.push(format!("{what}: no condition {n}"));
-                return None;
-            }
-        },
-    };
     let kind = &g.entities[entity as usize];
     let [min, max] = e.or(s::GROUP, [1u32, 1]);
     Some(SpawnRule {
         entity,
         category: kind.category,
         biome,
-        ground,
         place: e
             .or(s::PLACE, abi::spawn_place::GROUND)
             .min(abi::spawn_place::CEILING),
         height: (kind.height.ceil() as i32).max(1),
-        condition,
+        when: conds.all(&e.or::<Vec<String>>(s::WHEN, Vec::new())),
         dims,
-        light: e.or(s::LIGHT, [0, 15]),
         y: e.or(p::Y, [i32::MIN, i32::MAX]),
         group: [min.max(1), max.max(min).max(1)],
         weight: e.or(s::WEIGHT, 1),
@@ -1475,7 +1470,7 @@ fn bake_entity(e: &Entry) -> EntityKind {
         values: Vec::new(),
         slots: 0,
         worn: 0..0,
-        sounds: [u32::MAX; 4],
+        effects: [crate::content::Fx::NONE; 4],
         carry_height: e.or(k::CARRY_HEIGHT, 0.0),
         template_name: text(k::TEMPLATE),
         template: None,
@@ -1624,12 +1619,13 @@ pub(crate) fn write_cell(cell: usize, id: u32) {
 
 pub use weft_abi::EYE_SHARE as EYE;
 
-/// What an entity kind's `sounds` hold.
-pub mod entity_sound {
+/// An entity kind's events, by `EntityKind::effects` index.
+pub mod entity_event {
     pub const HURT: usize = 0;
     pub const DEATH: usize = 1;
     pub const AMBIENT: usize = 2;
     pub const STEP: usize = 3;
+    pub const NAMES: [&str; 4] = ["hurt", "death", "ambient", "step"];
 }
 
 /// Entity component with attribute modifiers.
@@ -1713,8 +1709,6 @@ pub fn freeze(
     mut raws: Vec<RawGame>,
     entities: Entities,
     block_names: &FxHashMap<String, u32>,
-    block_defs: &[crate::content::BlockDef],
-    matchers: &mut crate::refs::Matchers,
     item_names: &FxHashMap<String, u32>,
     items: &[crate::content::ItemDef],
     dim_names: &FxHashMap<String, u32>,
@@ -1723,6 +1717,7 @@ pub fn freeze(
     decls: &[ComponentDecl],
     order: &dyn Fn(ModId) -> u32,
     tables: &mut crate::entries::Tables,
+    conds: &mut crate::conditions::Texts,
     mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) -> Game {
@@ -1808,26 +1803,19 @@ pub fn freeze(
         |e, errors| bake_sound(e, &g.sound_categories, errors),
     );
     (g.keys, _) = tables.bake(kind(ek::KEY), ek::KEY, mod_name, errors, |e, errors| {
-        let key = e
-            .text(abi::comp::KEY_DEFAULT)
-            .unwrap_or_default()
-            .to_string();
-        if crate::input::Chord::parse(&key).is_none() {
-            errors.push(format!("key {}: unknown key name {key:?}", e.name));
-        }
-        (e.name.clone(), key)
+        let key = e.text(abi::comp::KEY_DEFAULT).unwrap_or_default();
+        let slots = crate::input::Binding::parse_slots(key).unwrap_or_else(|| {
+            errors.push(format!("key {}: unknown key {key:?}", e.name));
+            [None; crate::input::SLOTS]
+        });
+        KeyDef { name: e.name.clone(), default: slots, contexts: e.flags(crate::input::context::TAGS) }
     });
-    // The engine's settings, with a binding per key: the engine's and the mods'.
-    let mut keys: Vec<(String, String)> = crate::input::ENGINE_KEYS
+    // The settings, with a binding per key.
+    let keys: Vec<(String, String)> = g
+        .keys
         .iter()
-        .map(|(a, k)| (a.to_string(), k.to_string()))
+        .map(|k| (k.name.clone(), crate::input::Binding::slots_id(&k.default)))
         .collect();
-    for (action, key) in &g.keys {
-        match crate::input::Binding::parse_slots(key) {
-            Some(k) => keys.push((action.clone(), crate::input::Binding::slots_id(&k))),
-            None => errors.push(format!("key {action}: unknown key {key}")),
-        }
-    }
     let mut all = crate::config::engine_configs(&keys);
     all.extend(
         g.sound_categories
@@ -1852,7 +1840,7 @@ pub fn freeze(
             None => errors.push(format!("entity {}: no category {}", k.name, k.category_name)),
         }
     }
-    (g.cameras, g.camera_names) = tables.bake(kind(ek::CAMERA), ek::CAMERA, mod_name, errors, |e, _| bake_camera(e));
+    (g.cameras, g.camera_names) = tables.bake(kind(ek::CAMERA), ek::CAMERA, mod_name, errors, |e, _| bake_camera(e, conds));
     (g.attributes, g.attr_names) = tables.bake(kind(ek::ATTRIBUTE), ek::ATTRIBUTE, mod_name, errors, |e, _| {
         let [min, max] = e.or(abi::comp::attribute::RANGE, [f64::NEG_INFINITY, f64::INFINITY]);
         let default = e.or(abi::comp::attribute::DEFAULT, 0.0);
@@ -1888,7 +1876,7 @@ pub fn freeze(
     (g.damage_causes, g.damage_cause_names) =
         tables.bake(kind(ek::DAMAGE_CAUSE), ek::DAMAGE_CAUSE, mod_name, errors, |e, _| bake_damage_cause(e));
     (g.game_modes, g.game_mode_names) = tables.bake(kind(ek::GAME_MODE), ek::GAME_MODE, mod_name, errors, |e, _| bake_game_mode(e));
-    (g.poses, g.pose_names) = tables.bake(kind(ek::POSE), ek::POSE, mod_name, errors, |e, _| bake_pose(e));
+    (g.poses, g.pose_names) = tables.bake(kind(ek::POSE), ek::POSE, mod_name, errors, |e, _| bake_pose(e, conds));
     (g.precipitations, g.precipitation_names) =
         tables.bake(kind(ek::PRECIPITATION), ek::PRECIPITATION, mod_name, errors, |e, _| bake_precipitation(e));
     (g.text_places, g.text_place_names) =
@@ -1930,13 +1918,7 @@ pub fn freeze(
                 }
                 id
             });
-        let mut when = Vec::new();
-        for n in e.or::<Vec<String>>(m::WHEN, Vec::new()) {
-            match g.condition_names.get(&n) {
-                Some(&id) => when.push(id),
-                None => errors.push(format!("music {}: no condition {n}", e.name)),
-            }
-        }
+        let when = conds.all(&e.or::<Vec<String>>(m::WHEN, Vec::new()));
         MusicDef { name: e.name.clone(), tracks: e.or(m::TRACKS, Vec::new()), dimension, when }
     });
     (g.weathers, g.weather_names) = tables.bake(kind(ek::WEATHER), ek::WEATHER, mod_name, errors, |e, errors| {
@@ -1966,10 +1948,8 @@ pub fn freeze(
     g.pose_order = (0..g.poses.len() as u16).map(crate::world::Pose).collect();
     g.pose_order
         .sort_by_key(|p| std::cmp::Reverse(g.poses[p.0 as usize].priority));
-    let (spawns, _) = tables.bake(kind(ek::SPAWN), ek::SPAWN, mod_name, errors, |e, errors| {
-        let ground = |text: &str| matchers.add(text, block_names, block_defs, c);
-        bake_spawn(e, &g, c, ground, dim_names, biome_names, errors)
-    });
+    let (spawns, _) =
+        tables.bake(kind(ek::SPAWN), ek::SPAWN, mod_name, errors, |e, errors| bake_spawn(e, &g, c, conds, dim_names, biome_names, errors));
     g.spawns = spawns.into_iter().flatten().collect();
     // Natural spawning (`spawns`) runs while this is on.
 
@@ -2737,6 +2717,9 @@ pub struct CameraMode {
     pub call: Option<(ModId, Callback)>,
     pub transition: f32,
     pub easing: u32,
+    /// A condition (`Content::conds`) the server checks for a player turning it on, with
+    /// `action::CAMERA`; `None`: the client turns it on by itself.
+    pub when: Option<u32>,
 }
 
 impl CameraMode {
@@ -2765,12 +2748,13 @@ fn engine_cameras() -> Vec<RawEntry> {
         mode("core:first_person", cf::HAND | cf::HUD | cf::EFFECTS | cf::CYCLE),
         mode("core:behind", cf::BODY | cf::HUD | cf::CLIP | cf::CYCLE),
         mode("core:front", cf::BODY | cf::HUD | cf::CLIP | cf::CYCLE),
-        mode("core:free", cf::BODY | cf::SOLID | cf::DETACHED | cf::NO_INTERACT | cf::ASK)
+        mode("core:free", cf::BODY | cf::SOLID | cf::DETACHED | cf::NO_INTERACT)
+            .set(abi::comp::camera::WHEN, vec!["attribute(core:can_fly, 1..)".to_string()])
             .set(abi::comp::camera::KEY, "core:freecam".to_string()),
     ]
 }
 
-fn bake_camera(e: &Entry) -> CameraMode {
+fn bake_camera(e: &Entry, conds: &mut crate::conditions::Texts) -> CameraMode {
     use abi::comp::camera as c;
     CameraMode {
         name: e.name.clone(),
@@ -2782,5 +2766,6 @@ fn bake_camera(e: &Entry) -> CameraMode {
             .filter(|t| t.is_finite())
             .map_or(0.0, |t| t.max(0.0)),
         easing: e.or(c::EASING, abi::easing::IN_OUT),
+        when: conds.all(&e.or::<Vec<String>>(c::WHEN, Vec::new())),
     }
 }

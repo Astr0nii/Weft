@@ -29,6 +29,8 @@ pub static SPRUCE_PLANKS: Block = Block::named("spruce_planks");
 pub static OAK_LEAVES: Block = Block::named("oak_leaves");
 pub static BIRCH_LEAVES: Block = Block::named("birch_leaves");
 pub static SPRUCE_LEAVES: Block = Block::named("spruce_leaves");
+/// What a cactus does to who touches it.
+pub static PRICKED: DamageCause = DamageCause::named("cactus");
 pub static WATER: Block = Block::named("water");
 pub static LAVA: Block = Block::named("lava");
 pub static TALL_GRASS: Block = Block::named("tall_grass");
@@ -91,9 +93,9 @@ fn leaves(r: &mut Registry, handle: &'static Block, tex: &str) {
     // Vanilla: a sapling one time in 20, oak leaves an apple one time in 200.
     let table = r
         .loot(handle)
-        .pool(Pool::new().when(Cond::Chance(0.05)).item("sapling"));
+        .pool(Pool::new().when(Cond::chance(0.05)).item("sapling"));
     if std::ptr::eq(handle, &OAK_LEAVES) {
-        table.pool(Pool::new().when(Cond::Chance(0.005)).item("apple"));
+        table.pool(Pool::new().when(Cond::chance(0.005)).item("apple"));
     }
 }
 
@@ -319,7 +321,7 @@ pub fn register(r: &mut Registry) {
         .tint(&tints::GRASS)
         .no_item();
     r.loot(&TALL_GRASS)
-        .pool(Pool::new().when(Cond::Chance(0.125)).item("wheat_seeds"));
+        .pool(Pool::new().when(Cond::chance(0.125)).item("wheat_seeds"));
     plant(r, &DANDELION, "flower_dandelion");
     plant(r, &ROSE, "flower_rose");
     r.block(&SAPLING)
@@ -339,6 +341,7 @@ pub fn register(r: &mut Registry) {
         .grows(270.0, 0)
         .on_grow(|e| grow_column(e, &SUGAR_CANE))
         .tab(&crate::tabs::NATURAL);
+    r.damage_cause(&PRICKED).death_message("death.base.cactus");
     r.block(&CACTUS)
         .sound_group("cloth")
         .textures("cactus_top", "cactus_side", "cactus_top")
@@ -346,6 +349,7 @@ pub fn register(r: &mut Registry) {
         .hitbox([1.0, 0.0, 1.0], [15.0, 16.0, 15.0])
         .hardness(0.4)
         .needs_below("#cactus_soil")
+        .hazard(Hazard::touch(1.0, &PRICKED))
         .grows(270.0, 0)
         .on_grow(|e| grow_column(e, &CACTUS))
         .tab(&crate::tabs::NATURAL);
@@ -359,11 +363,11 @@ pub fn register(r: &mut Registry) {
         .grows(205.0, 9);
     // Modern's: unripe gives its seed back, ripe gives the wheat and up to 3 more seeds.
     r.loot(&WHEAT)
-        .pool(Pool::new().when(Cond::BlockState("age=7")).item("wheat"))
+        .pool(Pool::new().when(Cond::state("age=7")).item("wheat"))
         .pool(Pool::new().entry(Entry::item("wheat_seeds")))
         .pool(
             Pool::new()
-                .when(Cond::BlockState("age=7"))
+                .when(Cond::state("age=7"))
                 .entry(Entry::item("wheat_seeds").count(0, 3)),
         );
     r.block(&FARMLAND)

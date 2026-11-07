@@ -980,7 +980,7 @@ impl Server {
             if let Some(e) = r.entities.get_mut(entity) {
                 e.mode = mode;
             }
-            mode_modifiers(content(), r, entity, mode);
+            r.keep_sources(content(), entity);
         }
         self.players[pi].conn.send(ToClient::GameMode(mode));
     }
@@ -1344,29 +1344,6 @@ pub fn structure_near(c: &Content, dim: u32, seed: u64, name: &str, pos: IVec3, 
         }
     }
     best
-}
-
-/// What a game mode changes through attributes: in creative mobs do not notice the player, and it
-/// reaches further.
-fn mode_modifiers(c: &Content, r: &mut Dim, id: u64, mode: GameMode) {
-    // What another mode added goes first: each attribute any mode touches.
-    for a in c
-        .game
-        .game_modes
-        .iter()
-        .flat_map(|m| &m.modifiers)
-        .map(|m| &m.0)
-    {
-        if let Some(&attr) = c.game.attr_names.get(a) {
-            r.remove_attr_modifier(c, id, attr, "core:game_mode");
-        }
-    }
-    for (a, op, amount) in &mode.def().modifiers {
-        match c.game.attr_names.get(a) {
-            Some(&attr) => r.set_attr_modifier(c, id, attr, "core:game_mode", *op, *amount, 0),
-            None => log::warn!("game mode {}: no attribute {a}", mode.def().name),
-        }
-    }
 }
 
 /// Items in an entity's equipment slots that show on the model.

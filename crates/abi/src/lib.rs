@@ -587,9 +587,8 @@ pub mod comp {
     }
 
     /// A game mode's: its tags, and `MODIFIERS`
-    /// (`[ModeModifier]`) its players have while in it.
+    /// (`comp::MODIFIERS`, `[Modifier]`) its players have while in it.
     pub mod game_mode {
-        pub const MODIFIERS: &str = "game_mode.modifiers";
         /// Blocks break at once.
         pub const INSTANT_BREAK: &str = "game_mode.instant_break";
         /// Blocks don't break at all.
@@ -600,8 +599,6 @@ pub mod comp {
         pub const NO_COSTS: &str = "game_mode.no_costs";
         /// No damage, hunger or air (mods read it as `World::outside_survival`).
         pub const INVULNERABLE: &str = "game_mode.invulnerable";
-        /// May fly, jumping twice.
-        pub const CAN_FLY: &str = "game_mode.can_fly";
         /// Always flies.
         pub const ALWAYS_FLY: &str = "game_mode.always_fly";
         /// Goes through blocks.
@@ -618,9 +615,9 @@ pub mod comp {
 
     /// A pose's, as shares of standing (1 unless set): `HEIGHT`, `EYE`, `SPEED`; `TILT` (`u32`,
     /// `pose_tilt`), `ACTION` (`str`, the clip), tag `NO_BOB`, `PRIORITY` (`i32`), `KEY` (`str`,
-    /// an action), tags in `WHEN` (as `pose_when`), `FALLBACK` (`[str]` poses where it has no room).
+    /// an action), `WHEN` (`[str]`, conditions that all hold, `in_liquid`, `!flying`), `FALLBACK`
+    /// (`[str]` poses where it has no room).
     pub mod pose {
-        use crate::pose_when as w;
         pub const HEIGHT: &str = "pose.height";
         pub const EYE: &str = "pose.eye";
         pub const SPEED: &str = "pose.speed";
@@ -630,8 +627,7 @@ pub mod comp {
         pub const PRIORITY: &str = "pose.priority";
         pub const KEY: &str = "pose.key";
         pub const FALLBACK: &str = "pose.fallback";
-        pub const WHEN: [(&str, u32); 3] =
-            [("pose.in_liquid", w::SWIM_LIQUID), ("pose.not_flying", w::NOT_FLYING), ("pose.sprinting", w::SPRINTING)];
+        pub const WHEN: &str = "pose.when";
     }
 
     /// A precipitation's: `TEXTURE` (`str`, a strip of drops), `SPEED` (`f32`, share of rain's),
@@ -693,8 +689,10 @@ pub mod comp {
     /// A camera mode's: its tags (what goes with it), `KEY` (`str`, an action that turns
     /// it on and back to where it was), `CALL` (`callback`, `CameraArgs`: where the camera is each
     /// frame), `TRANSITION` (`f32`, seconds from the camera before, 0) eased by `EASING` (`u32`,
-    /// `easing`, `IN_OUT`).
+    /// `easing`, `IN_OUT`), `WHEN` (`[str]`, conditions: the player may turn it on only where
+    /// they hold for it on the server, and the server lets it, `action::CAMERA`).
     pub mod camera {
+        pub const WHEN: &str = "camera.when";
         pub const KEY: &str = "camera.key";
         pub const CALL: &str = "camera.call";
         pub const TRANSITION: &str = "camera.transition";
@@ -721,9 +719,6 @@ pub mod comp {
         pub const AIM: &str = "camera.aim";
         /// No hitting, using or picking.
         pub const NO_INTERACT: &str = "camera.no_interact";
-        /// The player may turn it on only if the server lets it (`action::CAMERA`): by default in a
-        /// game mode that flies (creative, spectator).
-        pub const ASK: &str = "camera.ask";
     }
 
     /// A setting's, shown as `config.<ns>.<key>` (and `.tooltip`) from the language files: `KIND`
@@ -785,6 +780,20 @@ pub mod comp {
     pub const SOUND_CATEGORY_WORLD: &str = "sound_category.world";
     pub const TINT_KIND_DEFAULT: &str = "tint_kind.default";
     pub const KEY_DEFAULT: &str = "key.default";
+    /// Attribute modifiers (`[Modifier]`) of a game mode, an item, a pose or an entity kind.
+    pub const MODIFIERS: &str = "modifiers";
+
+    /// A key's contexts, tags of its entry: where it acts. Two keys on one binding conflict
+    /// only where their contexts meet; a key with none acts wherever the world has the input
+    /// (all but `SCREEN`). A camera that takes the moves (`camera::DETACHED`) has `MOVEMENT` and
+    /// `RIDING` for itself, one that doesn't interact (`camera::NO_INTERACT`) `HANDS`.
+    pub mod key {
+        pub const MOVEMENT: &str = "key.movement";
+        pub const HANDS: &str = "key.hands";
+        pub const RIDING: &str = "key.riding";
+        pub const DEBUG: &str = "key.debug";
+        pub const SCREEN: &str = "key.screen";
+    }
 
     /// A particle kind's (particles live only on clients; the server and mods send bursts):
     /// `TEXTURES` (`[str]`, frames over its life; none: a piece of the burst's block texture),
@@ -1024,18 +1033,15 @@ pub mod comp {
     /// `WEIGHT` (`u32`, 1), while that entity category is under its cap near the player (8
     /// hostile, 6 passive, 6 other within 64 blocks). `ENTITY` (`str`) spawns `GROUP` (`[u32;2]`,
     /// at least and at most, 1 and 1) at a time with `CHANCE` (`f32`, 1) per attempt once picked,
-    /// at a `PLACE` (`u32`, `spawn_place`, on the ground) whose block `GROUND` takes (`match`:
-    /// under it, above it for a ceiling, the liquid itself; none: any), where the light is in
-    /// `LIGHT` (`[u32;2]`, inclusive, the brighter of sky light times daylight and block light;
-    /// 0..15) and condition `WHEN` (`str`) holds. The `core:mob_spawning` rule turns it off.
+    /// at a `PLACE` (`u32`, `spawn_place`, on the ground) where the conditions `WHEN` (`[str]`)
+    /// all hold, asked about the spot and the block it rests on (under it, above it for a ceiling,
+    /// the liquid itself): `light(..7)`, `block(#grass)`. The `core:mob_spawning` rule turns it off.
     pub mod spawn {
         pub const ENTITY: &str = "spawn.entity";
-        pub const GROUND: &str = "spawn.ground";
         pub const PLACE: &str = "spawn.place";
         pub const GROUP: &str = "spawn.group";
         pub const WEIGHT: &str = "spawn.weight";
         pub const CHANCE: &str = "spawn.chance";
-        pub const LIGHT: &str = "spawn.light";
         pub const WHEN: &str = "spawn.when";
     }
 
@@ -1100,7 +1106,9 @@ pub mod comp {
     /// is solid and what the crosshair picks; none: the boxes, else a plant's cross, else the
     /// whole block) and `OUTLINE` (likewise, what is outlined and cracked when it isn't the
     /// hitbox), `SIGNAL` (`SignalDesc`), `LIQUID_WALLS` (`u8`, a bit per `FACE_DIRS` side a liquid
-    /// in its cell can't pass; none: the sides its hitbox covers whole), `TURN` (`u8`, `Turn::index`:
+    /// in its cell can't pass; none: the sides its hitbox covers whole), `PIECES` (`[Piece]`, what a
+    /// hit breaks off alone; none: all of it), `RULES` (`[BlockRule]`, what happens to it by
+    /// itself), `HAZARDS` (`[Hazard]`, what it does to entities touching it), `TURN` (`u8`, `Turn::index`:
     /// all of the above written facing north, turned so; none: as written). It is opaque (hides its
     /// neighbors' faces, gets ambient occlusion) as a cube on the opaque layer. Any other component
     /// goes in its component table, per state; its item gets the first state's unless it sets
@@ -1145,7 +1153,9 @@ pub mod comp {
         pub const SIGNAL_BLOCKER: &str = "block.signal_blocker";
         pub const STICKY: &str = "block.sticky";
         pub const NOT_STOOD_ON: &str = "block.not_stood_on";
-        pub const HOLDS_LIQUID: &str = "block.holds_liquid";
+        pub const PIECES: &str = "block.pieces";
+        pub const RULES: &str = "block.rules";
+        pub const HAZARDS: &str = "block.hazards";
     }
 
     /// A biome's own climate and surface (`entry_kind::BIOME`), what every terrain rule placing
@@ -1294,9 +1304,6 @@ pub mod comp {
         /// Has the equipment slots (`Registry::equipment_slot`) the player has, after its own:
         /// armor on a zombie, shown on its model and counted like a player's.
         pub const WEARS: &str = "entity.wears";
-        /// The client makes no steps, idle noises or death smoke for it: its mod's
-        /// `client_entity_frame` does what it wants instead.
-        pub const OWN_EFFECTS: &str = "entity.own_effects";
         /// Takes no fall damage, which every kind does otherwise.
         pub const NO_FALL_DAMAGE: &str = "entity.no_fall_damage";
         /// Others don't push it away, which every kind does otherwise.
@@ -1363,7 +1370,12 @@ pub mod comp {
     pub const WEAR: &str = "wear";
     /// Block: seconds to break by hand at speed 1 (`f32`, 1 by default); negative = unbreakable.
     pub const HARDNESS: &str = "hardness";
-    /// Tag of blocks that burn what touches them, which a liquid of 1000 degrees has by itself.
+    /// What a block state or entity kind sounds and shows on an event (`[Effect]`), over what its
+    /// `SOUND` group and the engine give: a block's `break`, `place`, `step`, `hit`, `land`
+    /// (fallen onto), `sprint` (run on), an entity's `hurt`, `death`, `ambient`, `step`.
+    pub const EFFECTS: &str = "effects";
+    /// Tag of blocks that burn what is in them as lava does (15 seconds of fire, 4 damage), unless
+    /// they say what they do (`block::HAZARDS`); a liquid of 1000 degrees has it by itself.
     pub const HOT: &str = "hot";
     /// Block: how slippery its top is (`f32`, 0.6 by default; ice 0.98).
     pub const FRICTION: &str = "friction";
@@ -1378,14 +1390,6 @@ pub mod comp {
     /// Block: faces the tint applies to (`u8`, a bit per face in -X, +X, -Y, +Y, -Z, +Z order;
     /// all by default).
     pub const TINT_FACES: &str = "tint_faces";
-    /// Block: face (-X, +X, -Y, +Y, -Z, +Z) whose neighbor holds it up (`u8`). Unsupported, it
-    /// cannot be placed and breaks off when the support goes.
-    pub const SUPPORT_FACE: &str = "support_face";
-    /// Block: what holds it up (`match`, `#plant_soil`); without it any solid block does.
-    pub const SUPPORT: &str = "support";
-    /// Block: what one of the supporting block's horizontal neighbors must be (`match`, sugar
-    /// cane: `#water`), unless the support is the same block.
-    pub const SUPPORT_NEAR: &str = "support_near";
     /// The own name of one stack or block entity (UTF-8), as a player gave it: shown instead of
     /// the item's or block's, and carried from the stack to the placed block and back.
     pub const NAME: &str = "core:name";
@@ -1434,12 +1438,6 @@ pub mod comp {
     pub const WEAR_PER_HIT: &str = "wear_per_hit";
     /// Tag of biomes players may start in (the engine's spawn search tries them first).
     pub const SPAWN_BIOME: &str = "spawn_biome";
-    /// Block: mean seconds between growth steps (`f32`). A step needs at least `grow_light` light
-    /// (sky light by the daylight of that moment, or block light) and is timed by world time, so a
-    /// block in an unloaded area catches up when it loads again.
-    pub const GROW_TIME: &str = "grow_time";
-    /// `u32`, see `grow_time`.
-    pub const GROW_LIGHT: &str = "grow_light";
     /// Block: spreads onto these blocks (`match`; grass onto dirt) within `spread_reach`,
     /// where the target has light (`spread_light`) and nothing opaque on top (unless tagged
     /// `spreads_covered`). In `spread_time` seconds on average, sooner with more of it around.
@@ -1454,10 +1452,6 @@ pub mod comp {
     pub const SPREAD_TIME: &str = "spread_time";
     /// `u32`: light the target needs above it (vanilla grass 9).
     pub const SPREAD_LIGHT: &str = "spread_light";
-    /// Block: turns into this one (`block`) when something opaque covers it (grass to dirt).
-    pub const SMOTHERED_INTO: &str = "smothered_into";
-    /// `f32`: mean seconds before a covered block turns (vanilla about 68).
-    pub const SMOTHER_TIME: &str = "smother_time";
     /// Block: a particle kind (`str`) clients show around it now and then, near the player only
     /// (vanilla's torch smoke); nothing of it reaches the server.
     pub const AMBIENT_PARTICLE: &str = "ambient_particle";
@@ -1517,8 +1511,6 @@ pub mod block_flags {
     /// On a moving body it shoves, but can't be stood on and be taken along by: a piston's head
     /// sliding out from under whoever stands on the piston.
     pub const NOT_STOOD_ON: u32 = 2048;
-    /// Keeps the liquid source it is placed in, and a bucket fills it (waterlogging).
-    pub const HOLDS_LIQUID: u32 = 4096;
 }
 
 #[repr(u32)]
@@ -1588,6 +1580,95 @@ crate::data! {
         /// Per face quarter turns of the picture (`FACE_CORNERS`).
         pub turn: [u8; 6],
         pub tilt: BoxTilt,
+    }
+}
+
+crate::data! {
+    /// A piece of a block state that a player can break off alone (`comp::block::PIECES`): a hit
+    /// inside the box leaves the state with the properties `left` sets, dropping what the state
+    /// with those `alone` sets drops (`type=top`, `type=bottom` for a double slab's lower half).
+    pub struct Piece {
+        /// In 1/16 block units, written like the boxes.
+        pub min: [f32; 3],
+        pub max: [f32; 3],
+        pub left: alloc::string::String,
+        pub alone: alloc::string::String,
+    }
+}
+
+crate::data! {
+    /// What `event` sounds and shows (`comp::EFFECTS`): a sound event and a particle kind by
+    /// name, empty for what it would be anyway (its sound group's, the engine's pieces of a
+    /// block, a death's smoke), `none` for nothing.
+    pub struct Effect {
+        pub event: alloc::string::String,
+        pub sound: alloc::string::String,
+        pub particle: alloc::string::String,
+    }
+}
+
+/// Where an entity meets a block for a `Hazard`.
+pub mod hazard_at {
+    /// Its box is in the block's shape (a liquid's cell): fire, lava, a berry bush.
+    pub const INSIDE: u32 = 0;
+    /// It stands on it: magma.
+    pub const ON: u32 = 1;
+    /// Its eyes are in it: what suffocates.
+    pub const HEAD: u32 = 2;
+    /// Its box is within a sixteenth of the shape: a cactus.
+    pub const TOUCH: u32 = 3;
+}
+
+crate::data! {
+    /// What a block does to an entity meeting it `at` (`hazard_at`, `comp::block::HAZARDS`): every
+    /// `every` ticks (0 or 1: each tick, a hurt entity's pause between hits aside) while all of
+    /// `when` hold for the entity there (`condition`, `!flying`), `damage` of `cause` (a damage
+    /// cause, empty for none) and `fire` ticks of burning. Every opaque full block suffocates
+    /// at the head; a `hot` one without hazards of its own burns like lava.
+    pub struct Hazard {
+        pub at: u32,
+        pub damage: f32,
+        pub cause: alloc::string::String,
+        pub fire: u32,
+        pub every: u32,
+        pub when: alloc::vec::Vec<alloc::string::String>,
+    }
+}
+
+/// When a `BlockRule` is asked.
+pub mod rule_when {
+    /// Something next to it changed, or it was placed: `secs` later (0: at once). A state's
+    /// rules that wait are all asked at the first of their waits.
+    pub const NEIGHBOR: u32 = 0;
+    /// Now and then, every `secs` on average, like a random tick, while its conditions may
+    /// hold; timed by world time, so a block in an unloaded area catches up when it loads.
+    pub const RANDOM: u32 = 1;
+}
+
+/// What a `BlockRule` does when its conditions hold.
+pub mod rule_then {
+    /// It becomes `into`: properties set (`age=0`) or another block (`base:dirt`).
+    pub const BECOME: u32 = 0;
+    /// It grows: the block's `on_grow`, else its `age` one higher (nothing at the last).
+    pub const GROW: u32 = 1;
+    /// It breaks off, dropping what it drops (no support left).
+    pub const BREAK: u32 = 2;
+    /// It falls as a moving block (`Host::fall_block`, sand).
+    pub const FALL: u32 = 3;
+}
+
+crate::data! {
+    /// What happens to a block state by itself (`comp::block::RULES`): when `when` (`rule_when`,
+    /// with `secs`) asks and all of `conditions` hold for it (`condition`, about its own cell
+    /// and state; sides named in them, `side(down)`, are of the state's own frame and turn with
+    /// it), it does `then` (`rule_then`, with `into`). A neighbor rule that breaks it also keeps
+    /// it from being placed where it would.
+    pub struct BlockRule {
+        pub when: u32,
+        pub secs: f32,
+        pub conditions: alloc::vec::Vec<alloc::string::String>,
+        pub then: u32,
+        pub into: alloc::string::String,
     }
 }
 
@@ -2180,24 +2261,24 @@ pub mod seat_exit {
     pub const CALL: u32 = 3;
 }
 
-/// The keys of the player steering a mount this tick (`SteerArgs`).
+/// What the keys say of one action (`Host::keys_state`, `client_key_state`). Ticks are the
+/// client's game ticks, so a charge reads the same however fast frames come.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct MountInput {
-    /// -1..1: back to ahead, left to right.
-    pub forward: f32,
-    pub strafe: f32,
-    /// Jump and sneak (`core:jump`, `core:sneak`) held.
-    pub up: u32,
-    pub down: u32,
-    /// Ticks jump has been held, 0 when it isn't.
-    pub jump_held: u32,
-    /// Jump was let go this tick after being held that many ticks, 0 otherwise.
-    pub jump_released: u32,
-    pub sprint: u32,
-    /// Where the player looks, radians.
-    pub yaw: f32,
-    pub pitch: f32,
+pub struct KeyState {
+    /// Set off this frame.
+    pub pressed: u32,
+    pub held: u32,
+    /// Ticks it has been held, 0 when it isn't.
+    pub held_ticks: u32,
+    /// Let go this tick after being held that many ticks (a charge), 0 otherwise.
+    pub released: u32,
+}
+
+/// The keys as a mount's steering or a camera mode reads them (`Host::keys_state`).
+#[repr(C)]
+pub struct KeysCtx {
+    _private: [u8; 0],
 }
 
 /// What a mount does this tick (`SteerArgs::out`), starting from nothing.
@@ -2221,7 +2302,10 @@ defaults!(Steer { forward: 0.0, strafe: 0.0, speed: 1.0, yaw: f32::NAN, jump: 0.
 
 #[repr(C)]
 pub struct SteerArgs {
-    pub input: MountInput,
+    /// The keys of the player steering, and where it looks (radians).
+    pub keys: *const KeysCtx,
+    pub yaw: f32,
+    pub pitch: f32,
     /// The mount as it is.
     pub mount: EntityState,
     pub out: Steer,
@@ -2308,9 +2392,11 @@ defaults!(CameraPose { pos: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, yaw: 0.0, pitch: 0.
 /// A camera mode's frame (`comp::camera::CALL`), on the client.
 #[repr(C)]
 pub struct CameraArgs {
-    /// The keys, and in `yaw`/`pitch` the look: the camera's own, turned by the mouse, when
-    /// it's `comp::camera::DETACHED`, the player's otherwise. Its tick counts are frames here.
-    pub keys: MountInput,
+    /// The keys, and the look: the camera's own, turned by the mouse, when it's
+    /// `comp::camera::DETACHED`, the player's otherwise. A detached one reads the keys it took.
+    pub keys: *const KeysCtx,
+    pub yaw: f32,
+    pub pitch: f32,
     /// The player's eyes and where they look.
     pub eye: Vec3,
     pub eye_yaw: f32,
@@ -2470,8 +2556,16 @@ pub mod game_mode {
 }
 
 crate::data! {
-    /// An attribute modifier a game mode gives its players.
-    pub struct ModeModifier { pub attribute: alloc::string::String, pub op: u32, pub amount: f64 }
+    /// An attribute modifier something gives (`comp::MODIFIERS`): a game mode its players, an item
+    /// while held in the main hand or (`worn`) in an equipment slot, a pose while in it, an entity
+    /// kind while all of `when` hold for it (`condition`; checked each tick).
+    pub struct Modifier {
+        pub attribute: alloc::string::String,
+        pub op: u32,
+        pub amount: f64,
+        pub worn: bool,
+        pub when: alloc::vec::Vec<alloc::string::String>,
+    }
 }
 
 /// The engine's weathers, registered first in this order. Clear comes
@@ -2519,16 +2613,6 @@ pub mod pose_tilt {
     pub const FACE_DOWN: u32 = 2;
     /// Flat on its back (sleeping).
     pub const ON_BACK: u32 = 3;
-}
-
-/// When a pose may be taken, all of those given (`comp::pose::WHEN`).
-pub mod pose_when {
-    /// In a liquid it swims in (`comp::SWIMS_IN`): at its eyes, or at its feet once it is low.
-    pub const SWIM_LIQUID: u32 = 1;
-    /// Not flying (nor moving through blocks).
-    pub const NOT_FLYING: u32 = 2;
-    /// Sprinting: the sprint action held while moving forward, with the food for it.
-    pub const SPRINTING: u32 = 4;
 }
 
 /// An entity's box in blocks: as wide as `width` both ways, `height` tall, its eyes `eye` up.
@@ -3336,8 +3420,10 @@ pub struct Host {
     /// Client frame hooks only: simulated input, see `client_input`. Returns 0 for an unknown
     /// action or key.
     pub client_input: unsafe extern "C" fn(client: *mut ClientCtx, op: u32, text: Str, x: f32, y: f32) -> u32,
-    /// Bit 1: action pressed this frame, bit 2: held.
-    pub client_key_state: unsafe extern "C" fn(client: *mut ClientCtx, action: Str) -> u32,
+    /// An action's keys in a frame hook, all up while a screen has the input.
+    pub client_key_state: unsafe extern "C" fn(client: *mut ClientCtx, action: Str, out: *mut KeyState),
+    /// An action's keys as steering or a camera mode sees them (`SteerArgs::keys`).
+    pub keys_state: unsafe extern "C" fn(keys: *const KeysCtx, action: Str, out: *mut KeyState),
     /// Client frame hooks only: moves/turns the local player directly.
     pub client_control: unsafe extern "C" fn(client: *mut ClientCtx, control: *const PlayerControl),
     /// Client frame hooks only: see `client_op`.
@@ -3432,6 +3518,9 @@ pub struct Host {
     pub attribute_explain: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str) -> f64,
     /// An entry: a new one, an edit, a replacement or a removal (`EntryDesc::mode`).
     pub reg_entry: unsafe extern "C" fn(reg: *mut Registrar, entry: *const EntryDesc),
+    /// Whether condition `text` (`condition`) holds at `pos` for `entity` (0 for nobody); 0 for
+    /// one that doesn't, or doesn't parse (said once in the log).
+    pub holds: unsafe extern "C" fn(world: *mut WorldCtx, text: Str, pos: Vec3, entity: u64) -> u32,
     /// Rolls table `name`; writes at most `max` stacks to `out` and returns how many it made.
     pub roll_loot: unsafe extern "C" fn(world: *mut WorldCtx, name: Str, ctx: *const LootCtx, out: *mut ItemStack, max: usize) -> usize,
     /// Breaks a block as if mined with `tool` (by `player`, 0 for none): asks `break_block`,
@@ -3702,18 +3791,85 @@ pub struct ConditionArgs {
     pub pos: Vec3,
     /// Who it is about, 0 for nobody: the killer or breaker of loot.
     pub entity: u64,
+    /// What is between its parentheses where it is used, `mymod:near(lava)`: `lava`.
+    pub arg: Str,
     /// Out: non-zero when the condition holds.
     pub result: u32,
 }
 
-/// The engine's conditions (`entry_kind::CONDITION`), registered first in this order.
+/// The engine's conditions, the first entries of `entry_kind::CONDITION` in this order. A
+/// condition is written `name` or `name(argument)`, put together with `&`, `|`, `!` and
+/// parentheses: `night & light(..7)`; the engine's go without their namespace. Where a
+/// component takes conditions (`[str]`) all of them have to hold.
 pub mod condition {
     pub const DAY: u32 = 0;
     pub const NIGHT: u32 = 1;
     /// No sky over it.
     pub const UNDERGROUND: u32 = 2;
     pub const SURFACE: u32 = 3;
-    pub const NAMES: [&str; 4] = ["core:day", "core:night", "core:underground", "core:surface"];
+    /// `light(min..max)`, `light(..7)`, `light(9..)`: the light there is in the range, the
+    /// brighter of sky light times daylight and block light (0..15).
+    pub const LIGHT: u32 = 4;
+    /// `chance(0.05)`: holds that share of the times it is asked; only where the world is.
+    pub const CHANCE: u32 = 5;
+    /// `block(#grass)`: the block asked about (a block matcher): the one a loot table is rolled
+    /// for, the one under a spawn.
+    pub const BLOCK: u32 = 6;
+    /// `state(age=7)`: that block has these properties.
+    pub const STATE: u32 = 7;
+    /// `tool(tools/shears)`: what it is broken or killed with has the tag.
+    pub const TOOL: u32 = 8;
+    /// `tool_level(2)`: and its `tool_level` is at least that.
+    pub const TOOL_LEVEL: u32 = 9;
+    pub const KILLED_BY_PLAYER: u32 = 10;
+    pub const ON_FIRE: u32 = 11;
+    /// The block was harvested: broken by the world, or mined with a tool its `harvest_level`
+    /// accepts. Block tables made from `drops` have it on their pool.
+    pub const HARVESTED: u32 = 12;
+    /// The body asked about is in a liquid it swims in (`comp::SWIMS_IN`): at its eyes, or at its
+    /// feet once it is low (poses).
+    pub const IN_LIQUID: u32 = 13;
+    /// It flies (or moves through blocks).
+    pub const FLYING: u32 = 14;
+    /// It sprints: the sprint action held while moving forward, with the food for it. A pose it
+    /// falls back to goes without.
+    pub const SPRINTING: u32 = 15;
+    /// `attribute(core:can_fly, 1..)`: an attribute of the body asked about is in the range (as
+    /// `light`).
+    pub const ATTRIBUTE: u32 = 16;
+    /// `side(down)`: what is on that side of the cell asked about is solid; `side(down, #soil)`:
+    /// a block there is one the matcher takes. Unloaded, it is not known, and a rule waits.
+    pub const SIDE: u32 = 17;
+    /// `beside(down, #water)`: a block horizontally next to the cell on that side is one the
+    /// matcher takes (`beside(#water)`: next to the cell itself).
+    pub const BESIDE: u32 = 18;
+    /// `open(down)`: that side can be fallen into (air, a liquid, what placing replaces).
+    pub const OPEN: u32 = 19;
+    /// Something opaque is on top.
+    pub const COVERED: u32 = 20;
+    pub const NAMES: [&str; 21] = [
+        "core:day",
+        "core:night",
+        "core:underground",
+        "core:surface",
+        "core:light",
+        "core:chance",
+        "core:block",
+        "core:state",
+        "core:tool",
+        "core:tool_level",
+        "core:killed_by_player",
+        "core:on_fire",
+        "core:harvested",
+        "core:in_liquid",
+        "core:flying",
+        "core:sprinting",
+        "core:attribute",
+        "core:side",
+        "core:beside",
+        "core:open",
+        "core:covered",
+    ];
 }
 
 /// What happens to a particle that a `ParticleRule` answers.
@@ -4062,8 +4218,8 @@ pub mod action {
     pub const MOUNT: &str = "core:mount";
     /// `Mounting`. `entity` getting off `other` (`amount` its seat).
     pub const DISMOUNT: &str = "core:dismount";
-    /// `Query`: player `entity` turning on camera mode `amount` (its id), one with
-    /// `comp::camera::ASK`. With nobody allowing or denying, it may in a game mode that flies.
+    /// `Query`: player `entity` turning on camera mode `amount` (its id), one with conditions
+    /// (`comp::camera::WHEN`). With nobody allowing or denying, it may where they hold.
     pub const CAMERA: &str = "core:camera";
     /// `Query`: cubes from `pos` kept loaded (`Host::force_load`), `amount` the mode, `other`
     /// the ticket's key.
@@ -4168,6 +4324,8 @@ pub mod attribute {
     /// Multiplier on a player's field of view (1), on top of the setting and of flying and
     /// sprinting: a zoom, a speed rush.
     pub const FOV: &str = "core:fov";
+    /// Whether it may fly, jumping twice (0; 1 in creative): a flying ring is a modifier.
+    pub const CAN_FLY: &str = "core:can_fly";
 }
 
 /// How an attribute modifier applies, like vanilla: ADD amounts sum onto the base, then times
@@ -4178,31 +4336,6 @@ pub mod attr_op {
     pub const MULTIPLY_TOTAL: u32 = 2;
 }
 
-pub mod loot_cond {
-    /// Passes with probability `value`.
-    pub const CHANCE: u32 = 0;
-    /// The tool has tag `text`.
-    pub const TOOL_TAG: u32 = 1;
-    /// The tool lacks tag `text`.
-    pub const NOT_TOOL_TAG: u32 = 2;
-    /// The tool's `tool_level` is at least `value`.
-    pub const TOOL_LEVEL: u32 = 3;
-    pub const KILLED_BY_PLAYER: u32 = 4;
-    pub const ON_FIRE: u32 = 5;
-    /// The block was harvested: broken by the world, or mined with a tool its `harvest_level`
-    /// accepts. Block tables made from `drops` have it on their pool.
-    pub const HARVESTED: u32 = 6;
-    /// The block's state has what `text` says, a property and its value: `age=7`.
-    pub const BLOCK_STATE: u32 = 7;
-    /// Condition `text` (`entry_kind::CONDITION`) holds there, asked about the killer or breaker.
-    pub const CONDITION: u32 = 8;
-}
-
-crate::data! {
-    /// `loot_cond` `kind`, with its `value` or `text`.
-    pub struct LootCond { pub kind: u32, pub value: f32, pub text: alloc::string::String }
-}
-
 crate::data! {
     /// One weighted choice of a pool: `item` (name, or `#tag` for the tag's first item; empty = no
     /// item), `min..=max` of it. A burning victim drops it cooked by recipe kind `smelt` if set.
@@ -4211,7 +4344,8 @@ crate::data! {
         pub weight: u32,
         pub min: u32,
         pub max: u32,
-        pub conditions: alloc::vec::Vec<LootCond>,
+        /// Conditions (`condition`) that all hold.
+        pub when: alloc::vec::Vec<alloc::string::String>,
         pub smelt: alloc::string::String,
     }
 }
@@ -4222,7 +4356,8 @@ crate::data! {
     pub struct LootPool {
         pub rolls_min: u32,
         pub rolls_max: u32,
-        pub conditions: alloc::vec::Vec<LootCond>,
+        /// Conditions (`condition`) that all hold.
+        pub when: alloc::vec::Vec<alloc::string::String>,
         pub entries: alloc::vec::Vec<LootEntry>,
     }
 }
@@ -4240,7 +4375,7 @@ pub struct LootCtx {
     pub killer: u64,
     pub by_player: u32,
     pub on_fire: u32,
-    /// The block state being mined with `tool` (0 = none), for `loot_cond::HARVESTED`.
+    /// The block state being mined with `tool` (0 = none), for `condition::HARVESTED`.
     pub mined: u32,
 }
 defaults!(LootCtx { tool: ItemStack::EMPTY, killer: 0, by_player: 0, on_fire: 0, mined: 0 });

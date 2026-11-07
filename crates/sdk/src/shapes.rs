@@ -61,7 +61,7 @@ impl Registry {
         self.shapes_of("stairs", sources, "_stairs")
             .tag("stairs")
             .signal_blocker()
-            .holds_liquid()
+            .shares_cell_with("#water")
             .facing(Facings::HORIZONTAL, Toward::Away)
             .prop("half", ["bottom", "top"])
             .prop("shape", ["straight", "inner_left", "inner_right", "outer_left", "outer_right"])
@@ -91,17 +91,19 @@ impl Registry {
     pub fn slabs<'a>(&'a mut self, sources: &str) -> BlockBuilder<'a> {
         self.shapes_of("slab", sources, "_slab")
             .tag("slabs")
+            .shares_cell_with("#water")
             .prop("type", ["bottom", "top", "double"])
             .states(|p: &Props, s| match p.get("type") {
                 "bottom" => s
                     .model_box([0.0, 0.0, 0.0], [16.0, 8.0, 16.0])
-                    .signal_blocker()
-                    .holds_liquid(),
+                    .signal_blocker(),
                 "top" => s
                     .model_box([0.0, 8.0, 0.0], [16.0, 16.0, 16.0])
-                    .signal_blocker()
-                    .holds_liquid(),
-                _ => s.loot_rolls(2),
+                    .signal_blocker(),
+                _ => s
+                    .loot_rolls(2)
+                    .piece([0.0; 3], [16.0, 8.0, 16.0], "type=top", "type=bottom")
+                    .piece([0.0, 8.0, 0.0], [16.0; 3], "type=bottom", "type=top"),
             })
             .placement(|p, props| props.set("type", if upper_half(p) { "top" } else { "bottom" }))
             .merge(|p, props| {
@@ -117,15 +119,20 @@ impl Registry {
     pub fn vertical_slabs<'a>(&'a mut self, sources: &str) -> BlockBuilder<'a> {
         self.shapes_of("vertical_slab", sources, "_vertical_slab")
             .tag("vertical_slabs")
+            .shares_cell_with("#water")
             .facing(Facings::HORIZONTAL, Toward::Hit)
             .prop("double", ["false", "true"])
             .states(|p: &Props, s| match p.is("double", "true") {
-                true => s.loot_rolls(2),
+                true => {
+                    let other = format!("facing={},double=false", p.facing().opposite().name());
+                    s.loot_rolls(2)
+                        .piece([0.0, 0.0, 8.0], [16.0; 3], &other, "double=false")
+                        .piece([0.0; 3], [16.0, 16.0, 8.0], "double=false", &other)
+                }
                 // Written against the south side of its cell, facing away from it.
                 false => s
                     .model_box([0.0, 0.0, 8.0], [16.0, 16.0, 16.0])
-                    .signal_blocker()
-                    .holds_liquid(),
+                    .signal_blocker(),
             })
             .merge(|p, props| {
                 if p.placed("facing").and_then(Dir::from_name) == Some(props.facing().opposite()) {
@@ -185,11 +192,21 @@ impl BlockBuilder<'_> {
             let values = if plates && i == 0 { ["true", "false"] } else { ["false", "true"] };
             b.prop(d.name(), values)
         });
+        // Each side is a piece of its own, and wire is picked side by side as it is drawn.
+        for &d in &sides {
+            let (min, max) = plate(d);
+            let alone: Vec<String> = sides
+                .iter()
+                .filter(|&&o| o != d)
+                .map(|o| format!("{}=false", o.name()))
+                .collect();
+            let left = format!("{}=false", d.name());
+            b = b.state_where(&format!("{}=true", d.name()), move |s| {
+                let s = s.piece(min, max, &left, &alone.join(","));
+                if plates { s.model_box(min, max) } else { s.hitbox(min, max) }
+            });
+        }
         if plates {
-            for &d in &sides {
-                let (min, max) = plate(d);
-                b = b.state_where(&format!("{}=true", d.name()), move |s| s.model_box(min, max));
-            }
             let none = sides
                 .iter()
                 .map(|d| format!("{}=false", d.name()))

@@ -97,13 +97,13 @@ pub mod shot {
     /// Around the player at `distance`, turned by the mouse, while the player stands.
     pub fn orbit(distance: f32) -> Shot {
         Shot::new(&[cc::BODY, cc::CLIP, cc::DETACHED, cc::NO_INTERACT], move |a| {
-            let d = look_dir(a.keys.yaw, a.keys.pitch);
+            let d = look_dir(a.yaw, a.pitch);
             let e = v(a.eye);
             let r = distance as f64;
             a.out = CameraPose {
                 pos: at([e[0] - d[0] * r, e[1] - d[1] * r, e[2] - d[2] * r]),
-                yaw: a.keys.yaw,
-                pitch: a.keys.pitch,
+                yaw: a.yaw,
+                pitch: a.pitch,
                 ..CameraPose::DEFAULT
             };
         })
@@ -119,18 +119,23 @@ pub mod shot {
             if a.first != 0 {
                 *vel = [0.0; 3];
             }
-            let k = &a.keys;
+            use crate::client::keys;
+            let k = crate::client::Keys::of(a.keys, a.yaw, a.pitch);
             let ahead = look_dir(k.yaw, k.pitch);
             let right = [k.yaw.cos() as f64, 0.0, -k.yaw.sin() as f64];
-            let up = k.up as f64 - k.down as f64;
+            let (forward, aside, up) = (
+                k.axis(&keys::FORWARD, &keys::BACK) as f64,
+                k.axis(&keys::RIGHT, &keys::LEFT) as f64,
+                k.axis(&keys::JUMP, &keys::SNEAK) as f64,
+            );
             let mut wish = [0.0; 3];
             for i in 0..3 {
-                wish[i] = ahead[i] * k.forward as f64 + right[i] * k.strafe as f64 + if i == 1 { up } else { 0.0 };
+                wish[i] = ahead[i] * forward + right[i] * aside + if i == 1 { up } else { 0.0 };
             }
             let len = (wish[0] * wish[0] + wish[1] * wish[1] + wish[2] * wish[2])
                 .sqrt()
                 .max(1.0);
-            let s = speed as f64 * if k.sprint != 0 { 2.0 } else { 1.0 } / len;
+            let s = speed as f64 * if k.held(&keys::SPRINT) { 2.0 } else { 1.0 } / len;
             let blend = (a.dt as f64 * 8.0).min(1.0);
             let mut p = v(a.out.pos);
             for i in 0..3 {
@@ -210,9 +215,10 @@ impl CameraBuilder<'_> {
     pub fn in_cycle(self) -> Self {
         self.tag(cc::CYCLE)
     }
-    /// Only where the server lets it (`actions::CAMERA`).
-    pub fn ask(self) -> Self {
-        self.tag(cc::ASK)
+    /// Only where this holds for the player, asked on the server, and the server lets it
+    /// (`actions::CAMERA`): `.when(Cond::attribute(&attribute::CAN_FLY, 1.0, f64::MAX))`.
+    pub fn when(self, c: impl Into<crate::Cond>) -> Self {
+        self.push(&crate::comps::camera::WHEN, c.into().0)
     }
     /// A key that turns it on and back off, `default` as `Registry::key` takes it.
     pub fn key(self, key: &'static Key, default: &str) -> Self {

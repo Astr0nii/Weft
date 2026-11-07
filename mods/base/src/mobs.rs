@@ -259,8 +259,8 @@ pub fn register(r: &mut Registry) {
         .pool(Pool::new().items("string", 0, 2))
         .pool(
             Pool::new()
-                .when(Cond::KilledByPlayer)
-                .when(Cond::Chance(0.33))
+                .when(Cond::killed_by_player())
+                .when(Cond::chance(0.33))
                 .item("spider_eye"),
         );
     r.loot(&CREEPER).pool(Pool::new().items("gunpowder", 0, 2));

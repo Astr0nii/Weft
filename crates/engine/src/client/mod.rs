@@ -177,7 +177,7 @@ fn ride_step(
     player: &mut LocalPlayer,
     drive: &mut Drive,
     conn: &mut ClientConn,
-    input: &Input,
+    keys: &crate::input::Keys,
     block: &impl physics::Cells,
     gravity: f64,
     bodies: &[physics::Body],
@@ -190,24 +190,11 @@ fn ride_step(
     let steers = k.seats.get(seat as usize).is_some_and(|s| s.steers);
     let mut moved = None;
     if let (true, Some((owner, cb))) = (steers, k.steer) {
-        let axis = |plus: &str, minus: &str| input.held(plus) as i32 as f32 - input.held(minus) as i32 as f32;
-        let jump = input.captured && input.held("core:jump");
-        let released = if !jump { drive.jump_held } else { 0 };
-        drive.jump_held = if jump { drive.jump_held + 1 } else { 0 };
-        let held = |a: &str| input.captured && input.held(a);
         let d = m.dims();
         let mut args = weft_abi::SteerArgs {
-            input: weft_abi::MountInput {
-                forward: if input.captured { axis("core:forward", "core:back") } else { 0.0 },
-                strafe: if input.captured { axis("core:right", "core:left") } else { 0.0 },
-                up: jump as u32,
-                down: held("core:sneak") as u32,
-                jump_held: drive.jump_held,
-                jump_released: released,
-                sprint: held("core:sprint") as u32,
-                yaw: player.yaw,
-                pitch: player.pitch,
-            },
+            keys: keys.ctx(),
+            yaw: player.yaw,
+            pitch: player.pitch,
             mount: weft_abi::EntityState {
                 kind: m.kind,
                 flags: k.flags,
@@ -265,7 +252,6 @@ struct Drive {
     /// Blocks per tick.
     vel: DVec3,
     on_ground: bool,
-    jump_held: u32,
 }
 
 /// Where a rider's feet go in seat `seat` of a mount of `kind` at `pos` facing `yaw`.
@@ -455,8 +441,10 @@ pub struct Client {
     /// The local player as an entity: what the server says of it (health, actions, look) and
     /// what its own animation works out, brought up to date each frame (`sync_me`).
     pub me: ClientEntity,
-    /// The mount the player steers: its velocity, footing and how long jump has been held.
+    /// The mount the player steers: its velocity and footing.
     drive: Drive,
+    /// Per action: ticks held, and held before being let go this tick (`input::Keys`).
+    pub key_ticks: Vec<(u32, u32)>,
     accum: f64,
     tick_accum: f64,
     /// Seconds of physics steps taken, the clock solid bodies are shown by.
@@ -792,6 +780,7 @@ impl Client {
             sprint_stopped: false,
             me: ClientEntity::new(content().game.player_kind, DVec3::ZERO, 0.0, 0.0, ItemStack::EMPTY),
             drive: Drive::default(),
+            key_ticks: Vec::new(),
             accum: 0.0,
             tick_accum: 0.0,
             body_clock: 0.0,
@@ -910,8 +899,15 @@ impl Client {
         if self.me.health.is_nan() { self.max_health } else { self.me.health }
     }
 
-    fn attribute(&self, id: u32) -> f32 {
+    pub fn attribute(&self, id: u32) -> f32 {
         self.attributes.get(id as usize).copied().unwrap_or(1.0)
+    }
+
+    /// The attribute says it may fly.
+    pub fn can_fly(&self) -> bool {
+        self.attributes
+            .get(crate::server::extend::CAN_FLY as usize)
+            .is_some_and(|&v| v >= 1.0)
     }
 
     /// How much walking shakes the view now.
@@ -984,8 +980,9 @@ impl Client {
             input.stop("core:sprint");
         }
         let m = self.camera_mode();
-        input.mute_moves = m.has(crate::tag_bits::camera::DETACHED);
-        input.mute_hands = m.has(crate::tag_bits::camera::NO_INTERACT);
+        use crate::input::context as k;
+        input.muted = if m.has(crate::tag_bits::camera::DETACHED) { k::MOVEMENT | k::RIDING } else { 0 }
+            | if m.has(crate::tag_bits::camera::NO_INTERACT) { k::HANDS } else { 0 };
         let input = &*input;
         self.take_messages(dt);
         self.read_look(input);
@@ -998,9 +995,9 @@ impl Client {
         self.frame_dt = dt as f32;
         self.weather_effects(dt as f32);
         self.sync_me();
-        if input.pressed("core:drop") && !self.mode.has(crate::tag_bits::game_mode::NO_INTERACT) {
-            self.conn
-                .send(ToServer::Drop { all: input.held("core:sprint") });
+        let all = input.pressed("core:drop_all");
+        if (all || input.pressed("core:drop")) && !self.mode.has(crate::tag_bits::game_mode::NO_INTERACT) {
+            self.conn.send(ToServer::Drop { all });
         }
         if input.pressed("core:inventory") && input.captured {
             self.conn.send(ToServer::OpenInventory);
@@ -1042,7 +1039,7 @@ impl Client {
     }
 
     fn read_look(&mut self, input: &Input) {
-        if input.captured && !input.mute_moves {
+        if input.captured && input.muted & crate::input::context::MOVEMENT == 0 {
             let sens = 0.0022 * input.sensitivity;
             self.player.yaw -= input.mouse_delta.x * sens;
             let look = input.mouse_delta.y * sens * if input.invert_y { -1.0 } else { 1.0 };
@@ -1055,15 +1052,22 @@ impl Client {
         if self.me.vehicle.is_some() && input.captured && input.pressed("core:dismount") {
             self.conn.send(ToServer::Dismount);
         }
-        if self.mode.has(crate::tag_bits::game_mode::CAN_FLY) && input.captured && input.pressed("core:fly") {
+        if self.can_fly() && input.captured && input.pressed("core:fly") {
             self.player.flying = !self.player.flying;
         }
     }
 
-    /// A spectator's scroll wheel sets how fast it flies.
+    /// How fast a spectator flies.
     fn fly_speed(&mut self, input: &Input) {
-        if input.scroll != 0.0 && self.mode.has(crate::tag_bits::game_mode::NO_INTERACT) {
-            self.player.fly_speed = (self.player.fly_speed * if input.scroll > 0.0 { 1.25 } else { 0.8 }).clamp(0.1, 10.0);
+        let by = if input.pressed("core:fly_faster") {
+            1.25
+        } else if input.pressed("core:fly_slower") {
+            0.8
+        } else {
+            return;
+        };
+        if input.captured && self.mode.has(crate::tag_bits::game_mode::NO_INTERACT) {
+            self.player.fly_speed = (self.player.fly_speed * by).clamp(0.1, 10.0);
         }
     }
 
@@ -1072,9 +1076,8 @@ impl Client {
             return;
         }
         let old = self.selected;
-        // In a screen the number keys belong to it (swapping slots with the hotbar), and with F3
-        // down to the debug groups.
-        if input.captured && !input.held("core:debug") {
+        // In a screen the number keys belong to it (swapping slots with the hotbar).
+        if input.captured {
             for (i, action) in crate::input::HOTBAR
                 .into_iter()
                 .enumerate()
@@ -1085,9 +1088,9 @@ impl Client {
                 }
             }
         }
-        if input.scroll != 0.0 {
-            self.selected = (self.selected as i32 - input.scroll.signum() as i32)
-                .rem_euclid(content().game.player_layout.hotbar.max(1) as i32) as usize;
+        let step = input.pressed("core:hotbar_next") as i32 - input.pressed("core:hotbar_prev") as i32;
+        if input.captured && step != 0 {
+            self.selected = (self.selected as i32 + step).rem_euclid(content().game.player_layout.hotbar.max(1) as i32) as usize;
         }
         if old != self.selected {
             self.conn.send(ToServer::Select(self.selected as u32));
@@ -1231,6 +1234,7 @@ impl Client {
                     self.player.pos = e;
                 }
                 self.player.prev = self.player.pos;
+                input.count_ticks(&mut self.key_ticks);
                 let flying = self.player.flying || self.player.noclip;
                 let gravity = c.dims[world.dim as usize].gravity as f64;
                 // Solid bodies at this step (predicted like the server moves them) and soft
@@ -1270,7 +1274,7 @@ impl Client {
                         &mut self.player,
                         &mut self.drive,
                         &mut self.conn,
-                        input,
+                        &crate::input::Keys { input, ticks: &self.key_ticks, raw: false },
                         &block,
                         gravity,
                         &bodies,
@@ -1434,9 +1438,12 @@ impl Client {
                 let progress = if rate >= 1.0 { 1.0 } else { done + dt as f32 * self.tick_rate as f32 * rate };
                 if progress >= 1.0 && (input.pressed("core:attack") || self.break_delay <= 0.0) {
                     send_look.send(&mut self.conn);
+                    let at = self.hit_point(&hit);
                     self.conn
-                        .send(ToServer::Break { pos: hit.block, part: hit.state, face: hit.face, frame: hit.frame });
-                    let after = crate::wire::after_break(content(), hit.state, hit.face);
+                        .send(ToServer::Break { pos: hit.block, part: hit.state, face: hit.face, hit: at, frame: hit.frame });
+                    let after = c.states[hit.state as usize]
+                        .piece_hit(at, hit.face)
+                        .map_or(crate::content::AIR, |p| p.left);
                     match hit.frame {
                         0 => self.world.replace_part(hit.block, hit.state, after),
                         f => {
@@ -1475,6 +1482,14 @@ impl Client {
         }
     }
 
+    /// Where the crosshair is on what it hit, from the block's corner.
+    fn hit_point(&self, hit: &crate::physics::Hit) -> [f32; 3] {
+        let at = self
+            .frame_place(hit.frame)
+            .to_local(self.camera().pos + self.camera().forward().as_dvec3() * hit.dist);
+        (at - hit.block.as_dvec3()).as_vec3().to_array()
+    }
+
     fn use_held(&mut self, input: &Input, dt: f64, look: DVec3, send_look: &mut LookOnce) {
         if let Some((left, _)) = &mut self.using {
             *left = (*left - dt as f32 * self.tick_rate as f32).max(0.0);
@@ -1488,10 +1503,7 @@ impl Client {
                 self.conn.send(ToServer::Interact(id));
             } else if let Some(hit) = self.target {
                 let sneak = input.held("core:sneak");
-                let at = self
-                    .frame_place(hit.frame)
-                    .to_local(self.camera().pos + self.camera().forward().as_dvec3() * hit.dist);
-                let at = (at - hit.block.as_dvec3()).as_vec3().to_array();
+                let at = self.hit_point(&hit);
                 self.conn.send(ToServer::Use {
                     pos: hit.block,
                     part: hit.state,
@@ -1647,7 +1659,8 @@ impl Client {
         if let (Some((frame, pos, _)), Some(hit)) = (self.breaking, self.target) {
             if self.hit_dust <= 0.0 && (hit.frame, hit.block) == (frame, pos) {
                 self.hit_dust = 0.05;
-                if let Some(&kind) = c.game.particle_names.get(weft_abi::particle::BLOCK) {
+                let kind = c.states[hit.state as usize].effects[crate::content::block_event::HIT].particle;
+                if kind != u32::MAX {
                     let normal = crate::world::DIRS[hit.face as usize].as_vec3();
                     let at = self
                         .frame_place(frame)
@@ -1793,8 +1806,8 @@ impl Client {
             .world
             .block_or_air((pos - DVec3::Y * 0.2).floor().as_ivec3())
             .unwrap_or(0);
-        let Some(&kind) = c.game.particle_names.get(weft_abi::particle::BLOCK) else { return };
-        if under == 0 || c.states[under as usize].liquid.is_some() || self.chance() >= dt * crate::world::TPS as f32 {
+        let kind = c.states[under as usize].effects[crate::content::block_event::SPRINT].particle;
+        if kind == u32::MAX || under == 0 || c.states[under as usize].liquid.is_some() || self.chance() >= dt * crate::world::TPS as f32 {
             return;
         }
         let mut noise = || self.rng.float() * 0.8 - 0.4;
@@ -1907,9 +1920,9 @@ impl Client {
             let Some((own, drip)) = kinds.get(state as usize) else { continue };
             for &kind in own {
                 // Vanilla's: over a torch, and out from the wall where it leans.
-                let wall = c.states[state as usize]
-                    .support
-                    .map(|(f, _)| f as usize)
+                let wall = c
+                    .held_by(state)
+                    .map(|f| f as usize)
                     .filter(|f| f / 2 != 1)
                     .map(|f| crate::world::DIRS[f].as_dvec3());
                 let pos = (p.as_dvec3() + wall.map_or(DVec3::new(0.5, 0.7, 0.5), |d| DVec3::new(0.5, 0.92, 0.5) - d * 0.27)).to_array();
@@ -1947,13 +1960,14 @@ impl Client {
     /// timer), and a puff of smoke when its death animation ends (vanilla's 20 poof particles).
     pub fn entity_effects(&mut self, a: &weft_abi::ClientEntityArgs) {
         use crate::audio::Play;
-        use crate::content::block_sound;
-        use crate::registry::entity_sound;
+        use crate::content::block_event;
+        use crate::registry::entity_event;
         let c = content();
         let k = &c.game.entities[a.kind as usize];
         let pos = crate::world::dvec(a.pos);
         if a.dying >= 1.0 {
-            if let Some(&kind) = c.game.particle_names.get(weft_abi::particle::POOF) {
+            let kind = k.effects[entity_event::DEATH].particle;
+            if kind != u32::MAX {
                 let crate::physics::Dims { half_width: hw, height: h, .. } = physics::posed(k.size(), Pose::STAND);
                 let (w, h) = (hw as f32, h as f32 * 0.5);
                 let at = (pos + DVec3::Y * h as f64).to_array();
@@ -1978,12 +1992,12 @@ impl Client {
         let Some(e) = self.entities.get_mut(&a.entity) else { return };
         if a.walked >= e.next_step {
             e.next_step = a.walked + 1.6;
-            let sound = if k.sounds[entity_sound::STEP] != u32::MAX {
-                k.sounds[entity_sound::STEP]
+            let sound = if k.effects[entity_event::STEP].sound != u32::MAX {
+                k.effects[entity_event::STEP].sound
             } else {
                 self.world
                     .block_or_air((pos - DVec3::Y * 0.2).floor().as_ivec3())
-                    .map_or(u32::MAX, |s| c.states[s as usize].sounds[block_sound::STEP])
+                    .map_or(u32::MAX, |s| c.states[s as usize].effects[block_event::STEP].sound)
             };
             if sound != u32::MAX {
                 self.sounds
@@ -1998,9 +2012,13 @@ impl Client {
         }
         let Some(e) = self.entities.get(&a.entity) else { return };
         let eye = e.dims().eye;
-        if k.sounds[entity_sound::AMBIENT] != u32::MAX && self.chance() < a.dt / 12.0 {
-            self.sounds
-                .push(Play { sound: k.sounds[entity_sound::AMBIENT], pos: Some(pos + DVec3::Y * eye), volume: 1.0, pitch: 0.0 });
+        if k.effects[entity_event::AMBIENT].sound != u32::MAX && self.chance() < a.dt / 12.0 {
+            self.sounds.push(Play {
+                sound: k.effects[entity_event::AMBIENT].sound,
+                pos: Some(pos + DVec3::Y * eye),
+                volume: 1.0,
+                pitch: 0.0,
+            });
         }
     }
 
@@ -2008,11 +2026,11 @@ impl Client {
     /// travels for them.
     fn creature_sounds(&mut self, dt: f32, moved: f32) {
         use crate::audio::Play;
-        use crate::content::block_sound;
+        use crate::content::block_event;
         let c = content();
         let below = |w: &world::ClientWorld, p: DVec3| {
             w.block_or_air((p - DVec3::Y * 0.2).floor().as_ivec3())
-                .map_or(u32::MAX, |s| c.states[s as usize].sounds[block_sound::STEP])
+                .map_or(u32::MAX, |s| c.states[s as usize].effects[block_event::STEP].sound)
         };
         if self.player.on_ground && !self.player.flying && !self.mode.has(crate::tag_bits::game_mode::HIDDEN) {
             self.next_step -= moved;
@@ -2032,7 +2050,7 @@ impl Client {
             if self.hit_sound <= 0.0 {
                 // Vanilla knocks every four ticks while mining.
                 self.hit_sound = 0.2;
-                let sound = c.states[hit.state as usize].sounds[block_sound::HIT];
+                let sound = c.states[hit.state as usize].effects[block_event::HIT].sound;
                 self.sounds.push(Play {
                     sound,
                     pos: Some(
@@ -2065,9 +2083,10 @@ impl Client {
                 .game
                 .music
                 .iter()
-                .flat_map(|m| &m.when)
-                .copied()
-                .filter(|&id| crate::conditions::on_client(Some(self), id))
+                .filter_map(|m| m.when)
+                .filter(|&id| {
+                    crate::conditions::on_client(Some(self), id, &crate::conditions::Ask { pos: self.player.pos, ..Default::default() })
+                })
                 .collect(),
         }
     }
@@ -2688,11 +2707,11 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl physics::Cells, 
     let feet_wet = physics::in_liquid(c, block, p.pos, 0.0);
     // `input`: the action held and sprinting count, which a pose fallen back to goes without.
     let holds = |d: &crate::registry::PoseDef, input_too: bool| {
-        use weft_abi::pose_when as w;
-        let on = |f: u32| d.when & f != 0;
-        (!input_too || ((d.key.is_empty() || input.held(&d.key)) && (!on(w::SPRINTING) || sprint)))
-            && (!on(w::NOT_FLYING) || !(p.flying || p.noclip))
-            && (!on(w::SWIM_LIQUID) || in_swim_liquid)
+        let body = crate::conditions::Body { in_liquid: in_swim_liquid, flying: p.flying || p.noclip, sprinting: sprint || !input_too };
+        let ask = crate::conditions::Ask { pos: p.pos, body: Some(body), ..Default::default() };
+        (!input_too || d.key.is_empty() || input.held(&d.key))
+            && d.when
+                .is_none_or(|w| crate::conditions::on_client(None, w, &ask))
     };
     let want = match p.forced {
         Some((held, _)) => held,
@@ -2716,8 +2735,8 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl physics::Cells, 
             .or(back.last().copied())
             .unwrap_or(want)
     };
-    // Sprinting swims in a pose for it; in a liquid it is no use otherwise.
-    let swimming = sprint && p.pose.def().when & weft_abi::pose_when::SWIM_LIQUID != 0;
+    // Sprinting swims in a pose for it, lying down; in a liquid it is no use otherwise.
+    let swimming = sprint && in_swim_liquid && p.pose.def().tilt != weft_abi::pose_tilt::UPRIGHT;
     let sprint = sprint && (swimming || !feet_wet);
     p.sprinting = sprint;
     if !p.flying {

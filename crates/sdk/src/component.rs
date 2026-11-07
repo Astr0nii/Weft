@@ -790,17 +790,10 @@ pub static DRAG: Component<f32> = Component::named(abi::comp::DRAG);
 pub static LIGHT: Component<[u8; 3]> = Component::named(abi::comp::LIGHT);
 pub static TINT: Component<TintRef> = Component::named(abi::comp::TINT);
 pub static TINT_FACES: Component<u8> = Component::named(abi::comp::TINT_FACES);
-pub static SUPPORT_FACE: Component<u8> = Component::named(abi::comp::SUPPORT_FACE);
-pub static SUPPORT: Component<Matcher> = Component::named(abi::comp::SUPPORT);
-pub static SUPPORT_NEAR: Component<Matcher> = Component::named(abi::comp::SUPPORT_NEAR);
 pub static SPREADS_TO: Component<Matcher> = Component::named(abi::comp::SPREADS_TO);
-pub static GROW_TIME: Component<f32> = Component::named(abi::comp::GROW_TIME);
-pub static GROW_LIGHT: Component<u32> = Component::named(abi::comp::GROW_LIGHT);
 pub static SPREAD_TIME: Component<f32> = Component::named(abi::comp::SPREAD_TIME);
 pub static SPREAD_LIGHT: Component<u32> = Component::named(abi::comp::SPREAD_LIGHT);
 pub static SPREAD_REACH: Component<[i32; 6]> = Component::named(abi::comp::SPREAD_REACH);
-pub static SMOTHERED_INTO: Component<BlockRef> = Component::named(abi::comp::SMOTHERED_INTO);
-pub static SMOTHER_TIME: Component<f32> = Component::named(abi::comp::SMOTHER_TIME);
 pub static AMBIENT_PARTICLE: Component<Text> = Component::named(abi::comp::AMBIENT_PARTICLE);
 pub static DRIP: Component<Text> = Component::named(abi::comp::DRIP);
 pub static SPLASH: Component<Text> = Component::named(abi::comp::SPLASH);
@@ -819,6 +812,14 @@ pub static SHADER: Component<Text> = Component::named(abi::comp::SHADER);
 pub static MODEL: Component<Text> = Component::named(abi::comp::MODEL);
 pub static ANIMATIONS: Component<Text> = Component::named(abi::comp::ANIMATIONS);
 pub static SOUND: Component<Text> = Component::named(abi::comp::SOUND);
+pub static EFFECTS: Component<Vec<abi::Effect>> = Component::named(abi::comp::EFFECTS);
+pub static MODIFIERS: Component<Vec<abi::Modifier>> = Component::named(abi::comp::MODIFIERS);
+
+/// An `abi::Effect`, its sound event and particle kind by full name.
+pub(crate) fn effect(event: &str, sound: &str, particle: &str) -> abi::Effect {
+    let name = |n: &str| if matches!(n, "" | "none") { n.to_string() } else { crate::full_name(n) };
+    abi::Effect { event: event.to_string(), sound: name(sound), particle: name(particle) }
+}
 
 /// The stack after one of it is used up (burnt as fuel, taken by a recipe): one less, and the
 /// last one leaves its `remainder` behind (a lava bucket its bucket).

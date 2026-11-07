@@ -994,7 +994,7 @@ impl Controls {
         Self::change(ctx, &action, slot, |old| {
             let trigger = match (double, old.map(|b| b.trigger)) {
                 (true, _) => Trigger::Double,
-                (false, Some(Trigger::Toggle)) => Trigger::Toggle,
+                (false, Some(t @ (Trigger::Toggle | Trigger::Tap))) => t,
                 _ => Trigger::Hold,
             };
             Some(Binding { chord, trigger })
@@ -1031,9 +1031,13 @@ impl Screen for Controls {
             ctx.requests.push(Request::Rebuild);
             return true;
         }
-        let chord = crate::input::Chord { key, mods: ctx.input.mods() };
+        let chord = crate::input::Chord { key, mods: ctx.input.mods(), with: None };
         match self.first {
             Some((first, _)) if first == chord => self.bind(ctx, chord, true),
+            // Pressed while the first is still down: that one is held with it (F3+T).
+            Some((first, _)) if first.with.is_none() && ctx.input.held_key(first.key) => {
+                self.bind(ctx, crate::input::Chord { with: Some(first.key), ..chord }, false)
+            }
             Some((first, _)) => self.bind(ctx, first, false),
             None => self.first = Some((chord, std::time::Instant::now())),
         }
@@ -1074,7 +1078,7 @@ impl Screen for Controls {
                 old.map(|b| match b.trigger {
                     Trigger::Hold => Binding { trigger: Trigger::Toggle, ..b },
                     Trigger::Toggle => Binding { trigger: Trigger::Hold, ..b },
-                    Trigger::Double => b,
+                    Trigger::Double | Trigger::Tap => b,
                 })
             });
         } else {

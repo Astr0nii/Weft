@@ -114,8 +114,7 @@ impl Client {
             ToClient::Players(names) => self.players = names,
             ToClient::GameMode(mode) => {
                 self.mode = mode;
-                self.player.flying = mode.has(crate::tag_bits::game_mode::ALWAYS_FLY)
-                    || (mode.has(crate::tag_bits::game_mode::CAN_FLY) && self.player.flying);
+                self.player.flying = mode.has(crate::tag_bits::game_mode::ALWAYS_FLY) || (self.can_fly() && self.player.flying);
                 self.player.noclip = mode.has(crate::tag_bits::game_mode::NOCLIP);
                 self.player.fly_speed = 1.0;
             }

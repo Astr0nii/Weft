@@ -70,7 +70,7 @@ impl Server {
         let selected = e.selected;
         let mode = e.mode;
         r.entities.insert_with(c, e, inv, comps);
-        mode_modifiers(c, r, id, mode);
+        r.keep_sources(c, id);
         let worn = worn_of(c, &r.entities, id);
         // Known only now that the modifiers are back; a new player (no saved health) starts full.
         let max = r.max_health(c, id);

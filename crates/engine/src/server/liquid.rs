@@ -64,7 +64,7 @@ impl Dim {
     }
 
     /// Room for liquid: neither solid nor a ladder (unloaded counts as solid).
-    fn holds_liquid(&self, c: &Content, p: IVec3) -> bool {
+    fn has_room(&self, c: &Content, p: IVec3) -> bool {
         let room = |s: u32| c.states[s as usize].flags & (bf::SOLID | bf::CLIMBABLE) == 0;
         self.get(p).is_some_and(room) && self.space.extras(p).iter().all(|&s| room(s))
     }
@@ -101,11 +101,11 @@ impl Dim {
     }
 
     fn is_hole(&self, c: &Content, below: IVec3, l: u16) -> bool {
-        self.fluid(c, below).is_some_and(|f| f.id == l) || self.holds_liquid(c, below)
+        self.fluid(c, below).is_some_and(|f| f.id == l) || self.has_room(c, below)
     }
 
     fn passes(&self, c: &Content, p: IVec3, l: u16) -> bool {
-        !self.fluid(c, p).is_some_and(|f| f.id == l && f.source) && self.holds_liquid(c, p)
+        !self.fluid(c, p).is_some_and(|f| f.id == l && f.source) && self.has_room(c, p)
     }
 
     /// Whether `l` may flow into `p` from direction `dir`: into empty room, or down into another
@@ -114,7 +114,7 @@ impl Dim {
         match self.fluid(c, p) {
             Some(f) if f.id == l => false,
             Some(_) => falling_in && self.falls_into(c, l, p).is_some(),
-            None => self.holds_liquid(c, p),
+            None => self.has_room(c, p),
         }
     }
 
@@ -281,9 +281,9 @@ impl Dim {
                 .filter(|h| h.frame == 0)?;
             let source = c.liquids[l as usize].first_state;
             // Into what holds liquid, with the same say as placing a block.
-            if c.states[hit.state as usize].flags & bf::HOLDS_LIQUID != 0
+            if c.states[hit.state as usize].liquid.is_none()
                 && self.fluid(c, hit.block).is_none()
-                && self.can_hold_liquid(c, hit.block)
+                && self.can_hold_liquid(c, hit.block, source)
             {
                 let mut q = weft_abi::Query {
                     entity: player,

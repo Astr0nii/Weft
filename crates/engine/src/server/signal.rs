@@ -1068,8 +1068,8 @@ impl Signals {
     }
 
     fn fullness(&self, c: &Content, entities: &Entities, frame: u64, at: IVec3) -> Option<u8> {
-        let id = entities.anchors.get(&(frame, at))?;
-        let items = entities.inventories.get(id)?;
+        let id = entities.anchored(frame, at)?;
+        let items = entities.inventories.get(&id)?;
         if items.is_empty() {
             return Some(0);
         }
@@ -1751,10 +1751,7 @@ impl Dim {
                         .fold(0u8, |m, f| m | 1 << f);
                     (going != 0).then(|| c.block_of(state).with_sides(state, going))
                 } else {
-                    info.support
-                        .map(|(f, _)| f)
-                        .filter(|f| held_by(*f))
-                        .map(|_| state)
+                    c.held_by(state).filter(|f| held_by(*f)).map(|_| state)
                 };
                 if let Some(part) = part {
                     riding.insert(n, part);
@@ -1875,7 +1872,12 @@ impl Dim {
             .signals
             .moving
             .push(Moving { body, piston: plan.p, head, blocks, retracting: !plan.extend, head_turns });
-        self.sound(c.states[state as usize].sounds[crate::content::block_sound::PLACE], plan.p.as_dvec3() + DVec3::splat(0.5), 0.5, 0.0);
+        self.sound(
+            c.states[state as usize].effects[crate::content::block_event::PLACE].sound,
+            plan.p.as_dvec3() + DVec3::splat(0.5),
+            0.5,
+            0.0,
+        );
     }
 
     /// Bodies of pistons that got there turn back into blocks.
@@ -1983,50 +1985,6 @@ impl Dim {
                 }
             }
         }
-    }
-
-    /// Sides of an `on_sides` block that lost what held them up come off; the unloaded holds.
-    pub(super) fn sides_support(&mut self, c: &'static Content, p: IVec3, state: u32) -> bool {
-        let mask = wire::mask(c, state);
-        let mut left = mask;
-        for f in 0..6u8 {
-            if mask & (1 << f) != 0
-                && self
-                    .get(p + DIRS[f as usize])
-                    .is_some_and(|s| !wire::holds_wire(c, s))
-            {
-                left &= !(1 << f);
-            }
-        }
-        if left == mask {
-            return false;
-        }
-        for _ in 0..(mask ^ left).count_ones() {
-            self.drop_block_loot(c, p, state, abi::ItemStack::EMPTY, false, 0);
-        }
-        self.block_dust(c, p, state);
-        self.set(c, p, if left == 0 { AIR } else { c.block_of(state).with_sides(state, left) });
-        true
-    }
-
-    /// A player adding the side its placement chose (`placed`) to an `on_sides` block's cell: the
-    /// state, if that can be done. Its other properties are those of what is there already, else
-    /// of `placed`.
-    pub(super) fn sides_placed(&self, c: &Content, p: IVec3, placed: u32) -> Option<u32> {
-        let cur = self.get(p)?;
-        let def = c.block_of(placed);
-        let on = wire::mask(c, placed).trailing_zeros() as u8;
-        let step = *DIRS.get(on as usize)?;
-        let (mut mask, mut base) = (0, placed);
-        if c.states[cur as usize].block == c.states[placed as usize].block {
-            (mask, base) = (wire::mask(c, cur), cur);
-        } else if c.states[cur as usize].flags & bf::REPLACEABLE == 0 {
-            return None;
-        }
-        if mask & (1 << on) != 0 || !self.get(p + step).is_some_and(|s| wire::holds_wire(c, s)) {
-            return None;
-        }
-        Some(def.with_sides(base, mask | 1 << on))
     }
 }
 

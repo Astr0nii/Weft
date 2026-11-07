@@ -10,7 +10,7 @@
 //! // Computed values in stages, explainable:
 //! r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.5);
 //! // Loot tables any mod can change:
-//! r.loot(&OAK_LEAVES).pool(Pool::new().when(Cond::Chance(0.05)).item("sapling"));
+//! r.loot(&OAK_LEAVES).pool(Pool::new().when(Cond::chance(0.05)).item("sapling"));
 //! r.edit(base::ZOMBIE.loot()).pool(Pool::new().item("mymod:brain"));
 //! ```
 
@@ -32,8 +32,8 @@ pub mod question {
     use crate::Question;
     /// `entity` attacking `other` with `item`.
     pub static ATTACK: Question = Question::named(crate::abi::question::ATTACK);
-    /// Player `entity` turning on a camera mode that asks (`comp::camera::ASK`), which one
-    /// `Ask::is_camera` tells. `Allow` lets it where the game mode wouldn't.
+    /// Player `entity` turning on a camera mode with conditions (`.when(..)`), which one
+    /// `Ask::is_camera` tells. `Allow` lets it where they wouldn't.
     pub static CAMERA: Question = Question::named(crate::abi::action::CAMERA);
     /// Cubes kept loaded (`World::keep_loaded`) from block `pos`, `amount` the mode
     /// (`force_load::*`), `other` the ticket's key: deny one in someone else's claim.
@@ -71,6 +71,32 @@ pub mod attribute {
     pub static MINING_SPEED: Attribute = Attribute::named(crate::abi::attribute::MINING_SPEED);
     /// Multiplier on a player's field of view (1): a zoom, a speed rush.
     pub static FOV: Attribute = Attribute::named(crate::abi::attribute::FOV);
+    /// 1 or more: may fly, jumping twice (0; 1 in creative).
+    pub static CAN_FLY: Attribute = Attribute::named(crate::abi::attribute::CAN_FLY);
+}
+
+/// An attribute modifier that comes with something (`.modifier(..)` on an item, a pose, an
+/// entity kind): `Modifier::add(&attribute::MOVEMENT_SPEED, 0.2)`, while worn (`.worn()`) or
+/// while conditions hold for its holder (`.when(..)`).
+#[derive(Clone)]
+pub struct Modifier(pub(crate) abi::Modifier);
+
+impl Modifier {
+    pub fn new(attribute: &crate::Attribute, op: u32, amount: f64) -> Modifier {
+        Modifier(abi::Modifier { attribute: attribute.name().to_string(), op, amount, ..Default::default() })
+    }
+    pub fn add(attribute: &crate::Attribute, amount: f64) -> Modifier {
+        Modifier::new(attribute, abi::attr_op::ADD, amount)
+    }
+    /// An item's, while it is in an equipment slot rather than in the main hand.
+    pub fn worn(mut self) -> Modifier {
+        self.0.worn = true;
+        self
+    }
+    pub fn when(mut self, c: impl Into<Cond>) -> Modifier {
+        self.0.when.push(c.into().0);
+        self
+    }
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
@@ -304,47 +330,214 @@ pub struct LootCtx {
     pub killer: u64,
     pub by_player: bool,
     pub on_fire: bool,
-    /// The block state mined with `tool`, for `Cond::Harvested` (0 = none).
+    /// The block state mined with `tool`, for `Cond::harvested` (0 = none).
     pub mined: u32,
 }
 
-/// A loot condition.
-#[derive(Clone)]
-pub enum Cond {
-    Chance(f32),
-    /// The tool carries the tag (`tools/shears`).
-    ToolTag(String),
-    NotToolTag(String),
-    ToolLevel(u32),
-    KilledByPlayer,
-    OnFire,
-    /// The block was harvested: broken by the world, or mined with a tool its `mined_by` level
-    /// accepts. `drops(..)` tables have it; write it on pools of your own tables that should.
-    Harvested,
-    /// The block's state has this property at this value, written as in `w.prop`:
-    /// `BlockState("age=7")` for a ripe crop, `BlockState("lit=true")`.
-    BlockState(&'static str),
-    /// A condition (`Registry::condition`) holds there, asked about the killer or breaker.
-    Condition(&'static crate::Condition),
-}
+/// A condition (`abi::condition`): one of the engine's below, a registered one
+/// (`Cond::from(&conditions::NIGHT)`, `Cond::with(&MY_COND, "lava")`) or written out
+/// (`Cond::new("night & light(..7)")`), put together with `&`, `|` and `!`. Loot tables, spawning,
+/// poses, music, camera modes and text (`{if:..}`) all take them, and `w.holds` asks one.
+#[derive(Clone, Debug)]
+pub struct Cond(pub(crate) String);
 
 impl Cond {
-    pub fn tool_tag(t: &str) -> Cond {
-        Cond::ToolTag(t.to_string())
+    pub fn new(text: &str) -> Cond {
+        Cond(text.to_string())
     }
-    fn raw(&self) -> (u32, f32, &str) {
-        use abi::loot_cond as k;
-        match self {
-            Cond::Chance(p) => (k::CHANCE, *p, ""),
-            Cond::ToolTag(t) => (k::TOOL_TAG, 1.0, t),
-            Cond::NotToolTag(t) => (k::NOT_TOOL_TAG, 1.0, t),
-            Cond::ToolLevel(l) => (k::TOOL_LEVEL, *l as f32, ""),
-            Cond::KilledByPlayer => (k::KILLED_BY_PLAYER, 1.0, ""),
-            Cond::OnFire => (k::ON_FIRE, 1.0, ""),
-            Cond::BlockState(prop) => (k::BLOCK_STATE, 1.0, *prop),
-            Cond::Harvested => (k::HARVESTED, 1.0, ""),
-            Cond::Condition(c) => (k::CONDITION, 1.0, c.name()),
+    /// A registered condition with its argument, `name(arg)`.
+    pub fn with(c: &crate::Condition, arg: &str) -> Cond {
+        Cond(format!("{}({arg})", c.name()))
+    }
+    pub fn text(&self) -> &str {
+        &self.0
+    }
+    /// Holds that share of the times it is asked.
+    pub fn chance(p: f32) -> Cond {
+        Cond(format!("chance({p})"))
+    }
+    /// The light there, inclusive (0..15): the brighter of sky light times daylight and block light.
+    pub fn light(min: u32, max: u32) -> Cond {
+        Cond(format!("light({min}..{max})"))
+    }
+    /// The block asked about is one `what` takes (a block matcher): one broken, one under a spawn.
+    pub fn block(what: &str) -> Cond {
+        Cond(format!("block({})", crate::qualify_matcher(crate::mod_id(), what)))
+    }
+    /// The cell on side `d` of the one asked about has a block `what` takes, or (empty) is solid.
+    /// Not known while unloaded, so a rule waits. In a block's rule the side is of its own frame.
+    pub fn side(d: crate::Dir, what: &str) -> Cond {
+        match what.trim() {
+            "" => Cond(format!("side({})", d.name())),
+            m => Cond(format!("side({}, {})", d.name(), crate::qualify_matcher(crate::mod_id(), m))),
         }
+    }
+    /// A block horizontally next to the cell on side `d` is one `what` takes.
+    pub fn beside(d: crate::Dir, what: &str) -> Cond {
+        Cond(format!("beside({}, {})", d.name(), crate::qualify_matcher(crate::mod_id(), what)))
+    }
+    /// Side `d` can be fallen into: air, a liquid, what placing replaces.
+    pub fn open(d: crate::Dir) -> Cond {
+        Cond(format!("open({})", d.name()))
+    }
+    /// Something opaque is on top.
+    pub fn covered() -> Cond {
+        Cond::new("covered")
+    }
+    /// That block has these properties, written as in `w.prop`: `state("age=7")` for a ripe crop.
+    pub fn state(props: &str) -> Cond {
+        Cond(format!("state({props})"))
+    }
+    /// What it was broken or killed with carries the tag (`tools/shears`).
+    pub fn tool(tag: &str) -> Cond {
+        Cond(format!("tool({tag})"))
+    }
+    pub fn tool_level(level: u32) -> Cond {
+        Cond(format!("tool_level({level})"))
+    }
+    pub fn killed_by_player() -> Cond {
+        Cond::new("killed_by_player")
+    }
+    pub fn on_fire() -> Cond {
+        Cond::new("on_fire")
+    }
+    /// The block was harvested: broken by the world, or mined with a tool its `mined_by` level
+    /// accepts. `drops(..)` tables have it; write it on pools of your own tables that should.
+    pub fn harvested() -> Cond {
+        Cond::new("harvested")
+    }
+    /// The body asked about is in a liquid it swims in, flies, sprints (poses).
+    pub fn in_liquid() -> Cond {
+        Cond::new("in_liquid")
+    }
+    pub fn flying() -> Cond {
+        Cond::new("flying")
+    }
+    pub fn sprinting() -> Cond {
+        Cond::new("sprinting")
+    }
+    /// An attribute of the body asked about is within `min..=max`: `attribute(&attribute::CAN_FLY,
+    /// 1.0, f64::MAX)` where it may fly.
+    pub fn attribute(a: &crate::Attribute, min: f64, max: f64) -> Cond {
+        let end = |v: f64| if v.is_finite() && v.abs() < 1e30 { v.to_string() } else { String::new() };
+        Cond(format!("attribute({}, {}..{})", a.name(), end(min), end(max)))
+    }
+}
+
+impl From<&crate::Condition> for Cond {
+    fn from(c: &crate::Condition) -> Cond {
+        Cond(c.name().to_string())
+    }
+}
+
+impl std::ops::BitAnd for Cond {
+    type Output = Cond;
+    fn bitand(self, o: Cond) -> Cond {
+        Cond(format!("({}) & ({})", self.0, o.0))
+    }
+}
+
+impl std::ops::BitOr for Cond {
+    type Output = Cond;
+    fn bitor(self, o: Cond) -> Cond {
+        Cond(format!("({}) | ({})", self.0, o.0))
+    }
+}
+
+impl std::ops::Not for Cond {
+    type Output = Cond;
+    fn not(self) -> Cond {
+        Cond(format!("!({})", self.0))
+    }
+}
+
+/// What happens to a block by itself (`.rule(..)` on a block or a state): when
+/// (`Rule::random(mean_secs)` now and then, `Rule::neighbor()` as soon as something next to it
+/// changes, `Rule::after(secs)` that much later), if (`.when(..)`, again for more, about its
+/// own cell and state), then (`.becomes("age=0")` or `.becomes("base:dirt")`, `.grows()`,
+/// `.breaks()`, `.falls()`). Time goes on in unloaded areas and is caught up when they load.
+/// `grows`, `smothered_into`, `needs`, `falling` are rules.
+#[derive(Clone)]
+pub struct Rule(pub(crate) abi::BlockRule);
+
+impl Rule {
+    fn of(when: u32, secs: f32) -> Rule {
+        Rule(abi::BlockRule { when, secs, conditions: Vec::new(), then: abi::rule_then::GROW, into: String::new() })
+    }
+    pub fn random(mean_secs: f32) -> Rule {
+        Rule::of(abi::rule_when::RANDOM, mean_secs)
+    }
+    pub fn neighbor() -> Rule {
+        Rule::of(abi::rule_when::NEIGHBOR, 0.0)
+    }
+    pub fn after(secs: f32) -> Rule {
+        Rule::of(abi::rule_when::NEIGHBOR, secs)
+    }
+    pub fn when(mut self, c: impl Into<Cond>) -> Rule {
+        self.0.conditions.push(c.into().0);
+        self
+    }
+    /// Properties set (`age=0`) or another block (`base:dirt`, `base:farmland[moisture=0]`).
+    pub fn becomes(mut self, into: &str) -> Rule {
+        let props = into.contains('=') && !into.contains('[');
+        let into = if props { into.to_string() } else { crate::full_name(into) };
+        (self.0.then, self.0.into) = (abi::rule_then::BECOME, into);
+        self
+    }
+    /// Its `on_grow`, else its `age` one higher.
+    pub fn grows(mut self) -> Rule {
+        self.0.then = abi::rule_then::GROW;
+        self
+    }
+    /// Breaks off, dropping what it drops.
+    pub fn breaks(mut self) -> Rule {
+        self.0.then = abi::rule_then::BREAK;
+        self
+    }
+    pub fn falls(mut self) -> Rule {
+        self.0.then = abi::rule_then::FALL;
+        self
+    }
+}
+
+/// What a block does to an entity meeting it (`.hazard(..)`): `Hazard::touch(1.0, &CACTUS)` a
+/// cactus, `Hazard::on(1.0, &HOT_FLOOR)` magma, `Hazard::inside(1.0, &damage_causes::FIRE).fire(160)`
+/// fire; `.every(ticks)` between hits, `.when(..)` conditions about the entity there.
+#[derive(Clone)]
+pub struct Hazard(pub(crate) abi::Hazard);
+
+impl Hazard {
+    fn of(at: u32, damage: f32, cause: &crate::DamageCause) -> Hazard {
+        Hazard(abi::Hazard { at, damage, cause: cause.name().to_string(), fire: 0, every: 0, when: Vec::new() })
+    }
+    /// Its box in the block's shape.
+    pub fn inside(damage: f32, cause: &crate::DamageCause) -> Hazard {
+        Hazard::of(abi::hazard_at::INSIDE, damage, cause)
+    }
+    /// Standing on it.
+    pub fn on(damage: f32, cause: &crate::DamageCause) -> Hazard {
+        Hazard::of(abi::hazard_at::ON, damage, cause)
+    }
+    /// Its eyes in it.
+    pub fn head(damage: f32, cause: &crate::DamageCause) -> Hazard {
+        Hazard::of(abi::hazard_at::HEAD, damage, cause)
+    }
+    /// Within a sixteenth of its shape.
+    pub fn touch(damage: f32, cause: &crate::DamageCause) -> Hazard {
+        Hazard::of(abi::hazard_at::TOUCH, damage, cause)
+    }
+    /// Sets it burning for that many ticks too.
+    pub fn fire(mut self, ticks: u32) -> Hazard {
+        self.0.fire = ticks;
+        self
+    }
+    pub fn every(mut self, ticks: u32) -> Hazard {
+        self.0.every = ticks;
+        self
+    }
+    pub fn when(mut self, c: impl Into<Cond>) -> Hazard {
+        self.0.when.push(c.into().0);
+        self
     }
 }
 
@@ -376,8 +569,8 @@ impl Entry {
         self.weight = w;
         self
     }
-    pub fn when(mut self, c: Cond) -> Entry {
-        self.when.push(c);
+    pub fn when(mut self, c: impl Into<Cond>) -> Entry {
+        self.when.push(c.into());
         self
     }
     /// A burning victim drops it cooked by this recipe type (`base:smelting`).
@@ -403,8 +596,8 @@ impl Pool {
         self.rolls = (min, max.max(min));
         self
     }
-    pub fn when(mut self, c: Cond) -> Pool {
-        self.when.push(c);
+    pub fn when(mut self, c: impl Into<Cond>) -> Pool {
+        self.when.push(c.into());
         self
     }
     pub fn entry(mut self, e: Entry) -> Pool {
@@ -420,14 +613,7 @@ impl Pool {
         self.entry(Entry::item(name).count(min, max))
     }
     fn raw(&self, ns: &str) -> abi::LootPool {
-        let conds = |c: &[Cond]| {
-            c.iter()
-                .map(|c| {
-                    let (kind, value, text) = c.raw();
-                    abi::LootCond { kind, value, text: text.to_string() }
-                })
-                .collect()
-        };
+        let conds = |c: &[Cond]| c.iter().map(|c| c.0.clone()).collect();
         let entries = self
             .entries
             .iter()
@@ -436,11 +622,11 @@ impl Pool {
                 weight: e.weight,
                 min: e.min,
                 max: e.max,
-                conditions: conds(&e.when),
+                when: conds(&e.when),
                 smelt: e.smelt.clone(),
             })
             .collect();
-        abi::LootPool { rolls_min: self.rolls.0, rolls_max: self.rolls.1, conditions: conds(&self.when), entries }
+        abi::LootPool { rolls_min: self.rolls.0, rolls_max: self.rolls.1, when: conds(&self.when), entries }
     }
 }
 
@@ -670,6 +856,11 @@ impl World {
 
     pub fn attribute_remove_modifier(&self, entity: u64, attr: &Attribute, id: &str) {
         unsafe { (host().attribute_remove_modifier)(self.raw(), entity, Str::new(attr.name()), Str::new(id)) }
+    }
+
+    /// Whether `c` holds at `pos` for `entity` (0 for nobody): `w.holds(&Cond::new("night"), pos, 0)`.
+    pub fn holds(&self, c: &Cond, pos: crate::Vec3, entity: u64) -> bool {
+        unsafe { (host().holds)(self.raw(), Str::new(&c.0), pos, entity) != 0 }
     }
 
     pub fn roll_loot(&self, table: &dyn LootSource, ctx: &LootCtx) -> Vec<ItemStack> {

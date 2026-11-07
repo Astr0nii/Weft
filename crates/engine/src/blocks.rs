@@ -9,7 +9,7 @@ use rustc_hash::FxHashMap;
 use weft_abi::{self as abi, BlockModel, ModId, RenderLayer, block_flags as bf, comp::block as b, data, value_op as vo};
 
 use crate::components::{RawValue, matches};
-use crate::content::{BlockCallbacks, BlockDef, ModelBox, Prop, Signal, StateInfo};
+use crate::content::{AIR, BlockCallbacks, BlockDef, ModelBox, Piece, Prop, Signal, StateInfo};
 use crate::entries::{self, Entry, Folded, RawEntry, RawOp};
 
 type Part = (String, Vec<RawOp>);
@@ -31,6 +31,10 @@ pub(crate) struct Blocks {
     pub retextures: Vec<(String, Vec<(String, String)>)>,
     /// Edits by pattern: mod, name, whether they matched anything.
     pub patterns: Vec<(ModId, String, bool)>,
+    /// Each state's rules, still text.
+    pub rules: Vec<(usize, Vec<abi::BlockRule>)>,
+    /// Each state's hazards, still text.
+    pub hazards: Vec<(usize, Vec<abi::Hazard>)>,
 }
 
 /// Every mod's block entries in load order, frozen. Templates copy their item in `items` for each
@@ -97,6 +101,8 @@ pub(crate) fn freeze(
         opens_names: Vec::new(),
         block_names: FxHashMap::default(),
         shares: Vec::new(),
+        rules: Vec::new(),
+        hazards: Vec::new(),
         shapes,
         retextures: Vec::new(),
         patterns: Vec::new(),
@@ -117,6 +123,7 @@ pub(crate) fn freeze(
             .collect();
         let file = model_file(&e, read_model, errors);
         let mut state_values = Vec::with_capacity(count as usize);
+        let mut pieces = Vec::new();
         let mut tagged_here = vec![false; tagged.len()];
         for picked in &picks {
             let mut s = Values::of(&e.parts, picked, &e.name, errors);
@@ -134,9 +141,19 @@ pub(crate) fn freeze(
             if s.or(abi::comp::HARDNESS, 1.0f32) < 0.0 && !liquids.contains(&e.name) {
                 s.0.push(Cow::Owned(RawValue::tag(abi::comp::UNBREAKABLE)));
             }
-            let (info, head) = bake_state(&e.name, index, &s, &retexture, file.as_ref(), tex, errors);
+            let (info, head, raw, own_rules) = bake_state(&e.name, index, &s, &retexture, file.as_ref(), tex, errors);
+            if !own_rules.is_empty() {
+                out.rules.push((out.states.len(), own_rules));
+            }
+            let hazards = s.or::<Vec<abi::Hazard>>(b::HAZARDS, Vec::new());
+            if !hazards.is_empty() {
+                out.hazards.push((out.states.len(), hazards));
+            }
             if !head.is_empty() {
                 heads.push((out.states.len(), head));
+            }
+            if !raw.is_empty() {
+                pieces.push((out.states.len(), raw));
             }
             out.states.push(info);
             state_values.push(
@@ -210,8 +227,22 @@ pub(crate) fn freeze(
             on_signal: e.callback(b::ON_SIGNAL),
             signal_gate: e.callback(b::SIGNAL_GATE),
         };
-        out.block_defs
-            .push(BlockDef { name: e.name, owner: e.owner, first_state: first, states: count, props, cb, opens: None, sides });
+        let def = BlockDef { name: e.name, owner: e.owner, first_state: first, states: count, props, cb, opens: None, sides };
+        // A piece's properties are of the state it is in.
+        for (state, raw) in pieces {
+            let to = |text: &str| def.changed_text(state as u32, text);
+            for (bounds, left, alone) in raw {
+                match (to(&left), to(&alone)) {
+                    (Ok(left), Ok(alone)) => {
+                        // What lies on sides is gone with its last one.
+                        let left = if sides != 0 && out.states[left as usize].sides == 0 { AIR } else { left };
+                        out.states[state].pieces.push(Piece { bounds, left, alone });
+                    }
+                    (Err(e), _) | (_, Err(e)) => errors.push(format!("{} piece: {e}", def.name)),
+                }
+            }
+        }
+        out.block_defs.push(def);
     }
     out.block_names = out
         .block_defs
@@ -305,9 +336,7 @@ fn picks(name: &str, props: &[Prop], count: u32, parts: &[Part], errors: &mut Ve
 /// The states (from 0) a key `prop=value,..` picks: those with every value it names.
 fn picked(props: &[Prop], count: u32, key: &str) -> Result<Vec<u32>, String> {
     let mut fixed: Vec<(&Prop, u32)> = Vec::new();
-    for kv in key.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-        let Some((k, v)) = kv.split_once('=') else { return Err(format!("{kv} is not property=value")) };
-        let (k, v) = (k.trim(), v.trim());
+    for (k, v) in crate::content::prop_pairs(key)? {
         let Some(p) = props.iter().find(|p| p.name == k) else {
             let known: Vec<&str> = props.iter().map(|p| p.name.as_str()).collect();
             return Err(format!("no property {k} (it has: {})", if known.is_empty() { "none".into() } else { known.join(", ") }));
@@ -542,7 +571,8 @@ fn model_file(e: &Entry, read: &dyn Fn(&str) -> Option<String>, errors: &mut Vec
 }
 
 /// One state as its values say (absent: the defaults), its textures renamed by `retexture` and
-/// shaped by its block's model file. Also gives its piston head's name.
+/// shaped by its block's model file. Also gives its piston head's name and its pieces, their
+/// properties still text.
 fn bake_state(
     name: &str,
     block: u32,
@@ -551,7 +581,7 @@ fn bake_state(
     file: Option<&crate::block_model::FileModel>,
     tex: &mut dyn FnMut(&str) -> u32,
     errors: &mut Vec<String>,
-) -> (StateInfo, String) {
+) -> (StateInfo, String, Vec<([f32; 6], String, String)>, Vec<abi::BlockRule>) {
     let mut model = model_of(s.or(b::MODEL, BlockModel::Cube as u32));
     let own_layer = if model == BlockModel::Boxes { RenderLayer::Cutout } else { RenderLayer::Opaque };
     let mut layer = layer_of(s.or(b::LAYER, own_layer as u32));
@@ -630,6 +660,15 @@ fn bake_state(
             .collect()
     };
     let (hitbox, outline) = (sixteenths(b::HITBOX), sixteenths(b::OUTLINE));
+    let rules = s.or::<Vec<abi::BlockRule>>(b::RULES, Vec::new());
+    let pieces = s
+        .or::<Vec<abi::Piece>>(b::PIECES, Vec::new())
+        .into_iter()
+        .map(|p| {
+            let (a, b) = turn.bounds(p.min, p.max, 16.0);
+            ([a[0], a[1], a[2], b[0], b[1], b[2]].map(|v| v / 16.0), p.left, p.alone)
+        })
+        .collect();
     let signal: abi::SignalDesc = s.get(b::SIGNAL).unwrap_or(abi::SignalDesc::DEFAULT);
     let mut boxes: Vec<ModelBox> = boxes
         .iter()
@@ -695,7 +734,6 @@ fn bake_state(
         opacity,
         tint: 0,
         tint_faces: 0x3F,
-        grow: None,
         layer,
         level: 0,
         model,
@@ -722,13 +760,13 @@ fn bake_state(
         drag: 1.0,
         conductor: false,
         liquid: None,
-        support: None,
-        support_near: None,
         spread: None,
-        smother: None,
-        sounds: [u32::MAX; 4],
+        effects: [crate::content::Fx::NONE; 6],
+        pieces: Vec::new(),
+        rules: Vec::new(),
+        hazards: Vec::new(),
     };
-    (info, signal.head)
+    (info, signal.head, pieces, rules)
 }
 
 fn air() -> StateInfo {
@@ -736,7 +774,6 @@ fn air() -> StateInfo {
         turn: weft_abi::Turn::NONE,
         sides: 0,
         liquid_walls: u8::MAX,
-        grow: None,
         signal: Signal::default(),
         block: 0,
         flags: bf::REPLACEABLE | bf::NOT_TARGETABLE,
@@ -758,11 +795,11 @@ fn air() -> StateInfo {
         drag: 1.0,
         conductor: false,
         liquid: None,
-        support: None,
-        support_near: None,
         spread: None,
-        smother: None,
-        sounds: [u32::MAX; 4],
+        effects: [crate::content::Fx::NONE; 6],
+        pieces: Vec::new(),
+        rules: Vec::new(),
+        hazards: Vec::new(),
     }
 }
 
@@ -770,7 +807,7 @@ fn air() -> StateInfo {
 /// say what it is, which a stair of it isn't.
 fn carries_over(v: &RawValue) -> bool {
     // Its steps are states of that block, which a stair hasn't got.
-    if v.name == abi::comp::GROW_TIME || v.name == abi::comp::GROW_LIGHT || v.name.starts_with("block.") {
+    if v.name.starts_with("block.") {
         return false;
     }
     !v.schema.is_empty() || !v.bytes.is_empty() || v.text.is_some() || v.name.starts_with("mineable/")

@@ -248,11 +248,12 @@ impl Dim {
                 .anchors
                 .iter()
                 .filter(|((frame, p), _)| {
+                    let i = crate::world::local_index(*p);
                     *frame == 0
                         && crate::world::cube_of(*p) == cp
-                        && cube.get(crate::world::local_index(*p)) != self.get(*p).unwrap_or(u32::MAX)
+                        && (cube.get(i) != self.get(*p).unwrap_or(u32::MAX) || cube.extras(i) != self.space.extras(*p))
                 })
-                .map(|((_, p), id)| (*p, *id))
+                .flat_map(|((_, p), ids)| ids.iter().map(|id| (*p, *id)))
                 .collect();
             for (_, id) in gone {
                 self.entities.remove(id);

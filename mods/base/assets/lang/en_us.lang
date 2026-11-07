@@ -287,3 +287,4 @@ block.base.floater = Floater
 block.base.golden_lamp = Golden Lamp
 block.base.anchor = Anchor
 block.base.slime_block = Slime Block
+death.base.cactus = {0} was pricked to death

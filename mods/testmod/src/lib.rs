@@ -462,7 +462,7 @@ fn init(r: &mut Registry) {
         }
     });
     r.edit(crate::riding::STEED.loot())
-        .pool(Pool::new().when(Cond::Chance(0.05)).item("tin_ingot"));
+        .pool(Pool::new().when(Cond::chance(0.05)).item("tin_ingot"));
 
     r.command("tagbench", "[millions:int]", tag_bench);
     // The engine's /gizmo suggests this mod's group too.

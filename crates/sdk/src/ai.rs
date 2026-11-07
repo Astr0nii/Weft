@@ -120,6 +120,11 @@ impl Trigger {
         self
     }
 
+    /// Only while `c` holds where the mob is (`!Cond::new("day")`).
+    pub fn only_while(self, c: crate::Cond) -> Trigger {
+        self.only_if(move |w, st| w.holds(&c, st.pos, 0))
+    }
+
     /// Notices mobs of `kind` instead of players (a wolf and sheep).
     pub fn of(self, kind: &'static EntityKind) -> Trigger {
         self.of_any(move |_, _, st| st.kind == kind.id())
