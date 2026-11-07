@@ -1536,16 +1536,6 @@ macro_rules! state_setters {
                 .set(&bc::MODEL, BlockModel::None as u32)
                 .set(&bc::LAYER, RenderLayer::Opaque as u32)
         }
-        /// Raw `block_flags` on top of what the presets set (opaque is what a cube on the opaque
-        /// layer is).
-        pub fn with(mut self, f: u32) -> Self {
-            for (tag, bit) in abi::comp::block::FLAGS {
-                if f & bit != 0 {
-                    self = self.tag(tag);
-                }
-            }
-            if f & bf::SOLID != 0 { self.untag(abi::comp::block::NOT_SOLID) } else { self }
-        }
     };
 }
 

@@ -387,7 +387,7 @@ pub fn click(m: &mut OpenMenu, dim: &mut Dim, c: &'static Content, player: u64, 
         let creative = dim
             .entities
             .get(player)
-            .is_some_and(|e| e.mode.has(weft_abi::game_mode_flags::NO_COSTS));
+            .is_some_and(|e| e.mode.has(crate::tag_bits::game_mode::NO_COSTS));
         let there = if (slot as usize) < m.slots.len() { get(m, dim, player, slot) } else { ItemStack::EMPTY };
         if creative && m.cursor.is_empty() && !there.is_empty() {
             m.cursor = ItemStack { count: c.max_stack(there.item), ..there };

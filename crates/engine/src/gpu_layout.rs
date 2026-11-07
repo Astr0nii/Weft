@@ -621,7 +621,7 @@ gpu_struct! {
     pub struct GpuParticleKind as "ParticleKind" {
         /// x gravity, y speed kept this step, z speed kept on the ground this step.
         pub motion: [f32; 4],
-        /// x color, y color at the end, z `abi::particle_flags`, w shader slot.
+        /// x color, y color at the end, z `crate::tag_bits::particle`, w shader slot.
         pub data: [u32; 4],
         /// x first in `frames`, y how many, none for block dust; z first in `rules`, w how many.
         pub frames: [u32; 4],
@@ -975,7 +975,8 @@ pub fn particle_sim_prelude(window_reach: i32) -> String {
         let access = if matches!(*name, "sim" | "dst") { "read_write" } else { "read" };
         s.push_str(&format!("@group(1) @binding({i}) var<storage, {access}> {name}: {ty};\n"));
     }
-    use weft_abi::{particle_event as pe, particle_flags as pf, particle_then as pt, particle_when as pw};
+    use crate::tag_bits::particle as pf;
+    use weft_abi::{particle_event as pe, particle_then as pt, particle_when as pw};
     s.push_str(&format!(
         "struct SimArgs {{\n    first: u32,\n    count: u32,\n    dt: f32,\n    pad: f32,\n    shift: vec4<f32>,\n    rel: vec4<f32>,\n    origin: vec4<i32>,\n    center: vec4<i32>,\n}}\nvar<immediate> args: SimArgs;\nconst WINDOW_REACH: i32 = {window_reach};\nconst PARTICLE_FLAG_COLLIDE: u32 = {}u;\nconst PARTICLE_FLAG_FULLBRIGHT: u32 = {}u;\nconst PARTICLE_FLAG_SHRINK: u32 = {}u;\n",
         pf::COLLIDE, pf::FULLBRIGHT, pf::SHRINK

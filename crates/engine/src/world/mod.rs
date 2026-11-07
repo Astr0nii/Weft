@@ -69,7 +69,7 @@ impl GameMode {
         all.get(self.0 as usize).unwrap_or(&all[0])
     }
 
-    /// One of `abi::game_mode_flags`.
+    /// One of `crate::tag_bits::game_mode`.
     pub fn has(self, flag: u32) -> bool {
         self.def().flags & flag != 0
     }
@@ -96,7 +96,7 @@ impl GameMode {
 
     /// Takes no damage and needs no food.
     pub fn invulnerable(self) -> bool {
-        self.has(weft_abi::game_mode_flags::INVULNERABLE)
+        self.has(crate::tag_bits::game_mode::INVULNERABLE)
     }
 }
 

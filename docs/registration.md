@@ -84,7 +84,7 @@ Per-state components (`comps::block`):
 | `SIGNAL` | `SignalDesc` | none | set by the `signal_*` presets |
 | `LIQUID_WALLS` | `u8` | sides the hitbox covers | `.liquid_walls` |
 
-Tags per state (`abi::comp::block`): `NOT_SOLID`, `REPLACEABLE`, `CLIMBABLE`, `NOT_TARGETABLE`, `CULL_SAME`, `IMMOVABLE`, `SIGNAL_BLOCKER`, `STICKY`, `NOT_STOOD_ON`, `HOLDS_LIQUID`. Presets set them (`.not_solid()`, `.replaceable()`, `.holds_liquid()`...), `.with(block_flags::..)` sets any.
+Tags per state (`abi::comp::block`): `NOT_SOLID`, `REPLACEABLE`, `CLIMBABLE`, `NOT_TARGETABLE`, `CULL_SAME`, `IMMOVABLE`, `SIGNAL_BLOCKER`, `STICKY`, `NOT_STOOD_ON`, `HOLDS_LIQUID`. Presets set them (`.not_solid()`, `.replaceable()`, `.holds_liquid()`...), `.tag(..)` sets any.
 
 ```rust
 static LAMP: Block = Block::named("base:redstone_lamp");
@@ -217,7 +217,7 @@ A set of slots the server runs plus the screen showing it; a screen without slot
 | `SCREEN` | callback | client: builds the screen (`.screen`, `.default_screen`) |
 | `ON_KEY` | callback | keys while it is on top (`.on_key`) |
 
-Tags (`abi::comp::menu`): `menu.pauses`, `menu.keep_on_escape`, `menu.closes_on_respawn`, `menu.keys_first`, `menu.shows_chat` (`.pauses()`, `.with(screen_flags::..)`...).
+Tags (`abi::comp::menu`): `menu.pauses`, `menu.keep_on_escape`, `menu.closes_on_respawn`, `menu.keys_first`, `menu.shows_chat` (`.pauses()`, `.keep_on_escape()`..., `.tag(..)` for the rest).
 
 ```rust
 static CHEST: Menu = Menu::named("base:chest");
@@ -501,10 +501,10 @@ r.remove(&conditions::NIGHT);
 ```
 
 ## Camera
-A camera mode. `r.camera(&MODE)`, the engine's in `cameras::*`. `comps::camera`: `KEY` (`str`, `.key`), `CALL` (callback, `.shot`), `TRANSITION` (`f32`), `EASING` (`u32`) (`.transition`); tags `camera.body`, `hand`, `hud`, `effects`, `clip`, `solid`, `cycle`, `detached`, `aim`, `no_interact`, `ask` (`.with(camera_flags::..)`, `.without(..)`, `.in_cycle()`, `.ask()`).
+A camera mode. `r.camera(&MODE)`, the engine's in `cameras::*`. `comps::camera`: `KEY` (`str`, `.key`), `CALL` (callback, `.shot`), `TRANSITION` (`f32`), `EASING` (`u32`) (`.transition`); tags `camera.body`, `hand`, `hud`, `effects`, `clip`, `solid`, `cycle`, `detached`, `aim`, `no_interact`, `ask` (a shot's own, `.in_cycle()`, `.ask()`, `.tag(..)` and `.untag(..)`).
 
 ```rust
-r.edit(&cameras::FRONT).without(abi::camera_flags::CYCLE);
+r.edit(&cameras::FRONT).untag(abi::comp::camera::CYCLE);
 ```
 
 ## Key

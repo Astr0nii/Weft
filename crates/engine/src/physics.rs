@@ -216,7 +216,7 @@ impl<'a> Body<'a> {
             None => Aabb::around(pos, size.0, size.1),
         };
         let blocks = built.map(|s| (s, place));
-        Some(Body { id, aabb, delta, carry: kind.carry_height as f64, crushes: kind.is(weft_abi::entity_flags::CRUSHES), blocks })
+        Some(Body { id, aabb, delta, carry: kind.carry_height as f64, crushes: kind.is(crate::tag_bits::entity::CRUSHES), blocks })
     }
 
     /// Its solid boxes touching `area`, in world space (until `f` returns true).

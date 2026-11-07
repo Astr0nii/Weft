@@ -1218,7 +1218,7 @@ impl Running {
             .map(|(&id, e)| e.args(id, dt))
             .collect();
         for mut a in all.into_iter().chain([mine]) {
-            let own = c.game.entities[a.kind as usize].flags & abi::entity_flags::OWN_EFFECTS != 0;
+            let own = c.game.entities[a.kind as usize].flags & crate::tag_bits::entity::OWN_EFFECTS != 0;
             if !own && a.entity != mine.entity {
                 if let Some(g) = &mut self.game {
                     g.client.entity_effects(&a);
@@ -2141,7 +2141,7 @@ fn build_ui_quads(r: &mut Running, scale: f32) {
     let hud = r
         .game
         .as_ref()
-        .is_some_and(|g| g.client.camera_has(weft_abi::camera_flags::HUD))
+        .is_some_and(|g| g.client.camera_has(crate::tag_bits::camera::HUD))
         || !r.screens.is_empty();
     if r.game.is_some() && hud && !hud_hidden() && !(r.hud_off && r.screens.is_empty()) {
         layers.push(&r.hud.ui);

@@ -233,7 +233,7 @@ fn ride_step(
             ground: target * (1.0 - 0.6 * 0.91),
             air: 0.02,
             jump: if s.jump > 0.0 { s.jump as f64 * tick } else { 0.0 },
-            swim: k.is(weft_abi::entity_flags::SWIMS),
+            swim: k.is(crate::tag_bits::entity::SWIMS),
             ..Default::default()
         };
         let flies = s.flies != 0;
@@ -244,7 +244,7 @@ fn ride_step(
             half_width: d.half_width,
             height: d.height,
             step: physics::STEP_UP,
-            gravity: if flies || k.is(weft_abi::entity_flags::NO_GRAVITY) { 0.0 } else { physics::gravity_per_tick(gravity) },
+            gravity: if flies || k.is(crate::tag_bits::entity::NO_GRAVITY) { 0.0 } else { physics::gravity_per_tick(gravity) },
         };
         let mut pos = m.pos;
         let r = physics::walk(c, block, bodies, mount, &mut pos, &mut drive.vel, drive.on_ground, &ctl, &frame);
@@ -935,7 +935,7 @@ impl Client {
 
     /// What the main hand shows: from the eyes the old stack, until the hand has gone down with it.
     pub fn shown_held(&self) -> ItemStack {
-        if self.camera_has(weft_abi::camera_flags::HAND) { self.hand_stack } else { self.held() }
+        if self.camera_has(crate::tag_bits::camera::HAND) { self.hand_stack } else { self.held() }
     }
 
     pub fn off_held(&self) -> ItemStack {
@@ -966,7 +966,7 @@ impl Client {
 
     /// The key that swaps what is in the two hands.
     fn swap_hands(&mut self, input: &Input) {
-        if input.captured && !self.mode.has(weft_abi::game_mode_flags::NO_INTERACT) && input.pressed("core:swap_hands") {
+        if input.captured && !self.mode.has(crate::tag_bits::game_mode::NO_INTERACT) && input.pressed("core:swap_hands") {
             self.conn.send(ToServer::SwapHands);
         }
     }
@@ -984,8 +984,8 @@ impl Client {
             input.stop("core:sprint");
         }
         let m = self.camera_mode();
-        input.mute_moves = m.has(weft_abi::camera_flags::DETACHED);
-        input.mute_hands = m.has(weft_abi::camera_flags::NO_INTERACT);
+        input.mute_moves = m.has(crate::tag_bits::camera::DETACHED);
+        input.mute_hands = m.has(crate::tag_bits::camera::NO_INTERACT);
         let input = &*input;
         self.take_messages(dt);
         self.read_look(input);
@@ -998,7 +998,7 @@ impl Client {
         self.frame_dt = dt as f32;
         self.weather_effects(dt as f32);
         self.sync_me();
-        if input.pressed("core:drop") && !self.mode.has(weft_abi::game_mode_flags::NO_INTERACT) {
+        if input.pressed("core:drop") && !self.mode.has(crate::tag_bits::game_mode::NO_INTERACT) {
             self.conn
                 .send(ToServer::Drop { all: input.held("core:sprint") });
         }
@@ -1055,20 +1055,20 @@ impl Client {
         if self.me.vehicle.is_some() && input.captured && input.pressed("core:dismount") {
             self.conn.send(ToServer::Dismount);
         }
-        if self.mode.has(weft_abi::game_mode_flags::CAN_FLY) && input.captured && input.pressed("core:fly") {
+        if self.mode.has(crate::tag_bits::game_mode::CAN_FLY) && input.captured && input.pressed("core:fly") {
             self.player.flying = !self.player.flying;
         }
     }
 
     /// A spectator's scroll wheel sets how fast it flies.
     fn fly_speed(&mut self, input: &Input) {
-        if input.scroll != 0.0 && self.mode.has(weft_abi::game_mode_flags::NO_INTERACT) {
+        if input.scroll != 0.0 && self.mode.has(crate::tag_bits::game_mode::NO_INTERACT) {
             self.player.fly_speed = (self.player.fly_speed * if input.scroll > 0.0 { 1.25 } else { 0.8 }).clamp(0.1, 10.0);
         }
     }
 
     fn select_slot(&mut self, input: &Input) {
-        if self.mode.has(weft_abi::game_mode_flags::NO_INTERACT) {
+        if self.mode.has(crate::tag_bits::game_mode::NO_INTERACT) {
             return;
         }
         let old = self.selected;
@@ -1163,7 +1163,7 @@ impl Client {
     /// Swings, the held item going down and coming up when it changes, and the hand lagging
     /// behind the view.
     fn animate_hand(&mut self, input: &Input, dt: f64) {
-        let spectator = self.mode.has(weft_abi::game_mode_flags::NO_INTERACT);
+        let spectator = self.mode.has(crate::tag_bits::game_mode::NO_INTERACT);
         advance_swing(&mut self.hand_swing, dt as f32);
         self.swap_hands(input);
         // A use swings only when the server says it did something (`ToClient::Swing`).
@@ -1246,12 +1246,12 @@ impl Client {
                     if !e.is_body() {
                         continue;
                     }
-                    if k.is(weft_abi::entity_flags::SOLID) {
+                    if k.is(crate::tag_bits::entity::SOLID) {
                         let (now, delta) = (e.known(at), e.known(at) - e.known(at - step_ticks));
                         let physics::Dims { half_width: hw, height: h, .. } = e.dims();
                         let built = e.structure.as_deref().map(|s| s as &dyn physics::Blocks);
                         bodies.extend(physics::Body::of(id, k, now, (hw, h), delta, built));
-                    } else if k.is(weft_abi::entity_flags::PUSHABLE) {
+                    } else if k.is(crate::tag_bits::entity::PUSHABLE) {
                         let d = self.player.pos - e.pos;
                         let (theirs, mine) = (e.dims(), self.player.dims());
                         let reach = theirs.half_width + mine.half_width;
@@ -1318,10 +1318,10 @@ impl Client {
     /// What the crosshair is on. Returns where the eye looks.
     fn aim(&mut self, input: &Input) -> DVec3 {
         let c = content();
-        let spectator = self.mode.has(weft_abi::game_mode_flags::NO_INTERACT);
+        let spectator = self.mode.has(crate::tag_bits::game_mode::NO_INTERACT);
         // From the eye as drawn, the moment structures are drawn at too, so a block on a
         // structure the player rides stays the one aimed at.
-        let from = if self.camera_has(weft_abi::camera_flags::AIM) { self.cameras.shown } else { self.camera() };
+        let from = if self.camera_has(crate::tag_bits::camera::AIM) { self.cameras.shown } else { self.camera() };
         let (eye, look) = (from.pos, from.forward().as_dvec3());
         use crate::server::extend::{BLOCK_REACH, ENTITY_REACH};
         let reach = self.attribute(BLOCK_REACH) as f64;
@@ -1337,7 +1337,7 @@ impl Client {
             // In creative a mob gives its egg, there being no other way to get what stands there.
             let egg = || {
                 self.target_entity
-                    .filter(|_| self.mode.has(weft_abi::game_mode_flags::NO_COSTS))
+                    .filter(|_| self.mode.has(crate::tag_bits::game_mode::NO_COSTS))
                     .and_then(|e| c.spawn_egg_of(self.entities.get(&e)?.kind))
             };
             if let Some(item) = self.target.and_then(|h| c.pick_item(h.state)).or_else(egg) {
@@ -1347,7 +1347,7 @@ impl Client {
                     .iter()
                     .position(|s| s.item == item && !s.is_empty())
                     .or_else(|| {
-                        (self.mode.has(weft_abi::game_mode_flags::NO_COSTS) && !hotbar[self.selected].is_empty())
+                        (self.mode.has(crate::tag_bits::game_mode::NO_COSTS) && !hotbar[self.selected].is_empty())
                             .then(|| hotbar.iter().position(|s| s.is_empty()))
                             .flatten()
                     });
@@ -1400,8 +1400,8 @@ impl Client {
         self.refused_break = self
             .refused_break
             .filter(|&r| input.held("core:attack") && target.is_some_and(|h| (h.frame, h.block) == r));
-        let keeps = (self.mode.has(weft_abi::game_mode_flags::INSTANT_BREAK) && c.no_creative_break(self.held().item))
-            || self.mode.has(weft_abi::game_mode_flags::NO_BREAK);
+        let keeps = (self.mode.has(crate::tag_bits::game_mode::INSTANT_BREAK) && c.no_creative_break(self.held().item))
+            || self.mode.has(crate::tag_bits::game_mode::NO_BREAK);
         let refused = keeps || self.refused_break.is_some();
         if input.held("core:attack") {
             if let Some(id) = self.target_entity {
@@ -1424,7 +1424,7 @@ impl Client {
                     self.eye_liquid().is_some(),
                     self.player.on_ground,
                     self.attribute(crate::server::extend::MINING_SPEED),
-                    self.mode.has(weft_abi::game_mode_flags::INSTANT_BREAK),
+                    self.mode.has(crate::tag_bits::game_mode::INSTANT_BREAK),
                 );
                 let done = match self.breaking {
                     Some((f, p, v)) if (f, p) == (hit.frame, hit.block) && self.breaking_part == hit.state => v,
@@ -1551,7 +1551,7 @@ impl Client {
         frames.extend(
             self.entities
                 .iter()
-                .filter(|(_, e)| c.game.entities[e.kind as usize].is(weft_abi::entity_flags::SOLID))
+                .filter(|(_, e)| c.game.entities[e.kind as usize].is(crate::tag_bits::entity::SOLID))
                 .map(|(&id, e)| (id, e.pose(at))),
         );
         // A crowd's worth on all cores: nothing here depends on another entity.
@@ -1568,7 +1568,7 @@ impl Client {
                 .rel_target
                 .and_then(|t| frames.iter().find(|f| f.0 == e.frame).map(|f| (f.1, t)));
             let mut walked = None;
-            e.pos = if c.game.entities[e.kind as usize].is(weft_abi::entity_flags::SOLID) {
+            e.pos = if c.game.entities[e.kind as usize].is(crate::tag_bits::entity::SOLID) {
                 e.pose(at)
             } else if let Some((at, rel_target)) = body {
                 let rel_before = e.rel;
@@ -1819,7 +1819,7 @@ impl Client {
     fn overlays(&self, textures: &GameTextures) -> Vec<sky::Overlay> {
         let c = content();
         let mut out = Vec::new();
-        if !self.camera_has(weft_abi::camera_flags::EFFECTS) || self.hide_gui {
+        if !self.camera_has(crate::tag_bits::camera::EFFECTS) || self.hide_gui {
             return out;
         }
         let light = self.daylight().max(0.25);
@@ -2014,7 +2014,7 @@ impl Client {
             w.block_or_air((p - DVec3::Y * 0.2).floor().as_ivec3())
                 .map_or(u32::MAX, |s| c.states[s as usize].sounds[block_sound::STEP])
         };
-        if self.player.on_ground && !self.player.flying && !self.mode.has(weft_abi::game_mode_flags::HIDDEN) {
+        if self.player.on_ground && !self.player.flying && !self.mode.has(crate::tag_bits::game_mode::HIDDEN) {
             self.next_step -= moved;
             if self.next_step <= 0.0 {
                 // Vanilla: a step every 1/0.6 blocks walked.
@@ -2521,13 +2521,13 @@ impl Client {
             &overlays,
         );
         self.render.draw_translucent(&mut late);
-        let alive = !self.dead && !self.mode.has(weft_abi::game_mode_flags::NO_INTERACT);
-        let hand = (alive && self.camera_has(weft_abi::camera_flags::HAND) && !self.hide_gui).then(|| entity_render::Hand {
+        let alive = !self.dead && !self.mode.has(crate::tag_bits::game_mode::NO_INTERACT);
+        let hand = (alive && self.camera_has(crate::tag_bits::camera::HAND) && !self.hide_gui).then(|| entity_render::Hand {
             lowered: 1.0 - self.hand_height,
             lag: (self.player.pitch - self.hand_view.0, angle_diff(self.player.yaw, self.hand_view.1)),
             body: self.first_person_model,
         });
-        let me = (alive && (self.camera_has(weft_abi::camera_flags::BODY) || hand.is_some())).then_some(&self.me);
+        let me = (alive && (self.camera_has(crate::tag_bits::camera::BODY) || hand.is_some())).then_some(&self.me);
         let world = &self.world;
         let light = |p: IVec3| world.light(p);
         let mut hand_late = std::mem::take(&mut self.hand_late);

@@ -67,8 +67,8 @@ impl Server {
         let off_hand = c.game.player_layout.off == Some(slot);
         let Some((r, entity)) = self.region(pi) else { return false };
         let Some(e) = r.entities.get(entity) else { return false };
-        let creative = e.mode.has(weft_abi::game_mode_flags::NO_COSTS);
-        let no_place = e.mode.has(weft_abi::game_mode_flags::NO_PLACE);
+        let creative = e.mode.has(crate::tag_bits::game_mode::NO_COSTS);
+        let no_place = e.mode.has(crate::tag_bits::game_mode::NO_PLACE);
         let held = r.entities.inventory_slot(entity, slot);
         let Some(state) = c
             .items
@@ -198,7 +198,7 @@ impl Server {
             M::Use { face, .. } | M::UseItem { target: Some((_, face)) } if *face >= 6 => false,
             M::Respawn => !e.alive(),
             M::Break { .. } | M::Use { .. } | M::UseItem { .. } | M::Attack(_) | M::Swing | M::Interact(_) | M::Drop { .. } => {
-                e.alive() && !e.mode.has(weft_abi::game_mode_flags::NO_INTERACT)
+                e.alive() && !e.mode.has(crate::tag_bits::game_mode::NO_INTERACT)
             }
             M::Move { .. } | M::OpenInventory | M::Click { .. } | M::Drag { .. } | M::CreativeTake { .. } | M::Pick { .. } => e.alive(),
             _ => true,
@@ -240,7 +240,7 @@ impl Server {
                 let Some(e) = r
                     .entities
                     .get(entity)
-                    .filter(|e| !e.mode.has(weft_abi::game_mode_flags::NO_INTERACT))
+                    .filter(|e| !e.mode.has(crate::tag_bits::game_mode::NO_INTERACT))
                 else {
                     return;
                 };
@@ -321,9 +321,9 @@ impl Server {
                 let flies = r
                     .entities
                     .get(entity)
-                    .is_some_and(|e| e.mode.has(weft_abi::game_mode_flags::CAN_FLY));
+                    .is_some_and(|e| e.mode.has(crate::tag_bits::game_mode::CAN_FLY));
                 let mut q = weft_abi::Query { entity, amount: mode as f64, ..weft_abi::Query::DEFAULT };
-                let may = !m.has(weft_abi::camera_flags::ASK) || r.ask_or(c, weft_abi::action::CAMERA, &mut q, flies);
+                let may = !m.has(crate::tag_bits::camera::ASK) || r.ask_or(c, weft_abi::action::CAMERA, &mut q, flies);
                 if may {
                     self.players[pi]
                         .conn
@@ -337,8 +337,8 @@ impl Server {
                 let mining = self.players[pi].mining.take();
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get(entity) else { return };
-                let (eye, sel, creative) = (e.pos + DVec3::Y * e.eye(c), e.selected, e.mode.has(weft_abi::game_mode_flags::INSTANT_BREAK));
-                let no_break = e.mode.has(weft_abi::game_mode_flags::NO_BREAK);
+                let (eye, sel, creative) = (e.pos + DVec3::Y * e.eye(c), e.selected, e.mode.has(crate::tag_bits::game_mode::INSTANT_BREAK));
+                let no_break = e.mode.has(crate::tag_bits::game_mode::NO_BREAK);
                 let reach = r.block_reach(c, entity);
                 let rate = r.mining_rate_of(c, entity, frame, pos, part);
                 let progress = mining
@@ -421,7 +421,7 @@ impl Server {
             ToServer::Pick { item } => {
                 let Some((r, entity)) = self.region(pi) else { return };
                 let Some(e) = r.entities.get(entity) else { return };
-                let (sel, creative) = (e.selected, e.mode.has(weft_abi::game_mode_flags::NO_COSTS));
+                let (sel, creative) = (e.selected, e.mode.has(crate::tag_bits::game_mode::NO_COSTS));
                 let Some(inv) = r.entities.inventories.get(&entity) else { return };
                 let current = inv.get(sel as usize).copied().unwrap_or_default();
                 if let Some(j) = c
@@ -518,7 +518,7 @@ impl Server {
                 let p = &mut players[pi];
                 let creative = dims[p.dim as usize]
                     .entity(p.entity)
-                    .is_some_and(|e| e.mode.has(weft_abi::game_mode_flags::CREATIVE_INVENTORY));
+                    .is_some_and(|e| e.mode.has(crate::tag_bits::game_mode::CREATIVE_INVENTORY));
                 if let (true, Some(m), true) = (creative, &mut p.menu, item != 0 && (item as usize) < c.items.len()) {
                     // Like vanilla: the same item adds one, anything else held is thrown away
                     // first, an empty hand takes a stack (left) or one (right).
@@ -712,7 +712,7 @@ pub(super) fn within(eye: DVec3, block: IVec3, reach: f64) -> bool {
 pub(super) fn wear(c: &Content, d: &mut Dim, player: u64, slot: u32, amount: u32) {
     if d.entities
         .get(player)
-        .is_some_and(|e| e.mode.has(weft_abi::game_mode_flags::NO_COSTS))
+        .is_some_and(|e| e.mode.has(crate::tag_bits::game_mode::NO_COSTS))
     {
         return;
     }

@@ -3,8 +3,9 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use crate::tag_bits::entity as ef;
 use rustc_hash::FxHashMap;
-use weft_abi::{self as abi, Callback, ModId, entity_flags as ef, entry_kind as ek};
+use weft_abi::{self as abi, Callback, ModId, entry_kind as ek};
 
 use crate::components::{self as comps, Components, RawValue};
 use crate::entries::{Entry, RawEntry, bake, bake_by};
@@ -178,7 +179,7 @@ pub struct MenuDef {
     pub on_tick: Option<(ModId, Callback)>,
     pub screen: Option<(ModId, Callback)>,
     pub on_key: Option<(ModId, Callback)>,
-    /// How its screen behaves, `abi::screen_flags`.
+    /// How its screen behaves, `crate::tag_bits::screen`.
     pub flags: u32,
 }
 
@@ -900,7 +901,7 @@ fn engine_sound_categories() -> Vec<RawEntry> {
 /// `SoundDef::category` of the engine's music track: the first category.
 pub const MUSIC_CATEGORY: u32 = 0;
 
-/// A damage cause: what the engine does differently for it (`abi::damage_flags`), and how a
+/// A damage cause: what the engine does differently for it (`crate::tag_bits::damage`), and how a
 /// death by it reads.
 #[derive(Clone, Debug)]
 pub struct DamageCauseDef {
@@ -946,7 +947,7 @@ fn bake_damage_cause(e: &Entry) -> DamageCauseDef {
     let text = |c: &str| e.text(c).unwrap_or_default().to_string();
     DamageCauseDef {
         name: e.name.clone(),
-        flags: e.flags(&d::FLAGS),
+        flags: e.flags(&crate::tag_bits::damage::TAGS),
         death_message: text(d::DEATH_MESSAGE),
         death_message_by: text(d::DEATH_MESSAGE_BY),
     }
@@ -961,7 +962,7 @@ impl DamageCauseDef {
 #[derive(Clone, Debug)]
 pub struct WeatherDef {
     pub name: String,
-    /// `abi::weather_flags`.
+    /// `crate::tag_bits::weather`.
     pub flags: u32,
     pub look: abi::WeatherLook,
     pub sound_name: String,
@@ -973,13 +974,13 @@ pub struct WeatherDef {
 
 impl WeatherDef {
     pub fn falls(&self) -> bool {
-        self.flags & abi::weather_flags::FALLS != 0
+        self.flags & crate::tag_bits::weather::FALLS != 0
     }
     pub fn lightning(&self) -> bool {
-        self.flags & abi::weather_flags::LIGHTNING != 0
+        self.flags & crate::tag_bits::weather::LIGHTNING != 0
     }
     pub fn shelters(&self) -> bool {
-        self.flags & abi::weather_flags::SHELTERS != 0
+        self.flags & crate::tag_bits::weather::SHELTERS != 0
     }
 }
 
@@ -1008,7 +1009,8 @@ fn engine_weathers() -> Vec<RawEntry> {
 
 /// A weather from its entry: rain's look and flags where it says nothing.
 fn bake_weather(e: &crate::entries::Entry) -> WeatherDef {
-    use weft_abi::{comp::weather as w, weather_flags as f};
+    use crate::tag_bits::weather as f;
+    use weft_abi::comp::weather as w;
     let share = |c: &str, rain: f32| e.or(c, rain).clamp(0.0, 1.0);
     let flags =
         (!e.has(w::DRY) as u32 * f::FALLS) | (e.has(w::LIGHTNING) as u32 * f::LIGHTNING) | (!e.has(w::UNSHELTERED) as u32 * f::SHELTERS);
@@ -1138,7 +1140,7 @@ pub fn engine_pose_defs() -> &'static [PoseDef] {
     })
 }
 
-/// A game mode: what its players may do (`abi::game_mode_flags`) and the attribute modifiers
+/// A game mode: what its players may do (`crate::tag_bits::game_mode`) and the attribute modifiers
 /// they get, (attribute, op, amount).
 #[derive(Clone, Debug)]
 pub struct GameModeDef {
@@ -1149,7 +1151,13 @@ pub struct GameModeDef {
 
 fn engine_game_modes() -> Vec<RawEntry> {
     use abi::comp::game_mode as m;
-    let tag = |f: u32| m::FLAGS.iter().find(|t| t.1 == f).unwrap().0;
+    let tag = |f: u32| {
+        crate::tag_bits::game_mode::TAGS
+            .iter()
+            .find(|t| t.1 == f)
+            .unwrap()
+            .0
+    };
     let modifier = |attribute: &str, op: u32, amount: f64| abi::ModeModifier { attribute: attribute.to_string(), op, amount };
     let mode = |name: &str, flags: &[u32], modifiers: Vec<abi::ModeModifier>| {
         flags
@@ -1157,7 +1165,7 @@ fn engine_game_modes() -> Vec<RawEntry> {
             .fold(RawEntry::engine(abi::entry_kind::GAME_MODE, name), |e, f| e.tag(tag(*f)))
             .set(m::MODIFIERS, modifiers)
     };
-    use abi::game_mode_flags as f;
+    use crate::tag_bits::game_mode as f;
     // Unseen by mobs outside survival; creative reaches further.
     let unseen = || modifier(abi::attribute::VISIBILITY, abi::attr_op::MULTIPLY_TOTAL, -1.0);
     vec![
@@ -1183,7 +1191,7 @@ fn bake_game_mode(e: &Entry) -> GameModeDef {
     use abi::comp::game_mode as m;
     GameModeDef {
         name: e.name.clone(),
-        flags: e.flags(&m::FLAGS),
+        flags: e.flags(&crate::tag_bits::game_mode::TAGS),
         modifiers: e
             .or::<Vec<abi::ModeModifier>>(m::MODIFIERS, Vec::new())
             .into_iter()
@@ -1447,7 +1455,7 @@ fn bake_entity(e: &Entry) -> EntityKind {
         height: size.height,
         eye: e.or(k::EYE, size.height * EYE),
         speed: e.or(k::SPEED, 3.0),
-        flags: (ef::FALL_DAMAGE | ef::PUSHABLE | e.flags(&k::FLAGS)) & !e.flags(&k::OFF),
+        flags: (ef::FALL_DAMAGE | ef::PUSHABLE | e.flags(&crate::tag_bits::entity::TAGS)) & !e.flags(&crate::tag_bits::entity::OFF),
         category: 0,
         category_name: text(k::CATEGORY),
         texture: e
@@ -1527,7 +1535,7 @@ fn bake_menu(e: &Entry) -> MenuDef {
         on_tick: e.callback(m::ON_TICK),
         screen: e.callback(m::SCREEN),
         on_key: e.callback(m::ON_KEY),
-        flags: e.flags(&m::FLAGS),
+        flags: e.flags(&crate::tag_bits::screen::TAGS),
     }
 }
 
@@ -2117,7 +2125,7 @@ pub fn freeze(
             .min(1 << 16);
         if k.name == PLAYER {
             k.worn = g.player_layout.worn.clone();
-        } else if k.flags & weft_abi::entity_flags::WEARS != 0 {
+        } else if k.flags & crate::tag_bits::entity::WEARS != 0 {
             k.worn = k.slots..k.slots + g.player_layout.worn.len() as u32;
             k.slots = k.worn.end;
         }
@@ -2435,8 +2443,9 @@ fn bake_sound(e: &Entry, categories: &[SoundCategory], errors: &mut Vec<String>)
 
 /// Kinds the engine spawns itself; mods change or replace their look like any other.
 fn engine_particles() -> Vec<RawEntry> {
+    use crate::tag_bits::particle as pf;
     use abi::comp::particle as p;
-    use abi::{particle as k, particle_event as pe, particle_flags as pf, particle_then as pt, particle_when as pw};
+    use abi::{particle as k, particle_event as pe, particle_then as pt, particle_when as pw};
     let kind = |name: &str, textures: Vec<String>, [life, size]: [[f32; 2]; 2], [gravity, drag]: [f32; 2], color: [u32; 2], flags: u32| {
         let e = RawEntry::engine(ek::PARTICLE, name)
             .set(p::TEXTURES, textures)
@@ -2445,7 +2454,7 @@ fn engine_particles() -> Vec<RawEntry> {
             .set(p::GRAVITY, gravity)
             .set(p::DRAG, drag)
             .set(p::COLOR, color);
-        p::FLAGS
+        crate::tag_bits::particle::TAGS
             .iter()
             .filter(|f| flags & f.1 != 0)
             .fold(e, |e, f| e.tag(f.0))
@@ -2532,7 +2541,7 @@ fn freeze_particles(g: &mut Game, entries: &[Entry], errors: &mut Vec<String>) {
         let hits = rules
             .iter()
             .any(|r| matches!(r.event, pe::LAND | pe::WALL | pe::CEILING));
-        let flags = e.flags(&p::FLAGS) | if hits { abi::particle_flags::COLLIDE } else { 0 };
+        let flags = e.flags(&crate::tag_bits::particle::TAGS) | if hits { crate::tag_bits::particle::COLLIDE } else { 0 };
         let [life_min, life_max] = e.or(p::LIFE, [0.5f32, 1.0]);
         let [size_min, size_max] = e.or(p::SIZE, [0.1f32, 0.2]);
         let [color, color_end] = e.or(p::COLOR, [0xFFFFFFFFu32; 2]);
@@ -2553,7 +2562,7 @@ fn freeze_particles(g: &mut Game, entries: &[Entry], errors: &mut Vec<String>) {
             longest: 0.0,
         });
     }
-    let translucent = |k: &ParticleDef| k.flags & abi::particle_flags::TRANSLUCENT != 0;
+    let translucent = |k: &ParticleDef| k.flags & crate::tag_bits::particle::TRANSLUCENT != 0;
     for k in &g.particles {
         for r in k
             .rules
@@ -2745,9 +2754,9 @@ pub mod camera {
 }
 
 fn engine_cameras() -> Vec<RawEntry> {
-    use abi::camera_flags as cf;
+    use crate::tag_bits::camera as cf;
     let mode = |name: &str, flags: u32| {
-        abi::comp::camera::FLAGS
+        crate::tag_bits::camera::TAGS
             .iter()
             .filter(|f| flags & f.1 != 0)
             .fold(RawEntry::engine(abi::entry_kind::CAMERA, name), |e, f| e.tag(f.0))
@@ -2765,7 +2774,7 @@ fn bake_camera(e: &Entry) -> CameraMode {
     use abi::comp::camera as c;
     CameraMode {
         name: e.name.clone(),
-        flags: e.flags(&c::FLAGS),
+        flags: e.flags(&crate::tag_bits::camera::TAGS),
         key: e.text(c::KEY).filter(|k| !k.is_empty()).map(str::to_string),
         call: e.callback(c::CALL),
         transition: e

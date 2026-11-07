@@ -158,7 +158,7 @@ pub fn register(r: &mut Registry) {
         .max_health(20.0)
         .walk_speed(2.6)
         .hostile()
-        .with(entity_flags::BURNS_IN_SUN)
+        .tag(abi::comp::entity::BURNS_IN_SUN)
         .model(humanoid(true))
         .attack_damage(3.0)
         .reach(1.3)
@@ -200,7 +200,7 @@ pub fn register(r: &mut Registry) {
         .max_health(20.0)
         .walk_speed(2.5)
         .hostile()
-        .with(entity_flags::BURNS_IN_SUN)
+        .tag(abi::comp::entity::BURNS_IN_SUN)
         .model(skeleton_model())
         .attach(&FUSE)
         .goals(skeleton());
@@ -422,7 +422,7 @@ fn arrow_flies(w: &World, id: u64, st: &EntityState) -> bool {
     if let Some(target) = hit {
         w.damage(target, 3.0, shooter, damage_cause::ATTACK);
         w.despawn(id);
-    } else if st.flags & entity_flags::BLOCKED != 0 || st.on_ground != 0 || st.age > 100 {
+    } else if st.flags & entity_state::BLOCKED != 0 || st.on_ground != 0 || st.age > 100 {
         w.despawn(id);
     }
     true

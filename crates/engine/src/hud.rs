@@ -441,7 +441,7 @@ impl Hud {
             }
             Part::HeldName if editing => drop(ui.text(text::rich(lang.get("hud.edit.sample_name"), lang, None), "label")),
             Part::HeldName => {}
-            Part::Hotbar if client.mode.has(weft_abi::game_mode_flags::NO_HUD) => {}
+            Part::Hotbar if client.mode.has(crate::tag_bits::game_mode::NO_HUD) => {}
             Part::Hotbar => {
                 ui.container(Style::row().gap(0.0), |ui| {
                     for i in 0..content().game.player_layout.hotbar as u64 {

@@ -2,10 +2,12 @@ use std::cmp::Reverse;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::tag_bits::damage as df;
+use crate::tag_bits::entity as ef;
 use glam::{DVec3, IVec3};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use weft_abi::{self as abi, ItemStack, block_flags as bf, damage_cause as damage, damage_flags as df, entity_flags as ef};
+use weft_abi::{self as abi, ItemStack, block_flags as bf, damage_cause as damage};
 
 use super::entity::{Entities, Entity, Motion, Told, step};
 use super::space::Space;
@@ -1777,7 +1779,7 @@ impl Dim {
             .entities
             .list
             .iter()
-            .filter(|e| e.in_world() && e.pos.y < limit && !e.mode.has(weft_abi::game_mode_flags::NOCLIP))
+            .filter(|e| e.in_world() && e.pos.y < limit && !e.mode.has(crate::tag_bits::game_mode::NOCLIP))
             .map(|e| e.id)
             .collect();
         for id in falling {
@@ -1914,7 +1916,7 @@ impl Dim {
         let list = &self.entities.list;
         self.players.get_or_insert_with(|| {
             list.iter()
-                .filter(|e| e.player && !e.removed && !e.mode.has(weft_abi::game_mode_flags::HIDDEN))
+                .filter(|e| e.player && !e.removed && !e.mode.has(crate::tag_bits::game_mode::HIDDEN))
                 .map(|e| e.id)
                 .collect()
         })
@@ -2305,7 +2307,7 @@ impl Dim {
                     // Mods saw it this tick; the next `Move` tells of the next.
                     e.jumped = false;
                 }
-                if e.player && (!e.alive() || e.mode.has(weft_abi::game_mode_flags::NO_INTERACT)) {
+                if e.player && (!e.alive() || e.mode.has(crate::tag_bits::game_mode::NO_INTERACT)) {
                     return None;
                 }
                 let k = &c.game.entities[e.kind as usize];
@@ -2530,7 +2532,7 @@ impl Dim {
             .entities
             .list
             .iter()
-            .filter(|e| e.player && !e.removed && e.alive() && !e.mode.has(weft_abi::game_mode_flags::HIDDEN))
+            .filter(|e| e.player && !e.removed && e.alive() && !e.mode.has(crate::tag_bits::game_mode::HIDDEN))
             .map(|e| (e.id, e.pos))
             .collect();
         // Who is next to whom, once a merge is due: everyone asking everyone was the one thing
@@ -2778,7 +2780,7 @@ impl Dim {
     /// it holds and where it is now.
     pub fn mining_rate_of(&mut self, c: &Content, player: u64, frame: u64, pos: IVec3, part: u32) -> f32 {
         let Some(e) = self.entities.get(player) else { return 0.0 };
-        let (wet, on_ground, creative) = (self.head_in_liquid(c, e), e.on_ground, e.mode.has(weft_abi::game_mode_flags::INSTANT_BREAK));
+        let (wet, on_ground, creative) = (self.head_in_liquid(c, e), e.on_ground, e.mode.has(crate::tag_bits::game_mode::INSTANT_BREAK));
         let tool = self.entities.held(player);
         let speed = self.attribute(c, player, super::extend::MINING_SPEED, false) as f32;
         let state = self
@@ -3069,7 +3071,7 @@ impl Dim {
         let creative = self
             .entities
             .get(player)
-            .is_some_and(|e| e.mode.has(weft_abi::game_mode_flags::NO_COSTS));
+            .is_some_and(|e| e.mode.has(crate::tag_bits::game_mode::NO_COSTS));
         for &gone in &replaced {
             if !creative && c.states[gone as usize].block != c.states[chosen as usize].block {
                 self.drop_block_loot(c, p, gone, ItemStack::EMPTY, false, 0);

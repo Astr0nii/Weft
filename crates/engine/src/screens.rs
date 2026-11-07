@@ -372,23 +372,23 @@ impl Screen for ModScreen {
     }
 
     fn pauses(&self) -> bool {
-        self.has(weft_abi::screen_flags::PAUSES)
+        self.has(crate::tag_bits::screen::PAUSES)
     }
 
     fn escape_closes(&self) -> bool {
-        !self.has(weft_abi::screen_flags::KEEP_ON_ESCAPE)
+        !self.has(crate::tag_bits::screen::KEEP_ON_ESCAPE)
     }
 
     fn closes_on_respawn(&self) -> bool {
-        self.has(weft_abi::screen_flags::CLOSES_ON_RESPAWN)
+        self.has(crate::tag_bits::screen::CLOSES_ON_RESPAWN)
     }
 
     fn shows_chat(&self) -> bool {
-        self.has(weft_abi::screen_flags::SHOWS_CHAT)
+        self.has(crate::tag_bits::screen::SHOWS_CHAT)
     }
 
     fn keys_first(&self) -> bool {
-        self.has(weft_abi::screen_flags::KEYS_FIRST) || self.def().on_key.is_some()
+        self.has(crate::tag_bits::screen::KEYS_FIRST) || self.def().on_key.is_some()
     }
 
     fn key(&mut self, key: Key, ctx: &mut Ctx) -> bool {
@@ -893,7 +893,7 @@ impl Screen for ConfigScreen {
                         let mut spans = if cx.lang.has(&tip) { cx.t(&tip, &[]) } else { Vec::new() };
                         for (on, note) in [
                             (locked, "settings.config_synced"),
-                            (d.flags & weft_abi::config_flags::RESTART_REQUIRED != 0, "settings.config_restart"),
+                            (d.flags & crate::tag_bits::config::RESTART_REQUIRED != 0, "settings.config_restart"),
                         ] {
                             if on {
                                 if !spans.is_empty() {

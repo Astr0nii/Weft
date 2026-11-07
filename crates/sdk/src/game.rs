@@ -7,7 +7,7 @@ use crate::content::{
 use crate::ui::{Ui, ui_cb};
 use crate::{Id, Registry, WithComponents, World, callback, comps, host, qualify};
 
-pub use abi::{EYE_SHARE, Energy, EntityState, component_flags, damage_cause, entity_flags, slot_flags};
+pub use abi::{EYE_SHARE, Energy, EntityState, component_flags, damage_cause, entity_state, slot_flags};
 
 /// The engine's player kind, for hooks and components on players.
 pub static PLAYER: EntityKind = EntityKind::named("core:player");
@@ -873,11 +873,11 @@ impl EntityBuilder<'_> {
     /// A solid body: others stand on it and ride along, bump into it and get pushed by it
     /// (platforms, boats, lifts). Not pushed around itself.
     pub fn solid(self) -> Self {
-        self.with(entity_flags::SOLID).unpushable()
+        self.tag(abi::comp::entity::SOLID).unpushable()
     }
     /// Takes no damage (no hurt flash, health stays); `/clear` and the void still remove it.
     pub fn invulnerable(self) -> Self {
-        self.with(entity_flags::INVULNERABLE)
+        self.tag(abi::comp::entity::INVULNERABLE)
     }
     /// Neither pushes nor is pushed by other entities (ghosts, projectiles).
     pub fn unpushable(self) -> Self {
@@ -886,11 +886,11 @@ impl EntityBuilder<'_> {
     /// Moved exactly by the velocity mod logic gives it (`entity_modify`), through blocks, no
     /// gravity: lifts, airships, contraptions.
     pub fn kinematic(self) -> Self {
-        self.with(entity_flags::KINEMATIC)
+        self.tag(abi::comp::entity::KINEMATIC)
     }
     /// A solid body that hurts what it squeezes into blocks instead of only pushing it.
     pub fn crushing(self) -> Self {
-        self.with(entity_flags::CRUSHES)
+        self.tag(abi::comp::entity::CRUSHES)
     }
     /// Riders up to `blocks` above the body (jumping, flying around inside it) keep moving with
     /// it and their own motion stays relative to it, so a jump on a fast ship lands on the ship.
@@ -914,13 +914,13 @@ impl EntityBuilder<'_> {
     /// The client makes no steps, idle noises or death smoke for it: `r.client_entity_frame`
     /// does its effects instead.
     pub fn own_effects(self) -> Self {
-        self.with(entity_flags::OWN_EFFECTS)
+        self.tag(abi::comp::entity::OWN_EFFECTS)
     }
     /// It has the player's equipment slots (`Registry::equipment_slot`) after its own: what it
     /// wears shows on its model and counts like a player's armor; `group(EQUIPMENT_GROUP)` or a
     /// slot's name in `w.inventory(id)` reaches them.
     pub fn equipment(self) -> Self {
-        self.with(entity_flags::WEARS)
+        self.tag(abi::comp::entity::WEARS)
     }
     /// Damage of its melee hits (`World::attack`), like an item's.
     pub fn attack_damage(self, damage: f32) -> Self {
@@ -947,13 +947,6 @@ impl EntityBuilder<'_> {
     }
     pub fn walk_speed(self, s: f32) -> Self {
         self.set(&comps::entity::SPEED, s)
-    }
-    /// These `entity_flags` on, on top of what the presets set (`abi::comp::entity::FLAGS`).
-    pub fn with(self, flags: u32) -> Self {
-        abi::comp::entity::FLAGS
-            .iter()
-            .filter(|f| flags & f.1 != 0)
-            .fold(self, |b, f| b.tag(f.0))
     }
     /// A category registered with `Registry::entity_category` (any mod's), for spawn caps and
     /// despawning.
@@ -1084,7 +1077,7 @@ impl EntityBuilder<'_> {
     }
     /// Its falls hurt its riders too, as a horse's.
     pub fn riders_fall(self) -> Self {
-        self.with(entity_flags::RIDERS_FALL)
+        self.tag(abi::comp::entity::RIDERS_FALL)
     }
     /// Blocks the third-person camera stays further back while riding it, 0 for none; without
     /// this, by its size.
@@ -1365,29 +1358,22 @@ impl MenuBuilder<'_> {
     pub fn screen(self, f: impl Fn(&mut Ui) + Send + Sync + 'static) -> Self {
         self.set(&comps::menu::SCREEN, ui_cb(f))
     }
-    /// These `screen_flags` on: how its screen behaves.
-    pub fn with(self, flags: u32) -> Self {
-        abi::comp::menu::FLAGS
-            .iter()
-            .filter(|f| flags & f.1 != 0)
-            .fold(self, |b, f| b.tag(f.0))
-    }
     /// Single player stops while it is open (the pause and settings screens).
     pub fn pauses(self) -> Self {
-        self.with(abi::screen_flags::PAUSES)
+        self.tag(abi::comp::menu::PAUSES)
     }
     /// Escape doesn't close it (the death screen).
     pub fn keep_on_escape(self) -> Self {
-        self.with(abi::screen_flags::KEEP_ON_ESCAPE)
+        self.tag(abi::comp::menu::KEEP_ON_ESCAPE)
     }
     /// It closes when the player respawns.
     pub fn closes_on_respawn(self) -> Self {
-        self.with(abi::screen_flags::CLOSES_ON_RESPAWN)
+        self.tag(abi::comp::menu::CLOSES_ON_RESPAWN)
     }
     /// Like the chat screen: the HUD leaves the messages to it and Enter sends the text of its
     /// input of class `chat`.
     pub fn shows_chat(self) -> Self {
-        self.with(abi::screen_flags::SHOWS_CHAT)
+        self.tag(abi::comp::menu::SHOWS_CHAT)
     }
     /// Keys pressed while it is on top, by their settings name (`Enter`, `KeyE`, `mouse3`), before
     /// Escape and the other global keys.
@@ -1512,7 +1498,8 @@ impl Registry {
         b.e.mode = mode;
         drop(f(b
             .no_egg()
-            .with(entity_flags::NO_GRAVITY | entity_flags::INVULNERABLE)
+            .tag(abi::comp::entity::NO_GRAVITY)
+            .tag(abi::comp::entity::INVULNERABLE)
             .set_text(&comps::entity::BLOCK, block.name())));
     }
 

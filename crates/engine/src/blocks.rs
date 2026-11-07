@@ -604,7 +604,7 @@ fn bake_state(
                 .collect();
         }
     }
-    let mut flags = b::FLAGS
+    let mut flags = crate::tag_bits::block::TAGS
         .iter()
         .filter(|f| s.has(f.0))
         .fold(if s.has(b::NOT_SOLID) { 0 } else { bf::SOLID }, |all, f| all | f.1);
@@ -940,7 +940,7 @@ fn shaped(own: Vec<RawValue>, source: &Values, textures: &[String; 6], tag: &str
     if model == BlockModel::Cube {
         for name in [b::LAYER, b::LIGHT_OPACITY, b::NOT_SOLID]
             .into_iter()
-            .chain(b::FLAGS.iter().map(|f| f.0))
+            .chain(crate::tag_bits::block::TAGS.iter().map(|f| f.0))
         {
             set(&mut own, name, source.value(name));
         }

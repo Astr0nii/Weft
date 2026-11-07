@@ -274,7 +274,7 @@ impl Dim {
         let creative = self
             .entities
             .get(player)
-            .is_some_and(|e| e.mode.has(weft_abi::game_mode_flags::NO_COSTS));
+            .is_some_and(|e| e.mode.has(crate::tag_bits::game_mode::NO_COSTS));
         if let Some(&(l, empty)) = c.item_liquid.get(&held.item) {
             let hit = self
                 .look_ray(c, player, self.block_reach(c, player), false)

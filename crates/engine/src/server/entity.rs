@@ -1,10 +1,11 @@
 //! Entities of one dimension: core state in a dense list, mod components as raw bytes, inventories
 //! as an engine contract every mod can read and write.
 
+use crate::tag_bits::entity as ef;
 use glam::{DVec3, IVec3};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use weft_abi::{ItemStack, entity_flags as ef};
+use weft_abi::ItemStack;
 
 use crate::content::Content;
 use crate::physics;
@@ -201,7 +202,7 @@ impl Entity {
 
     /// Something that stands in the world and can be hit: not a dropped item or a spectator either.
     pub fn is_body(&self) -> bool {
-        self.in_world() && self.item.is_empty() && !self.mode.has(weft_abi::game_mode_flags::HIDDEN)
+        self.in_world() && self.item.is_empty() && !self.mode.has(crate::tag_bits::game_mode::HIDDEN)
     }
 
     /// It comes and goes with the world's cube it is in: players have a file of their own, what is
@@ -211,10 +212,9 @@ impl Entity {
     }
 
     pub fn state(&self, c: &Content, max_health: f32) -> weft_abi::EntityState {
-        let k = &c.game.entities[self.kind as usize];
         weft_abi::EntityState {
             kind: self.kind,
-            flags: k.flags | if self.blocked { ef::BLOCKED } else { 0 },
+            flags: if self.blocked { weft_abi::entity_state::BLOCKED } else { 0 },
             pose: self.pose.0 as u32,
             flying: self.flying as u32,
             pos: self.pos.to_array().into(),

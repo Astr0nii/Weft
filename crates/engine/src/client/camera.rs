@@ -1,8 +1,9 @@
 //! Camera modes (`registry::CameraMode`): which one is on, what it says each frame, the box or
 //! the pull-in that keeps it out of blocks, and the eased change from one to the next.
 
+use crate::tag_bits::camera as cf;
 use glam::DVec3;
-use weft_abi::{self as abi, camera_flags as cf};
+use weft_abi::{self as abi};
 
 use super::Client;
 use super::world_render::Camera;
