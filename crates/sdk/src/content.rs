@@ -2249,11 +2249,11 @@ impl BlockBuilder<'_> {
                 if let Some((allowed, toward)) = facing {
                     p.set("facing", toward.choose(allowed, a.face, a.look, a.hit).name());
                 }
-                // Against what was clicked, like a torch; the engine adds it to what is there.
+                // Against what was clicked, else the allowed side nearest the look; the engine adds
+                // it to what is there.
+                let back = crate::Dir::from_face(a.face).opposite();
                 if let Some(allowed) = sides {
-                    let on = crate::Toward::Face
-                        .choose(allowed.opposite(), a.face, a.look, a.hit)
-                        .opposite();
+                    let on = if allowed.allows(back) { back } else { crate::Toward::Away.choose(allowed, a.face, a.look, a.hit) };
                     for d in allowed.dirs() {
                         p.set(d.name(), if d == on { "true" } else { "false" });
                     }
@@ -2262,7 +2262,7 @@ impl BlockBuilder<'_> {
                     p.set("axis", ["x", "y", "z"][a.face as usize / 2 % 3]);
                 }
                 if attaches {
-                    let attach = crate::Dir::from_face(a.face).opposite();
+                    let attach = back;
                     p.set("attach", attach.name());
                     // A switch on a wall is always upright, as in vanilla; a gate goes with the look.
                     let front =
@@ -2946,24 +2946,23 @@ impl SignalBuild {
         // Faces as the model is written: what `facing` and `attach` name, turned back.
         let turn = s.turn();
         let own = |d: crate::Dir| 1u32 << turn.own(d).face();
-        let side = |x: Side| 1u32 << x as u32;
         let mut sig = abi::SignalDesc { kind: self.kind, flags: self.flags, head: self.head.to_string(), ..abi::SignalDesc::DEFAULT };
         let (attach, facing) = (dir("attach"), dir("facing"));
         match self.kind {
             k::SWITCH => (sig.gives, sig.strong) = (0x3F, attach.map_or(0, own)),
             k::TORCH => {
                 // Off with power from what holds it; strong into the block on its far side.
-                sig.inputs = attach.map_or(side(Side::Bottom), own);
-                (sig.gives, sig.strong) = (0x3F & !sig.inputs, attach.map_or(side(Side::Top), |a| own(a.opposite())));
+                sig.inputs = attach.map_or(side_bits(&[Side::Bottom]), own);
+                (sig.gives, sig.strong) = (0x3F & !sig.inputs, attach.map_or(side_bits(&[Side::Top]), |a| own(a.opposite())));
             }
             k::REPEATER => {
-                sig.inputs = side(Side::Rear);
-                sig.locks = side(Side::Left) | side(Side::Right);
-                (sig.gives, sig.strong) = (side(Side::Front), side(Side::Front));
+                sig.inputs = side_bits(&[Side::Rear]);
+                sig.locks = side_bits(&[Side::Left, Side::Right]);
+                (sig.gives, sig.strong) = (side_bits(&[Side::Front]), side_bits(&[Side::Front]));
             }
             k::COMPARATOR => {
-                sig.inputs = side(Side::Rear) | side(Side::Left) | side(Side::Right);
-                (sig.gives, sig.strong) = (side(Side::Front), side(Side::Front));
+                sig.inputs = side_bits(&[Side::Rear, Side::Left, Side::Right]);
+                (sig.gives, sig.strong) = (side_bits(&[Side::Front]), side_bits(&[Side::Front]));
             }
             k::GATE => (sig.inputs, sig.gives, sig.strong) = (self.inputs, self.outputs, self.outputs),
             k::OBSERVER => {

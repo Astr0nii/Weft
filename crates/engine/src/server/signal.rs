@@ -228,7 +228,7 @@ impl View<'_> {
 
 /// What a device gives what is next to it in direction `dir`, wire and devices.
 fn direct(s: &Signal, dir: u8) -> u8 {
-    if wire::gives(s, dir) { s.level } else { 0 }
+    if s.gives & (1 << dir) != 0 { s.level } else { 0 }
 }
 
 /// What a device gives a block in direction `dir`, strongly: its power goes on through that block.
@@ -684,7 +684,7 @@ impl Signals {
         // What came with it shows at once, and clients here hear of it.
         let came = if self.wires.contains_key(&p) { None } else { self.arriving.remove(&p) };
         if let Some(m) = &came {
-            for f in (0..6u8).filter(|f| mask & (1 << f) != 0 && m.levels[*f as usize] > 0) {
+            for f in wire::dirs(mask).filter(|f| m.levels[*f as usize] > 0) {
                 self.level_changes.push((p, f, m.levels[f as usize]));
             }
         }
@@ -1085,8 +1085,6 @@ impl Signals {
         }
         Some(if any { 1 + (sum / items.len() as f32 * 14.0) as u8 } else { 0 })
     }
-
-    /// The two sides of a gate, left and right of the way it faces, seen from above what holds it.
 
     /// What a device should do, from what is around it now.
     fn evaluate(&mut self, c: &'static Content, d: &Dim, p: IVec3, now: u64, effects: &mut Vec<Effect>) {
@@ -2011,28 +2009,21 @@ impl Dim {
         true
     }
 
-    /// A player adding a side of an `on_sides` block to a cell, against the face clicked (the
-    /// allowed side nearest the look when that one isn't): the state, if that can be done. Its
-    /// other properties are those of what is there already, else of `placed`.
+    /// A player adding the side its placement chose (`placed`) to an `on_sides` block's cell: the
+    /// state, if that can be done. Its other properties are those of what is there already, else
+    /// of `placed`.
     pub(super) fn sides_placed(&self, c: &Content, p: IVec3, placed: u32) -> Option<u32> {
         let cur = self.get(p)?;
         let def = c.block_of(placed);
-        // The side its placement chose.
         let on = wire::mask(c, placed).trailing_zeros() as u8;
-        if on >= 6 {
-            return None;
-        }
+        let step = *DIRS.get(on as usize)?;
         let (mut mask, mut base) = (0, placed);
         if c.states[cur as usize].block == c.states[placed as usize].block {
             (mask, base) = (wire::mask(c, cur), cur);
         } else if c.states[cur as usize].flags & bf::REPLACEABLE == 0 {
             return None;
         }
-        if mask & (1 << on) != 0
-            || !self
-                .get(p + DIRS[on as usize])
-                .is_some_and(|s| wire::holds_wire(c, s))
-        {
+        if mask & (1 << on) != 0 || !self.get(p + step).is_some_and(|s| wire::holds_wire(c, s)) {
             return None;
         }
         Some(def.with_sides(base, mask | 1 << on))

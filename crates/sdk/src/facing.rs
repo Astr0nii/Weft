@@ -90,10 +90,6 @@ impl Facings {
         }
         Facings(bits)
     }
-    /// The directions opposite these.
-    pub const fn opposite(self) -> Facings {
-        Facings((self.0 & 0b01_0101) << 1 | (self.0 >> 1) & 0b01_0101)
-    }
     pub fn allows(self, d: Dir) -> bool {
         self.0 & (1 << d as u8) != 0
     }
@@ -238,7 +234,6 @@ mod tests {
         assert_eq!(Toward::Player.choose(Facings::HORIZONTAL, 3, [0.0, -0.9, -0.4], [0.5; 3]), Dir::South);
         assert_eq!(Toward::Face.choose(f, 3, [0.0, -1.0, 0.0], [0.5; 3]), Dir::Up);
         assert_eq!(Toward::Hit.choose(Facings::HORIZONTAL, 3, [0.0, -1.0, 0.0], [0.9, 0.0, 0.6]), Dir::West);
-        assert_eq!(Facings::only(&[Dir::Down, Dir::East]).opposite(), Facings::only(&[Dir::Up, Dir::West]));
     }
 }
 

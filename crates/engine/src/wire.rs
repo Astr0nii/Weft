@@ -6,7 +6,7 @@
 use glam::IVec3;
 use weft_abi::{block_flags as bf, signal_kind as sk};
 
-use crate::content::{Content, Signal, StateInfo};
+use crate::content::{Content, StateInfo};
 use crate::world::{Cube, DIRS};
 
 /// A direction's name as `facing` properties have it.
@@ -50,16 +50,6 @@ pub fn same_shape(a: &StateInfo, b: &StateInfo) -> bool {
 /// `same_shape` of a device: it keeps its circuit, changing its level.
 pub fn same_device(a: &StateInfo, b: &StateInfo) -> bool {
     is_device(a.signal.kind) && is_device(b.signal.kind) && same_shape(a, b)
-}
-
-/// Whether a device gives what is next to it in direction `dir`.
-pub fn gives(s: &Signal, dir: u8) -> bool {
-    s.gives & (1 << dir) != 0
-}
-
-/// Whether a device takes what comes from direction `dir`.
-pub fn reads(s: &Signal, dir: u8) -> bool {
-    s.inputs & (1 << dir) != 0
 }
 
 /// The directions in a face mask.
@@ -155,26 +145,6 @@ mod tests {
             assert_eq!(e.len(), 4);
             assert!(!e.contains(&f) && !e.contains(&(f ^ 1)));
         }
-    }
-
-    fn device(kind: u32, front: u8, attach: u8) -> Signal {
-        Signal { kind, front, attach, ..Signal::default() }
-    }
-
-    #[test]
-    fn what_a_device_takes_and_gives() {
-        // On the floor, its front to the north.
-        let gate = Signal { inputs: 0b1110, ..device(sk::GATE, 4, 2) };
-        assert!(gate.level == 0 && reads(&gate, 5), "from behind");
-        assert!(reads(&gate, 0) && reads(&gate, 1), "and from the sides");
-        assert!(!reads(&gate, 4) && gives(&gate, 4), "its front is where it gives");
-        let piston = device(sk::PISTON, 3, 6);
-        assert!(reads(&piston, 2) && reads(&piston, 0));
-        assert!(!reads(&piston, 3) && !gives(&piston, 3), "nothing at its front");
-        let floater = device(sk::FLOATER, 4, 6);
-        assert!(!reads(&floater, 4) && reads(&floater, 5));
-        let observer = device(sk::OBSERVER, 4, 6);
-        assert!(gives(&observer, 5) && !gives(&observer, 4) && !reads(&observer, 5));
     }
 
     #[test]

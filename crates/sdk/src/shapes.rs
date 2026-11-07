@@ -68,28 +68,18 @@ impl Registry {
             .states(|p: &Props, mut s| {
                 // Written going up to the north; the top half is the same turned over about that
                 // way, which swaps its left and right.
-                let mut shape = p.get("shape");
-                if p.is("half", "top") {
+                let (shape, top) = (p.get("shape"), p.is("half", "top"));
+                if top {
                     s = s.orientation(Orientation::new(Dir::Up, p.facing()));
-                    shape = match shape {
-                        "inner_left" => "inner_right",
-                        "inner_right" => "inner_left",
-                        "outer_left" => "outer_right",
-                        "outer_right" => "outer_left",
-                        straight => straight,
-                    };
                 }
-                s = s.model_box([0.0, 0.0, 0.0], [16.0, 8.0, 16.0]);
-                let (x, z) = match shape {
-                    "outer_left" => ([0.0, 8.0], [0.0, 8.0]),
-                    "outer_right" => ([8.0, 16.0], [0.0, 8.0]),
-                    _ => ([0.0, 16.0], [0.0, 8.0]),
-                };
-                s = s.model_box([x[0], 8.0, z[0]], [x[1], 16.0, z[1]]);
+                let x = if shape.ends_with("left") != top { [0.0, 8.0] } else { [8.0, 16.0] };
+                let s = s.model_box([0.0; 3], [16.0, 8.0, 16.0]);
                 match shape {
-                    "inner_left" => s.model_box([0.0, 8.0, 8.0], [8.0, 16.0, 16.0]),
-                    "inner_right" => s.model_box([8.0, 8.0, 8.0], [16.0, 16.0, 16.0]),
-                    _ => s,
+                    "outer_left" | "outer_right" => s.model_box([x[0], 8.0, 0.0], [x[1], 16.0, 8.0]),
+                    "inner_left" | "inner_right" => s
+                        .model_box([0.0, 8.0, 0.0], [16.0, 16.0, 8.0])
+                        .model_box([x[0], 8.0, 8.0], [x[1], 16.0, 16.0]),
+                    _ => s.model_box([0.0, 8.0, 0.0], [16.0, 16.0, 8.0]),
                 }
             })
             .placement(|p, props| props.set("half", if upper_half(p) { "top" } else { "bottom" }))
