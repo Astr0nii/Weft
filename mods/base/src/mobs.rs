@@ -62,8 +62,7 @@ fn skeleton_model() -> Model {
     .uv_size(64, 32)
 }
 
-/// Vanilla's sheep (`SheepModel` and `SheepFurModel`) in one texture: the sheep in the upper half,
-/// its wool in the lower, on boxes grown over it.
+/// Vanilla's sheep
 fn sheep_model() -> Model {
     let wool = |p: [f32; 2]| [p[0], p[1] + 32.0];
     let head = vanilla_part("head", [0.0, 6.0, -8.0], &[(
