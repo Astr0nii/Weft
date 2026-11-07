@@ -74,16 +74,16 @@ fn sheep_model() -> Model {
         .inflated(1.75)
         .rotation(-90.0, 0.0, 0.0);
     let left_ear = ModelPart::new("leftEar", [-4.0, 12.0, -9.0])
-        .cuboid([0.0, 7.0, -3.0], [3.0, 2.0, 1.0], [0.0, 0.0])
+        .cuboid([0.0, 6.5, -3.0], [3.0, 2.0, 1.0], [0.0, 0.0])
         .rotation(0.0, 0.0, 15.0)
         .mirrored()
         .child_of(0);
     let right_ear = ModelPart::new("rightEar", [4.0, 12.0, -9.0])
-        .cuboid([-3.0, 7.0, -3.0], [3.0, 2.0, 1.0], [0.0, 0.0])
+        .cuboid([-3.0, 6.5, -3.0], [3.0, 2.0, 1.0], [0.0, 0.0])
         .rotation(0.0, 0.0, -15.0)
         .child_of(0);
     let snout = ModelPart::new("snout", [4.0, 12.0, -9.0])
-        .cuboid([-5.5, 4.5, -6.0], [3.0, 3.0, 4.0], [0.0, 3.0])
+        .cuboid([-5.5, 5.0, -6.0], [3.0, 3.0, 4.0], [0.0, 3.0])
         .rotation(-15.0, 0.0, 0.0)
         .child_of(0);
     let mut parts = vec![head, body, left_ear, right_ear, snout];
