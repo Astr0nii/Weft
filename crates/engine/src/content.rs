@@ -71,13 +71,17 @@ pub struct Signal {
     pub kind: u32,
     /// What it gives now.
     pub level: u8,
-    pub attach: u8,
+    /// Its faces as bits by direction, turned with the block (`abi::SignalDesc` says what each is).
+    pub inputs: u8,
+    pub locks: u8,
+    pub watches: u8,
+    pub gives: u8,
+    pub strong: u8,
+    /// The way it acts, 6 for none: a piston's head, what a floater carries.
     pub front: u8,
     pub delay: u8,
     /// `abi::signal_flags`.
     pub flags: u8,
-    /// A gate's input faces (`1 << abi::gate_side::*`).
-    pub inputs: u8,
     /// How many values its `power` property has (0: none), and states between them.
     pub levels: u8,
     pub stride: u32,

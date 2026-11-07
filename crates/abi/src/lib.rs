@@ -1740,21 +1740,22 @@ pub mod signal_kind {
     pub const NONE: u32 = 0;
     /// Lies on faces; its state is `first_state + mask of them`.
     pub const WIRE: u32 = 1;
-    /// Gives its `power` all around, strongly into the block it is on (`attach`).
+    /// Gives its `power` property's level (full without one), whatever comes in.
     pub const SWITCH: u32 = 2;
-    /// On unless the block it is on (`attach`) has power.
+    /// On unless an input has power; flickering too fast burns it out a while.
     pub const TORCH: u32 = 3;
-    /// Full power out of `front` after `delay` when what is behind it has any.
+    /// Full power after `delay` while an input has any, held as it is while a lock has power.
     pub const REPEATER: u32 = 4;
-    /// Compares what is behind it with its sides; `SUBTRACT` takes the sides from it.
+    /// What comes in opposite its output, or a container's fullness there, unless the other
+    /// inputs have more; `SUBTRACT` takes theirs from it.
     pub const COMPARATOR: u32 = 5;
-    /// A pulse out of its back when the block at `front` changes.
+    /// A pulse when the block at a face it watches changes.
     pub const OBSERVER: u32 = 6;
-    /// `comp::block::SIGNAL_GATE` works out what comes out of `front` from its `inputs`.
+    /// `comp::block::SIGNAL_GATE` works out what it gives from its inputs.
     pub const GATE: u32 = 7;
-    /// `power` and `comp::block::ON_SIGNAL` follow the power around it.
+    /// `power` and `comp::block::ON_SIGNAL` follow the power at its inputs.
     pub const SINK: u32 = 8;
-    /// Pushes blocks at `front` with power from any other side; `STICKY` pulls them back.
+    /// Pushes blocks at `front` with power at an input; `STICKY` pulls them back.
     pub const PISTON: u32 = 9;
     pub const PISTON_HEAD: u32 = 10;
     /// With power it takes all it is stuck to and carries it along `front`, faster the more power;
@@ -1771,37 +1772,44 @@ pub mod signal_flags {
     pub const BREAKS: u32 = 4;
 }
 
-/// A gate's faces, from where it looks: bits of `SignalDesc::inputs`, indices of `GateArgs::inputs`.
-pub mod gate_side {
-    pub const FRONT: u32 = 0;
-    pub const REAR: u32 = 1;
-    pub const LEFT: u32 = 2;
-    pub const RIGHT: u32 = 3;
-    /// Away from what it is on.
-    pub const TOP: u32 = 4;
-    pub const BOTTOM: u32 = 5;
-}
-
 crate::data! {
     /// What a block state is to redstone (`comp::block::SIGNAL`). A property named `power` holds
-    /// its level: two values are off and full.
+    /// its level: two values are off and full. Its faces are bits by face index as its model is
+    /// written (front north, bottom down), and turn with it (`comp::block::TURN`).
     pub struct SignalDesc {
+        /// `signal_kind`: what it makes of what comes in.
         pub kind: u32,
-        /// Direction of what holds it (-X, +X, -Y, +Y, -Z, +Z), 6 for none.
-        pub attach: u32,
-        /// Direction it gives or looks, 6 for none.
+        /// Where it reads power.
+        pub inputs: u32,
+        /// Where a repeater or comparator giving into it holds it as it is.
+        pub locks: u32,
+        /// Where a block changing sets it off.
+        pub watches: u32,
+        /// Where it gives power, and of those where strongly: into the block there and on.
+        pub gives: u32,
+        pub strong: u32,
+        /// The face it acts at, 6 for none: a piston's head, what a floater carries.
         pub front: u32,
         /// Game ticks.
         pub delay: u32,
         /// `signal_flags`.
         pub flags: u32,
-        /// A gate's input faces, `1 << gate_side::*`.
-        pub inputs: u32,
         /// A piston's head block.
         pub head: alloc::string::String,
     }
 }
-defaults!(SignalDesc { kind: signal_kind::NONE, attach: 6, front: 6, delay: 2, flags: 0, inputs: 0, head: alloc::string::String::new() });
+defaults!(SignalDesc {
+    kind: signal_kind::NONE,
+    inputs: 0,
+    locks: 0,
+    watches: 0,
+    gives: 0,
+    strong: 0,
+    front: 6,
+    delay: 2,
+    flags: 0,
+    head: alloc::string::String::new(),
+});
 
 crate::data! {
     /// A property of a block (`comp::block::PROPS`): `facing`, `lit`, `age`, each with its values.
@@ -1844,8 +1852,8 @@ pub struct SignalReadArgs {
     pub output: u32,
 }
 
-/// What comes in on each face of a `signal_kind::GATE` (by `gate_side`, 0 where it doesn't
-/// read), and `output` to set: what it gives now.
+/// What comes in on each face of a `signal_kind::GATE` (by face index as its model is written,
+/// 0 where it doesn't read), and `output` to set: what it gives now.
 #[repr(C)]
 pub struct GateArgs {
     pub world: *mut WorldCtx,

@@ -44,7 +44,7 @@ pub fn is_device(kind: u32) -> bool {
 /// Whether going from one state to the other leaves wire around it as it is: the same block turned
 /// the same way (a gate going on or off, water falling a level). Only wire itself changes.
 pub fn same_shape(a: &StateInfo, b: &StateInfo) -> bool {
-    a.block == b.block && a.signal.kind != sk::WIRE && a.signal.front == b.signal.front && a.signal.attach == b.signal.attach
+    a.block == b.block && a.signal.kind != sk::WIRE && a.turn == b.turn
 }
 
 /// `same_shape` of a device: it keeps its circuit, changing its level.
@@ -52,52 +52,19 @@ pub fn same_device(a: &StateInfo, b: &StateInfo) -> bool {
     is_device(a.signal.kind) && is_device(b.signal.kind) && same_shape(a, b)
 }
 
-/// The two directions to the side of a device: a comparator's and a gate's other inputs.
-pub fn sides(s: &Signal) -> [u8; 2] {
-    let up = if s.attach < 6 { -DIRS[s.attach as usize] } else { IVec3::Y };
-    let right = DIRS.get(s.front as usize).map_or(IVec3::X, |f| f.cross(up));
-    let r = DIRS.iter().position(|d| *d == right).unwrap_or(0) as u8;
-    [r ^ 1, r]
-}
-
-/// The direction a gate's face (`abi::gate_side`) looks.
-pub fn gate_dir(s: &Signal, side: u32) -> u8 {
-    use weft_abi::gate_side as g;
-    let bottom = if s.attach < 6 { s.attach } else { 2 };
-    let [left, right] = sides(s);
-    match side {
-        g::FRONT => s.front,
-        g::REAR => s.front ^ 1,
-        g::LEFT => left,
-        g::RIGHT => right,
-        g::TOP => bottom ^ 1,
-        _ => bottom,
-    }
-}
-
 /// Whether a device gives what is next to it in direction `dir`.
 pub fn gives(s: &Signal, dir: u8) -> bool {
-    match s.kind {
-        sk::SWITCH => true,
-        sk::TORCH => dir != s.attach,
-        sk::REPEATER | sk::COMPARATOR | sk::GATE => dir == s.front,
-        sk::OBSERVER => dir ^ 1 == s.front,
-        _ => false,
-    }
+    s.gives & (1 << dir) != 0
 }
 
 /// Whether a device takes what comes from direction `dir`.
 pub fn reads(s: &Signal, dir: u8) -> bool {
-    match s.kind {
-        sk::TORCH => dir == s.attach,
-        sk::REPEATER => dir == s.front ^ 1,
-        sk::COMPARATOR => dir == s.front ^ 1 || sides(s).contains(&dir),
-        sk::GATE => (0..6).any(|i| s.inputs & (1 << i) != 0 && gate_dir(s, i) == dir),
-        sk::SINK => true,
-        // Their front is stuck to what they take along, or is where the head goes.
-        sk::FLOATER | sk::PISTON => dir != s.front,
-        _ => false,
-    }
+    s.inputs & (1 << dir) != 0
+}
+
+/// The directions in a face mask.
+pub fn dirs(mask: u8) -> impl Iterator<Item = u8> {
+    (0..6u8).filter(move |d| mask & (1 << d) != 0)
 }
 
 /// Whether a cube has wire.

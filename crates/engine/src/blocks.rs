@@ -701,11 +701,14 @@ fn bake_state(
         model,
         signal: Signal {
             kind: signal.kind,
-            attach: signal.attach as u8,
-            front: signal.front as u8,
+            inputs: turn.faces(signal.inputs as u8),
+            locks: turn.faces(signal.locks as u8),
+            watches: turn.faces(signal.watches as u8),
+            gives: turn.faces(signal.gives as u8),
+            strong: turn.faces(signal.strong as u8),
+            front: if signal.front < 6 { turn.face(signal.front as usize) as u8 } else { 6 },
             delay: signal.delay.min(31) as u8,
             flags: signal.flags as u8,
-            inputs: signal.inputs as u8,
             ..Signal::default()
         },
         // A box model's faces default to these (the particles of breaking it show them too).

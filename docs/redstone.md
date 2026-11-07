@@ -78,7 +78,8 @@ r.block(&ALARM).signal_sink().on_signal(|e| {
 // A gate with your own logic, on the clicked face. Runs only when something around it changes,
 // and what it returns comes out of the front after the delay (in redstone ticks, like a repeater's).
 // `Gate::new()` reads behind it and both sides; `.inputs(&[Side::Left, Side::Right, Side::Top])`
-// names other faces, `.delay(4)` waits longer.
+// names other faces, `.outputs(&[Side::Front, Side::Top])` gives at more than the front, `.delay(4)`
+// waits longer. Sides are the gate's own, so they turn with it.
 r.block(&AND_GATE)
     .signal_gate(Gate::new(), |s| if s.side(Side::Rear) > 0 && (s.side(Side::Left) > 0 || s.side(Side::Right) > 0) { 15 } else { 0 })
     .model_box([0.0, 0.0, 0.0], [16.0, 2.0, 16.0])

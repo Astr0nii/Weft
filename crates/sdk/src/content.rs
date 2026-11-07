@@ -2133,12 +2133,17 @@ impl<'a> BlockBuilder<'a> {
         self.tag(abi::comp::block::NOT_STOOD_ON)
             .signal_props(abi::signal_kind::PISTON_HEAD, 0, false, false)
     }
-    /// A gate with logic of your own, on the clicked face: what comes out of the front a
+    /// A gate with logic of your own, on the clicked face: what comes out of its outputs a
     /// `gate`'s delay after what goes in at its inputs calls for it. Runs only when something
     /// around it changes.
     pub fn signal_gate(mut self, gate: Gate, f: impl Fn(&GateInputs) -> u8 + Send + Sync + 'static) -> Self {
         // In redstone ticks, like a repeater's: two game ticks each.
-        self.signal = Some(SignalBuild { delay: Some(gate.delay * 2), inputs: gate.inputs, ..self.signal.unwrap_or_default() });
+        self.signal = Some(SignalBuild {
+            delay: Some(gate.delay * 2),
+            inputs: gate.inputs,
+            outputs: gate.outputs,
+            ..self.signal.unwrap_or_default()
+        });
         self.set(&bc::SIGNAL_GATE, callback(move |a: &mut abi::GateArgs| a.output = f(GateInputs::wrap(a)) as u32))
             .signal_props(abi::signal_kind::GATE, 16, true, true)
     }
@@ -2928,35 +2933,54 @@ struct SignalBuild {
     attaches: bool,
     delay: Option<u32>,
     flags: u32,
+    /// A gate's faces (`Side` bits).
     inputs: u32,
+    outputs: u32,
     head: &'static str,
 }
 
 impl SignalBuild {
     fn apply<'s>(&self, p: &Props, mut s: State<'s>) -> State<'s> {
+        use abi::signal_kind as k;
         let dir = |name: &str| crate::Dir::from_name(p.get(name));
-        let front = dir("front").or(dir("facing"));
-        let mut sig = abi::SignalDesc {
-            kind: self.kind,
-            flags: self.flags,
-            inputs: self.inputs,
-            head: self.head.to_string(),
-            ..abi::SignalDesc::DEFAULT
-        };
-        if let Some(a) = dir("attach") {
-            sig.attach = a.face();
-            if self.attaches {
-                // Written unturned, as the model is.
-                let own = s.turn().own(a);
-                s = s.needs(own, "");
+        // Faces as the model is written: what `facing` and `attach` name, turned back.
+        let turn = s.turn();
+        let own = |d: crate::Dir| 1u32 << turn.own(d).face();
+        let side = |x: Side| 1u32 << x as u32;
+        let mut sig = abi::SignalDesc { kind: self.kind, flags: self.flags, head: self.head.to_string(), ..abi::SignalDesc::DEFAULT };
+        let (attach, facing) = (dir("attach"), dir("facing"));
+        match self.kind {
+            k::SWITCH => (sig.gives, sig.strong) = (0x3F, attach.map_or(0, own)),
+            k::TORCH => {
+                // Off with power from what holds it; strong into the block on its far side.
+                sig.inputs = attach.map_or(side(Side::Bottom), own);
+                (sig.gives, sig.strong) = (0x3F & !sig.inputs, attach.map_or(side(Side::Top), |a| own(a.opposite())));
             }
-            // A torch powers the block on the far side of it, as high as it stands.
-            if self.kind == abi::signal_kind::TORCH {
-                sig.front = a.opposite().face();
+            k::REPEATER => {
+                sig.inputs = side(Side::Rear);
+                sig.locks = side(Side::Left) | side(Side::Right);
+                (sig.gives, sig.strong) = (side(Side::Front), side(Side::Front));
             }
+            k::COMPARATOR => {
+                sig.inputs = side(Side::Rear) | side(Side::Left) | side(Side::Right);
+                (sig.gives, sig.strong) = (side(Side::Front), side(Side::Front));
+            }
+            k::GATE => (sig.inputs, sig.gives, sig.strong) = (self.inputs, self.outputs, self.outputs),
+            k::OBSERVER => {
+                let f = facing.unwrap_or(crate::Dir::North);
+                (sig.watches, sig.gives, sig.strong) = (own(f), own(f.opposite()), own(f.opposite()));
+            }
+            k::SINK => sig.inputs = 0x3F,
+            // Their front is stuck to what they take along, or is where the head goes.
+            k::PISTON | k::FLOATER | k::PISTON_HEAD => {
+                let f = turn.own(facing.unwrap_or(crate::Dir::Up)).face();
+                sig.front = f;
+                sig.inputs = if self.kind == k::PISTON_HEAD { 0 } else { 0x3F & !(1 << f) };
+            }
+            _ => {}
         }
-        if let Some(f) = front {
-            sig.front = f.face();
+        if let Some(a) = attach.filter(|_| self.attaches) {
+            s = s.needs(turn.own(a), "");
         }
         if let Some(t) = self.delay {
             sig.delay = t;
@@ -3028,19 +3052,25 @@ impl SignalEvent {
     }
 }
 
-/// A gate's faces, from where it looks (`Gate::inputs`, `GateInputs::side`).
+/// A device's faces, from where it looks: its own, as its model is written (front north, bottom
+/// down), so they turn with it (`Gate::inputs`, `GateInputs::side`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
-    Front = 0,
-    Rear = 1,
-    Left = 2,
-    Right = 3,
-    /// Away from what it is on.
-    Top = 4,
-    Bottom = 5,
+    Left = 0,
+    Right = 1,
+    /// Against what it is on.
+    Bottom = 2,
+    Top = 3,
+    Front = 4,
+    Rear = 5,
 }
 
-/// Which faces of a `BlockBuilder::signal_gate` read power, and its delay.
+fn side_bits(sides: &[Side]) -> u32 {
+    sides.iter().fold(0, |m, s| m | 1 << *s as u32)
+}
+
+/// Which faces of a `BlockBuilder::signal_gate` read power and give it (strongly, into the block
+/// there and on), and its delay.
 ///
 /// ```ignore
 /// // a repeater-like AND of the sides, two redstone ticks late
@@ -3049,20 +3079,24 @@ pub enum Side {
 #[derive(Clone, Copy, Debug)]
 pub struct Gate {
     inputs: u32,
+    outputs: u32,
     delay: u32,
 }
 
 impl Gate {
-    /// Reads behind it and both sides, one redstone tick late.
+    /// Reads behind it and both sides, gives out of the front, one redstone tick late.
     pub fn new() -> Gate {
-        Gate { inputs: 1 << abi::gate_side::REAR | 1 << abi::gate_side::LEFT | 1 << abi::gate_side::RIGHT, delay: 1 }
+        Gate { inputs: side_bits(&[Side::Rear, Side::Left, Side::Right]), outputs: side_bits(&[Side::Front]), delay: 1 }
     }
-    /// The faces it reads. The front is its output, never an input.
+    /// The faces it reads; an output is never an input.
     pub fn inputs(mut self, sides: &[Side]) -> Gate {
-        self.inputs = sides
-            .iter()
-            .filter(|s| **s != Side::Front)
-            .fold(0, |m, s| m | 1 << *s as u32);
+        self.inputs = side_bits(sides) & !self.outputs;
+        self
+    }
+    /// The faces it gives at.
+    pub fn outputs(mut self, sides: &[Side]) -> Gate {
+        self.outputs = side_bits(sides);
+        self.inputs &= !self.outputs;
         self
     }
     /// In redstone ticks, two game ticks each.
