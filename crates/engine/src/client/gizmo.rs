@@ -94,7 +94,7 @@ impl Gizmos {
                 .values()
                 .filter(|e| (e.pos - me).length_squared() < 64.0 * 64.0)
             {
-                let (hw, h, eye) = e.dims();
+                let crate::physics::Dims { half_width: hw, height: h, eye } = e.dims();
                 cuboid(&mut lines, e.pos - DVec3::new(hw, 0.0, hw), e.pos + DVec3::new(hw, h, hw), 0xFFFFFFFF);
                 let eye = e.pos + DVec3::Y * eye;
                 let (sy, cy) = (e.yaw as f64).sin_cos();
@@ -124,17 +124,27 @@ impl Gizmos {
             // monsters may spawn now, yellow where they may at night, green where never.
             let dim = client.world.dim;
             let hostile = |s: &&crate::registry::SpawnRule| {
-                c.game.categories[s.category as usize].name == "core:hostile" && s.dimension.is_none_or(|d| d == dim)
+                c.game.categories[s.category as usize].name == "core:hostile" && (s.dims.is_empty() || s.dims.contains(&dim))
             };
-            let rules: Vec<[u32; 2]> = c
+            let rules: Vec<Option<u32>> = c
                 .game
                 .spawns
                 .iter()
                 .filter(hostile)
-                .map(|s| s.light)
+                .map(|s| s.when)
                 .collect();
             let day = client.daylight();
-            let spawns = |light: u32| rules.iter().any(|r| (r[0]..=r[1]).contains(&light));
+            let spawns = |p: IVec3, below: u32, daylight: f32| {
+                let ask = crate::conditions::Ask {
+                    pos: p.as_dvec3() + DVec3::splat(0.5),
+                    state: below,
+                    daylight: Some(daylight),
+                    ..Default::default()
+                };
+                rules
+                    .iter()
+                    .any(|w| w.is_none_or(|w| crate::conditions::on_client(Some(client), w, &ask)))
+            };
             for dy in -4..=4 {
                 for dz in -6..=6 {
                     for dx in -6..=6 {
@@ -146,12 +156,10 @@ impl Gizmos {
                         if !solid(below) || solid(here) {
                             continue;
                         }
-                        let l = client.world.light(p);
-                        let block = weft_abi::light::block(l).min(15);
-                        let now = weft_abi::light::effective(l, day);
-                        let color = if spawns(now) {
+                        let block = weft_abi::light::block(client.world.light(p)).min(15);
+                        let color = if spawns(p, below, day) {
                             0xFF5040FF
-                        } else if spawns(block) {
+                        } else if spawns(p, below, 0.0) {
                             0xFFD040FF
                         } else {
                             0x60FF60FF
@@ -176,7 +184,7 @@ pub fn shape(s: &GizmoShape, lines: &mut Vec<Line>, fills: &mut Vec<Fill>, label
         weft_abi::gizmo_kind::LINE => lines.push((s.a, s.b, s.color)),
         weft_abi::gizmo_kind::BOX => cuboid(lines, s.a.min(s.b), s.a.max(s.b), s.color),
         weft_abi::gizmo_kind::FILL => fills.push((s.a.min(s.b), s.a.max(s.b), s.color)),
-        _ => labels.push((s.a, s.text.clone(), s.color, if s.b.x > 0.0 { s.b.x as f32 } else { 1.0 })),
+        _ => labels.push((s.a, s.text.clone(), s.color, if s.size > 0.0 { s.size } else { 1.0 })),
     }
 }
 

@@ -79,8 +79,17 @@ use weft_abi::FACE_NAMES as FACES;
 /// Reads the model `name` (`ns:block/lamp`) through `read` (file text by asset name), following
 /// parents. Errors name the file.
 pub fn load(name: &str, read: &dyn Fn(&str) -> Option<String>) -> Result<Option<FileModel>, String> {
+    load_with(name, read, &[])
+}
+
+/// `load` with `textures` (a `#name` and the texture there) over whatever the files say: one
+/// model for many blocks, each with its own pictures.
+pub fn load_with(name: &str, read: &dyn Fn(&str) -> Option<String>, own: &[(String, String)]) -> Result<Option<FileModel>, String> {
     let Some(src) = read(name) else { return Ok(None) };
-    let mut textures: FxHashMap<String, String> = FxHashMap::default();
+    let mut textures: FxHashMap<String, String> = own
+        .iter()
+        .map(|(k, v)| (k.trim_start_matches('#').to_string(), v.clone()))
+        .collect();
     let mut elements: Option<Vec<Value>> = None;
     let mut builtin: Option<String> = None;
     let mut display = None;

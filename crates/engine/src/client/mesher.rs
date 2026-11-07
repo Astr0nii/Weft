@@ -5,12 +5,13 @@
 //! corners.
 
 use crate::gpu_layout::{face, quad};
-use weft_abi::{Layer, Model, block_flags as bf};
+use weft_abi::{BlockModel, RenderLayer, block_flags as bf};
 
 use crate::content::Content;
 
 pub const PAD: usize = 18;
 pub const PAD_VOLUME: usize = PAD * PAD * PAD;
+pub const ABSENT: u32 = u32::MAX;
 
 #[inline]
 pub const fn pidx(x: i32, y: i32, z: i32) -> usize {
@@ -59,7 +60,7 @@ impl Mesh {
 
 use crate::gpu_layout::CORNERS;
 
-const NORMALS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
+pub const NORMALS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
 
 #[cfg(test)]
 pub fn corners(dir: usize) -> [[i32; 3]; 4] {
@@ -83,7 +84,7 @@ pub fn build(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm) -> Mesh {
         for (x, &s) in states[row * PAD..(row + 1) * PAD].iter().enumerate() {
             if s != 0 {
                 *f |= 1 << x;
-                if ctm.hides(c.tight[s as usize].flags, s) {
+                if n.light[row * PAD + x] != ABSENT && ctm.hides(c.tight[s as usize].flags, s) {
                     *o |= 1 << x;
                 }
             }
@@ -147,36 +148,32 @@ fn draw_block(
     let tile = ctm.model(c, n, x, y, z, s);
     let boxes = tile.unwrap_or(drawn.boxes);
     let textures = drawn.textures;
-    let model = if tile.is_some() { Model::Boxes } else { drawn.model };
+    let model = if tile.is_some() { BlockModel::Boxes } else { drawn.model };
     match model {
         // Drawn apart, for its power to change without a new mesh (`wires.rs`).
-        Model::None | Model::Wire => {}
-        Model::Cube => {
+        BlockModel::None | BlockModel::Wire => {}
+        BlockModel::Cube => {
             for dir in 0..6 {
                 let [dx, dy, dz] = NORMALS[dir];
                 let ni = pidx(x + dx, y + dy, z + dz);
-                let ns = n.states[ni];
-                let ninfo = &c.states[ns as usize];
-                if ctm.hides(ninfo.flags, ns) {
+                if face_hidden(c, ctm, s, n.states[ni]) {
                     continue;
                 }
-                if ninfo.block == info.block && info.layer != Layer::Opaque && info.flags & bf::CULL_SAME != 0 {
-                    continue;
-                }
-                let (ao, light) = corner_data(n, ctm, opaque, x, y, z, dir);
+                let (ao, light) = corner_data(c, n, ctm, opaque, x, y, z, dir);
                 let tex = ctm.resolve(c, n, x, y, z, dir, textures[dir] & face::TEX_MASK);
                 let tint = face_tint(info, ctm, dir, tex);
                 // All that is translucent is kept far to near as one list of quads.
-                if info.layer == Layer::Translucent {
+                if info.layer == RenderLayer::Translucent {
                     let corners = CORNERS[dir].map(|k| [(x + k[0]) as f32, (y + k[1]) as f32, (z + k[2]) as f32]);
                     let light = std::array::from_fn(|k| darker_by_ao(light[k], (ao >> (k * 2)) & 3));
-                    mesh.quads[Layer::Translucent as usize].push(quad(corners, WHOLE, tex, biome, tint, light));
+                    mesh.quads[RenderLayer::Translucent as usize].push(quad(corners, WHOLE, tex, biome, tint, light));
                 } else {
                     mesh.faces[info.layer as usize].push(crate::gpu_layout::face_record(
                         [x, y, z],
                         dir as u32,
                         ao,
                         tint as u32,
+                        info.turns[dir] as u32,
                         tex,
                         biome,
                         light,
@@ -184,7 +181,7 @@ fn draw_block(
                 }
             }
         }
-        Model::Cross => {
+        BlockModel::Cross => {
             let l = light16(n.light[i]);
             let t = ctm.resolve(c, n, x, y, z, 0, textures[0] & face::TEX_MASK);
             let b = [x as f32, y as f32, z as f32];
@@ -195,15 +192,15 @@ fn draw_block(
                 let corners = [[p0[0], p0[1], p0[2]], [p1[0], p0[1], p1[2]], [p1[0], p1[1], p1[2]], [p0[0], p1[1], p0[2]]];
                 let back = [corners[1], corners[0], corners[3], corners[2]];
                 for q in [corners, back] {
-                    mesh.quads[Layer::Cutout as usize].push(quad(q, WHOLE, t, biome, info.tint | FLAT, [l; 4]));
+                    mesh.quads[RenderLayer::Cutout as usize].push(quad(q, WHOLE, t, biome, info.tint | FLAT, [l; 4]));
                 }
             }
         }
-        Model::Boxes => {
+        BlockModel::Boxes => {
             let l = light16(n.light[i]);
             // A file's model on a block with no holes may have them, which a texture
             // of a block with none wouldn't get to show otherwise.
-            let layer = if info.layer == Layer::Opaque { Layer::Cutout } else { info.layer };
+            let layer = if info.layer == RenderLayer::Opaque { RenderLayer::Cutout } else { info.layer };
             // No light is kept inside an opaque block, whatever a pack drew there,
             // nor in others like it next to it: the brightest around goes for all.
             let dark_inside = info.flags & bf::OPAQUE != 0;
@@ -234,6 +231,13 @@ pub const DIR_RANK: [u8; 6] = [3, 0, 4, 1, 5, 2];
 
 /// A face of a model's box as it is drawn, in the world and as an item alike: its corners in the
 /// block, turned and tilted, and the part of its picture (16 across). `None`: it has no such face.
+/// Whether a cube's face toward `neighbor` doesn't show: it is opaque (a pack's rule doesn't open
+/// it), or the same block, which culls its own (glass).
+pub fn face_hidden(c: &Content, ctm: &super::ctm::Ctm, state: u32, neighbor: u32) -> bool {
+    let (info, n) = (&c.states[state as usize], &c.states[neighbor as usize]);
+    ctm.hides(n.flags, neighbor) || n.block == info.block && info.layer != RenderLayer::Opaque && info.flags & bf::CULL_SAME != 0
+}
+
 pub fn box_face(bx: &crate::content::ModelBox, dir: usize) -> Option<([[f32; 3]; 4], [f32; 4])> {
     if bx.uv[dir][0] <= weft_abi::UV_NO_FACE[0] {
         return None;
@@ -263,6 +267,7 @@ fn tilted(p: [f32; 3], t: &weft_abi::BoxTilt) -> [f32; 3] {
 }
 
 fn corner_data(
+    c: &Content,
     n: &Neighborhood,
     ctm: &super::ctm::Ctm,
     opaque: &impl Fn(usize) -> bool,
@@ -299,11 +304,19 @@ fn corner_data(
         let ao = if s1 && s2 { 0 } else { 3 - (s1 as u32 + s2 as u32 + s3 as u32) };
         ao_bits |= ao << (k * 2);
 
+        // Only what light could come from into the cell before the face: a slab's closed side
+        // keeps its neighbor's light off the face as it keeps the light itself.
+        let t = |i: usize| &c.tight[n.states[i] as usize];
+        let along = |axis: usize, s: i32| axis * 2 + (s > 0) as usize;
+        let (to_a, to_b) = (along(ta, -sa), along(tb, -sb));
+        let r1 = t(i1).lets_into(t(i0), to_a);
+        let r2 = t(i2).lets_into(t(i0), to_b);
+        let r3 = (t(i3).lets_into(t(i1), to_b) && r1) || (t(i3).lets_into(t(i2), to_a) && r2);
         let mut sum = [0u32; 4];
         let mut count = 0;
-        for (idx, solid) in [(i0, false), (i1, s1), (i2, s2), (i3, s3 || (s1 && s2))] {
+        for (idx, solid) in [(i0, false), (i1, s1 || !r1), (i2, s2 || !r2), (i3, s3 || (s1 && s2) || !r3)] {
             // A block with holes is still opaque to light, there is none in it to go by.
-            if solid || ctm.is_open(n.states[idx]) {
+            if solid || n.light[idx] == ABSENT || ctm.is_open(n.states[idx]) {
                 continue;
             }
             let l = n.light[idx];
@@ -327,6 +340,9 @@ fn brightest_around(n: &Neighborhood, x: i32, y: i32, z: i32) -> u32 {
         for dz in -1..=1 {
             for dx in -1..=1 {
                 let l = n.light[pidx(x + dx, y + dy, z + dz)];
+                if l == ABSENT {
+                    continue;
+                }
                 for (ch, m) in most.iter_mut().enumerate() {
                     *m = (*m).max((l >> (ch * 8)) & 0xFF);
                 }
@@ -412,7 +428,13 @@ fn liquid(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm, mesh: &mut Mesh,
     let ts = info.textures[0];
     let (fx, fy, fz) = (x as f32, y as f32, z as f32);
     let layer = info.layer as usize;
-    if !same(x, y + 1, z) {
+    // In a block (waterlogged): its sides it covers whole stand where the liquid's would, which
+    // would fight them.
+    let parts = std::iter::once(n.states[i]).chain(n.extras.get(&i).into_iter().flatten().copied());
+    let walls = parts
+        .filter(|&p| c.states[p as usize].liquid.is_none())
+        .fold(0u8, |m, p| m | c.liquid_walls[p as usize]);
+    if !same(x, y + 1, z) && walls & 1 << 3 == 0 {
         let corners = [
             [fx, fy + hat(0, 1), fz + 1.0],
             [fx + 1.0, fy + hat(1, 1), fz + 1.0],
@@ -426,7 +448,7 @@ fn liquid(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm, mesh: &mut Mesh,
     }
     for dir in [0usize, 1, 4, 5] {
         let [dx, _, dz] = NORMALS[dir];
-        if same(x + dx, y, z + dz) {
+        if same(x + dx, y, z + dz) || walls & 1 << dir != 0 {
             continue;
         }
         let ni = pidx(x + dx, y, z + dz);
@@ -442,7 +464,7 @@ fn liquid(c: &Content, n: &Neighborhood, ctm: &super::ctm::Ctm, mesh: &mut Mesh,
         mesh.quads[layer].push(quad(corners, WHOLE, ts, biome, info.tint, [nl; 4]));
     }
     let below = pidx(x, y - 1, z);
-    if !same(x, y - 1, z) && !ctm.hides(c.states[n.states[below] as usize].flags, n.states[below]) {
+    if !same(x, y - 1, z) && walls & 1 << 2 == 0 && !ctm.hides(c.states[n.states[below] as usize].flags, n.states[below]) {
         let corners = CORNERS[2].map(|p| [fx + p[0] as f32, fy, fz + p[2] as f32]);
         mesh.quads[layer].push(quad(corners, WHOLE, t, biome, info.tint, [light16(n.light[below]); 4]));
     }

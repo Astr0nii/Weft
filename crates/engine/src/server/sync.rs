@@ -25,7 +25,7 @@ impl Server {
             send_clock(p, dim, *tick, *tick_rate);
             let viewer = dim
                 .entity(p.entity)
-                .map_or((DVec3::ZERO, GameMode::Survival), |e| (e.pos, e.mode));
+                .map_or((DVec3::ZERO, GameMode::SURVIVAL), |e| (e.pos, e.mode));
             send_entities(c, p, dim, &moved[d], *tick, view.radius, viewer);
             send_own_state(c, p, dim);
             if !p.gizmos.is_empty() {
@@ -84,20 +84,21 @@ impl Server {
                     .iter_mut()
                     .filter(|e| !e.removed && e.anchor.is_none())
                 {
-                    let now = (e.pos, e.yaw, e.pitch, e.pose);
+                    let now = (e.pos, e.yaw, e.pitch, e.pose, e.sprinting);
                     // Solid bodies every tick: clients show them between server positions, and a
                     // body that stops must say so (two equal positions).
-                    let solid = c.game.entities[e.kind as usize].is(abi::entity_flags::SOLID);
+                    let solid = c.game.entities[e.kind as usize].is(crate::tag_bits::entity::SOLID);
                     if solid
                         || e.sent.is_none_or(|s| {
                             (s.0 - now.0).length_squared() > 1e-6
                                 || (s.1 - now.1).abs() > 0.01
                                 || (s.2 - now.2).abs() > 0.01
                                 || s.3 != now.3
+                                || s.4 != now.4
                         })
                     {
                         if e.sent.is_some() {
-                            m.push((e.id, e.pos, e.yaw, e.pitch, e.pose, e.frame.unwrap_or(0)));
+                            m.push((e.id, e.pos, e.yaw, e.pitch, e.pose, e.sprinting, e.frame.unwrap_or(0)));
                         }
                         e.sent = Some(now);
                     }
@@ -129,7 +130,7 @@ impl Server {
                 r.space.signals.level_changes.clear();
                 r.entities.killed.clear();
                 r.entities.taken.clear();
-                r.entities.pushed.clear();
+                r.entities.told.clear();
                 r.entities.dirty_comp.clear();
                 r.gizmos.clear();
                 // Block entity inventory changes must reach the save.
@@ -226,8 +227,7 @@ fn send_clock(p: &mut Player, dim: &DimSet, tick: u64, rate: u32) {
         p.conn.send(ToClient::TickRate(rate));
     }
     if dim.weather_moved || p.first_sync {
-        p.conn
-            .send(ToClient::Weather { raining: dim.raining, thunder: dim.thunder });
+        p.conn.send(ToClient::Weather(dim.weather as u32));
     }
     if tick % TPS as u64 == 0 || dim.day_moved {
         p.conn
@@ -250,13 +250,15 @@ fn send_entities(
     let mut visible = FxHashSet::default();
     for reg in &dim.regions {
         // Spectators are seen only by other spectators.
-        let shown = |e: &&Entity| e.mode != GameMode::Spectator || me_mode == GameMode::Spectator;
+        // Hidden ones are seen by the hidden alone.
+        let hidden = |m: GameMode| m.has(crate::tag_bits::game_mode::HIDDEN);
+        let shown = |e: &&Entity| !hidden(e.mode) || hidden(me_mode);
         // A dead player is gone for the others (its death animation plays) until it respawns.
         for e in reg
             .entities
             .list
             .iter()
-            .filter(|e| e.in_world(c) && e.id != p.entity && (!e.player || e.alive()))
+            .filter(|e| e.in_world() && e.id != p.entity && (!e.player || e.alive()))
             .filter(shown)
         {
             if (e.pos - me).length_squared() > range2 {
@@ -381,10 +383,14 @@ fn send_entities(
 /// What only the player itself hears: pushes, movement numbers, inventory, components, its menu.
 fn send_own_state(c: &'static Content, p: &mut Player, dim: &mut DimSet) {
     let Some(reg) = dim.entity_region(p.entity) else { return };
-    for &(_, push) in reg.entities.pushed.iter().filter(|h| h.0 == p.entity) {
-        p.conn.send(match push {
-            entity::Pushed::Knock(away) => ToClient::Knock { away },
-            entity::Pushed::Add(add) => ToClient::Velocity { add },
+    for &(_, told) in reg.entities.told.iter().filter(|h| h.0 == p.entity) {
+        p.conn.send(match told {
+            entity::Told::Knock(away) => ToClient::Knock { away },
+            entity::Told::Add(add) => ToClient::Velocity { add },
+            entity::Told::Velocity(v) => ToClient::SetVelocity(v),
+            entity::Told::Look(look) => ToClient::Look(look),
+            entity::Told::Flying(on) => ToClient::Flying(on),
+            entity::Told::Selected(slot) => ToClient::Selected(slot),
         });
     }
     // The client moves its player and times its mining: it needs them all.
@@ -429,7 +435,7 @@ fn send_own_state(c: &'static Content, p: &mut Player, dim: &mut DimSet) {
     p.first_sync = false;
     if let Some(m) = &mut p.menu {
         // The machine's menu-synced components, all at first, then what changed.
-        let owner = m.owner;
+        let owner = m.owner();
         let first = !std::mem::replace(&mut m.comps_sent, true);
         let comps: Vec<(u64, u32, Vec<u8>)> = c
             .game
@@ -544,15 +550,7 @@ pub(super) fn gizmos_for(p: &Player, dim: &DimSet, tick: u64, me: DVec3) -> Vec<
         return out;
     }
     let on = |g: &str| p.gizmos.iter().any(|x| x == g);
-    let shape = |group: &str, kind: u8, a: DVec3, b: DVec3, color: u32| GizmoShape {
-        group: group.into(),
-        kind,
-        a,
-        b,
-        color,
-        ticks: TPS + 2,
-        text: Msg::default(),
-    };
+    let shape = |group: &str, kind: u8, a: DVec3, b: DVec3, color: u32| GizmoShape::shape(group, kind, a, b, color, TPS + 2);
     if on("regions") {
         const COLORS: [u32; 6] = [0xFF4040FF, 0x40FF40FF, 0x4080FFFF, 0xFFFF40FF, 0xFF40FFFF, 0x40FFFFFF];
         for (i, r) in dim.regions.iter().enumerate() {

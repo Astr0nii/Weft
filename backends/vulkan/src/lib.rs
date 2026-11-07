@@ -14,43 +14,6 @@ const FRAMES: usize = 2;
 const MAX_MARKS: u32 = 16;
 const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 
-struct Slab<T> {
-    items: Vec<Option<T>>,
-    free: Vec<u32>,
-}
-
-impl<T> Slab<T> {
-    fn new() -> Self {
-        Slab { items: Vec::new(), free: Vec::new() }
-    }
-    fn insert(&mut self, v: T) -> u32 {
-        if let Some(i) = self.free.pop() {
-            self.items[i as usize] = Some(v);
-            i
-        } else {
-            self.items.push(Some(v));
-            self.items.len() as u32 - 1
-        }
-    }
-    fn remove(&mut self, i: u32) -> Option<T> {
-        let v = self.items.get_mut(i as usize)?.take();
-        if v.is_some() {
-            self.free.push(i);
-        }
-        v
-    }
-    fn get(&self, i: u32) -> &T {
-        self.items[i as usize]
-            .as_ref()
-            .expect("stale render handle")
-    }
-    fn get_mut(&mut self, i: u32) -> &mut T {
-        self.items[i as usize]
-            .as_mut()
-            .expect("stale render handle")
-    }
-}
-
 struct Buffer {
     raw: vk::Buffer,
     alloc: Allocation,
@@ -147,6 +110,9 @@ pub struct VulkanBackend {
     samplers: [vk::Sampler; 4],
     free_tex: Vec<u32>,
     next_tex: u32,
+    /// What a freed texture's slot shows until it is taken again: whoever still has its number
+    /// samples nothing rather than freed memory (a lost device on Intel, garbage elsewhere).
+    blank_view: vk::ImageView,
     capture_requested: bool,
     capture: Option<(vk::Buffer, Allocation, u32, u32, vk::Format)>,
     device_name: String,
@@ -388,11 +354,15 @@ impl VulkanBackend {
                 .fill_mode_non_solid(true)
                 .shader_int16(true);
             let mut f11 = vk::PhysicalDeviceVulkan11Features::default().storage_buffer16_bit_access(true);
+            // Texture slots are written while the frame before may still be drawing, which only
+            // this makes legal; where it is missing, it was so before too.
+            let unused_while_pending = has12.descriptor_binding_update_unused_while_pending != vk::FALSE;
             let mut f12 = vk::PhysicalDeviceVulkan12Features::default()
                 .descriptor_indexing(true)
                 .runtime_descriptor_array(true)
                 .descriptor_binding_partially_bound(true)
                 .descriptor_binding_sampled_image_update_after_bind(true)
+                .descriptor_binding_update_unused_while_pending(unused_while_pending)
                 .shader_sampled_image_array_non_uniform_indexing(true)
                 // Metal has no such draw, and nothing needs it yet.
                 .draw_indirect_count(has12.draw_indirect_count != vk::FALSE)
@@ -477,7 +447,10 @@ impl VulkanBackend {
                 });
             }
 
-            let flags = vk::DescriptorBindingFlags::PARTIALLY_BOUND | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND;
+            let mut flags = vk::DescriptorBindingFlags::PARTIALLY_BOUND | vk::DescriptorBindingFlags::UPDATE_AFTER_BIND;
+            if unused_while_pending {
+                flags |= vk::DescriptorBindingFlags::UPDATE_UNUSED_WHILE_PENDING;
+            }
             let binding_flags = [flags, vk::DescriptorBindingFlags::empty(), Default::default(), Default::default(), Default::default()];
             let bindings = [
                 vk::DescriptorSetLayoutBinding::default()
@@ -605,9 +578,9 @@ impl VulkanBackend {
                 want_size: (desc.width, desc.height),
                 vsync: desc.vsync,
                 dirty_swapchain: true,
-                buffers: Slab::new(),
-                textures: Slab::new(),
-                pipelines: Slab::new(),
+                buffers: Slab::default(),
+                textures: Slab::default(),
+                pipelines: Slab::default(),
                 uploads: Vec::new(),
                 global_layout,
                 global_pool,
@@ -615,6 +588,7 @@ impl VulkanBackend {
                 samplers,
                 free_tex: Vec::new(),
                 next_tex: 0,
+                blank_view: vk::ImageView::null(),
                 capture_requested: false,
                 capture: None,
                 device_name,
@@ -623,6 +597,12 @@ impl VulkanBackend {
                 gpu_times: Vec::new(),
             };
             backend.recreate_swapchain()?;
+            let blank = backend.create_texture(
+                &TextureDesc { width: 1, height: 1, mips: 1, format: Format::Rgba8Srgb, render_target: false },
+                "freed slot",
+            );
+            backend.write_texture(blank, 0, &[0; 4]);
+            backend.blank_view = backend.textures.get(blank.0).view;
             Ok(backend)
         }
     }
@@ -813,6 +793,16 @@ impl VulkanBackend {
         }
     }
 
+    /// Frees `d` once the GPU is done with it: after the next wait on this slot's fence. That wait
+    /// must not be one still to come for the submission before (a destroy between `end_frame` and
+    /// `begin_frame`, like an asset reload's): it would only cover the frame two back, and the one
+    /// just submitted could still be drawing with `d` when it goes (a GPU fault, which hangs the
+    /// whole screen on Apple GPUs). So the slot is made ready first, as uploads do.
+    fn defer(&mut self, d: Deferred) {
+        self.ensure_slot_ready();
+        self.frames[self.slot].deferred.push(d);
+    }
+
     fn destroy_now(&mut self, d: Deferred) {
         unsafe {
             match d {
@@ -821,12 +811,22 @@ impl VulkanBackend {
                     self.allocator.free(a).ok();
                 }
                 Deferred::Texture(image, view, a, index) => {
+                    if index != u32::MAX {
+                        let info = [vk::DescriptorImageInfo::default()
+                            .image_view(self.blank_view)
+                            .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                        let write = vk::WriteDescriptorSet::default()
+                            .dst_set(self.global_set)
+                            .dst_binding(0)
+                            .dst_array_element(index)
+                            .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
+                            .image_info(&info);
+                        self.device.update_descriptor_sets(&[write], &[]);
+                        self.free_tex.push(index);
+                    }
                     self.device.destroy_image_view(view, None);
                     self.device.destroy_image(image, None);
                     self.allocator.free(a).ok();
-                    if index != u32::MAX {
-                        self.free_tex.push(index);
-                    }
                 }
                 Deferred::Pipeline(p, l, s) => {
                     self.device.destroy_pipeline(p, None);
@@ -912,6 +912,19 @@ impl VulkanBackend {
         };
     }
 
+    /// Orders copies: those recorded after it start once those before it are written.
+    unsafe fn copy_barrier(&self, cmd: vk::CommandBuffer) {
+        let b = [vk::MemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::COPY)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::COPY)
+            .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)];
+        unsafe {
+            self.device
+                .cmd_pipeline_barrier2(cmd, &vk::DependencyInfo::default().memory_barriers(&b))
+        };
+    }
+
     unsafe fn record_uploads(&mut self, cmd: vk::CommandBuffer) {
         if self.uploads.is_empty() {
             return;
@@ -925,10 +938,26 @@ impl VulkanBackend {
                 .map(|c| c.0)
                 .collect();
             let uploads = std::mem::take(&mut self.uploads);
+            // Byte ranges copied into each buffer since the last barrier. Copies are unordered
+            // without one, so a later write to the same bytes could land first and be overwritten
+            // by the older data; a copy that overlaps one of these waits for them. Keyed by
+            // (buffer, start) to the end; the ranges never overlap, so only the one starting
+            // last before a copy's end can overlap it.
+            let mut written: std::collections::BTreeMap<(u32, u64), u64> = Default::default();
             for u in &uploads {
                 match *u {
                     Upload::Buffer { src, dst, offset, size } => {
                         let Some(Some(b)) = self.buffers.items.get(dst as usize) else { continue };
+                        let end = offset + size;
+                        if written
+                            .range(..(dst, end))
+                            .next_back()
+                            .is_some_and(|(&(d, _), &e)| d == dst && e > offset)
+                        {
+                            self.copy_barrier(cmd);
+                            written.clear();
+                        }
+                        written.insert((dst, offset), end);
                         let region = [vk::BufferCopy { src_offset: src.1, dst_offset: offset, size }];
                         self.device
                             .cmd_copy_buffer(cmd, chunks[src.0 as usize], b.raw, &region);
@@ -1195,9 +1224,11 @@ impl Backend for VulkanBackend {
 
     fn destroy_buffer(&mut self, buffer: BufferId) {
         if let Some(b) = self.buffers.remove(buffer.0) {
-            self.frames[self.slot]
-                .deferred
-                .push(Deferred::Buffer(b.raw, b.alloc));
+            // Writes still queued for it go with it: its slot is free at once, and a buffer made
+            // before the uploads run (a reload makes many) would take them, past its end.
+            self.uploads
+                .retain(|u| !matches!(u, Upload::Buffer { dst, .. } if *dst == buffer.0));
+            self.defer(Deferred::Buffer(b.raw, b.alloc));
         }
     }
 
@@ -1296,9 +1327,14 @@ impl Backend for VulkanBackend {
 
     fn destroy_texture(&mut self, texture: TextureId) {
         if let Some(t) = self.textures.remove(texture.0) {
-            self.frames[self.slot]
-                .deferred
-                .push(Deferred::Texture(t.image, t.view, t.alloc, t.index));
+            // As for buffers: uploads still queued for it must not reach a texture that takes its
+            // slot.
+            self.uploads.retain(|u| match u {
+                Upload::Texture { dst, .. } => *dst != texture.0,
+                Upload::InitTexture(id) => *id != texture.0,
+                Upload::Buffer { .. } => true,
+            });
+            self.defer(Deferred::Texture(t.image, t.view, t.alloc, t.index));
         }
     }
 
@@ -1438,9 +1474,7 @@ impl Backend for VulkanBackend {
 
     fn destroy_pipeline(&mut self, pipeline: PipelineId) {
         if let Some(p) = self.pipelines.remove(pipeline.0) {
-            self.frames[self.slot]
-                .deferred
-                .push(Deferred::Pipeline(p.raw, p.layout, p.set_layout));
+            self.defer(Deferred::Pipeline(p.raw, p.layout, p.set_layout));
         }
     }
 
@@ -1802,9 +1836,7 @@ impl Backend for VulkanBackend {
                 px.swap(0, 2);
             }
         }
-        self.frames[self.slot]
-            .deferred
-            .push(Deferred::Buffer(buf, alloc));
+        self.defer(Deferred::Buffer(buf, alloc));
         Some(Capture { width: w, height: h, rgba })
     }
 

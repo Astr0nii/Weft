@@ -110,8 +110,8 @@ impl Dim {
     pub fn take_block(&mut self, c: &'static Content, p: IVec3) -> Option<(u32, Option<u64>, Moved)> {
         let state = self.get(p)?;
         let entity = self.anchored(p);
-        if entity.is_some() {
-            self.entities.anchors.remove(&(self.frame, p));
+        if let Some(id) = entity {
+            self.entities.unanchor((self.frame, p), id);
         }
         let signal = self.space.signals.carry_out(p);
         self.write_block(c, p, AIR, true);
@@ -279,7 +279,7 @@ impl Dim {
                 .copied()
                 .unwrap_or(IVec3::ZERO)
                 * level as i32;
-            breaks |= s.mode == 1;
+            breaks |= s.flags as u32 & weft_abi::signal_flags::BREAKS != 0;
         }
         (sum.signum(), breaks)
     }
@@ -343,10 +343,10 @@ impl Dim {
         Some(out)
     }
 
-    fn break_for_body(&mut self, c: &'static Content, cells: Vec<IVec3>) {
+    pub(super) fn break_for_body(&mut self, c: &'static Content, cells: Vec<IVec3>) {
         for p in cells {
             if let Some(s) = self.get(p).filter(|s| *s != AIR) {
-                self.drop_block_loot(c, p, s, abi::ItemStack::EMPTY, false, None);
+                self.drop_block_loot(c, p, s, abi::ItemStack::EMPTY, false, 0);
                 self.set(c, p, AIR);
             }
         }
@@ -456,7 +456,7 @@ impl Dim {
                     for p in off {
                         if let Some(s) = d.get(p).filter(|s| *s != AIR) {
                             log::debug!("{} riding on a platform at {p} came off", c.state_name(s));
-                            d.drop_block_loot(c, p, s, abi::ItemStack::EMPTY, false, None);
+                            d.drop_block_loot(c, p, s, abi::ItemStack::EMPTY, false, 0);
                             d.set(c, p, AIR);
                         }
                     }
@@ -520,7 +520,7 @@ impl Dim {
         let (all, was) = (b.all_blocks(), b.cell);
         let blocks: Vec<(IVec3, u32, Option<u64>)> = all
             .into_iter()
-            .map(|(local, state)| (local, state, self.entities.anchors.get(&(id, local)).copied()))
+            .map(|(local, state)| (local, state, self.entities.anchored(id, local)))
             .collect();
         self.in_frame(on.unwrap_or(0), |d| {
             let place = Transform::of(d.place.to_local(pos));
@@ -571,7 +571,7 @@ impl Dim {
                 .map_or(Vec::new(), |s| s.extras(b.local).to_vec());
             self.land_block(c, b.to, b.state, b.entity, signal);
             if self.get(b.to) == Some(b.state) {
-                self.set_extras(b.to, extras);
+                self.write_cell(c, b.to, b.state, Some(extras), true);
             }
             if let Some(was) = was.filter(|was| self.get(b.to) != Some(*was)) {
                 cells.push((b.to, was));
@@ -603,13 +603,10 @@ impl Dim {
     /// Goes where it was going, if that is free: otherwise it breaks there, what it holds with it.
     fn land_block(&mut self, c: &'static Content, at: IVec3, state: u32, entity: Option<u64>, signal: Moved) {
         match self.get(at) {
-            // Wire joins the wire there, each piece holding on by itself.
-            Some(there)
-                if c.states[there as usize].block == c.states[state as usize].block
-                    && c.states[state as usize].signal.kind == abi::signal_kind::WIRE =>
-            {
-                let first = c.block_of(state).first_state;
-                self.write_block(c, at, first + ((there - first) | (state - first)), true);
+            // Sides join the sides there, each holding on by itself.
+            Some(there) if c.states[there as usize].block == c.states[state as usize].block && c.states[state as usize].sides != 0 => {
+                let sides = c.states[there as usize].sides | c.states[state as usize].sides;
+                self.write_block(c, at, c.block_of(state).with_sides(state, sides), true);
             }
             Some(there) if there == AIR || c.states[there as usize].flags & abi::block_flags::REPLACEABLE != 0 => {
                 if c.states[state as usize].signal.kind == abi::signal_kind::OBSERVER {
@@ -627,7 +624,7 @@ impl Dim {
             self.drop_inventory(c, id);
             self.entities.remove(id);
         }
-        self.drop_block_loot(c, at, state, abi::ItemStack::EMPTY, false, None);
+        self.drop_block_loot(c, at, state, abi::ItemStack::EMPTY, false, 0);
     }
 
     /// Landed bodies, a tick on: they get shown, and go.
@@ -712,10 +709,15 @@ impl Dim {
             }
         }
         for (at, state) in blocks {
-            if let Some(cb) = c.block_of(state).cb.on_pass {
-                let owner = c.block_of(state).owner;
+            if let Some((owner, cb)) = c.block_of(state).cb.on_carried {
                 let cell = at + now;
-                self.call(owner, cb, |w| abi::BlockEventArgs { world: w, pos: cell.to_array(), state, other: at.to_array(), entity: id });
+                self.call(owner, cb, |w| abi::BlockEventArgs {
+                    world: w,
+                    pos: cell.to_array().into(),
+                    state,
+                    other: at.to_array().into(),
+                    entity: id,
+                });
             }
         }
     }

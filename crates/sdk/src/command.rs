@@ -9,6 +9,7 @@
 //! });
 //! ```
 
+use crate::abi::Vec3;
 use std::ops::{Deref, DerefMut};
 
 use crate::abi::{self, Str, command_value as cv};
@@ -104,14 +105,15 @@ impl Command<'_> {
             .map(|v| v.float)
     }
 
-    /// Words, text, player names, and the full names of items, blocks, entities, dimensions.
+    /// Words, text, player names, and the full names of items, blocks, entities, dimensions,
+    /// attributes.
     pub fn text(&self, name: &str) -> Option<&str> {
         self.value(name)
             .filter(|v| v.kind == cv::TEXT || v.kind == cv::ID)
             .map(|v| unsafe { v.text.as_str() })
     }
 
-    /// Registry id of an item, block state, entity kind or dimension parameter.
+    /// Registry id of an item, block state, entity kind, dimension or attribute parameter.
     pub fn id(&self, name: &str) -> Option<u32> {
         self.value(name)
             .filter(|v| v.kind == cv::ID)
@@ -130,14 +132,14 @@ impl Command<'_> {
             })
     }
 
-    pub fn pos(&self, name: &str) -> Option<[f64; 3]> {
+    pub fn pos(&self, name: &str) -> Option<Vec3> {
         self.value(name)
             .filter(|v| v.kind == cv::POS)
             .map(|v| v.pos)
     }
 
     /// Whether a literal word of the usage (or an optional parameter) was given.
-    pub fn has(&self, name: &str) -> bool {
+    pub fn given(&self, name: &str) -> bool {
         self.value(name).is_some()
     }
 

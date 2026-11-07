@@ -1,6 +1,40 @@
 {
  "format_version": "1.8.0",
  "animations": {
+  "animation.stock.ride": {
+   "loop": true,
+   "animation_length": 0.05,
+   "bones": {
+    "rightLeg": {
+     "rotation": [
+      -81.0,
+      18.0,
+      4.5
+     ]
+    },
+    "leftLeg": {
+     "rotation": [
+      -81.0,
+      -18.0,
+      -4.5
+     ]
+    },
+    "rightArm": {
+     "rotation": [
+      -36.0,
+      0.0,
+      0.0
+     ]
+    },
+    "leftArm": {
+     "rotation": [
+      -36.0,
+      0.0,
+      0.0
+     ]
+    }
+   }
+  },
   "animation.stock.walk": {
    "animation_length": 1.41726,
    "bones": {

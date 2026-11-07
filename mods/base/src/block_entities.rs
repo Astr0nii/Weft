@@ -17,34 +17,33 @@ pub fn register(r: &mut Registry) {
     );
     r.system(&SMELTING, tick_furnaces);
     // The furnace's state syncs to whoever has it open: the screen binds to it directly.
-    r.machine(&FURNACE, &FURNACE_MENU)
-        .block(|b| {
-            // Front towards the player; unlit and lit.
-            b.sound_group("stone")
-                .facing(Facings::HORIZONTAL, Toward::Player)
-                .prop("lit", ["false", "true"])
-                .states(|p, s| {
-                    let lit = p.is("lit", "true");
-                    let s =
-                        s.front_faces(p.facing(), "furnace_side", "furnace_top", if lit { "furnace_front_lit" } else { "furnace_front" });
-                    if lit { s.light_rgb(13, 11, 8) } else { s }
-                })
-                .hardness(3.5)
-                .mineable("pickaxe")
-                .needs_tool(0)
-                .tab(&crate::tabs::FUNCTIONAL)
+    r.block(&FURNACE)
+        // Front towards the player; unlit and lit.
+        .sound_group("stone")
+        .facing(Facings::HORIZONTAL, Toward::Player)
+        .prop("lit", ["false", "true"])
+        .states(|p, s| {
+            let lit = p.is("lit", "true");
+            let s = s.front_faces("furnace_side", "furnace_top", if lit { "furnace_front_lit" } else { "furnace_front" });
+            if lit { s.light_rgb(13, 11, 8) } else { s }
         })
-        .group("input", Slots::single())
-        .group("fuel", Slots::single().accepts("fuel"))
-        .group("output", Slots::single().output())
+        .hardness(3.5)
+        .mined_by("pickaxe", 0)
+        .tab(&crate::tabs::FUNCTIONAL)
+        .entity(|e| e.attach(&SMELTING).inventory(3))
+        .opens(&FURNACE_MENU);
+    r.menu(&FURNACE_MENU)
+        .group("input", Slots::single().holder())
+        .group("fuel", Slots::single().accepts("fuel").holder())
+        .group("output", Slots::single().output().holder())
         .recipes(&crate::recipes::SMELTING)
-        .attach(&SMELTING)
+        .player_inventory()
         .screen(|ui| {
-            ui.panel("panel", S::col().pad(7.0).gap(4.0).stretch(), |ui| {
+            ui.panel("panel", S::column().pad(7.0).gap(4.0).stretch(), |ui| {
                 ui.title();
                 ui.row(S::row().gap(8.0), |ui| {
                     ui.spacer();
-                    ui.column(S::col().gap(2.0), |ui| {
+                    ui.column(S::column().gap(2.0), |ui| {
                         ui.group("input");
                         ui.progress_bind_dir("flame", S::default().size(14.0, 14.0), abi::ui_dir::UP, |c| {
                             c.menu_component(&SMELTING)
@@ -63,20 +62,21 @@ pub fn register(r: &mut Registry) {
             });
         });
 
-    r.machine(&CHEST, &CHEST_MENU)
-        .block(|b| {
-            b.sound_group("wood")
-                .facing(Facings::HORIZONTAL, Toward::Player)
-                .states(|p, s| {
-                    s.front_faces(p.facing(), "chest_side", "chest_top", "chest_front")
-                        .model_box([1.0, 0.0, 1.0], [15.0, 14.0, 15.0])
-                })
-                .hardness(2.5)
-                .mineable("axe")
-                .tab(&crate::tabs::FUNCTIONAL)
+    r.block(&CHEST)
+        .sound_group("wood")
+        .facing(Facings::HORIZONTAL, Toward::Player)
+        .states(|_, s| {
+            s.front_faces("chest_side", "chest_top", "chest_front")
+                .model_box([1.0, 0.0, 1.0], [15.0, 14.0, 15.0])
         })
-        .group("chest", Slots::chest(3))
-        .plain_screen();
+        .hardness(2.5)
+        .mined_by("axe", tool_tier::HAND)
+        .tab(&crate::tabs::FUNCTIONAL)
+        .entity(|e| e.inventory(27))
+        .opens(&CHEST_MENU);
+    r.menu(&CHEST_MENU)
+        .group("chest", Slots::chest(3).holder())
+        .default_screen();
 }
 
 /// `ticks` of one furnace at once (its area was unloaded, the time jumped): it smelts while
@@ -92,9 +92,12 @@ fn catch_up(w: &World, id: u64, s: &mut Smelting, ticks: u32) {
         .flatten()
     {
         let q = abi::Query { entity: id, item: input.item, ..query() };
-        s.cook_max = w.compute(&SMELT_TIME, time as f64, &q).round().max(1.0) as u32;
+        s.cook_max = w
+            .chain_compute(&SMELT_TIME, time as f64, &q)
+            .round()
+            .max(1.0) as u32;
         let items = (input.count).min(output.room_for(out)) as u64;
-        let per_fuel = FUEL.on_filled(&fuel).unwrap_or(0) as u64;
+        let per_fuel = FUEL.on_stack_item(&fuel).unwrap_or(0) as u64;
         let fuel_items = if per_fuel > 0 { fuel.count as u64 } else { 0 };
         let work = (items * s.cook_max as u64).saturating_sub(s.cook as u64);
         let worked = idle.min(work).min(s.burn as u64 + fuel_items * per_fuel);
@@ -102,7 +105,7 @@ fn catch_up(w: &World, id: u64, s: &mut Smelting, ticks: u32) {
         if lit > 0 {
             let mut left = fuel;
             for _ in 0..lit {
-                left = use_one(left);
+                left = consume_one(left);
             }
             fuel_slot.set(0, left);
             s.burn_max = per_fuel as u32;
@@ -133,8 +136,8 @@ fn tick_furnaces(b: &mut SystemBatch<Smelting>) {
             let was_lit = s.burn > 0;
             catch_up(&w, id, s, ticks);
             let pos = st.block_pos();
-            if (s.burn > 0) != was_lit && FURNACE.is(w.get(pos)) {
-                w.set_prop(pos, "lit", if s.burn > 0 { "true" } else { "false" });
+            if (s.burn > 0) != was_lit && FURNACE.is(w.block(pos)) {
+                w.prop_set(pos, "lit", if s.burn > 0 { "true" } else { "false" });
             }
             continue;
         }
@@ -156,16 +159,19 @@ fn tick_furnaces(b: &mut SystemBatch<Smelting>) {
             .flatten();
         let fits = recipe.is_some_and(|(out, _)| output.room_for(out) > 0);
         if s.burn == 0 && fits {
-            if let Some(ticks) = FUEL.on_filled(&fuel) {
+            if let Some(ticks) = FUEL.on_stack_item(&fuel) {
                 s.burn = ticks;
                 s.burn_max = ticks;
-                fuel_slot.set(0, use_one(fuel));
+                fuel_slot.set(0, consume_one(fuel));
             }
         }
         if s.burn > 0 && fits {
             let (out, time) = recipe.unwrap();
             let q = abi::Query { entity: id, item: input.item, ..query() };
-            s.cook_max = w.compute(&SMELT_TIME, time as f64, &q).round().max(1.0) as u32;
+            s.cook_max = w
+                .chain_compute(&SMELT_TIME, time as f64, &q)
+                .round()
+                .max(1.0) as u32;
             s.cook += 1;
             if s.cook >= s.cook_max {
                 s.cook = 0;
@@ -180,8 +186,8 @@ fn tick_furnaces(b: &mut SystemBatch<Smelting>) {
             s.cook = s.cook.saturating_sub(2);
         }
         let lit = s.burn > 0;
-        if lit != was_lit && FURNACE.is(w.get(pos)) {
-            w.set_prop(pos, "lit", if lit { "true" } else { "false" });
+        if lit != was_lit && FURNACE.is(w.block(pos)) {
+            w.prop_set(pos, "lit", if lit { "true" } else { "false" });
         }
     }
 }

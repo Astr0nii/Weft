@@ -444,12 +444,17 @@ pub fn format(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>) {
 /// A translation `key` with `args`; an empty key shows its one argument as it is (ready text
 /// from code, like a ticket or a profile line).
 pub fn message(key: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>) {
+    format(template_of(key, cx), args, cx, out);
+}
+
+/// What a message's key stands for: its translation, the template it carries, or its one argument.
+fn template_of<'a>(key: &'a str, cx: &Ctx<'a>) -> &'a str {
     if key.is_empty() {
-        format("{0}", args, cx, out);
+        "{0}"
     } else if let Some(template) = key.strip_prefix(TEMPLATE) {
-        format(template, args, cx, out);
+        template
     } else {
-        format(cx.lang.get(key), args, cx, out);
+        cx.lang.get(key)
     }
 }
 
@@ -560,8 +565,8 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
         } else if let Some(action) = tag.strip_prefix("key:") {
             let name = cx
                 .input
-                .and_then(|i| i.key_of(action))
-                .map(|k| display_chord(cx.lang, k))
+                .and_then(|i| i.binding_of(action))
+                .map(|b| display_binding(cx.lang, b))
                 .unwrap_or_else(|| "?".into());
             let color = st
                 .color
@@ -651,7 +656,7 @@ fn format_depth(template: &str, args: &[Arg], cx: &Ctx, out: &mut Vec<Span>, st:
                 Some(Arg::Name(n)) => push_name(n, cx, out, st, depth),
                 Some(Arg::Msg(m)) if depth < 4 => {
                     let color = st.color;
-                    format_depth(cx.lang.get(&m.key), &m.args, cx, out, st, color, depth + 1);
+                    format_depth(template_of(&m.key, cx), &m.args, cx, out, st, color, depth + 1);
                     st.color = color;
                 }
                 Some(Arg::Key(k)) if depth < 4 => {
@@ -925,6 +930,15 @@ pub fn layout_with(spans: &[Span], font: &Font, max_width: Option<f32>, line_hei
 
 /// A key's name for players: translated (`keyname.ShiftLeft`) when the language has it.
 /// `Ctrl+T`: the modifiers (`keyname.ctrl` ..., either side's key), then the key.
+/// What a player reads for a binding: its keys, `x2` after a double tap's (`Wx2`).
+pub fn display_binding(lang: &Lang, b: crate::input::Binding) -> String {
+    let chord = display_chord(lang, b.chord);
+    match b.trigger {
+        crate::input::Trigger::Double => format!("{chord}x2"),
+        _ => chord,
+    }
+}
+
 pub fn display_chord(lang: &Lang, c: crate::input::Chord) -> String {
     let mut out = String::new();
     for (bit, name, ..) in crate::input::MODIFIERS {
@@ -932,6 +946,10 @@ pub fn display_chord(lang: &Lang, c: crate::input::Chord) -> String {
             out += lang.get(&format!("keyname.{name}"));
             out.push('+');
         }
+    }
+    if let Some(w) = c.with {
+        out += &display_key(lang, w);
+        out.push('+');
     }
     out + &display_key(lang, c.key)
 }

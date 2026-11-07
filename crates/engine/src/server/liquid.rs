@@ -2,7 +2,7 @@
 //! block reacts to neighbor changes by scheduling a tick after its delay; a tick recomputes the
 //! level from the neighbors, falls if it can and otherwise spreads sideways only towards the
 //! nearest way down within `slope_find`. Mods describe liquids and reactions as data
-//! (`abi::LiquidDesc`, `abi::ReactionDesc`), nothing calls into a mod per update.
+//! (`abi::comp::liquid`, `abi::comp::reaction`), nothing calls into a mod per update.
 
 use glam::{DVec3, IVec3};
 use weft_abi::{ItemStack, block_flags as bf};
@@ -46,32 +46,25 @@ impl Dim {
         self.fluid(c, p).filter(|_| !self.sealed(c, p, d))
     }
 
-    /// Whether what shares the cell at `p` with a liquid closes all of its side towards `d`.
+    /// Whether what shares the cell at `p` with a liquid closes its side towards `d`: what its
+    /// shape covers whole there (a stair's back), or what its block says (`liquid_walls`).
     fn sealed(&self, c: &Content, p: IVec3, d: IVec3) -> bool {
         if self.space.extras(p).is_empty() {
             return false;
         }
-        let axis = if d.x != 0 {
-            0
-        } else if d.y != 0 {
-            1
-        } else {
-            2
+        let Some(dir) = weft_abi::FACE_DIRS
+            .iter()
+            .position(|f| IVec3::from_array(*f) == d)
+        else {
+            return false;
         };
-        let up = d[axis] > 0;
-        self.parts(p).into_iter().any(|s| {
-            c.states[s as usize].collision.iter().any(|b| {
-                let at_side = if up { b[axis + 3] >= 1.0 } else { b[axis] <= 0.0 };
-                at_side
-                    && (0..3)
-                        .filter(|&a| a != axis)
-                        .all(|a| b[a] <= 0.0 && b[a + 3] >= 1.0)
-            })
-        })
+        self.parts(p)
+            .into_iter()
+            .any(|s| c.liquid_walls[s as usize] & 1 << dir != 0)
     }
 
     /// Room for liquid: neither solid nor a ladder (unloaded counts as solid).
-    fn holds_liquid(&self, c: &Content, p: IVec3) -> bool {
+    fn has_room(&self, c: &Content, p: IVec3) -> bool {
         let room = |s: u32| c.states[s as usize].flags & (bf::SOLID | bf::CLIMBABLE) == 0;
         self.get(p).is_some_and(room) && self.space.extras(p).iter().all(|&s| room(s))
     }
@@ -108,11 +101,11 @@ impl Dim {
     }
 
     fn is_hole(&self, c: &Content, below: IVec3, l: u16) -> bool {
-        self.fluid(c, below).is_some_and(|f| f.id == l) || self.holds_liquid(c, below)
+        self.fluid(c, below).is_some_and(|f| f.id == l) || self.has_room(c, below)
     }
 
     fn passes(&self, c: &Content, p: IVec3, l: u16) -> bool {
-        !self.fluid(c, p).is_some_and(|f| f.id == l && f.source) && self.holds_liquid(c, p)
+        !self.fluid(c, p).is_some_and(|f| f.id == l && f.source) && self.has_room(c, p)
     }
 
     /// Whether `l` may flow into `p` from direction `dir`: into empty room, or down into another
@@ -121,7 +114,7 @@ impl Dim {
         match self.fluid(c, p) {
             Some(f) if f.id == l => false,
             Some(_) => falling_in && self.falls_into(c, l, p).is_some(),
-            None => self.holds_liquid(c, p),
+            None => self.has_room(c, p),
         }
     }
 
@@ -130,7 +123,7 @@ impl Dim {
         let mine = c.liquids[l as usize].first_state;
         c.reactions
             .iter()
-            .find(|r| r.falls_into.is_some() && c.matches(&r.liquid, mine) && c.matches(&r.touching, state))
+            .find(|r| r.falls_into.is_some() && c.matchers.has(r.liquid, mine) && c.matchers.has(r.touching, state))
             .and_then(|r| r.falls_into)
     }
 
@@ -147,7 +140,7 @@ impl Dim {
         self.set(c, p, state);
         // Plants and torches wash away with their drops, like vanilla.
         for old in was {
-            self.drop_block_loot(c, p, old, ItemStack::EMPTY, false, None);
+            self.drop_block_loot(c, p, old, ItemStack::EMPTY, false, 0);
         }
     }
 
@@ -258,7 +251,7 @@ impl Dim {
             let hit = c
                 .reactions
                 .iter()
-                .find(|r| c.matches(&r.liquid, state) && c.matches(&r.touching, n));
+                .find(|r| c.matchers.has(r.liquid, state) && c.matchers.has(r.touching, n));
             if let Some(b) = hit.and_then(|r| if f.source { r.source } else { r.flowing }) {
                 // In with a block it just goes: what it would turn into has no room.
                 if self.space.extras(p).is_empty() && self.get(p) == Some(state) {
@@ -281,25 +274,25 @@ impl Dim {
         let creative = self
             .entities
             .get(player)
-            .is_some_and(|e| e.mode == crate::world::GameMode::Creative);
+            .is_some_and(|e| e.mode.has(crate::tag_bits::game_mode::NO_COSTS));
         if let Some(&(l, empty)) = c.item_liquid.get(&held.item) {
             let hit = self
                 .look_ray(c, player, self.block_reach(c, player), false)
                 .filter(|h| h.frame == 0)?;
             let source = c.liquids[l as usize].first_state;
             // Into what holds liquid, with the same say as placing a block.
-            if c.states[hit.state as usize].flags & bf::HOLDS_LIQUID != 0
+            if c.states[hit.state as usize].liquid.is_none()
                 && self.fluid(c, hit.block).is_none()
-                && self.can_hold_liquid(c, hit.block)
+                && self.can_hold_liquid(c, hit.block, source)
             {
                 let mut q = weft_abi::Query {
                     entity: player,
-                    pos: hit.block.to_array(),
+                    pos: hit.block.to_array().into(),
                     state: source,
                     item: held.item,
                     ..weft_abi::Query::DEFAULT
                 };
-                if !self.ask(c, weft_abi::question::PLACE_BLOCK, &mut q) || !self.add_part(c, hit.block, source) {
+                if !self.ask(c, weft_abi::action::PLACE_BLOCK, &mut q) || !self.add_part(c, hit.block, source) {
                     return None;
                 }
                 return Some(if creative || empty == 0 { held } else { ItemStack::new(empty, 1) });
@@ -311,9 +304,14 @@ impl Dim {
             if old == source {
                 return None;
             }
-            let mut q =
-                weft_abi::Query { entity: player, pos: target.to_array(), state: source, item: held.item, ..weft_abi::Query::DEFAULT };
-            if !self.ask(c, weft_abi::question::PLACE_BLOCK, &mut q) {
+            let mut q = weft_abi::Query {
+                entity: player,
+                pos: target.to_array().into(),
+                state: source,
+                item: held.item,
+                ..weft_abi::Query::DEFAULT
+            };
+            if !self.ask(c, weft_abi::action::PLACE_BLOCK, &mut q) {
                 return None;
             }
             if c.states[old as usize].liquid.is_some() {
@@ -328,9 +326,14 @@ impl Dim {
             .filter(|h| h.frame == 0)?;
         let f = decode(c, hit.state).filter(|f| f.source)?;
         let filled = *c.containers.get(&(held.item, f.id))?;
-        let mut q =
-            weft_abi::Query { entity: player, pos: hit.block.to_array(), state: hit.state, item: held.item, ..weft_abi::Query::DEFAULT };
-        if !self.ask(c, weft_abi::question::BREAK_BLOCK, &mut q) {
+        let mut q = weft_abi::Query {
+            entity: player,
+            pos: hit.block.to_array().into(),
+            state: hit.state,
+            item: held.item,
+            ..weft_abi::Query::DEFAULT
+        };
+        if !self.ask(c, weft_abi::action::BREAK_BLOCK, &mut q) {
             return None;
         }
         self.replace_part(c, hit.block, hit.state, AIR);
@@ -354,7 +357,13 @@ impl Dim {
     pub fn look_ray(&self, c: &Content, id: u64, max: f64, liquids: bool) -> Option<crate::physics::Hit> {
         let e = self.entities.get(id)?;
         let eye = e.pos + DVec3::Y * e.eye(c);
-        let dir = crate::physics::look_dir(e.yaw, e.pitch);
+        let from = if self.frame != 0 { self.place.to_local(eye) } else { eye };
+        self.ray(c, from, crate::physics::look_dir(e.yaw, e.pitch), max, liquids)
+    }
+
+    /// The first block along a ray from `from` (in this dimension's frame: a body's blocks when
+    /// asked from them), bodies included when asked from the world.
+    pub fn ray(&self, c: &Content, from: DVec3, dir: DVec3, max: f64, liquids: bool) -> Option<crate::physics::Hit> {
         let structures: Vec<(u64, crate::physics::Transform, &dyn crate::physics::Blocks)> = self
             .bodies
             .iter()
@@ -366,8 +375,8 @@ impl Dim {
             .collect();
         // Asked from a body's blocks, it looks along those.
         if self.frame != 0 {
-            return crate::physics::pick(c, &*self.space, &[], self.place.to_local(eye), dir, max, liquids);
+            return crate::physics::pick(c, &*self.space, &[], from, dir, max, liquids);
         }
-        crate::physics::pick(c, &*self.space, &structures, eye, dir, max, liquids)
+        crate::physics::pick(c, &*self.space, &structures, from, dir, max, liquids)
     }
 }

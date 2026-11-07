@@ -17,7 +17,18 @@ const NAMES: [&str; 6] = ["west", "east", "down", "up", "north", "south"];
 const VECS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
 
 fn wire(faces: &[u8]) -> String {
-    format!("base:redstone[faces={}]", faces.iter().fold(0, |m, f| m | 1 << f))
+    let sides: Vec<String> = faces
+        .iter()
+        .map(|&f| format!("{}=true", NAMES[f as usize]))
+        .collect();
+    format!("base:redstone[{}]", sides.join(","))
+}
+
+/// The sides a state of wire lies on, a bit per face.
+fn wire_sides(state: u32) -> u8 {
+    (0..6u8)
+        .filter(|&f| state_prop(state, NAMES[f as usize]) == Some("true"))
+        .fold(0, |m, f| m | 1 << f)
 }
 
 fn on_floor(name: &str, front: u8, rest: &str) -> String {
@@ -252,6 +263,26 @@ pub async fn redstone_comparator(t: T) -> R {
     Ok(())
 }
 
+/// A mod's gate reads the faces it names and only those: power behind it does nothing.
+pub async fn redstone_gate(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let z = -4;
+    let gate = add(f, [4, 0, z]);
+    let lamp = add(f, [5, 0, z]);
+    t.set(gate, &format!("testmod:and_gate[attach=down,front={}]", NAMES[EAST as usize]))
+        .await?;
+    t.set(lamp, "base:redstone_lamp").await?;
+    t.set(add(f, [3, 0, z]), &lever(true)).await?;
+    t.set(add(f, [4, 0, z - 1]), &lever(true)).await?;
+    settle(&t).await?;
+    t.check(!lit(&t, lamp).await?, "the rear and one side are not both sides");
+    t.set(add(f, [4, 0, z + 1]), &lever(true)).await?;
+    settle(&t).await?;
+    t.check(lit(&t, lamp).await?, "both sides");
+    Ok(())
+}
+
 /// A piston pushes, a sticky one pulls back, and two wanting one block both give way.
 pub async fn redstone_piston(t: T) -> R {
     t.flat().await?;
@@ -330,7 +361,7 @@ pub async fn redstone_piston_moves(t: T) -> R {
     t.secs(0.5).await?;
     // What the player sees: where they are shown, frame by frame.
     let steps = |t: &T, frames: u32| {
-        let (t, mut last, mut largest) = (t.clone(), t.state().shown[0], 0.0f64);
+        let (t, mut last, mut largest) = (t.clone(), t.state().shown.x, 0.0f64);
         async move {
             // What a step has beyond the speed it goes at: a long frame makes a long step too.
             let mut frame = std::time::Instant::now();
@@ -339,17 +370,17 @@ pub async fn redstone_piston_moves(t: T) -> R {
                 let dt = std::mem::replace(&mut frame, std::time::Instant::now())
                     .elapsed()
                     .as_secs_f64();
-                let x = t.state().shown[0];
+                let x = t.state().shown.x;
                 largest = largest.max((x - last).abs() - 10.0 * dt);
                 last = x;
             }
             Ok::<_, String>(largest)
         }
     };
-    let start = t.state().pos[0];
+    let start = t.state().pos.x;
     t.set(switch, &lever(true)).await?;
     let largest = steps(&t, 150).await?;
-    let went = t.state().pos[0] - start;
+    let went = t.state().pos.x - start;
     t.probe("carried along", went as f32, (0.9..1.1).contains(&went));
     t.probe("largest step of a frame when carried", largest as f32, largest < 0.15);
     t.check(t.block(add(f, [1, -1, 0])).await?.contains("cobblestone"), "the block got there");
@@ -367,15 +398,15 @@ pub async fn redstone_piston_moves(t: T) -> R {
     t.set(add(f, [1, -1, 0]), "base:cobblestone").await?;
     t.set(switch, &lever(false)).await?;
     t.secs(0.3).await?;
-    let start = t.state().pos[0];
+    let start = t.state().pos.x;
     t.set(switch, &lever(true)).await?;
     let largest = steps(&t, 150).await?;
-    let went = t.state().pos[0] - start;
+    let went = t.state().pos.x - start;
     t.probe("shoved out of the way", went as f32, went > 0.2);
     t.probe("largest step of a frame when shoved", largest as f32, largest < 0.15);
     t.cmd(&format!("/tp {} {} {}", f[0], f[1] + 12, f[2]))
         .await?;
-    t.c().fly(true);
+    t.c().set_flying(true);
     t.secs(0.3).await?;
 
     // Slime brings the block touching it, not what it can't move.
@@ -721,7 +752,7 @@ pub async fn redstone_body_light(t: T) -> R {
     t.flat().await?;
     let f = t.feet();
     // A dark box around the player.
-    t.c().fly(true);
+    t.c().set_flying(true);
     t.fill(add(f, [-4, -1, -8]), add(f, [8, 6, 4]), "base:stone")
         .await?;
     t.fill(add(f, [-3, 0, -7]), add(f, [7, 5, 3]), "air")
@@ -814,7 +845,7 @@ pub async fn redstone_floater(t: T) -> R {
     t.cmd(&format!("/tp {} {} {}", f[0] as f64 + 2.5, f[1] + y + 2, f[2] as f64 + z as f64 + 0.5))
         .await?;
     t.secs(0.5).await?;
-    let start = t.state().pos[0];
+    let start = t.state().pos.x;
     // Power to the floater from what comes along.
     // Under the floater, stuck to the slime next to it: it goes along.
     t.set(at(1, -1), "base:redstone_block").await?;
@@ -845,7 +876,7 @@ pub async fn redstone_floater(t: T) -> R {
     t.check(t.block(at(7, 0)).await?.contains("floater"), "the floater with it");
     t.check(t.block(at(8, 1)).await?.contains("stone"), "and the block on the slime");
     t.check(!t.block(at(1, 0)).await?.contains("floater"), "nothing left behind");
-    let now = t.state().pos[0];
+    let now = t.state().pos.x;
     let slip = (now - start) - (now - start).round();
     t.probe("how far what stood on it slipped", slip.abs() as f32, slip.abs() < 0.02);
     t.probe("how far what stood on it went", (now - start) as f32, (now - start) > 4.0);
@@ -939,11 +970,11 @@ pub async fn redstone_floater(t: T) -> R {
     t.set(at(-3, 2), "base:floater[facing=south]").await?;
     t.cmd(&format!("/tp {} {} {}", f[0] as f64 - 0.5, f[1] + y + 4, f[2] as f64 + z as f64 + 4.5))
         .await?;
-    t.c().fly(true);
+    t.c().set_flying(true);
     t.op("put me 1 base:floater 1").await?;
     t.op("put me 2 base:lever 1").await?;
     t.op("put me 3 base:redstone_torch 1").await?;
-    t.c().select(1);
+    t.c().select_slot(1);
     t.look_at(at(-1, 1));
     t.secs(0.5).await?;
     t.shot("floaters").await?;
@@ -1047,7 +1078,7 @@ pub async fn redstone_body_edges(t: T) -> R {
     settle(&t).await?;
     let id_num: u64 = id.parse().map_err(|_| "no platform".to_string())?;
     t.check(!lit(&t, lamp).await?, "the platform's wire isn't fed by the wire next to it");
-    let sb = t.c().structure_block(id_num, [0, 1, 0]);
+    let sb = t.c().body_block(id_num, [0, 1, 0]);
     t.check(sb.is_some(), "the client has what is on it");
 
     // A gate on a platform changes its look for clients as well.
@@ -1066,11 +1097,11 @@ pub async fn redstone_body_edges(t: T) -> R {
         .await?;
     let id_num: u64 = id.parse().map_err(|_| "no platform".to_string())?;
     t.secs(0.3).await?;
-    let before = t.c().structure_block(id_num, [1, 1, 0]);
+    let before = t.c().body_block(id_num, [1, 1, 0]);
     t.op(&format!("structureset {id} 0 1 0 base:redstone_block"))
         .await?;
     settle(&t).await?;
-    let after = t.c().structure_block(id_num, [1, 1, 0]);
+    let after = t.c().body_block(id_num, [1, 1, 0]);
     t.check(before.is_some() && before != after, format!("its look changes for clients: {before:?} then {after:?}"));
     t.check(
         t.op(&format!("sblock {id} 1 1 0"))
@@ -1409,7 +1440,7 @@ pub async fn redstone_body_and_world(t: T) -> R {
     t.check(seen, "an observer sees it go past");
     t.check(own_lit, "its own lamp is lit going past a block of the world");
     let passes: u32 = t.op("passes").await?.parse().unwrap_or(0);
-    t.check(passes > passes_before + 3, format!("on_pass as it goes: {passes_before} then {passes}"));
+    t.check(passes > passes_before + 3, format!("on_carried as it goes: {passes_before} then {passes}"));
     Ok(())
 }
 
@@ -1506,22 +1537,22 @@ pub async fn redstone_flying_rider(t: T) -> R {
         t.cmd(&format!("/tp {} {} {}", f[0] as f64 + x, f[1] + top, f[2] as f64 + z as f64 + 0.5))
             .await?;
         t.secs(0.5).await?;
-        let start = t.state().pos[0];
+        let start = t.state().pos.x;
         // A pulse into the piston, as its observer would give it: someone may stand on that one.
         t.set(at(0, y), "base:redstone_block").await?;
         t.set(at(0, y), "air").await?;
         // What is shown only goes forward.
-        let (mut was, mut back) = (t.state().shown[0], 0.0f64);
+        let (mut was, mut back) = (t.state().shown.x, 0.0f64);
         let began = std::time::Instant::now();
         while began.elapsed() < Duration::from_secs(4) {
             t.frames(1).await?;
-            let now = t.state().shown[0];
+            let now = t.state().shown.x;
             back = back.max(was - now);
             was = now;
         }
         t.probe(&format!("how far back {name} went at most"), back as f32, back < 0.01);
         // Whichever block of its row the machine ended on, the rider is as far along it as before.
-        let now = t.state().pos[0];
+        let now = t.state().pos.x;
         let slip = (now - start) - (now - start).round();
         t.probe(&format!("how far {name} slipped"), slip.abs() as f32, slip.abs() < 0.02);
         t.probe(&format!("blocks {name} went"), (now - start) as f32, now - start > 2.0);
@@ -1538,10 +1569,10 @@ pub async fn redstone_flying_rider(t: T) -> R {
         .await?;
     let id: u64 = idol.trim().parse().map_err(|_| format!("spawned {idol}"))?;
     t.secs(0.5).await?;
-    let start = t.c().entity(id).map_or(0.0, |e| e.pos[0]);
+    let start = t.c().entity(id).map_or(0.0, |e| e.pos.x);
     t.set(add(f, [1, 1, z]), "base:redstone_block").await?;
     t.secs(1.0).await?;
-    let went = t.c().entity(id).map_or(0.0, |e| e.pos[0]) - start;
+    let went = t.c().entity(id).map_or(0.0, |e| e.pos.x) - start;
     t.probe("how far what stood on the block went", went as f32, (went - 1.0).abs() < 0.02);
     Ok(())
 }
@@ -1579,8 +1610,8 @@ pub async fn redstone_flying_machine(t: T) -> R {
         t.frames(1).await?;
         let now = t.state().shown;
         largest = largest
-            .max((now[0] - last[0]).abs())
-            .max((now[1] - last[1]).abs());
+            .max((now.x - last.x).abs())
+            .max((now.y - last.y).abs());
         last = now;
     }
     // At most half a block a tick, and a frame isn't longer than that even under load.
@@ -1595,7 +1626,7 @@ pub async fn redstone_flying_machine(t: T) -> R {
     }
     t.probe("blocks a flying machine went in 1000 frames", reached.unwrap_or(0) as f32, reached.is_some_and(|x| x > 4));
     let now = t.state().shown;
-    t.probe("blocks the player rode", (now[0] - from[0]) as f32, now[0] - from[0] > 5.0);
+    t.probe("blocks the player rode", (now.x - from.x) as f32, now.x - from.x > 5.0);
     Ok(())
 }
 
@@ -1608,35 +1639,23 @@ pub async fn redstone_by_hand(t: T) -> R {
     let (wall, cell) = (add(f, [0, 0, z]), add(f, [0, 0, z + 1]));
     t.set(wall, "base:stone").await?;
     t.op("put me 0 redstone 8").await?;
-    t.c().select(0);
+    t.c().select_slot(0);
     t.frames(2).await?;
     t.look_at(wall);
     t.frames(2).await?;
     t.press("core:use");
-    t.until("dust on the wall", Duration::from_secs(2), |t| {
-        t.c()
-            .block(cell)
-            .is_some_and(|s| state_prop(s, "faces") == Some("16"))
-    })
-    .await?;
+    t.until("dust on the wall", Duration::from_secs(2), |t| t.c().block(cell).is_some_and(|s| wire_sides(s) == 16))
+        .await?;
     t.look_at(add(cell, [0, -1, 0]));
     t.secs(0.3).await?;
     t.press("core:use");
-    t.until("dust on the floor as well", Duration::from_secs(2), |t| {
-        t.c()
-            .block(cell)
-            .is_some_and(|s| state_prop(s, "faces") == Some("20"))
-    })
-    .await?;
+    t.until("dust on the floor as well", Duration::from_secs(2), |t| t.c().block(cell).is_some_and(|s| wire_sides(s) == 20))
+        .await?;
     t.look_at(wall);
     t.secs(0.3).await?;
     t.press("core:attack");
-    t.until("the wall's piece gone", Duration::from_secs(2), |t| {
-        t.c()
-            .block(cell)
-            .is_some_and(|s| state_prop(s, "faces") == Some("4"))
-    })
-    .await?;
+    t.until("the wall's piece gone", Duration::from_secs(2), |t| t.c().block(cell).is_some_and(|s| wire_sides(s) == 4))
+        .await?;
     // The one left goes with its floor.
     t.set(add(cell, [0, -1, 0]), "air").await?;
     settle(&t).await?;
@@ -1644,7 +1663,7 @@ pub async fn redstone_by_hand(t: T) -> R {
     t.set(add(cell, [0, -1, 0]), "base:stone").await?;
 
     t.op("put me 1 repeater 1").await?;
-    t.c().select(1);
+    t.c().select_slot(1);
     t.frames(2).await?;
     t.look_at(wall);
     t.secs(0.3).await?;
@@ -1741,7 +1760,7 @@ pub async fn redstone_looks(t: T) -> R {
     t.set(add(f, [-5, 0, z - 2]), "base:piston[facing=west]")
         .await?;
     t.set(add(f, [-5, 1, z - 2]), "base:redstone_block").await?;
-    t.c().look(180.0, 8.0);
+    t.c().set_look(180.0, 8.0);
     t.secs(0.5).await?;
     t.shot("gallery").await?;
 
@@ -1769,8 +1788,8 @@ pub async fn redstone_looks(t: T) -> R {
     {
         t.op(&format!("put me {i} {item} 1")).await?;
     }
-    t.c().look(0.0, -32.0);
-    t.c().select(8);
+    t.c().set_look(0.0, -32.0);
+    t.c().select_slot(8);
     t.secs(1.0).await?;
     t.shot("close").await?;
 
@@ -1927,12 +1946,9 @@ fn state_of(part: Part, way: ([usize; 3], [i32; 3])) -> Option<u32> {
     let first = |name: &str| Block::lookup(name);
     Some(match part {
         Part::Solid(n) | Part::Plain(n) => first(n)?,
-        Part::Wire(mask) => {
-            let m = (0..6u8)
-                .filter(|d| mask & (1 << d) != 0)
-                .fold(0u32, |m, d| m | 1 << turned_dir(way, d));
-            first("base:redstone")? + m
-        }
+        Part::Wire(mask) => (0..6u8)
+            .filter(|d| mask & (1 << d) != 0)
+            .try_fold(first("base:redstone")?, |s, d| state_with(s, NAMES[turned_dir(way, d) as usize], "true"))?,
         Part::Device(n, attach, front, prop) => {
             let mut s = first(n)?;
             if let Some(a) = attach {
@@ -1960,7 +1976,7 @@ pub fn build_turned(w: &World, seed: u64, from: [i32; 3]) -> Result<String, Stri
         for x in -REACH..=REACH {
             for y in -REACH..=REACH {
                 for z in -REACH..=REACH {
-                    if !w.set(at([x, y, z]), air) {
+                    if !w.set_block(at([x, y, z]), air) {
                         return Err(format!("{:?} is not loaded", at([x, y, z])));
                     }
                 }
@@ -1978,7 +1994,7 @@ pub fn build_turned(w: &World, seed: u64, from: [i32; 3]) -> Result<String, Stri
                 }
                 let q = turned(way, p);
                 let state = state_of(part, way).ok_or("a state of the circuit doesn't exist")?;
-                w.set([from[0] + o[0] + q[0], from[1] + o[1] + q[1], from[2] + o[2] + q[2]], state);
+                w.set_block([from[0] + o[0] + q[0], from[1] + o[1] + q[1], from[2] + o[2] + q[2]], state);
             }
         }
     }
@@ -1996,12 +2012,12 @@ pub async fn redstone_on_a_structure(t: T) -> R {
     // Added by what mods can do.
     let structure_set = |x: i32, block: &str| format!("structureset {id} {x} 1 0 {block}");
     t.op(&structure_set(0, "base:redstone_block")).await?;
-    t.op(&structure_set(1, "base:redstone[faces=4]")).await?;
+    t.op(&structure_set(1, "base:redstone[down=true]")).await?;
     t.frames(5).await?;
     let name = format!("test-{}", t.name());
-    t.c().leave_world();
+    t.c().world_leave();
     t.screen("core:title").await?;
-    t.c().open_world(&name, 1);
+    t.c().world_open(&name, 1);
     t.until("joined again", Duration::from_secs(60), |t| t.flag(client::client_flags::JOINED))
         .await?;
     t.loaded().await?;
@@ -2015,7 +2031,7 @@ pub async fn redstone_on_a_structure(t: T) -> R {
         .ok_or(format!("no lift among {list}"))?
         .to_string();
     // Wire next to what was saved, which is what used to be fatal.
-    t.op(&format!("structureset {id} 2 1 0 base:redstone[faces=4]"))
+    t.op(&format!("structureset {id} 2 1 0 base:redstone[down=true]"))
         .await?;
     settle(&t).await?;
     t.check(t.state().frame > 0, "still here");
@@ -2023,11 +2039,11 @@ pub async fn redstone_on_a_structure(t: T) -> R {
     // Wire on it is drawn, in its power's color, where the structure is.
     t.op(&format!("structureset {id} 0 0 -1 base:stone"))
         .await?;
-    t.op(&format!("structureset {id} 0 1 -1 base:redstone[faces=4]"))
+    t.op(&format!("structureset {id} 0 1 -1 base:redstone[down=true]"))
         .await?;
     let uid: u64 = id.parse().map_err(|_| "not an id".to_string())?;
     // From above.
-    t.c().fly(true);
+    t.c().set_flying(true);
     t.cmd(&format!("/tp {} {} {}", f[0] + 4, f[1] + 7, f[2] - 8))
         .await?;
     t.secs(0.5).await?;
@@ -2035,14 +2051,14 @@ pub async fn redstone_on_a_structure(t: T) -> R {
     for _ in 0..40 {
         t.frames(1).await?;
         let Some(o) = t.c().entity(uid).map(|e| e.pos) else { continue };
-        let at = [o[0] + 0.0, o[1] + 1.03, o[2] - 1.0];
+        let at = [o.x + 0.0, o.y + 1.03, o.z - 1.0];
         let st = t.state();
-        let (dx, dy, dz) = (at[0] - st.shown[0], at[1] - st.shown[1] - 1.62, at[2] - st.shown[2]);
+        let (dx, dy, dz) = (at[0] - st.shown.x, at[1] - st.shown.y - 1.62, at[2] - st.shown.z);
         t.c()
-            .look((-dx).atan2(-dz).to_degrees() as f32, dy.atan2((dx * dx + dz * dz).sqrt()).to_degrees() as f32);
+            .set_look((-dx).atan2(-dz).to_degrees() as f32, dy.atan2((dx * dx + dz * dz).sqrt()).to_degrees() as f32);
         t.frames(2).await?;
         let Some(o) = t.c().entity(uid).map(|e| e.pos) else { continue };
-        if let Some((x, y)) = t.on_screen([o[0] + 0.0, o[1] + 1.03, o[2] - 1.0]) {
+        if let Some((x, y)) = t.on_screen([o.x + 0.0, o.y + 1.03, o.z - 1.0]) {
             // Beside the crosshair.
             let px = t.pixel(x + 0.012, y + 0.01).await?;
             red |= px[0] as i32 > px[1] as i32 * 2 && px[0] > 60;
@@ -2114,9 +2130,9 @@ pub async fn redstone_saved(t: T) -> R {
     let before = t.shot("before").await?.share(0.05, 0.05, 0.95, 0.95, red);
     t.check(lit(&t, lamp).await?, "lit before");
 
-    t.c().leave_world();
+    t.c().world_leave();
     t.screen("core:title").await?;
-    t.c().open_world(&format!("test-{}", t.name()), 1);
+    t.c().world_open(&format!("test-{}", t.name()), 1);
     t.loaded().await?;
     t.look_at(add(f, [2, 0, z]));
     settle(&t).await?;

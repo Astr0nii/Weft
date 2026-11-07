@@ -9,7 +9,7 @@ pub static WHEAT_SEEDS: Item = Item::named("wheat_seeds");
 pub static WHEAT: Item = Item::named("wheat");
 pub static BUCKET: Item = Item::named("bucket");
 pub static FLINT: Item = Item::named("flint");
-pub static CLAY: Item = Item::named("clay");
+pub static CLAY_BALL: Item = Item::named("clay_ball");
 
 pub use base_api::{ARMOR, Armor, FLAMMABLE, FOOD, FUEL, Food};
 /// Tags of armor pieces, head to feet; `<tag>/<material>` picks the recipe (see recipes.rs).
@@ -27,8 +27,8 @@ const MATERIALS: [Material; 5] = [
     Material { name: "wood", level: tool_tier::WOOD, speed: 2.0, durability: 59, damage: 0.0 },
     Material { name: "stone", level: tool_tier::STONE, speed: 4.0, durability: 131, damage: 1.0 },
     Material { name: "iron", level: tool_tier::IRON, speed: 6.0, durability: 250, damage: 2.0 },
-    Material { name: "diamond", level: tool_tier::DIAMOND, speed: 8.0, durability: 1561, damage: 3.0 },
     Material { name: "gold", level: tool_tier::WOOD, speed: 12.0, durability: 32, damage: 0.0 },
+    Material { name: "diamond", level: tool_tier::DIAMOND, speed: 8.0, durability: 1561, damage: 3.0 },
 ];
 
 pub fn register(r: &mut Registry) {
@@ -61,18 +61,14 @@ pub fn register(r: &mut Registry) {
         .tag("materials/diamond")
         .tab(&crate::tabs::INGREDIENTS);
     r.item(&WHEAT_SEEDS)
-        .placed_block(&crate::blocks::WHEAT)
+        .places(&crate::blocks::WHEAT)
         .tab(&crate::tabs::NATURAL);
     r.item(&WHEAT)
         .tag("crops/wheat")
         .tab(&crate::tabs::INGREDIENTS);
-    // Other block drops; clay and flint for now
-    r.item(&FLINT)
-        .tag("materials/flint")
-        .tab(&crate::tabs::INGREDIENTS);
-    r.item(&CLAY)
-        .tag("materials/clay")
-        .tab(&crate::tabs::INGREDIENTS);
+    // What gravel and clay drop.
+    r.item(&FLINT).tab(&crate::tabs::INGREDIENTS);
+    r.item(&CLAY_BALL).tab(&crate::tabs::INGREDIENTS);
     // Filled buckets come with their liquids (blocks.rs); the engine fills and pours them.
     r.item(&BUCKET).max_stack(16).tab(&crate::tabs::TOOLS);
     r.set("lava_bucket", &FUEL, 20000);
@@ -96,7 +92,7 @@ pub fn register(r: &mut Registry) {
         let i = r
             .item(Item::generated(name.into()))
             .set(&FOOD, Food { hunger, saturation })
-            .use_time(1.6)
+            .use_ticks(32)
             .on_use(base_api::eat)
             .tab(&crate::tabs::FOOD);
         let i = if tag.starts_with("cooked_meat/") { i.tag("cooked_meat") } else { i };
@@ -118,8 +114,7 @@ pub fn register(r: &mut Registry) {
         let tool = |r: &mut Registry, kind: &str, damage: f32, speed: f32| {
             let b = r
                 .item(Item::generated(format!("{}_{kind}", m.name)))
-                .tool(kind)
-                .tool_level(m.level)
+                .tool(kind, m.level)
                 .mining_speed(m.speed)
                 .durability(m.durability)
                 .attack_damage(damage)
@@ -158,7 +153,8 @@ pub fn register(r: &mut Registry) {
             let points = points[slot];
             let tag = ARMOR_SLOTS[slot];
             // Leggings are the inner layer, drawn closer to the body.
-            let (inflate, layer) = if slot == 2 { (0.5, 2) } else { (1.0, 1) };
+            let (inflate, layer) =
+                if mat == "leather" { if slot == 2 { (0.2, 2) } else { (0.4, 1) } } else { if slot == 2 { (0.5, 2) } else { (0.75, 1) } };
             r.item(Item::generated(format!("{mat}_{piece}")))
                 .durability(durability * dur)
                 .set(&ARMOR, Armor { points, toughness })

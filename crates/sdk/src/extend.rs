@@ -3,53 +3,44 @@
 //! ```ignore
 //! // Notifications after the fact, batched once per tick:
 //! pub static EATEN: Event<Eaten> = Event::named("eaten");
-//! r.on(&EATEN, |b| for e in b.iter() { b.world().damage(..) });
+//! r.on_event(&EATEN, |b| for e in b.iter() { b.world().damage(..) });
 //! w.emit(&EATEN, Eaten { .. });
 //! // May it happen? Any deny wins:
-//! r.intercept(&question::BREAK_BLOCK, |q| if q.pos()[1] < 0 { Verdict::Deny } else { Verdict::Abstain });
+//! r.before_event(&actions::BREAK_BLOCK, |q| if q.pos()[1] < 0 { Verdict::Deny } else { Verdict::Abstain });
 //! // Computed values in stages, explainable:
 //! r.modify(&chain::DAMAGE, stage::MULTIPLY, |m| m.value *= 0.5);
 //! // Loot tables any mod can change:
-//! r.loot(&OAK_LEAVES).pool(Pool::new().when(Cond::Chance(0.05)).item("sapling"));
-//! r.loot_modify(&ZOMBIE).add_pool(Pool::new().item("mymod:brain"));
+//! r.loot(&OAK_LEAVES).pool(Pool::new().when(Cond::chance(0.05)).item("sapling"));
+//! r.edit(base::ZOMBIE.loot()).pool(Pool::new().item("mymod:brain"));
 //! ```
 
+use crate::abi::BlockPos;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::abi::{self, ItemStack, Slice, Str};
 use crate::component::Value;
-use crate::{Attribute, Chain, LootSource, Question, Registry, World, callback, host, qualify};
+use crate::{Attribute, Chain, LootSource, LootTable, Question, Registry, WithComponents, World, callback, comps, host, qualify};
 
-pub use abi::{BlockChange, ChatMessage, Death, Hurt, ItemUsed, Pickup, PlayerEvent, attr_op, permission, stage};
+pub use abi::{
+    BlockChange, ChatMessage, Death, DimensionChange, Hurt, Interaction, ItemUsed, Pickup, PlayerEvent, attr_op, permission, stage,
+};
 
-/// The engine's questions (`Registry::intercept`, `World::ask`).
+/// The engine's questions with no event after them (`Registry::before_event`, `World::ask`); the
+/// others are `actions`.
 pub mod question {
     use crate::Question;
-    use crate::abi::question as q;
-    /// `entity` the player (0 for `break_block` without one), `pos`, `state`, `item` the tool.
-    pub static BREAK_BLOCK: Question = Question::named(q::BREAK_BLOCK);
-    /// `entity`, `pos`, `state` to be placed, `item` used.
-    pub static PLACE_BLOCK: Question = Question::named(q::PLACE_BLOCK);
-    /// Right click on a block: `entity`, `pos`, `state`.
-    pub static USE_BLOCK: Question = Question::named(q::USE_BLOCK);
-    /// `entity` about to change dimension to `dim`.
-    pub static ENTER_DIMENSION: Question = Question::named(q::ENTER_DIMENSION);
-    /// `entity` (a player) picking up `item` (count in `amount`), `other` the item entity.
-    pub static PICKUP_ITEM: Question = Question::named(q::PICKUP_ITEM);
     /// `entity` attacking `other` with `item`.
-    pub static ATTACK: Question = Question::named(q::ATTACK);
-    /// `entity` about to be hurt by `other` for `amount` of `cause`: deny to prevent it.
-    pub static HURT: Question = Question::named(q::HURT);
-    /// A player (`other`) right clicking `entity` holding `item`.
-    pub static INTERACT_ENTITY: Question = Question::named(q::INTERACT_ENTITY);
-    /// A player (`entity`) about to use the held `item`, on block `pos` when `state` isn't 0.
-    pub static USE_ITEM: Question = Question::named(q::USE_ITEM);
-    /// A player (`entity`) about to say `text()` in the chat. Commands don't ask.
-    pub static CHAT: Question = Question::named(q::CHAT);
+    pub static ATTACK: Question = Question::named(crate::abi::question::ATTACK);
+    /// Player `entity` turning on a camera mode with conditions (`.when(..)`), which one
+    /// `Ask::is_camera` tells. `Allow` lets it where they wouldn't.
+    pub static CAMERA: Question = Question::named(crate::abi::action::CAMERA);
+    /// Cubes kept loaded (`World::keep_loaded`) from block `pos`, `amount` the mode
+    /// (`force_load::*`), `other` the ticket's key: deny one in someone else's claim.
+    pub static FORCE_LOAD: Question = Question::named(crate::abi::action::FORCE_LOAD);
 }
 
-/// The engine's value chains (`Registry::modify`, `World::compute`).
+/// The engine's value chains (`Registry::modify`, `World::chain_compute`).
 pub mod chain {
     use crate::Chain;
     /// Damage an entity takes (`entity` hurt by `other`, `cause`), after `on_hurt` hooks.
@@ -68,8 +59,6 @@ pub mod attribute {
     pub static VISIBILITY: Attribute = Attribute::named(crate::abi::attribute::VISIBILITY);
     /// Multiplier on jump speed, players and mobs (1).
     pub static JUMP_STRENGTH: Attribute = Attribute::named(crate::abi::attribute::JUMP_STRENGTH);
-    /// 1 or more: can swim in any liquid, also those that are `not_swimmable`.
-    pub static SWIM_ANYWHERE: Attribute = Attribute::named(crate::abi::attribute::SWIM_ANYWHERE);
     /// Multiplier on how fast a swing recharges (1).
     pub static ATTACK_SPEED: Attribute = Attribute::named(crate::abi::attribute::ATTACK_SPEED);
     /// Below 1: can't sprint (1).
@@ -80,6 +69,34 @@ pub mod attribute {
     pub static ENTITY_REACH: Attribute = Attribute::named(crate::abi::attribute::ENTITY_REACH);
     /// Multiplier on how fast a player mines (1).
     pub static MINING_SPEED: Attribute = Attribute::named(crate::abi::attribute::MINING_SPEED);
+    /// Multiplier on a player's field of view (1): a zoom, a speed rush.
+    pub static FOV: Attribute = Attribute::named(crate::abi::attribute::FOV);
+    /// 1 or more: may fly, jumping twice (0; 1 in creative).
+    pub static CAN_FLY: Attribute = Attribute::named(crate::abi::attribute::CAN_FLY);
+}
+
+/// An attribute modifier that comes with something (`.modifier(..)` on an item, a pose, an
+/// entity kind): `Modifier::add(&attribute::MOVEMENT_SPEED, 0.2)`, while worn (`.worn()`) or
+/// while conditions hold for its holder (`.when(..)`).
+#[derive(Clone)]
+pub struct Modifier(pub(crate) abi::Modifier);
+
+impl Modifier {
+    pub fn new(attribute: &crate::Attribute, op: u32, amount: f64) -> Modifier {
+        Modifier(abi::Modifier { attribute: attribute.name().to_string(), op, amount, ..Default::default() })
+    }
+    pub fn add(attribute: &crate::Attribute, amount: f64) -> Modifier {
+        Modifier::new(attribute, abi::attr_op::ADD, amount)
+    }
+    /// An item's, while it is in an equipment slot rather than in the main hand.
+    pub fn worn(mut self) -> Modifier {
+        self.0.worn = true;
+        self
+    }
+    pub fn when(mut self, c: impl Into<Cond>) -> Modifier {
+        self.0.when.push(c.into().0);
+        self
+    }
 }
 
 const UNRESOLVED: u32 = u32::MAX - 1;
@@ -106,7 +123,7 @@ impl<T: Value> Event<T> {
         if id != UNRESOLVED {
             return id;
         }
-        if unsafe { (host().components)() }.is_null() {
+        if unsafe { (host().component_table)() }.is_null() {
             return u32::MAX;
         }
         let id = unsafe { (host().find_event)(Str::new(self.name()), Str::new(&T::schema())) };
@@ -117,30 +134,110 @@ impl<T: Value> Event<T> {
 
 macro_rules! schema_values {
     ($($t:ty),*) => {$(
-        unsafe impl Value for $t {
-            fn schema() -> String {
-                <$t as abi::Schema>::SCHEMA.into()
-            }
-        }
+        unsafe impl Value for $t {}
     )*};
 }
-schema_values!(ItemStack, abi::ChatMessage, abi::BlockChange, abi::Death, abi::Hurt, abi::PlayerEvent, abi::Pickup, abi::ItemUsed);
+schema_values!(
+    ItemStack,
+    abi::ChatMessage,
+    abi::BlockChange,
+    abi::Death,
+    abi::Hurt,
+    abi::PlayerEvent,
+    abi::Pickup,
+    abi::ItemUsed,
+    abi::Interaction,
+    abi::Mounting,
+    abi::DimensionChange,
+    abi::WeatherTick
+);
 
-/// The engine's events.
-pub static BLOCK_BROKEN: Event<abi::BlockChange> = Event::named(abi::event::BLOCK_BROKEN);
-pub static BLOCK_PLACED: Event<abi::BlockChange> = Event::named(abi::event::BLOCK_PLACED);
-pub static ENTITY_DIED: Event<abi::Death> = Event::named(abi::event::ENTITY_DIED);
+/// The engine's events with no question before them; the others are `actions`.
 pub static PLAYER_JOINED: Event<abi::PlayerEvent> = Event::named(abi::event::PLAYER_JOINED);
-/// A dead player came back at the spawn point, components reset but the `KEEP` ones; moving
-/// them on from here (a bed) happens before anyone saw them there.
+/// A dead player came back at the spawn point, components reset but the `KEEP_ON_RESPAWN` ones;
+/// moving them on from here (a bed) happens before anyone saw them there.
 pub static PLAYER_RESPAWNED: Event<abi::PlayerEvent> = Event::named(abi::event::PLAYER_RESPAWNED);
-pub static ITEM_PICKED_UP: Event<abi::Pickup> = Event::named(abi::event::ITEM_PICKED_UP);
-/// A player said something, no mod denying it.
-pub static CHAT_MESSAGE: Event<abi::ChatMessage> = Event::named(abi::event::CHAT_MESSAGE);
-pub static ENTITY_HURT: Event<abi::Hurt> = Event::named(abi::event::ENTITY_HURT);
-/// A player used the held item and something happened (`stack` as it was before): eating,
-/// emptying a bucket. Another mod reacts to food here, by the item's components.
-pub static ITEM_USED: Event<abi::ItemUsed> = Event::named(abi::event::ITEM_USED);
+pub static ENTITY_HEALED: Event<abi::Hurt> = Event::named(abi::event::ENTITY_HEALED);
+/// Every tick in each dimension with weather: which it is.
+pub static WEATHER_TICK: Event<abi::WeatherTick> = Event::named(abi::event::WEATHER_TICK);
+
+/// Something that happens, as one name: the question asked before it (`r.before_event(&A, ..)`,
+/// any deny wins) and the event after (`r.on_event(&A, ..)`). The engine's are in `actions`; a mod's
+/// own goes through `w.act(&WRENCH, &mut query, value)`.
+///
+/// ```ignore
+/// static WRENCH: Action<Wrenched> = Action::named("wrench");
+/// r.before_event(&actions::DIE, |a| if has_totem(a) { Verdict::Deny } else { Verdict::Abstain });
+/// r.on_event(&actions::BREAK_BLOCK, |b| for c in b.iter() { /* .. */ });
+/// ```
+pub struct Action<T: Value> {
+    ask: Question,
+    done: Event<T>,
+}
+
+impl<T: Value> Action<T> {
+    pub const fn named(name: &'static str) -> Self {
+        Action { ask: Question::named(name), done: Event::named(name) }
+    }
+}
+
+impl<T: Value> AsRef<Question> for Action<T> {
+    fn as_ref(&self) -> &Question {
+        &self.ask
+    }
+}
+
+impl<T: Value> AsRef<Event<T>> for Action<T> {
+    fn as_ref(&self) -> &Event<T> {
+        &self.done
+    }
+}
+
+impl AsRef<Question> for Question {
+    fn as_ref(&self) -> &Question {
+        self
+    }
+}
+
+impl<T: Value> AsRef<Event<T>> for Event<T> {
+    fn as_ref(&self) -> &Event<T> {
+        self
+    }
+}
+
+impl World {
+    /// Asks `action`'s question with `q`, and when nobody refuses sends its event with `value`.
+    /// True if it may happen.
+    pub fn act<T: Value>(&self, action: &Action<T>, q: &mut abi::Query, value: T) -> bool {
+        let ok = self.ask(action, q);
+        if ok {
+            self.emit(action, value);
+        }
+        ok
+    }
+}
+
+/// The engine's actions (`abi::action`): what may be refused and what is told after, for each.
+pub mod actions {
+    use super::Action;
+    use crate::abi::{self, action as a};
+    pub static BREAK_BLOCK: Action<abi::BlockChange> = Action::named(a::BREAK_BLOCK);
+    pub static PLACE_BLOCK: Action<abi::BlockChange> = Action::named(a::PLACE_BLOCK);
+    pub static USE_BLOCK: Action<abi::BlockChange> = Action::named(a::USE_BLOCK);
+    /// Sent when using the item did something (`stack` as it was before): eating, emptying a
+    /// bucket. Another mod reacts to food here, by the item's components.
+    pub static USE_ITEM: Action<abi::ItemUsed> = Action::named(a::USE_ITEM);
+    pub static INTERACT_ENTITY: Action<abi::Interaction> = Action::named(a::INTERACT_ENTITY);
+    /// Asked before the damage chain, sent after armor and every modifier.
+    pub static HURT: Action<abi::Hurt> = Action::named(a::HURT);
+    pub static DIE: Action<abi::Death> = Action::named(a::DIE);
+    pub static PICKUP_ITEM: Action<abi::Pickup> = Action::named(a::PICKUP_ITEM);
+    pub static ENTER_DIMENSION: Action<abi::DimensionChange> = Action::named(a::ENTER_DIMENSION);
+    pub static CHAT: Action<abi::ChatMessage> = Action::named(a::CHAT);
+    /// Asked with `entity` the rider, `other` the mount, `amount` the seat.
+    pub static MOUNT: Action<abi::Mounting> = Action::named(a::MOUNT);
+    pub static DISMOUNT: Action<abi::Mounting> = Action::named(a::DISMOUNT);
+}
 
 /// Every value of one event queued during a tick, in the order they happened.
 pub struct EventBatch<T> {
@@ -170,7 +267,7 @@ pub enum Verdict {
     Deny,
 }
 
-/// A question being asked (`Registry::intercept`).
+/// A question being asked (`Registry::before_event`).
 pub struct Ask {
     world: World,
     question: &'static str,
@@ -190,18 +287,22 @@ impl Ask {
     pub fn entity(&self) -> u64 {
         self.query().entity
     }
-    pub fn pos(&self) -> [i32; 3] {
+    pub fn pos(&self) -> BlockPos {
         self.query().pos
     }
     pub fn state(&self) -> u32 {
         self.query().state
     }
-    /// What a player is about to say (`question::CHAT`).
+    /// What a player is about to say (`actions::CHAT`).
     pub fn text(&self) -> &str {
         unsafe { self.query().text.as_str() }
     }
     pub fn item(&self) -> u32 {
         self.query().item
+    }
+    /// Whether `question::CAMERA` asks about `mode`.
+    pub fn is_camera(&self, mode: &crate::CameraMode) -> bool {
+        self.query().amount == mode.id() as f64
     }
 }
 
@@ -229,44 +330,214 @@ pub struct LootCtx {
     pub killer: u64,
     pub by_player: bool,
     pub on_fire: bool,
-    /// The block state mined with `tool`, for `Cond::Harvested` (0 = none).
+    /// The block state mined with `tool`, for `Cond::harvested` (0 = none).
     pub mined: u32,
 }
 
-/// A loot condition.
-#[derive(Clone)]
-pub enum Cond {
-    Chance(f32),
-    /// The tool carries the tag (`tools/shears`).
-    ToolTag(String),
-    NotToolTag(String),
-    ToolLevel(u32),
-    KilledByPlayer,
-    OnFire,
-    /// The block was harvested: broken by the world, or mined with a tool its `needs_tool`
-    /// accepts. `drops(..)` tables have it; write it on pools of your own tables that should.
-    Harvested,
-    /// The block's state has this property at this value, written as in `w.prop`:
-    /// `BlockState("age=7")` for a ripe crop, `BlockState("lit=true")`.
-    BlockState(&'static str),
-}
+/// A condition (`abi::condition`): one of the engine's below, a registered one
+/// (`Cond::from(&conditions::NIGHT)`, `Cond::with(&MY_COND, "lava")`) or written out
+/// (`Cond::new("night & light(..7)")`), put together with `&`, `|` and `!`. Loot tables, spawning,
+/// poses, music, camera modes and text (`{if:..}`) all take them, and `w.holds` asks one.
+#[derive(Clone, Debug)]
+pub struct Cond(pub(crate) String);
 
 impl Cond {
-    pub fn tool_tag(t: &str) -> Cond {
-        Cond::ToolTag(t.to_string())
+    pub fn new(text: &str) -> Cond {
+        Cond(text.to_string())
     }
-    fn raw(&self) -> (u32, f32, &str) {
-        use abi::loot_cond as k;
-        match self {
-            Cond::Chance(p) => (k::CHANCE, *p, ""),
-            Cond::ToolTag(t) => (k::TOOL_TAG, 1.0, t),
-            Cond::NotToolTag(t) => (k::NOT_TOOL_TAG, 1.0, t),
-            Cond::ToolLevel(l) => (k::TOOL_LEVEL, *l as f32, ""),
-            Cond::KilledByPlayer => (k::KILLED_BY_PLAYER, 1.0, ""),
-            Cond::OnFire => (k::ON_FIRE, 1.0, ""),
-            Cond::BlockState(prop) => (k::BLOCK_STATE, 1.0, *prop),
-            Cond::Harvested => (k::HARVESTED, 1.0, ""),
+    /// A registered condition with its argument, `name(arg)`.
+    pub fn with(c: &crate::Condition, arg: &str) -> Cond {
+        Cond(format!("{}({arg})", c.name()))
+    }
+    pub fn text(&self) -> &str {
+        &self.0
+    }
+    /// Holds that share of the times it is asked.
+    pub fn chance(p: f32) -> Cond {
+        Cond(format!("chance({p})"))
+    }
+    /// The light there, inclusive (0..15): the brighter of sky light times daylight and block light.
+    pub fn light(min: u32, max: u32) -> Cond {
+        Cond(format!("light({min}..{max})"))
+    }
+    /// The block asked about is one `what` takes (a block matcher): one broken, one under a spawn.
+    pub fn block(what: &str) -> Cond {
+        Cond(format!("block({})", crate::qualify_matcher(crate::mod_id(), what)))
+    }
+    /// The cell on side `d` of the one asked about has a block `what` takes, or (empty) is solid.
+    /// Not known while unloaded, so a rule waits. In a block's rule the side is of its own frame.
+    pub fn side(d: crate::Dir, what: &str) -> Cond {
+        match what.trim() {
+            "" => Cond(format!("side({})", d.name())),
+            m => Cond(format!("side({}, {})", d.name(), crate::qualify_matcher(crate::mod_id(), m))),
         }
+    }
+    /// A block horizontally next to the cell on side `d` is one `what` takes.
+    pub fn beside(d: crate::Dir, what: &str) -> Cond {
+        Cond(format!("beside({}, {})", d.name(), crate::qualify_matcher(crate::mod_id(), what)))
+    }
+    /// Side `d` can be fallen into: air, a liquid, what placing replaces.
+    pub fn open(d: crate::Dir) -> Cond {
+        Cond(format!("open({})", d.name()))
+    }
+    /// Something opaque is on top.
+    pub fn covered() -> Cond {
+        Cond::new("covered")
+    }
+    /// That block has these properties, written as in `w.prop`: `state("age=7")` for a ripe crop.
+    pub fn state(props: &str) -> Cond {
+        Cond(format!("state({props})"))
+    }
+    /// What it was broken or killed with carries the tag (`tools/shears`).
+    pub fn tool(tag: &str) -> Cond {
+        Cond(format!("tool({tag})"))
+    }
+    pub fn tool_level(level: u32) -> Cond {
+        Cond(format!("tool_level({level})"))
+    }
+    pub fn killed_by_player() -> Cond {
+        Cond::new("killed_by_player")
+    }
+    pub fn on_fire() -> Cond {
+        Cond::new("on_fire")
+    }
+    /// The block was harvested: broken by the world, or mined with a tool its `mined_by` level
+    /// accepts. `drops(..)` tables have it; write it on pools of your own tables that should.
+    pub fn harvested() -> Cond {
+        Cond::new("harvested")
+    }
+    /// The body asked about is in a liquid it swims in, flies, sprints (poses).
+    pub fn in_liquid() -> Cond {
+        Cond::new("in_liquid")
+    }
+    pub fn flying() -> Cond {
+        Cond::new("flying")
+    }
+    pub fn sprinting() -> Cond {
+        Cond::new("sprinting")
+    }
+    /// An attribute of the body asked about is within `min..=max`: `attribute(&attribute::CAN_FLY,
+    /// 1.0, f64::MAX)` where it may fly.
+    pub fn attribute(a: &crate::Attribute, min: f64, max: f64) -> Cond {
+        let end = |v: f64| if v.is_finite() && v.abs() < 1e30 { v.to_string() } else { String::new() };
+        Cond(format!("attribute({}, {}..{})", a.name(), end(min), end(max)))
+    }
+}
+
+impl From<&crate::Condition> for Cond {
+    fn from(c: &crate::Condition) -> Cond {
+        Cond(c.name().to_string())
+    }
+}
+
+impl std::ops::BitAnd for Cond {
+    type Output = Cond;
+    fn bitand(self, o: Cond) -> Cond {
+        Cond(format!("({}) & ({})", self.0, o.0))
+    }
+}
+
+impl std::ops::BitOr for Cond {
+    type Output = Cond;
+    fn bitor(self, o: Cond) -> Cond {
+        Cond(format!("({}) | ({})", self.0, o.0))
+    }
+}
+
+impl std::ops::Not for Cond {
+    type Output = Cond;
+    fn not(self) -> Cond {
+        Cond(format!("!({})", self.0))
+    }
+}
+
+/// What happens to a block by itself (`.rule(..)` on a block or a state): when
+/// (`Rule::random(mean_secs)` now and then, `Rule::neighbor()` as soon as something next to it
+/// changes, `Rule::after(secs)` that much later), if (`.when(..)`, again for more, about its
+/// own cell and state), then (`.becomes("age=0")` or `.becomes("base:dirt")`, `.grows()`,
+/// `.breaks()`, `.falls()`). Time goes on in unloaded areas and is caught up when they load.
+/// `grows`, `smothered_into`, `needs`, `falling` are rules.
+#[derive(Clone)]
+pub struct Rule(pub(crate) abi::BlockRule);
+
+impl Rule {
+    fn of(when: u32, secs: f32) -> Rule {
+        Rule(abi::BlockRule { when, secs, conditions: Vec::new(), then: abi::rule_then::GROW, into: String::new() })
+    }
+    pub fn random(mean_secs: f32) -> Rule {
+        Rule::of(abi::rule_when::RANDOM, mean_secs)
+    }
+    pub fn neighbor() -> Rule {
+        Rule::of(abi::rule_when::NEIGHBOR, 0.0)
+    }
+    pub fn after(secs: f32) -> Rule {
+        Rule::of(abi::rule_when::NEIGHBOR, secs)
+    }
+    pub fn when(mut self, c: impl Into<Cond>) -> Rule {
+        self.0.conditions.push(c.into().0);
+        self
+    }
+    /// Properties set (`age=0`) or another block (`base:dirt`, `base:farmland[moisture=0]`).
+    pub fn becomes(mut self, into: &str) -> Rule {
+        let props = into.contains('=') && !into.contains('[');
+        let into = if props { into.to_string() } else { crate::full_name(into) };
+        (self.0.then, self.0.into) = (abi::rule_then::BECOME, into);
+        self
+    }
+    /// Its `on_grow`, else its `age` one higher.
+    pub fn grows(mut self) -> Rule {
+        self.0.then = abi::rule_then::GROW;
+        self
+    }
+    /// Breaks off, dropping what it drops.
+    pub fn breaks(mut self) -> Rule {
+        self.0.then = abi::rule_then::BREAK;
+        self
+    }
+    pub fn falls(mut self) -> Rule {
+        self.0.then = abi::rule_then::FALL;
+        self
+    }
+}
+
+/// What a block does to an entity meeting it (`.hazard(..)`): `Hazard::touch(1.0, &CACTUS)` a
+/// cactus, `Hazard::on(1.0, &HOT_FLOOR)` magma, `Hazard::inside(1.0, &damage_causes::FIRE).fire(160)`
+/// fire; `.every(ticks)` between hits, `.when(..)` conditions about the entity there.
+#[derive(Clone)]
+pub struct Hazard(pub(crate) abi::Hazard);
+
+impl Hazard {
+    fn of(at: u32, damage: f32, cause: &crate::DamageCause) -> Hazard {
+        Hazard(abi::Hazard { at, damage, cause: cause.name().to_string(), fire: 0, every: 0, when: Vec::new() })
+    }
+    /// Its box in the block's shape.
+    pub fn inside(damage: f32, cause: &crate::DamageCause) -> Hazard {
+        Hazard::of(abi::hazard_at::INSIDE, damage, cause)
+    }
+    /// Standing on it.
+    pub fn on(damage: f32, cause: &crate::DamageCause) -> Hazard {
+        Hazard::of(abi::hazard_at::ON, damage, cause)
+    }
+    /// Its eyes in it.
+    pub fn head(damage: f32, cause: &crate::DamageCause) -> Hazard {
+        Hazard::of(abi::hazard_at::HEAD, damage, cause)
+    }
+    /// Within a sixteenth of its shape.
+    pub fn touch(damage: f32, cause: &crate::DamageCause) -> Hazard {
+        Hazard::of(abi::hazard_at::TOUCH, damage, cause)
+    }
+    /// Sets it burning for that many ticks too.
+    pub fn fire(mut self, ticks: u32) -> Hazard {
+        self.0.fire = ticks;
+        self
+    }
+    pub fn every(mut self, ticks: u32) -> Hazard {
+        self.0.every = ticks;
+        self
+    }
+    pub fn when(mut self, c: impl Into<Cond>) -> Hazard {
+        self.0.when.push(c.into().0);
+        self
     }
 }
 
@@ -298,8 +569,8 @@ impl Entry {
         self.weight = w;
         self
     }
-    pub fn when(mut self, c: Cond) -> Entry {
-        self.when.push(c);
+    pub fn when(mut self, c: impl Into<Cond>) -> Entry {
+        self.when.push(c.into());
         self
     }
     /// A burning victim drops it cooked by this recipe type (`base:smelting`).
@@ -325,8 +596,8 @@ impl Pool {
         self.rolls = (min, max.max(min));
         self
     }
-    pub fn when(mut self, c: Cond) -> Pool {
-        self.when.push(c);
+    pub fn when(mut self, c: impl Into<Cond>) -> Pool {
+        self.when.push(c.into());
         self
     }
     pub fn entry(mut self, e: Entry) -> Pool {
@@ -341,148 +612,56 @@ impl Pool {
     pub fn items(self, name: &str, min: u32, max: u32) -> Pool {
         self.entry(Entry::item(name).count(min, max))
     }
-}
-
-/// The ABI view of pools, kept alive while a descriptor points into it.
-pub(crate) struct RawPools {
-    conds: Vec<Vec<abi::LootCond>>,
-    entries: Vec<Vec<abi::LootEntry>>,
-    pub(crate) pools: Vec<abi::LootPool>,
-    _names: Vec<String>,
-}
-
-pub(crate) fn raw_pools(ns: &str, pools: &[Pool]) -> RawPools {
-    let mut names: Vec<String> = Vec::new();
-    for p in pools {
-        for e in &p.entries {
-            names.push(if e.item.is_empty() || e.item.starts_with('#') { e.item.clone() } else { qualify(ns, &e.item) });
-        }
-    }
-    let mut out = RawPools { conds: Vec::new(), entries: Vec::new(), pools: Vec::new(), _names: Vec::new() };
-    let mut cond_index = Vec::new();
-    for p in pools {
-        let pc: Vec<abi::LootCond> = p
-            .when
-            .iter()
-            .map(|c| {
-                let (kind, value, text) = c.raw();
-                abi::LootCond { kind, value, text: Str::new(text), ..abi::LootCond::DEFAULT }
-            })
-            .collect();
-        cond_index.push(out.conds.len());
-        out.conds.push(pc);
-        for e in &p.entries {
-            out.conds.push(
-                e.when
-                    .iter()
-                    .map(|c| {
-                        let (kind, value, text) = c.raw();
-                        abi::LootCond { kind, value, text: Str::new(text), ..abi::LootCond::DEFAULT }
-                    })
-                    .collect(),
-            );
-        }
-    }
-    let mut n = 0;
-    for (pi, p) in pools.iter().enumerate() {
-        let first = cond_index[pi];
-        let entries: Vec<abi::LootEntry> = p
+    fn raw(&self, ns: &str) -> abi::LootPool {
+        let conds = |c: &[Cond]| c.iter().map(|c| c.0.clone()).collect();
+        let entries = self
             .entries
             .iter()
-            .enumerate()
-            .map(|(ei, e)| {
-                let name = Str::new(&names[n + ei]);
-                abi::LootEntry {
-                    item: name,
-                    weight: e.weight,
-                    min: e.min,
-                    max: e.max,
-                    conditions: Slice::new(&out.conds[first + 1 + ei]),
-                    smelt: Str::new(&e.smelt),
-                    ..abi::LootEntry::DEFAULT
-                }
+            .map(|e| abi::LootEntry {
+                item: loot_item(ns, &e.item),
+                weight: e.weight,
+                min: e.min,
+                max: e.max,
+                when: conds(&e.when),
+                smelt: e.smelt.clone(),
             })
             .collect();
-        n += p.entries.len();
-        out.entries.push(entries);
+        abi::LootPool { rolls_min: self.rolls.0, rolls_max: self.rolls.1, when: conds(&self.when), entries }
     }
-    for (pi, p) in pools.iter().enumerate() {
-        out.pools.push(abi::LootPool {
-            rolls_min: p.rolls.0,
-            rolls_max: p.rolls.1,
-            conditions: Slice::new(&out.conds[cond_index[pi]]),
-            entries: Slice::new(&out.entries[pi]),
-            ..abi::LootPool::DEFAULT
-        });
-    }
-    out._names = names;
-    out
 }
 
-/// A loot table being registered; sent when dropped.
+/// An item name in this mod's namespace by default; `#tag` and nothing stay as they are.
+fn loot_item(ns: &str, item: &str) -> String {
+    if item.is_empty() || item.starts_with('#') { item.to_string() } else { qualify(ns, item) }
+}
+
+/// A loot table being registered (`Registry::loot`) or changed (`r.edit(ZOMBIE.loot())`); sent
+/// when dropped.
 pub struct LootBuilder<'a> {
     reg: &'a mut Registry,
-    name: String,
-    pools: Vec<Pool>,
+    e: crate::entry::Entry,
 }
 
 impl LootBuilder<'_> {
-    pub fn pool(mut self, p: Pool) -> Self {
-        self.pools.push(p);
-        self
+    /// One more pool, after the table's.
+    pub fn pool(self, p: Pool) -> Self {
+        let pool = p.raw(self.reg.ns);
+        self.push(&comps::loot::POOLS, pool)
     }
-}
-
-impl Drop for LootBuilder<'_> {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            return;
-        }
-        let raw = raw_pools(self.reg.ns, &self.pools);
-        let desc = abi::LootDesc { name: Str::new(&self.name), pools: Slice::new(&raw.pools), ..abi::LootDesc::DEFAULT };
-        unsafe { (host().reg_loot)(self.reg.raw, &desc) }
+    /// Every entry of item `from` gives `to` instead, in whatever pools the table has in the end.
+    pub fn replace_drop(self, from: &str, to: &str) -> Self {
+        let swap = abi::LootSwap { name: loot_item(self.reg.ns, from), to: loot_item(self.reg.ns, to) };
+        self.push(&comps::loot::SWAPS, swap)
     }
-}
-
-/// Changes to tables of any mod (`table` may end in `*`).
-pub struct LootModBuilder<'a> {
-    reg: &'a mut Registry,
-    table: String,
-}
-
-impl LootModBuilder<'_> {
-    fn send(&mut self, op: u32, pool: Option<&Pool>, from: &str, to: &str) {
-        let pools: Vec<Pool> = pool.into_iter().cloned().collect();
-        let raw = raw_pools(self.reg.ns, &pools);
-        let (from, to) = (
-            if from.is_empty() { String::new() } else { qualify(self.reg.ns, from) },
-            if to.is_empty() { String::new() } else { qualify(self.reg.ns, to) },
-        );
-        let desc = abi::LootModDesc {
-            table: Str::new(&self.table),
-            op,
-            pool: raw.pools.first().copied().unwrap_or(abi::LootPool::DEFAULT),
-            from: Str::new(&from),
-            to: Str::new(&to),
-            ..abi::LootModDesc::DEFAULT
-        };
-        unsafe { (host().reg_loot_modifier)(self.reg.raw, &desc) }
+    /// Entries of `item` are left out, likewise.
+    pub fn remove_drop(self, item: &str) -> Self {
+        let swap = abi::LootSwap { name: loot_item(self.reg.ns, item), to: String::new() };
+        self.push(&comps::loot::SWAPS, swap)
     }
-    pub fn add_pool(mut self, p: Pool) -> Self {
-        self.send(abi::loot_op::ADD_POOL, Some(&p), "", "");
-        self
-    }
-    pub fn replace(mut self, from: &str, to: &str) -> Self {
-        self.send(abi::loot_op::REPLACE_ITEM, None, from, to);
-        self
-    }
-    pub fn remove(mut self, item: &str) -> Self {
-        self.send(abi::loot_op::REMOVE_ITEM, None, item, "");
-        self
-    }
-    pub fn clear(mut self) -> Self {
-        self.send(abi::loot_op::CLEAR, None, "", "");
-        self
+    /// Empties the table, its swaps too; pools added after it stay.
+    pub fn clear(self) -> Self {
+        self.set(&comps::loot::POOLS, Vec::new())
+            .unset(&comps::loot::SWAPS)
     }
 }
 
@@ -521,6 +700,17 @@ impl<T> SystemBatch<'_, T> {
     }
 }
 
+/// An attribute being registered (`Registry::attribute`).
+pub struct AttributeBuilder<'a> {
+    reg: &'a mut Registry,
+    e: crate::entry::Entry,
+}
+
+crate::entry::entry_builder!(
+    Attribute => AttributeBuilder, attribute_entry;
+    LootTable => LootBuilder, loot_entry;
+);
+
 impl Registry {
     /// A system over a per-entity component (`Registry::entity_component`): once per tick and
     /// region with all values in one slice, no host call per entity.
@@ -542,7 +732,7 @@ impl Registry {
     }
 
     /// Handles every value of `event` once per tick (and region), in one call.
-    pub fn on<T: Value>(&mut self, event: &Event<T>, f: impl Fn(&EventBatch<T>) + Send + Sync + 'static) {
+    pub fn on_event<T: Value>(&mut self, event: &impl AsRef<Event<T>>, f: impl Fn(&EventBatch<T>) + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::EventArgs| {
             let stride = a.stride as usize;
             if stride != size_of::<T>() {
@@ -553,11 +743,11 @@ impl Registry {
                 .collect();
             f(&EventBatch { world: World::from_raw(a.world), values });
         });
-        unsafe { (host().reg_event_handler)(self.raw, Str::new(event.name()), Str::new(&T::schema()), cb) }
+        unsafe { (host().reg_event_handler)(self.raw, Str::new(event.as_ref().name()), Str::new(&T::schema()), cb) }
     }
 
     /// Answers `question` (`question::*` or a mod's own) before it happens.
-    pub fn intercept(&mut self, question: &Question, f: impl Fn(&Ask) -> Verdict + Send + Sync + 'static) {
+    pub fn before_event(&mut self, question: &impl AsRef<Question>, f: impl Fn(&Ask) -> Verdict + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::InterceptArgs| {
             let ask = Ask {
                 world: World::from_raw(a.world),
@@ -573,7 +763,7 @@ impl Registry {
                 }
             }
         });
-        unsafe { (host().reg_interceptor)(self.raw, Str::new(question.name()), cb) }
+        unsafe { (host().reg_interceptor)(self.raw, Str::new(question.as_ref().name()), cb) }
     }
 
     /// A step on value `chain` (`chain::*` or a mod's own) at `stage` (`stage::*`).
@@ -583,27 +773,33 @@ impl Registry {
             f(&mut m);
             a.value = m.value;
         });
-        unsafe { (host().reg_modifier)(self.raw, Str::new(chain.name()), stage, cb) }
+        unsafe { (host().reg_chain_modifier)(self.raw, Str::new(chain.name()), stage, cb) }
     }
 
     /// An attribute of living entities (`attribute::*` are the engine's).
-    pub fn attribute(&mut self, attribute: &Attribute, default: f64, min: f64, max: f64) {
-        unsafe { (host().reg_attribute)(self.raw, Str::new(attribute.name()), default, min, max) }
+    pub fn attribute(&mut self, attribute: &'static Attribute, default: f64, min: f64, max: f64) -> AttributeBuilder<'_> {
+        self.attribute_entry(attribute)
+            .set(&crate::comps::attribute::DEFAULT, default)
+            .set(&crate::comps::attribute::RANGE, [min, max])
+    }
+
+    fn attribute_entry(&mut self, attribute: &'static Attribute) -> AttributeBuilder<'_> {
+        AttributeBuilder { reg: self, e: crate::entry::Entry::of(attribute) }
     }
 
     /// A loot table: a block's or entity kind's is what it drops, a `LootTable` is one of its own.
     pub fn loot<'a>(&'a mut self, table: &dyn LootSource) -> LootBuilder<'a> {
-        LootBuilder { reg: self, name: table.table_name().to_string(), pools: Vec::new() }
+        LootBuilder { reg: self, e: crate::entry::Entry::new(abi::entry_kind::LOOT, table.table_name().to_string()) }
     }
 
-    pub fn loot_modify<'a>(&'a mut self, table: &dyn LootSource) -> LootModBuilder<'a> {
-        LootModBuilder { reg: self, table: table.table_name().to_string() }
+    fn loot_entry(&mut self, table: &'static LootTable) -> LootBuilder<'_> {
+        LootBuilder { reg: self, e: crate::entry::Entry::of(table) }
     }
 
     /// Declares a component stacks carry a value of (`stack.with(&COMP, v)`), with its flags
     /// (`abi::stack_flags`: kept on the server, not saved), 0 for neither.
-    pub fn stack_component<T: Value>(&mut self, c: &crate::Component<T>, flags: u32) {
-        unsafe { (host().reg_stack_component)(self.raw, Str::new(c.name()), Str::new(&T::schema()), flags) }
+    pub fn stack_component<T: Value>(&mut self, c: &crate::Component<T>, flags: u32) -> crate::game::DeclarationBuilder<'_> {
+        self.declare::<T>(c.name()).stack(flags)
     }
 }
 
@@ -611,17 +807,17 @@ impl World {
     /// In `ticks` ticks `event` fires with `value` (a calm-down, a hunger pulse). The timer is
     /// saved with `entity` and goes with it when it is removed; one per entity and event, so
     /// setting it again moves it.
-    pub fn after<T: Value>(&self, entity: u64, ticks: u32, event: &Event<T>, value: T) {
+    pub fn emit_after<T: Value>(&self, entity: u64, ticks: u32, event: &Event<T>, value: T) {
         let id = event.id();
         if id == u32::MAX {
             return;
         }
         let b = unsafe { std::slice::from_raw_parts(&value as *const T as *const u8, size_of::<T>()) };
-        unsafe { (host().entity_after)(self.raw(), entity, ticks, id, Slice::new(b)) }
+        unsafe { (host().emit_after)(self.raw(), entity, ticks, id, Slice::new(b)) }
     }
 
-    pub fn emit<T: Value>(&self, event: &Event<T>, value: T) {
-        let id = event.id();
+    pub fn emit<T: Value>(&self, event: &impl AsRef<Event<T>>, value: T) {
+        let id = event.as_ref().id();
         if id == u32::MAX {
             return;
         }
@@ -630,17 +826,17 @@ impl World {
     }
 
     /// Asks the interceptors of `question`; true if allowed.
-    pub fn ask(&self, question: &Question, q: &mut abi::Query) -> bool {
-        unsafe { (host().ask)(self.raw(), Str::new(question.name()), q) != 0 }
+    pub fn ask(&self, question: &impl AsRef<Question>, q: &mut abi::Query) -> bool {
+        unsafe { (host().ask)(self.raw(), Str::new(question.as_ref().name()), q) != 0 }
     }
 
-    pub fn compute(&self, chain: &Chain, base: f64, q: &abi::Query) -> f64 {
-        unsafe { (host().compute)(self.raw(), Str::new(chain.name()), base, q, 0) }
+    pub fn chain_compute(&self, chain: &Chain, base: f64, q: &abi::Query) -> f64 {
+        unsafe { (host().chain_compute)(self.raw(), Str::new(chain.name()), base, q, 0) }
     }
 
-    /// Like `compute`, with the steps that led to the value ("4, base at stage 200: 4 -> 2 = 2").
-    pub fn explain(&self, chain: &Chain, base: f64, q: &abi::Query) -> (f64, String) {
-        let v = unsafe { (host().compute)(self.raw(), Str::new(chain.name()), base, q, 1) };
+    /// Like `chain_compute`, with the steps that led to the value ("4, base at stage 200: 4 -> 2 = 2").
+    pub fn chain_explain(&self, chain: &Chain, base: f64, q: &abi::Query) -> (f64, String) {
+        let v = unsafe { (host().chain_compute)(self.raw(), Str::new(chain.name()), base, q, 1) };
         (v, unsafe { (host().explanation)().as_str().to_string() })
     }
 
@@ -648,18 +844,23 @@ impl World {
         unsafe { (host().attribute)(self.raw(), entity, Str::new(attribute.name())) }
     }
 
-    pub fn explain_attribute(&self, entity: u64, attribute: &Attribute) -> (f64, String) {
+    pub fn attribute_explain(&self, entity: u64, attribute: &Attribute) -> (f64, String) {
         let v = unsafe { (host().attribute_explain)(self.raw(), entity, Str::new(attribute.name())) };
         (v, unsafe { (host().explanation)().as_str().to_string() })
     }
 
     /// Adds or replaces modifier `id` on an attribute for `ticks` (0 = until removed).
-    pub fn add_modifier(&self, entity: u64, attr: &Attribute, id: &str, op: u32, amount: f64, ticks: u64) {
-        unsafe { (host().attribute_modifier)(self.raw(), entity, Str::new(attr.name()), Str::new(id), op, amount, ticks) }
+    pub fn attribute_add_modifier(&self, entity: u64, attr: &Attribute, id: &str, op: u32, amount: f64, ticks: u64) {
+        unsafe { (host().attribute_add_modifier)(self.raw(), entity, Str::new(attr.name()), Str::new(id), op, amount, ticks) }
     }
 
-    pub fn remove_modifier(&self, entity: u64, attr: &Attribute, id: &str) {
-        unsafe { (host().attribute_remove)(self.raw(), entity, Str::new(attr.name()), Str::new(id)) }
+    pub fn attribute_remove_modifier(&self, entity: u64, attr: &Attribute, id: &str) {
+        unsafe { (host().attribute_remove_modifier)(self.raw(), entity, Str::new(attr.name()), Str::new(id)) }
+    }
+
+    /// Whether `c` holds at `pos` for `entity` (0 for nobody): `w.holds(&Cond::new("night"), pos, 0)`.
+    pub fn holds(&self, c: &Cond, pos: crate::Vec3, entity: u64) -> bool {
+        unsafe { (host().holds)(self.raw(), Str::new(&c.0), pos, entity) != 0 }
     }
 
     pub fn roll_loot(&self, table: &dyn LootSource, ctx: &LootCtx) -> Vec<ItemStack> {
@@ -683,7 +884,8 @@ impl World {
 
     /// Breaks a block as if mined with `tool` by `player` (0 = nobody), with its loot when
     /// `drops`. False if nothing broke or an interceptor said no.
-    pub fn break_block(&self, pos: [i32; 3], tool: ItemStack, player: u64, drops: bool) -> bool {
+    pub fn break_block(&self, pos: impl Into<BlockPos>, tool: ItemStack, player: u64, drops: bool) -> bool {
+        let pos = pos.into();
         unsafe { (host().break_block)(self.raw(), &pos, tool, player, drops as u32) != 0 }
     }
 }

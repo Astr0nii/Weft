@@ -122,10 +122,10 @@ enum Effect {
         p: IVec3,
         extend: bool,
     },
-    /// Mods run with the rest of the world in place: rear, sides.
-    Logic {
+    /// Mods run with the rest of the world in place: what came in at each of its own faces.
+    Gate {
         p: IVec3,
-        inputs: [u8; 3],
+        inputs: [u8; 6],
     },
     /// A comparator reading a block that has its own idea of it, and what is at its sides.
     Compare {
@@ -228,29 +228,28 @@ impl View<'_> {
 
 /// What a device gives what is next to it in direction `dir`, wire and devices.
 fn direct(s: &Signal, dir: u8) -> u8 {
-    if wire::gives(s, dir) { s.level } else { 0 }
+    if s.gives & (1 << dir) != 0 { s.level } else { 0 }
 }
 
 /// What a device gives a block in direction `dir`, strongly: its power goes on through that block.
 fn strong(s: &Signal, dir: u8) -> u8 {
-    let reaches = match s.kind {
-        sk::SOURCE => dir == s.attach,
-        sk::TORCH | sk::REPEATER | sk::COMPARATOR | sk::LOGIC => dir == s.front,
-        sk::OBSERVER => dir ^ 1 == s.front,
-        _ => false,
-    };
-    if reaches { s.level } else { 0 }
+    if s.strong & (1 << dir) != 0 { s.level } else { 0 }
 }
 
 fn can_give(s: &Signal) -> bool {
-    matches!(s.kind, sk::SOURCE | sk::TORCH | sk::REPEATER | sk::COMPARATOR | sk::LOGIC | sk::OBSERVER)
+    s.gives != 0
+}
+
+/// Where a comparator reads what is behind it: opposite its output.
+fn rear(s: &Signal) -> u8 {
+    s.gives.trailing_zeros() as u8 ^ 1
 }
 
 use wire::is_device;
 
 /// What a comparator with `mode` makes of what is behind it and at its sides.
-fn compared(mode: u8, rear: u8, side: u8) -> u8 {
-    if mode == 1 {
+fn compared(flags: u8, rear: u8, side: u8) -> u8 {
+    if flags as u32 & abi::signal_flags::SUBTRACT != 0 {
         rear.saturating_sub(side)
     } else if rear >= side {
         rear
@@ -524,7 +523,7 @@ impl Signals {
         }
         let behind = |s: &Self, r: IVec3| {
             s.device_signal(c, r)
-                .and_then(|g| DIRS.get((g.front ^ 1) as usize))
+                .and_then(|g| DIRS.get(rear(g) as usize))
                 .map(|d| r + *d)
         };
         let those: Vec<IVec3> = self
@@ -546,7 +545,7 @@ impl Signals {
                 if d.input == u8::MAX {
                     return None;
                 }
-                out.push((s.front, d.input, s.mode == 1));
+                out.push((s.front, d.input, s.flags as u32 & abi::signal_flags::BREAKS != 0));
             }
         }
         Some(out)
@@ -608,9 +607,9 @@ impl Signals {
 
     fn add_device(&mut self, c: &Content, p: IVec3, state: u32) {
         let s = &c.states[state as usize].signal;
-        if s.kind == sk::OBSERVER && s.front < 6 {
+        for d in wire::dirs(s.watches) {
             self.watchers
-                .entry(p + DIRS[s.front as usize])
+                .entry(p + DIRS[d as usize])
                 .or_default()
                 .push(p);
         }
@@ -638,8 +637,8 @@ impl Signals {
         if let Some(d) = self.devices.remove(&p) {
             self.count_out(p);
             let s = &c.states[d.state as usize].signal;
-            if s.kind == sk::OBSERVER && s.front < 6 {
-                let at = p + DIRS[s.front as usize];
+            for d in wire::dirs(s.watches) {
+                let at = p + DIRS[d as usize];
                 if let Some(list) = self.watchers.get_mut(&at) {
                     list.retain(|o| *o != p);
                     if list.is_empty() {
@@ -685,7 +684,7 @@ impl Signals {
         // What came with it shows at once, and clients here hear of it.
         let came = if self.wires.contains_key(&p) { None } else { self.arriving.remove(&p) };
         if let Some(m) = &came {
-            for f in (0..6u8).filter(|f| mask & (1 << f) != 0 && m.levels[*f as usize] > 0) {
+            for f in wire::dirs(mask).filter(|f| m.levels[*f as usize] > 0) {
                 self.level_changes.push((p, f, m.levels[f as usize]));
             }
         }
@@ -1069,8 +1068,8 @@ impl Signals {
     }
 
     fn fullness(&self, c: &Content, entities: &Entities, frame: u64, at: IVec3) -> Option<u8> {
-        let id = entities.anchors.get(&(frame, at))?;
-        let items = entities.inventories.get(id)?;
+        let id = entities.anchored(frame, at)?;
+        let items = entities.inventories.get(&id)?;
         if items.is_empty() {
             return Some(0);
         }
@@ -1086,8 +1085,6 @@ impl Signals {
         }
         Some(if any { 1 + (sum / items.len() as f32 * 14.0) as u8 } else { 0 })
     }
-
-    /// The two sides of a gate, left and right of the way it faces, seen from above what holds it.
 
     /// What a device should do, from what is around it now.
     fn evaluate(&mut self, c: &'static Content, d: &Dim, p: IVec3, now: u64, effects: &mut Vec<Effect>) {
@@ -1106,9 +1103,19 @@ impl Signals {
                 }
             };
         }
+        // The most of what comes in at these faces.
+        macro_rules! most {
+            ($mask:expr) => {{
+                let mut most = 0;
+                for dir in wire::dirs($mask) {
+                    most = most.max(read!(dir));
+                }
+                most
+            }};
+        }
         match s.kind {
             sk::TORCH => {
-                let input = if s.attach < 6 { read!(s.attach) } else { 0 };
+                let input = most!(s.inputs);
                 let burnt = self.devices[&p].burnt_until > now;
                 if burnt {
                     self.polled.insert(p);
@@ -1125,28 +1132,24 @@ impl Signals {
                 }
             }
             sk::REPEATER => {
-                // A gate pointing into its side holds it where it is.
-                let sides = wire::sides(&s);
-                if sides
-                    .iter()
-                    .any(|&side| d.signal_view().state(p + DIRS[side as usize]).is_none())
-                {
+                // A gate pointing into a lock holds it where it is.
+                if wire::dirs(s.locks).any(|side| d.signal_view().state(p + DIRS[side as usize]).is_none()) {
                     self.held.insert(p);
                     return;
                 }
-                let locked = sides.iter().any(|&side| {
+                let locked = wire::dirs(s.locks).any(|side| {
                     self.device_signal(c, p + DIRS[side as usize])
                         .is_some_and(|g| matches!(g.kind, sk::REPEATER | sk::COMPARATOR) && direct(g, side ^ 1) > 0)
                 });
                 if !locked {
-                    let want = if read!(s.front ^ 1) > 0 { 15 } else { 0 };
+                    let want = if most!(s.inputs) > 0 { 15 } else { 0 };
                     if want != s.level {
                         self.schedule(p, want, s.delay, now);
                     }
                 }
             }
             sk::COMPARATOR => {
-                let behind = p + DIRS[(s.front ^ 1) as usize];
+                let behind = p + DIRS[rear(&s) as usize];
                 let reads_itself = d
                     .get(behind)
                     .is_some_and(|b| c.block_of(b).cb.signal_read.is_some());
@@ -1156,17 +1159,16 @@ impl Signals {
                 } else {
                     self.readers.remove(&p);
                 }
-                let [a, b] = wire::sides(&s);
-                let side = read!(a).max(read!(b));
+                let side = most!(s.inputs & !(1 << rear(&s)));
                 if reads_itself {
                     effects.push(Effect::Compare { p, behind, side });
                     return;
                 }
                 let rear = match container {
                     Some(v) => v,
-                    None => read!(s.front ^ 1),
+                    None => read!(rear(&s)),
                 };
-                let want = compared(s.mode, rear, side);
+                let want = compared(s.flags, rear, side);
                 if want != s.level {
                     self.schedule(p, want, s.delay, now);
                 }
@@ -1179,34 +1181,28 @@ impl Signals {
                     self.schedule(p, 15, s.delay, now);
                 }
             }
-            sk::LOGIC => {
-                let [a, b] = wire::sides(&s);
-                // Not the front: that is where its own output goes.
-                effects.push(Effect::Logic { p, inputs: [read!(s.front ^ 1), read!(a), read!(b)] });
+            sk::GATE => {
+                // By its own faces, as its model is written.
+                let back = c.states[state as usize].turn.inverse();
+                let mut inputs = [0u8; 6];
+                for dir in wire::dirs(s.inputs) {
+                    inputs[back.face(dir as usize)] = read!(dir);
+                }
+                effects.push(Effect::Gate { p, inputs });
             }
             sk::SINK => {
-                let mut most = 0;
-                for dir in (0..6u8).filter(|&dir| wire::reads(&s, dir)) {
-                    most = most.max(read!(dir));
-                }
+                let most = most!(s.inputs);
                 if self.devices[&p].input != most {
                     effects.push(Effect::Sink { p, level: most });
                 }
             }
             sk::FLOATER => {
                 self.polled.remove(&p);
-                let mut most = 0;
-                for dir in (0..6u8).filter(|&dir| wire::reads(&s, dir)) {
-                    most = most.max(read!(dir));
-                }
-                effects.push(Effect::Floater { p, level: most });
+                effects.push(Effect::Floater { p, level: most!(s.inputs) });
             }
             sk::PISTON => {
                 self.polled.remove(&p);
-                let mut most = 0;
-                for dir in (0..6u8).filter(|&dir| wire::reads(&s, dir)) {
-                    most = most.max(read!(dir));
-                }
+                let most = most!(s.inputs);
                 if (most > 0) != (s.level > 0) {
                     effects.push(Effect::Piston { p, extend: most > 0 });
                 }
@@ -1386,13 +1382,13 @@ impl Dim {
                         self.set(c, p, new);
                     }
                     let block = c.block_of(state);
-                    if let (Some(cb), true) = (block.cb.on_signal, was != u8::MAX) {
-                        self.call(block.owner, cb, |w| abi::SignalArgs {
+                    if let (Some((owner, cb)), true) = (block.cb.on_signal, was != u8::MAX) {
+                        self.call(owner, cb, |w| abi::SignalArgs {
                             world: w,
-                            pos: p.to_array(),
+                            pos: p.to_array().into(),
                             state: new,
                             level: level as u32,
-                            was: was as u32,
+                            before: was as u32,
                         });
                     }
                 }
@@ -1415,10 +1411,10 @@ impl Dim {
                     };
                     let info = c.states[state as usize].signal;
                     let block = c.block_of(there);
-                    let Some(cb) = block.cb.signal_read else { continue };
+                    let Some((owner, cb)) = block.cb.signal_read else { continue };
                     let out =
-                        self.call(block.owner, cb, |w| abi::SignalReadArgs { world: w, pos: behind.to_array(), state: there, output: 0 });
-                    let want = compared(info.mode, out.output.min(15) as u8, side);
+                        self.call(owner, cb, |w| abi::SignalReadArgs { world: w, pos: behind.to_array().into(), state: there, output: 0 });
+                    let want = compared(info.flags, out.output.min(15) as u8, side);
                     if want != info.level {
                         self.space.signals.schedule(p, want, info.delay, self.time);
                     }
@@ -1435,18 +1431,16 @@ impl Dim {
                         self.floater_shows(c, p, FLOATER_IDLE);
                     }
                 }
-                Effect::Logic { p, inputs } => {
+                Effect::Gate { p, inputs } => {
                     let Some(state) = self.space.signals.devices.get(&p).map(|d| d.state) else { continue };
                     let info = c.states[state as usize].signal;
                     let block = c.block_of(state);
-                    let Some(cb) = block.cb.signal_logic else { continue };
-                    let [rear, left, right] = inputs.map(|v| v as u32);
-                    let out = self.call(block.owner, cb, |w| abi::LogicArgs {
+                    let Some((owner, cb)) = block.cb.signal_gate else { continue };
+                    let out = self.call(owner, cb, |w| abi::GateArgs {
                         world: w,
-                        pos: p.to_array(),
+                        pos: p.to_array().into(),
                         state,
-                        rear,
-                        sides: [left, right],
+                        inputs: inputs.map(|v| v as u32),
                         output: info.level as u32,
                     });
                     let want = out.output.min(15) as u8;
@@ -1618,6 +1612,24 @@ impl Dim {
         Some((moved, broken))
     }
 
+    /// What a piston in front of `from` facing `dir` would push, moved one block that way as a
+    /// body over a piston's time, then put down: for a mod's own movers. False if it can't go.
+    pub fn push_blocks(&mut self, c: &'static Content, from: IVec3, dir: u8) -> bool {
+        let Some(&step) = DIRS.get(dir as usize) else { return false };
+        let Some((moved, broken)) = self.gather_move(c, from - step, None, from, step) else { return false };
+        if moved.is_empty() {
+            return false;
+        }
+        self.break_for_body(c, broken);
+        let id = self.lift_for_mod(c, from, &moved);
+        let Some(e) = self.entities.get_mut(id) else { return false };
+        e.motion = super::entity::Motion::To { to: e.pos + step.as_dvec3(), left: MOVE_TICKS as u16 };
+        if let Some(b) = self.bodies.get_mut(&id) {
+            b.stopping = true;
+        }
+        true
+    }
+
     fn push_plan(&mut self, c: &Content, p: IVec3, extend: bool) -> Option<PushPlan> {
         let state = self.get(p)?;
         let s = c.states[state as usize].signal;
@@ -1639,7 +1651,7 @@ impl Dim {
                 .devices
                 .get(&p)
                 .is_some_and(|d| self.time > d.pushed_at + MOVE_TICKS as u64);
-            if s.mode == 1 && held_on {
+            if s.flags as u32 & abi::signal_flags::STICKY != 0 && held_on {
                 let beyond = head + step;
                 let here = self.get(beyond)?;
                 if here != AIR && c.states[here as usize].flags & bf::SOLID != 0 && self.movable(c, here) {
@@ -1737,13 +1749,9 @@ impl Dim {
                     let going = (0..6u8)
                         .filter(|f| mask & (1 << f) != 0 && held_by(*f))
                         .fold(0u8, |m, f| m | 1 << f);
-                    (going != 0).then(|| c.block_of(state).first_state + going as u32)
+                    (going != 0).then(|| c.block_of(state).with_sides(state, going))
                 } else {
-                    let support = info
-                        .support
-                        .map(|(f, _)| f)
-                        .or((info.signal.attach < 6).then_some(info.signal.attach));
-                    support.filter(|f| held_by(*f)).map(|_| state)
+                    c.held_by(state).filter(|f| held_by(*f)).map(|_| state)
                 };
                 if let Some(part) = part {
                     riding.insert(n, part);
@@ -1799,7 +1807,7 @@ impl Dim {
         for &b in &plan.broken {
             if let Some(there) = self.get(b) {
                 if c.states[there as usize].liquid.is_none() {
-                    self.drop_block_loot(c, b, there, abi::ItemStack::EMPTY, false, None);
+                    self.drop_block_loot(c, b, there, abi::ItemStack::EMPTY, false, 0);
                 }
                 self.set(c, b, AIR);
             }
@@ -1864,7 +1872,12 @@ impl Dim {
             .signals
             .moving
             .push(Moving { body, piston: plan.p, head, blocks, retracting: !plan.extend, head_turns });
-        self.sound(c.states[state as usize].sounds[crate::content::block_sound::PLACE], plan.p.as_dvec3() + DVec3::splat(0.5), 0.5, 0.0);
+        self.sound(
+            c.states[state as usize].effects[crate::content::block_event::PLACE].sound,
+            plan.p.as_dvec3() + DVec3::splat(0.5),
+            0.5,
+            0.0,
+        );
     }
 
     /// Bodies of pistons that got there turn back into blocks.
@@ -1972,51 +1985,6 @@ impl Dim {
                 }
             }
         }
-    }
-
-    /// Pieces of wire that lost what held them up come off; the unloaded holds.
-    pub(super) fn wire_support(&mut self, c: &'static Content, p: IVec3, state: u32) -> bool {
-        let mask = wire::mask(c, state);
-        let mut left = mask;
-        for f in 0..6u8 {
-            if mask & (1 << f) != 0
-                && self
-                    .get(p + DIRS[f as usize])
-                    .is_some_and(|s| !wire::holds_wire(c, s))
-            {
-                left &= !(1 << f);
-            }
-        }
-        if left == mask {
-            return false;
-        }
-        for _ in 0..(mask ^ left).count_ones() {
-            self.drop_block_loot(c, p, state, abi::ItemStack::EMPTY, false, None);
-        }
-        self.block_dust(c, p, state);
-        self.set(c, p, if left == 0 { AIR } else { c.block_of(state).first_state + left as u32 });
-        true
-    }
-
-    /// A player adding a piece of wire to a cell: the state, if that can be done.
-    pub(super) fn wire_placed(&self, c: &Content, p: IVec3, face: u8, wire_state: u32) -> Option<u32> {
-        let cur = self.get(p)?;
-        let on = face ^ 1;
-        let first = c.block_of(wire_state).first_state;
-        let mut mask = 0;
-        if c.states[cur as usize].block == c.states[wire_state as usize].block {
-            mask = wire::mask(c, cur);
-        } else if c.states[cur as usize].flags & bf::REPLACEABLE == 0 {
-            return None;
-        }
-        if mask & (1 << on) != 0
-            || !self
-                .get(p + DIRS[on as usize])
-                .is_some_and(|s| wire::holds_wire(c, s))
-        {
-            return None;
-        }
-        Some(first + (mask | 1 << on) as u32)
     }
 }
 

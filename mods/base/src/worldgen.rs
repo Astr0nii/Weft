@@ -123,18 +123,20 @@ pub fn register(r: &mut Registry) {
     // Underground (3D): whole cubes deep under the surface; spiders like it there.
     r.biome(&DEEP_CAVES).tag("cave").tag("dark");
 
-    for (ore, max_y, veins, size) in [
-        (&COAL_ORE, 128, 8, 12),
-        (&IRON_ORE, 64, 6, 8),
-        (&GOLD_ORE, 32, 2, 7),
-        (&crate::redstone::REDSTONE_ORE, 16, 4, 8),
-        (&DIAMOND_ORE, 16, 1, 6),
+    // The last: share left out where it would touch a cave, vanilla's.
+    for (ore, max_y, veins, size, exposed) in [
+        (&COAL_ORE, 128, 8, 12, 0.0),
+        (&IRON_ORE, 64, 6, 8, 0.0),
+        (&GOLD_ORE, 32, 2, 7, 0.5),
+        (&crate::redstone::REDSTONE_ORE, 16, 4, 8, 0.0),
+        (&DIAMOND_ORE, 16, 1, 6, 0.5),
     ] {
         r.ore(ore)
             .y(i32::MIN, max_y)
             .veins(veins)
-            .size(size)
-            .replace("#stone_ore_replaceables");
+            .vein_size(size)
+            .replaces("#stone_ore_replaceables")
+            .exposed(exposed);
     }
 
     // The overworld's shape. Other mods add to it by these names (`base:desert`, `base:mountains`).
@@ -145,33 +147,42 @@ pub fn register(r: &mut Registry) {
         .feature(preset::continents(18.0))
         // Biomes shape the land through their climate, not their borders, so nothing seams:
         // the cold flattens hills into tundra, deserts get dunes.
-        .feature(preset::hills(16.0, 110.0).mask(Mask::Temperature(-0.35, -0.6).not()))
-        .feature(preset::dunes(4.0, 26.0).mask(Mask::Temperature(0.25, 0.45).and(Mask::Humidity(0.1, -0.05))))
+        .feature(preset::hills(16.0, 110.0).mask(Expr::temperature().ramp(-0.35, -0.6).not()))
+        .feature(
+            preset::dunes(4.0, 26.0).mask(
+                Expr::temperature()
+                    .ramp(0.25, 0.45)
+                    .and(Expr::humidity().ramp(0.1, -0.05)),
+            ),
+        )
+        // How mountainous a place is: the mountains' strength, and where the mountains biome goes.
+        .field(
+            "base:mountains",
+            Expr::fbm(0x44, 700.0, 3)
+                .ramp(-0.1, 0.3)
+                .and(Expr::continent().ramp(0.0, 0.2)),
+        )
         .feature(
             preset::mountains(150.0, 260.0)
-                .mask(
-                    Mask::noise(700.0, -0.1, 0.3)
-                        .salt(0x44)
-                        .and(Mask::Continent(0.0, 0.2)),
-                )
+                .mask(Expr::field("base:mountains"))
                 .named("mountains"),
         )
         // Biomes bring their climate and surface; rules only add where else they must hold.
-        .biome(BiomeRule::new("ocean").height(..=SEA - 2))
-        .biome(
+        .rule(BiomeRule::new("ocean").height(..=SEA - 2))
+        .rule(
             BiomeRule::new("snowy_plains")
                 .named("snowy_coast")
                 .height(..=SEA + 1)
                 .continent(..0.1),
         )
-        .biome(BiomeRule::new("beach").height(..=SEA + 1).continent(..0.1))
-        .biome(BiomeRule::new("mountains").feature("mountains", 0.45..))
-        .biome(BiomeRule::new("snowy_plains"))
-        .biome(BiomeRule::new("taiga"))
-        .biome(BiomeRule::new("desert"))
-        .biome(BiomeRule::new("forest"))
-        .biome(BiomeRule::new("birch_forest"))
-        .biome(BiomeRule::new("plains"))
+        .rule(BiomeRule::new("beach").height(..=SEA + 1).continent(..0.1))
+        .rule(BiomeRule::new("mountains").field("base:mountains", 0.45..))
+        .rule(BiomeRule::new("snowy_plains"))
+        .rule(BiomeRule::new("taiga"))
+        .rule(BiomeRule::new("desert"))
+        .rule(BiomeRule::new("forest"))
+        .rule(BiomeRule::new("birch_forest"))
+        .rule(BiomeRule::new("plains"))
         .cave_biome("deep_caves", 24, 96.0, 0.25)
         .caves(Caves::new("lava", i32::MIN, 11));
 
@@ -180,16 +191,17 @@ pub fn register(r: &mut Registry) {
         .cell(5)
         .reach(3)
         .density(&TREES)
+        .ground("#plant_soil")
         .shape(|s| {
-            let [x, y, z] = s.pos();
+            let BlockPos { x, y, z } = s.pos();
             let log = TREE_KINDS
                 .on_biome(s.biome())
                 .and_then(|l| l.pick(s.random() >> 40))
                 .unwrap_or(OAK_LOG.id());
             let Some(t) = tree_at(log, x, y, z, s.random() >> 32) else { return };
-            tree_blocks(&t, |x, y, z, state, force| if force { s.force([x, y, z], state) } else { s.put([x, y, z], state) });
+            tree_blocks(&t, |x, y, z, state, force| if force { s.put_force([x, y, z], state) } else { s.put([x, y, z], state) });
         });
-    r.decorate(decorate);
+    r.decoration(decorate);
 }
 
 static TREE_SITES: Scatter = Scatter::named("trees");
@@ -255,14 +267,14 @@ fn tree_blocks(t: &TreeAt, mut put: impl FnMut(i32, i32, i32, u32, bool)) {
 pub fn grow_tree(w: World, p: [i32; 3]) {
     let Some(t) = tree_at(OAK_LOG.id(), p[0], p[1], p[2], w.random()) else { return };
     for y in t.y + 1..t.y + t.height {
-        if w.get([t.x, y, t.z]) != 0 {
+        if w.block([t.x, y, t.z]) != 0 {
             return;
         }
     }
     tree_blocks(&t, |x, y, z, s, overwrite| {
-        let cur = w.get([x, y, z]);
+        let cur = w.block([x, y, z]);
         if overwrite || cur == 0 || TALL_GRASS.is(cur) {
-            w.set([x, y, z], s);
+            w.set_block([x, y, z], s);
         }
     });
 }
@@ -271,7 +283,7 @@ pub fn grow_tree(w: World, p: [i32; 3]) {
 fn decorate(g: &mut Gen) {
     let Some(&cols) = g.columns() else { return };
     let seed = g.seed();
-    let [ox, oy, oz] = g.origin();
+    let BlockPos { x: ox, y: oy, z: oz } = g.origin();
     let max_h = cols.iter().map(|c| c.height).max().unwrap_or(0);
     let min_h = cols.iter().map(|c| c.height).min().unwrap_or(0);
 
@@ -352,12 +364,12 @@ fn decorate(g: &mut Gen) {
             let y = y as usize;
             let (wx, wz) = (ox + x as i32, oz + z as i32);
             // Clay patch size based on noise scale
-            let clay = Fields { seed }.fbm(0xC1A7, wx * 16, wz * 16, 18 * 16, 3);
+            let clay = fixed::fbm(fixed::seed32(seed, 0xC1A7), wx * 16, wz * 16, 18 * 16, 3);
             // Threshold for clay generation
-            if clay > ONE / 4 {
+            if clay > fixed::ONE / 4 {
                 let surface = g.get(x, y, z);
                 if SAND.is(surface) || GRAVEL.is(surface) {
-                    g.set(x, y, z, CLAYBLOCK.id());
+                    g.set(x, y, z, CLAY.id());
                 }
             }
         }
@@ -366,7 +378,7 @@ fn decorate(g: &mut Gen) {
 
 /// The test dimension: flat, bounded in height, nothing else.
 pub fn flat(g: &mut Gen) {
-    let [_, oy, _] = g.origin();
+    let BlockPos { y: oy, .. } = g.origin();
     for y in 0..16usize {
         let wy = oy + y as i32;
         let s = match wy {

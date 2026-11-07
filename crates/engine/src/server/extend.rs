@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use weft_abi::{self as abi, verdict};
 
 use super::dim::Dim;
-use crate::content::Content;
+use crate::content::{Content, SourceMod};
 
 thread_local! {
     static EXPLAIN: RefCell<String> = const { RefCell::new(String::new()) };
@@ -127,7 +127,7 @@ impl Dim {
 
     /// Whether the interceptors of `question` let it happen: any deny wins.
     pub fn ask(&mut self, c: &'static Content, question: &str, q: &mut abi::Query) -> bool {
-        if !c.dims[self.id as usize].editable && (question == abi::question::BREAK_BLOCK || question == abi::question::PLACE_BLOCK) {
+        if !c.dims[self.id as usize].editable && (question == abi::action::BREAK_BLOCK || question == abi::action::PLACE_BLOCK) {
             q.verdict = verdict::DENY;
             return false;
         }
@@ -142,6 +142,28 @@ impl Dim {
                 break;
             }
         }
+        q.verdict = if allowed { verdict::ALLOW } else { verdict::DENY };
+        allowed
+    }
+
+    /// `ask` where an interceptor may also allow outright: with every one abstaining, `default`.
+    pub fn ask_or(&mut self, c: &'static Content, question: &str, q: &mut abi::Query, default: bool) -> bool {
+        let Some(list) = c.game.interceptors.get(question) else { return default };
+        let mut allowed = None;
+        for &(owner, cb) in list {
+            q.verdict = verdict::ABSTAIN;
+            let qp = q as *mut abi::Query;
+            self.call(owner, cb, |w| abi::InterceptArgs { world: w, question: abi::Str::new(question), query: qp });
+            match q.verdict {
+                verdict::DENY => {
+                    allowed = Some(false);
+                    break;
+                }
+                verdict::ALLOW => allowed = Some(true),
+                _ => {}
+            }
+        }
+        let allowed = allowed.unwrap_or(default);
         q.verdict = if allowed { verdict::ALLOW } else { verdict::DENY };
         allowed
     }
@@ -179,14 +201,15 @@ impl Dim {
 /// The engine's attributes come first in the registry (`registry::freeze`).
 pub const MAX_HEALTH: u32 = 0;
 pub const MOVEMENT_SPEED: u32 = 1;
-pub const VISIBILITY: u32 = 2;
+
 pub const JUMP_STRENGTH: u32 = 3;
-pub const SWIM_ANYWHERE: u32 = 4;
-pub const ATTACK_SPEED: u32 = 5;
-pub const CAN_SPRINT: u32 = 6;
-pub const BLOCK_REACH: u32 = 7;
-pub const ENTITY_REACH: u32 = 8;
-pub const MINING_SPEED: u32 = 9;
+pub const ATTACK_SPEED: u32 = 4;
+pub const CAN_SPRINT: u32 = 5;
+pub const BLOCK_REACH: u32 = 6;
+pub const ENTITY_REACH: u32 = 7;
+pub const MINING_SPEED: u32 = 8;
+pub const FOV: u32 = 9;
+pub const CAN_FLY: u32 = 10;
 
 impl Dim {
     fn base_attribute(&self, c: &Content, entity: u64, attr: u32) -> Option<f64> {
@@ -217,8 +240,8 @@ impl Dim {
                     if a == def.hash && (until == 0 || until > self.time) {
                         match op as u32 {
                             abi::attr_op::ADD => add += amount,
-                            abi::attr_op::MUL_BASE => mul_base += amount,
-                            abi::attr_op::MUL_TOTAL => mul_total *= 1.0 + amount,
+                            abi::attr_op::MULTIPLY_BASE => mul_base += amount,
+                            abi::attr_op::MULTIPLY_TOTAL => mul_total *= 1.0 + amount,
                             _ => {}
                         }
                     }
@@ -238,13 +261,13 @@ impl Dim {
             .sum();
         let mul_base: f64 = mods
             .iter()
-            .filter(|m| m.op as u32 == abi::attr_op::MUL_BASE)
+            .filter(|m| m.op as u32 == abi::attr_op::MULTIPLY_BASE)
             .map(|m| m.amount)
             .sum();
         let mut v = (base + add) * (1.0 + mul_base);
         for m in mods
             .iter()
-            .filter(|m| m.op as u32 == abi::attr_op::MUL_TOTAL)
+            .filter(|m| m.op as u32 == abi::attr_op::MULTIPLY_TOTAL)
         {
             v *= 1.0 + m.amount;
         }
@@ -290,6 +313,101 @@ impl Dim {
         }
     }
 
+    /// The modifiers what entities are in, hold, wear, do and are give them
+    /// (`Content::source_mods`), kept up each tick (`keep_sources`).
+    pub(super) fn source_modifiers(&mut self, c: &'static Content) {
+        if c.source_mods.is_empty() {
+            return;
+        }
+        let ids: Vec<u64> = self
+            .entities
+            .list
+            .iter()
+            .filter(|e| !e.removed && e.is_body())
+            .map(|e| e.id)
+            .collect();
+        for id in ids {
+            self.keep_sources(c, id);
+        }
+    }
+
+    /// Entity `id`'s modifiers from its game mode, its main hand's item, its worn items, its pose
+    /// and its kind while their conditions hold: one per attribute and operation,
+    /// `core:source/<op>`.
+    pub fn keep_sources(&mut self, c: &'static Content, id: u64) {
+        let s = &c.source_mods;
+        let Some(e) = self.entities.get(id) else { return };
+        let (kind, pose, pos, mode, body) = (e.kind, e.pose, e.pos, e.mode, e.body());
+        let mut from: Vec<SourceMod> = s.kinds.get(&kind).cloned().unwrap_or_default();
+        from.extend(s.modes.get(&(mode.0 as u32)).into_iter().flatten());
+        from.extend(s.poses.get(&(pose.0 as u32)).into_iter().flatten());
+        let held = self.entities.held(id).item;
+        from.extend(s.items.get(&held).into_iter().flatten().filter(|m| !m.worn));
+        let worn = c.game.entities[kind as usize].worn.clone();
+        let inv = self.entities.inventories.get(&id);
+        for st in inv
+            .and_then(|i| i.get(worn.start as usize..worn.end as usize))
+            .into_iter()
+            .flatten()
+        {
+            from.extend(
+                s.items
+                    .get(&st.item)
+                    .into_iter()
+                    .flatten()
+                    .filter(|m| m.worn),
+            );
+        }
+        if from.is_empty()
+            && !self
+                .entities
+                .comps
+                .contains_key(&(id, c.game.modifiers_comp))
+        {
+            return;
+        }
+        let ask = crate::conditions::Ask { pos, entity: id, body: Some(body), ..Default::default() };
+        let mut want: Vec<(u32, u32, f64)> = Vec::new();
+        for m in from {
+            if m.when
+                .is_some_and(|w| !crate::conditions::on_server(self, c, w, &ask))
+            {
+                continue;
+            }
+            match want.iter_mut().find(|w| (w.0, w.1) == (m.attr, m.op)) {
+                Some(w) if m.op == abi::attr_op::MULTIPLY_TOTAL => w.2 = (1.0 + w.2) * (1.0 + m.amount) - 1.0,
+                Some(w) => w.2 += m.amount,
+                None => want.push((m.attr, m.op, m.amount)),
+            }
+        }
+        let mut mods = self.modifiers_of(c, id);
+        let ours = |m: &AttrMod| m.id.starts_with("core:source/");
+        let had: Vec<(u64, u8, f64)> = mods
+            .iter()
+            .filter(|m| ours(m))
+            .map(|m| (m.attr, m.op, m.amount))
+            .collect();
+        let now: Vec<(u64, u8, f64)> = want
+            .iter()
+            .map(|&(a, op, x)| (c.game.attributes[a as usize].hash, op.min(2) as u8, x))
+            .collect();
+        if had.len() == now.len() && now.iter().all(|w| had.contains(w)) {
+            return;
+        }
+        mods.retain(|m| !ours(m));
+        mods.extend(
+            now.into_iter()
+                .map(|(attr, op, amount)| AttrMod { attr, op, amount, until: 0, id: format!("core:source/{op}") }),
+        );
+        if mods.is_empty() {
+            self.entities.comps.remove(&(id, c.game.modifiers_comp));
+        } else {
+            self.entities
+                .comps
+                .insert((id, c.game.modifiers_comp), encode_mods(&mods));
+        }
+    }
+
     /// The only maximum health there is: the attribute (the kind's value plus modifiers).
     pub fn max_health(&self, c: &Content, entity: u64) -> f32 {
         self.attribute(c, entity, MAX_HEALTH, false) as f32
@@ -304,9 +422,20 @@ impl Dim {
     }
 
     /// Rolls a loot table with this region's random stream.
-    pub fn roll_loot(&mut self, c: &Content, table: &str, ctx: &crate::loot::Ctx) -> Vec<weft_abi::ItemStack> {
+    /// Rolls `table`; conditions it asks are answered about `pos` and `entity` first.
+    pub fn roll_loot(
+        &mut self,
+        c: &'static Content,
+        table: &str,
+        ctx: &crate::loot::Ctx,
+        pos: glam::DVec3,
+        entity: u64,
+    ) -> Vec<weft_abi::ItemStack> {
         let Some(t) = c.loot.get(table) else { return Vec::new() };
-        let mut rng = || self.random_unit();
-        crate::loot::roll(c, t, ctx, &mut rng)
+        let ask = crate::conditions::Ask { pos, entity, state: ctx.state, loot: Some(ctx), ..Default::default() };
+        let me = std::cell::RefCell::new(self);
+        let mut rng = || me.borrow_mut().random_unit();
+        let mut holds = |id| crate::conditions::on_server(&mut me.borrow_mut(), c, id, &ask);
+        crate::loot::roll(c, t, ctx, &mut rng, &mut holds)
     }
 }

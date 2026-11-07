@@ -79,17 +79,17 @@ pub async fn run(t: T, src: String) -> R {
                 let (a, secs) = rest.rsplit_once(' ').unwrap_or((rest, "1"));
                 t.hold(a.trim(), secs.parse().unwrap_or(1.0));
             }
-            "click" => t.c().click(num(0, 0.0) as u32, 0.0),
-            "cursor" => t.c().cursor(num(0, 0.5), num(1, 0.5)),
-            "scroll" => t.c().scroll(num(0, -1.0)),
-            "type" => t.c().type_text(rest),
+            "click" => t.c().input_click(num(0, 0.0) as u32, 0.0),
+            "cursor" => t.c().input_cursor(num(0, 0.5), num(1, 0.5)),
+            "scroll" => t.c().input_scroll(num(0, -1.0)),
+            "type" => t.c().input_type(rest),
             "key" => {
-                if !t.c().key(rest, 0.0) {
+                if !t.c().input_key(rest, 0.0) {
                     t.fail(format!("unknown key {rest}"));
                 }
             }
-            "look" => t.c().look(num(0, 0.0), num(1, 0.0)),
-            "chat" => t.c().chat(rest),
+            "look" => t.c().set_look(num(0, 0.0), num(1, 0.0)),
+            "chat" => t.c().say(rest),
             // `view 64 vsync off`-like settings, past what `same_conditions` fixed.
             "view" => weft_sdk::settings::VIEW_DISTANCE.set(rest.parse().map_err(|_| "view: a number")?),
             "vsync" => weft_sdk::settings::VSYNC.set(rest == "on"),
@@ -99,7 +99,7 @@ pub async fn run(t: T, src: String) -> R {
             }
             "say_config" => {
                 let cfg = weft_sdk::Config::<f64>::named(Box::leak(rest.to_string().into_boxed_str()));
-                t.c().chat(&format!("config {rest} = {}", cfg.get()));
+                t.c().say(&format!("config {rest} = {}", cfg.get()));
             }
             "shot" => {
                 let path = match launch_option("shot-dir") {
@@ -118,7 +118,7 @@ pub async fn run(t: T, src: String) -> R {
                 t.bench(secs.parse().unwrap_or(5.0), label.trim()).await?;
             }
             "host" => {
-                t.c().host_world();
+                t.c().world_host();
                 t.until("hosting", Duration::from_secs(60), |t| t.flag(cf::HOSTING))
                     .await?;
                 let _ = std::fs::write(rest, t.c().ticket());
@@ -133,12 +133,12 @@ pub async fn run(t: T, src: String) -> R {
                     !ticket.is_empty()
                 })
                 .await?;
-                t.c().join(&ticket);
+                t.c().world_join(&ticket);
             }
-            "origin" => origin = t.state().pos,
+            "origin" => origin = (t.state().pos).to_array(),
             "where" => {
                 let s = t.state();
-                weft_sdk::info!("script: where {:.3} {:.3} {:.3} {rest}", s.pos[0], s.pos[1], s.pos[2]);
+                weft_sdk::info!("script: where {:.3} {:.3} {:.3} {rest}", s.pos.x, s.pos.y, s.pos.z);
             }
             "rec" => weft_sdk::info!("REC {rest}"),
             "via" => match waypoint(origin, rest) {
@@ -151,16 +151,16 @@ pub async fn run(t: T, src: String) -> R {
                 None => t.fail(format!("bad waypoint '{line}'")),
             },
             "travel" => {
-                let eye = t.c().entity(0).map_or(1.62, |e| e.size[2] as f64);
+                let eye = t.c().entity(0).map_or(1.62, |e| e.size.eye as f64);
                 let s = t.state();
-                let mut pts = vec![[s.pos[0], s.pos[1] + eye, s.pos[2], (s.yaw as f64).to_degrees(), (s.pitch as f64).to_degrees()]];
+                let mut pts = vec![[s.pos.x, s.pos.y + eye, s.pos.z, (s.yaw as f64).to_degrees(), (s.pitch as f64).to_degrees()]];
                 pts.append(&mut via);
                 fly(&t, pts, num(0, 5.0) as f64, eye).await?;
             }
             "glide" => {
                 let s = t.state();
-                let from = [s.pos[0], s.pos[1] + 0.0, s.pos[2]];
-                let eye = t.c().entity(0).map_or(1.62, |e| e.size[2] as f64);
+                let from = [s.pos.x, s.pos.y + 0.0, s.pos.z];
+                let eye = t.c().entity(0).map_or(1.62, |e| e.size.eye as f64);
                 let a = [from[0], from[1] + eye, from[2], (s.yaw as f64).to_degrees(), (s.pitch as f64).to_degrees()];
                 let b = [a[0], a[1], a[2], num(0, 0.0) as f64, num(1, 0.0) as f64];
                 fly(&t, vec![a, b], num(2, 2.0) as f64, eye).await?;
@@ -275,8 +275,8 @@ async fn fly(t: &T, mut pts: Vec<[f64; 5]>, secs: f64, eye: f64) -> R {
         let c = t.c();
         c.control(&weft_sdk::abi::PlayerControl {
             mask: weft_sdk::abi::control_mask::POS | weft_sdk::abi::control_mask::VEL | weft_sdk::abi::control_mask::LOOK,
-            pos: [p[0], p[1] - eye, p[2]],
-            vel: [0.0; 3],
+            pos: [p[0], p[1] - eye, p[2]].into(),
+            vel: [0.0; 3].into(),
             yaw: p[3].to_radians() as f32,
             pitch: p[4].to_radians() as f32,
             ..weft_sdk::abi::PlayerControl::DEFAULT

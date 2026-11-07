@@ -153,7 +153,7 @@ pub fn ramp(v: i32, from: i32, to: i32) -> i32 {
         return if v >= to { ONE } else { 0 };
     }
     // Parameters are within +-2^18 (`q12` clamps), so this stays in 32 bits.
-    ((v - from).clamp(-(1 << 18), 1 << 18) * ONE / (to - from)).clamp(0, ONE)
+    ((v.wrapping_sub(from)).clamp(-(1 << 18), 1 << 18) * ONE / (to - from)).clamp(0, ONE)
 }
 
 /// To Q12 (and Q4 below), rounded, for parameters given as decimals; out of range (an open
@@ -168,102 +168,33 @@ pub fn q4(v: f64) -> i32 {
     (v * 16.0).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
 }
 
-/// The world's noise fields at Q4 positions, Q12 values.
-#[derive(Clone, Copy)]
-pub struct Fields {
-    pub seed: u64,
-}
-
-impl Fields {
-    pub fn fbm(&self, salt: u64, x: i32, z: i32, scale: i32, octaves: u32) -> i32 {
-        fbm(seed32(self.seed, salt), x, z, scale, octaves)
-    }
-
-    pub fn ridge(&self, salt: u64, x: i32, z: i32, scale: i32) -> i32 {
-        ONE - (self.fbm(salt, x, z, scale, 4) * 2).abs().min(ONE)
-    }
-
-    pub fn continent(&self, x: i32, z: i32) -> i32 {
-        ((self.fbm(salt::CONTINENT, x, z, 900 * 16, 4) * 6554) >> 12) + 614
-    }
-
-    pub fn temperature(&self, x: i32, z: i32) -> i32 {
-        (self.fbm(salt::TEMPERATURE, x, z, 1100 * 16, 3) * 5734) >> 12
-    }
-
-    pub fn humidity(&self, x: i32, z: i32) -> i32 {
-        (self.fbm(salt::HUMIDITY, x, z, 800 * 16, 3) * 5734) >> 12
-    }
-}
-
-/// The terrain presets: height (Q4) at (`x`, `z`) (Q4); parameters in Q4 (heights, sizes).
-pub mod shape {
-    use super::*;
-
-    pub fn continents(f: &Fields, x: i32, z: i32, depth: i32) -> i32 {
-        ((f.continent(x, z) * 5 / 2).clamp(-ONE, ONE) * depth) >> 12
-    }
-
-    pub fn hills(f: &Fields, x: i32, z: i32, height: i32, size: i32) -> i32 {
-        (f.fbm(salt::HILLS, x, z, size, 4) * height) >> 12
-    }
-
-    pub fn mountains(f: &Fields, x: i32, z: i32, height: i32, width: i32) -> i32 {
-        let r = f.ridge(salt::MOUNTAINS, x, z, width);
-        ((((r * r) >> 12) * height) >> 12) + ((f.fbm(salt::HILLS, x, z, 60 * 16, 4) * height) >> 12) / 7
-    }
-
-    pub fn plateaus(f: &Fields, x: i32, z: i32, height: i32, size: i32, step: i32) -> i32 {
-        let v = (ramp(f.fbm(salt::PLATEAUS, x, z, size, 3), 0, 1024) * height) >> 12;
-        let step = step.max(1);
-        div_floor(v, step).0 * step
-    }
-
-    pub fn canyons(f: &Fields, x: i32, z: i32, depth: i32, width: i32) -> i32 {
-        let r = f.ridge(salt::CANYONS, x, z, width.min(1 << 20) * 40);
-        -((ramp(r, 3994, ONE) * depth) >> 12)
-    }
-
-    pub fn dunes(f: &Fields, x: i32, z: i32, height: i32, wavelength: i32) -> i32 {
-        let wl = wavelength.clamp(1, (1 << 18) - 1);
-        let warp = (f.fbm(salt::DUNES, x, z, wl * 4, 2) * wl) >> 12;
-        let t = div_floor(x + z / 2 + warp, wl).1 * ONE / wl;
-        // Gentle windward slope, steep lee side.
-        let profile = if t < 3277 { t * ONE / 3277 } else { (ONE - t) * ONE / 819 };
-        (profile * height) >> 12
-    }
-
-    pub fn craters(f: &Fields, x: i32, z: i32, radius: i32, depth: i32, spacing: i32) -> i32 {
-        let sp = spacing.clamp(16, 512 * 16);
-        let (cx, cz) = (div_floor(x, sp).0, div_floor(z, sp).0);
-        let seed = seed32(f.seed, salt::CRATERS);
-        let (bx, bz) = (x >> 4, z >> 4);
-        let mut total = 0;
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                let h = hash(seed, cx + dx, 0, cz + dz);
-                let h2 = fmix(h);
-                if (h & 4095) as i32 > 2458 {
-                    continue;
-                }
-                // In blocks from here on: squares of Q4 distances overflow 32 bits.
-                let r = ((radius.clamp(16, 512 * 16) * (2048 + ((h >> 12) & 4095) as i32)) >> 12) >> 4;
-                let r2 = (r * r).max(1);
-                let px = ((cx + dx) * sp + (((h2 & 4095) as i32 * sp) >> 12)) >> 4;
-                let pz = ((cz + dz) * sp + ((((h2 >> 12) & 4095) as i32 * sp) >> 12)) >> 4;
-                let d2 = (bx - px) * (bx - px) + (bz - pz) * (bz - pz);
-                if d2 >= r2 * 2 {
-                    continue;
-                }
-                let d = ((d2 as u32 * 4096) / r2 as u32) as i32;
-                if d < ONE {
-                    total -= ((ONE - d) * depth) >> 12;
-                } else if d < 6554 {
-                    let rim = (ONE - (d - 5325).abs() * ONE / 1229).max(0);
-                    total += ((rim * depth) >> 12) / 4;
-                }
+/// Where `weft_abi::expr::SITE` looks: the square of the distance from (`x`, `z`) (Q4) to the
+/// nearest point of the grid cells around, in units of that point's radius (Q12). A cell of
+/// `spacing` (Q4) holds one point at a seeded spot with chance `chance` (Q12), and its radius is
+/// `radius` (Q4) times 0.5 to 1.5. 8192 where none is within reach.
+pub fn site(seed: u32, x: i32, z: i32, spacing: i32, chance: i32, radius: i32) -> i32 {
+    let sp = spacing.clamp(16, 512 * 16);
+    let (cx, cz) = (div_floor(x, sp).0, div_floor(z, sp).0);
+    let (bx, bz) = (x >> 4, z >> 4);
+    let mut nearest = 2 * ONE;
+    for dz in -1..=1 {
+        for dx in -1..=1 {
+            let h = hash(seed, cx + dx, 0, cz + dz);
+            let h2 = fmix(h);
+            if (h & 4095) as i32 > chance {
+                continue;
             }
+            // In blocks from here on: squares of Q4 distances overflow 32 bits.
+            let r = ((radius.clamp(16, 512 * 16) * (2048 + ((h >> 12) & 4095) as i32)) >> 12) >> 4;
+            let r2 = (r * r).max(1);
+            let px = ((cx + dx) * sp + (((h2 & 4095) as i32 * sp) >> 12)) >> 4;
+            let pz = ((cz + dz) * sp + ((((h2 >> 12) & 4095) as i32 * sp) >> 12)) >> 4;
+            let d2 = (bx - px) * (bx - px) + (bz - pz) * (bz - pz);
+            if d2 >= r2 * 2 {
+                continue;
+            }
+            nearest = nearest.min(((d2 as u32 * 4096) / r2 as u32) as i32);
         }
-        total
     }
+    nearest
 }

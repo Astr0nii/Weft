@@ -20,43 +20,53 @@ use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use crate::abi::{self, ItemStack, Str, entry_kind as ek};
 use crate::host;
 
-/// A type a component can hold: plain data with a schema string the engine compares between mods.
-/// Implemented for numbers, `bool`, `Text`, a few engine structs, and any struct declared with
-/// [`value!`](crate::value).
+pub use abi::data::Data;
+
+/// What a component of a registration can hold (`abi::data`): numbers, `bool`, text (`String`),
+/// lists (`Vec`), callbacks, engine structs, structs declared with [`value!`](crate::value)
+/// (plain) or [`abi::data!`] (with text and lists).
+///
+/// `Value` is the plain kind: `repr(C)` data an entity, a stack or an event carries and a system
+/// changes in place.
 ///
 /// # Safety
 /// The type must be `repr(C)` plain data valid for whatever bytes another mod wrote with the same
 /// schema.
-pub unsafe trait Value: Copy + 'static {
-    fn schema() -> String;
-}
+pub unsafe trait Value: Data + Copy {}
 
-macro_rules! primitive {
-    ($($t:ty => $s:literal),*) => {
-        $(unsafe impl Value for $t {
-            fn schema() -> String { $s.into() }
-        })*
+macro_rules! plain {
+    ($($t:ty),*) => {
+        $(unsafe impl Value for $t {})*
     };
 }
-primitive!(u8 => "u8", i8 => "i8", u16 => "u16", i16 => "i16", u32 => "u32", i32 => "i32", u64 => "u64", i64 => "i64", f32 => "f32", f64 => "f64", bool => "bool");
+plain!(u8, i8, u16, i16, u32, i32, u64, i64, f32, f64, bool);
 
-unsafe impl<T: Value, const N: usize> Value for [T; N] {
-    fn schema() -> String {
-        format!("[{};{N}]", T::schema())
-    }
+unsafe impl<T: Value, const N: usize> Value for [T; N] {}
+
+/// `Data` of a `repr(C)` value, its own bytes.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! raw_data {
+    ($t:ty, $schema:expr) => {
+        impl $crate::abi::data::Data for $t {
+            const FIXED: bool = true;
+            fn schema() -> String {
+                ($schema).into()
+            }
+            fn write(&self, out: &mut Vec<u8>) {
+                out.extend_from_slice(unsafe { std::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) });
+            }
+            fn read(r: &mut &[u8]) -> Option<Self> {
+                let b = r.get(..size_of::<Self>())?;
+                *r = &r[size_of::<Self>()..];
+                Some(unsafe { std::ptr::read_unaligned(b.as_ptr() as *const Self) })
+            }
+        }
+    };
 }
 
-unsafe impl Value for abi::Worn {
-    fn schema() -> String {
-        <abi::Worn as abi::Schema>::SCHEMA.into()
-    }
-}
-
-unsafe impl Value for abi::Energy {
-    fn schema() -> String {
-        <abi::Energy as abi::Schema>::SCHEMA.into()
-    }
-}
+unsafe impl Value for abi::Worn {}
+unsafe impl Value for abi::Energy {}
 
 /// Text owned by the engine (`str` schema). Set it with the builders' `set_text`.
 #[repr(transparent)]
@@ -74,11 +84,8 @@ impl Text {
     }
 }
 
-unsafe impl Value for Text {
-    fn schema() -> String {
-        "str".into()
-    }
-}
+unsafe impl Value for Text {}
+raw_data!(Text, "str");
 
 /// Values written as text and read as something else: `Text` stays text, `BlockRef`,
 /// `BlockList` and `ItemRef` name things that the engine resolves when the game loads (a typo is
@@ -88,30 +95,33 @@ impl TextValue for Text {}
 impl TextValue for BlockRef {}
 impl TextValue for ItemRef {}
 impl TextValue for BlockList {}
-impl TextValue for TagRef {}
+impl TextValue for Matcher {}
 impl TextValue for TintRef {}
 
-/// A tag a component names (`#plant_soil`), read back as the tag's component id.
+/// Which blocks, as a component names them: a block matcher (`set_text(&SUPPORT, "#plant_soil
+/// !base:sand")`, syntax in `docs/modding.md`), compiled once when the game loads and read back
+/// as its id.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TagRef(pub u32);
+pub struct Matcher(pub u32);
 
-unsafe impl Value for TagRef {
-    fn schema() -> String {
-        "tag".into()
+impl Matcher {
+    /// Whether it takes block state `state`.
+    pub fn has(&self, state: u32) -> bool {
+        unsafe { (host().matcher_has)(self.0, state) != 0 }
     }
 }
+
+unsafe impl Value for Matcher {}
+raw_data!(Matcher, "match");
 
 /// A tint kind a component names (`core:grass`), read back as its number.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TintRef(pub u32);
 
-unsafe impl Value for TintRef {
-    fn schema() -> String {
-        "tint".into()
-    }
-}
+unsafe impl Value for TintRef {}
+raw_data!(TintRef, "tint");
 
 /// A block (or a state, `base:furnace[lit=true]`) a component names: `set_text(&TREE_LEAVES,
 /// "oak_leaves")`, read back as its state id.
@@ -119,22 +129,16 @@ unsafe impl Value for TintRef {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockRef(pub u32);
 
-unsafe impl Value for BlockRef {
-    fn schema() -> String {
-        "block".into()
-    }
-}
+unsafe impl Value for BlockRef {}
+raw_data!(BlockRef, "block");
 
 /// An item a component names (`set_text(&REMAINDER, "bucket")`), read back as its id.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ItemRef(pub u32);
 
-unsafe impl Value for ItemRef {
-    fn schema() -> String {
-        "item".into()
-    }
-}
+unsafe impl Value for ItemRef {}
+raw_data!(ItemRef, "item");
 
 /// Blocks with weights a component names: `set_text(&TREE_KINDS, "birch_log:1 oak_log:4")`
 /// (weight 1 when left out), resolved when the game loads.
@@ -142,16 +146,13 @@ unsafe impl Value for ItemRef {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BlockList(pub u32);
 
-unsafe impl Value for BlockList {
-    fn schema() -> String {
-        "blocks".into()
-    }
-}
+unsafe impl Value for BlockList {}
+raw_data!(BlockList, "blocks");
 
 impl BlockList {
     /// (state, weight) pairs.
     pub fn entries(&self) -> &'static [[u32; 2]] {
-        unsafe { (host().ref_list)(self.0).as_slice() }
+        unsafe { (host().block_list)(self.0).as_slice() }
     }
     /// One state by its weight, `roll` being any random number.
     pub fn pick(&self, roll: u64) -> Option<u32> {
@@ -186,21 +187,20 @@ macro_rules! value {
         #[repr(C)]
         #[derive(Clone, Copy, Debug, PartialEq)]
         $vis struct $name { $($(#[$fm])* $fvis $field: $ty),* }
-        unsafe impl $crate::Value for $name {
-            fn schema() -> String {
-                let fields: Vec<String> = vec![$(format!("{}:{}", stringify!($field), <$ty as $crate::Value>::schema())),*];
-                format!("{{{}}}", fields.join(","))
-            }
-        }
+        unsafe impl $crate::Value for $name {}
+        $crate::raw_data!($name, {
+            let fields: Vec<String> = vec![$(format!("{}:{}", stringify!($field), <$ty as $crate::abi::data::Data>::schema())),*];
+            format!("{{{}}}", fields.join(","))
+        });
     };
 }
 
 static TABLE: AtomicPtr<abi::ComponentTable> = AtomicPtr::new(std::ptr::null_mut());
 
-fn table() -> Option<&'static abi::ComponentTable> {
+fn component_table() -> Option<&'static abi::ComponentTable> {
     let mut p = TABLE.load(Ordering::Relaxed);
     if p.is_null() {
-        p = unsafe { (host().components)() } as *mut _;
+        p = unsafe { (host().component_table)() } as *mut _;
         if p.is_null() {
             return None;
         }
@@ -210,8 +210,8 @@ fn table() -> Option<&'static abi::ComponentTable> {
 }
 
 #[inline]
-fn has(kind: u32, entry: u32, comp: u32) -> bool {
-    let Some(t) = table() else { return false };
+fn table_has(kind: u32, entry: u32, comp: u32) -> bool {
+    let Some(t) = component_table() else { return false };
     let k = &t.kinds[kind as usize];
     if entry >= k.entries || comp >= t.components {
         return false;
@@ -219,9 +219,46 @@ fn has(kind: u32, entry: u32, comp: u32) -> bool {
     unsafe { *k.bits.add((entry * k.words + comp / 64) as usize) >> (comp % 64) & 1 != 0 }
 }
 
+/// How many entries of `kind` (`abi::entry_kind`) there are, blocks counted by state; 0 before
+/// the registries are frozen.
+pub fn entry_count(kind: u32) -> u32 {
+    component_table()
+        .and_then(|t| t.kinds.get(kind as usize))
+        .map_or(0, |k| k.entries)
+}
+
+/// Name and schema (empty: a tag) of component `id`.
+pub fn component_info(id: u32) -> Option<(&'static str, &'static str)> {
+    let (mut name, mut schema) = (Str::EMPTY, Str::EMPTY);
+    (unsafe { (host().component_info)(id, &mut name, &mut schema) } != 0).then(|| unsafe { (name.as_str(), schema.as_str()) })
+}
+
+/// Every component and tag entry `id` of `kind` has, by name and schema: what a thing is, for a
+/// mod showing it (WAILA) or building on any mod's things. Values are read with the components'
+/// handles, `Component::on_block` and the like.
+pub fn components_of(kind: u32, id: u32) -> Vec<(&'static str, &'static str)> {
+    let Some(t) = component_table() else { return Vec::new() };
+    (0..t.components)
+        .filter(|&c| table_has(kind, id, c))
+        .filter_map(component_info)
+        .collect()
+}
+
+/// Every entry of `kind` with component or tag `name`: all logs (`entries_with(BLOCK, "logs")`,
+/// one per state), every ore.
+pub fn entries_with(kind: u32, name: &str) -> Vec<u32> {
+    let Some(t) = component_table() else { return Vec::new() };
+    let Some(comp) = (0..t.components).find(|&c| component_info(c).is_some_and(|(n, _)| n == name)) else { return Vec::new() };
+    (0..entry_count(kind))
+        .filter(|&e| table_has(kind, e, comp))
+        .collect()
+}
+
 const UNRESOLVED: u32 = u32::MAX - 1;
 const MISSING: u32 = u32::MAX;
-const KINDS: usize = ek::COUNT;
+/// Kinds whose place in the table a handle caches (block to dimension: what hot code reads);
+/// the others are looked up on each read.
+const CACHED: usize = ek::DIMENSION as usize + 1;
 
 static NO_BITS: u64 = 0;
 
@@ -250,12 +287,21 @@ impl Slot {
 
 struct Lookup {
     id: AtomicU32,
-    slots: [Slot; KINDS],
+    slots: [Slot; CACHED],
+}
+
+/// Where one component sits in one kind's table: its bit's word in entry 0's row.
+struct Place {
+    bits: *const u64,
+    words: u32,
+    entries: u32,
+    data: *const u8,
+    stride: u32,
 }
 
 impl Lookup {
     const fn new() -> Lookup {
-        Lookup { id: AtomicU32::new(UNRESOLVED), slots: [const { Slot::new() }; KINDS] }
+        Lookup { id: AtomicU32::new(UNRESOLVED), slots: [const { Slot::new() }; CACHED] }
     }
 
     fn id(&self, name: &str, schema: &dyn Fn() -> String) -> u32 {
@@ -263,7 +309,7 @@ impl Lookup {
         if id != UNRESOLVED {
             return id;
         }
-        if table().is_none() {
+        if component_table().is_none() {
             // Registration is still running: nothing to look up yet.
             return MISSING;
         }
@@ -272,181 +318,308 @@ impl Lookup {
         id
     }
 
+    /// Where it sits in `kind`'s table: cached in the handle for the first kinds.
     #[inline]
-    fn has(&self, kind: u32, entry: u32, name: &str, schema: &dyn Fn() -> String) -> bool {
-        let s = &self.slots[kind as usize];
+    fn place(&self, kind: u32, name: &str, schema: &dyn Fn() -> String) -> Option<Place> {
+        let Some(s) = self.slots.get(kind as usize) else { return self.find(kind, name, schema) };
         let mut bits = s.bits.load(Ordering::Acquire);
         if bits.is_null() {
             bits = self.fill(kind, name, schema);
             if bits.is_null() {
-                return false;
+                return None;
             }
         }
-        entry < s.entries.load(Ordering::Relaxed)
-            && unsafe { *bits.add((entry * s.words.load(Ordering::Relaxed)) as usize) } >> (self.id.load(Ordering::Relaxed) % 64) & 1 != 0
+        Some(Place {
+            bits,
+            words: s.words.load(Ordering::Relaxed),
+            entries: s.entries.load(Ordering::Relaxed),
+            data: s.data.load(Ordering::Relaxed),
+            stride: s.stride.load(Ordering::Relaxed),
+        })
+    }
+
+    fn find(&self, kind: u32, name: &str, schema: &dyn Fn() -> String) -> Option<Place> {
+        let id = self.id(name, schema);
+        let t = component_table()?;
+        let k = t.kinds.get(kind as usize)?;
+        if id >= t.components {
+            // Nothing uses it: every check says no.
+            return Some(Place { bits: &NO_BITS, words: 0, entries: 0, data: std::ptr::null(), stride: 0 });
+        }
+        let col = unsafe { *k.columns.add(id as usize) };
+        Some(Place {
+            bits: unsafe { k.bits.add((id / 64) as usize) },
+            words: k.words,
+            entries: k.entries,
+            data: col.data,
+            stride: col.stride,
+        })
     }
 
     #[inline]
-    fn read<T: Copy>(&self, kind: u32, entry: u32, name: &str, schema: &dyn Fn() -> String) -> Option<T> {
-        if !self.has(kind, entry, name, schema) {
+    fn has(&self, kind: u32, entry: u32, name: &str, schema: &dyn Fn() -> String) -> bool {
+        self.place(kind, name, schema)
+            .is_some_and(|p| self.has_at(&p, entry))
+    }
+
+    #[inline]
+    fn has_at(&self, p: &Place, entry: u32) -> bool {
+        entry < p.entries && unsafe { *p.bits.add((entry * p.words) as usize) } >> (self.id.load(Ordering::Relaxed) % 64) & 1 != 0
+    }
+
+    #[inline]
+    fn read<T: Data>(&self, kind: u32, entry: u32, name: &str, schema: &dyn Fn() -> String) -> Option<T> {
+        let p = self.place(kind, name, schema)?;
+        if !self.has_at(&p, entry) {
             return None;
         }
-        let s = &self.slots[kind as usize];
-        let stride = s.stride.load(Ordering::Relaxed);
-        (stride as usize == size_of::<T>()).then(|| unsafe {
-            std::ptr::read_unaligned(
-                s.data
-                    .load(Ordering::Relaxed)
-                    .add((entry * stride) as usize) as *const T,
-            )
-        })
+        let stride = p.stride as usize;
+        let at = unsafe { p.data.add(entry as usize * stride) };
+        let mut cell = unsafe { std::slice::from_raw_parts(at as *const u8, stride) };
+        if T::FIXED {
+            return (stride == size_of::<T>())
+                .then(|| T::read(&mut cell))
+                .flatten();
+        }
+        // Text is kept as a `Str`, other packed values as a `Slice` of their bytes.
+        let (ptr, len) = unsafe { std::ptr::read_unaligned(at as *const (*const u8, usize)) };
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        if abi::data::is_text(schema_of::<T>()) {
+            let mut packed = (len as u32).to_le_bytes().to_vec();
+            packed.extend_from_slice(bytes);
+            return T::read(&mut packed.as_slice());
+        }
+        T::read(&mut &bytes[..])
     }
 
     #[cold]
     fn fill(&self, kind: u32, name: &str, schema: &dyn Fn() -> String) -> *mut u64 {
-        let id = self.id(name, schema);
-        let Some(t) = table() else { return std::ptr::null_mut() };
+        let Some(p) = self.find(kind, name, schema) else { return std::ptr::null_mut() };
         let s = &self.slots[kind as usize];
-        let k = &t.kinds[kind as usize];
-        let bits = if id < t.components {
-            let col = unsafe { *k.columns.add(id as usize) };
-            s.words.store(k.words, Ordering::Relaxed);
-            s.entries.store(k.entries, Ordering::Relaxed);
-            s.data.store(col.data as *mut u8, Ordering::Relaxed);
-            s.stride.store(col.stride, Ordering::Relaxed);
-            unsafe { k.bits.add((id / 64) as usize) as *mut u64 }
-        } else {
-            // Nothing uses it: every check says no.
-            &NO_BITS as *const u64 as *mut u64
-        };
-        s.bits.store(bits, Ordering::Release);
-        bits
+        s.words.store(p.words, Ordering::Relaxed);
+        s.entries.store(p.entries, Ordering::Relaxed);
+        s.data.store(p.data as *mut u8, Ordering::Relaxed);
+        s.stride.store(p.stride, Ordering::Relaxed);
+        s.bits.store(p.bits as *mut u64, Ordering::Release);
+        p.bits as *mut u64
     }
 }
 
 /// Typed handle to a component, found by name the first time it is used. Component and tag
 /// names are a vocabulary shared by all mods, not things a mod owns: `fuel` means the same
-/// to everyone and is used as written, a `modid:` prefix only keeps a term to one mod.
-pub struct Component<T: Value> {
+/// to everyone and is used as written, a `modid:` prefix only keeps a term to one mod. `K` is
+/// the kind whose registrations take it (`crate::kind`), any kind by default.
+pub struct Component<T: Data, K = crate::kind::Any> {
     name: &'static str,
     lookup: Lookup,
-    _p: PhantomData<fn() -> T>,
+    _p: PhantomData<fn() -> (T, K)>,
 }
 
-impl<T: Value> Component<T> {
+impl<T: Data, K> Component<T, K> {
     pub const fn named(name: &'static str) -> Self {
         Component { name, lookup: Lookup::new(), _p: PhantomData }
     }
     pub fn name(&self) -> &'static str {
         self.name
     }
+    /// Its declaration, for `Registry::edit`: `r.edit(HUNGER.declaration())`.
+    pub fn declaration(&self) -> &'static crate::Declaration {
+        crate::Declaration::as_written(self.name)
+    }
     /// `u32::MAX` if nothing uses it (or before the registries are frozen).
     #[inline]
     pub fn id(&self) -> u32 {
         self.lookup.id(self.name, &T::schema)
     }
+    /// Its value on entry `id` of `kind` (`abi::entry_kind`): a weather's, a game mode's, any
+    /// kind's but word sets and component declarations.
+    #[inline]
+    pub fn on(&self, kind: u32, id: u32) -> Option<T> {
+        self.lookup.read(kind, id, self.name, &T::schema)
+    }
     #[inline]
     pub fn on_block(&self, state: u32) -> Option<T> {
-        self.lookup.read(ek::BLOCK, state, self.name, &T::schema)
+        self.on(ek::BLOCK, state)
     }
     #[inline]
     pub fn on_item(&self, item: u32) -> Option<T> {
-        self.lookup.read(ek::ITEM, item, self.name, &T::schema)
+        self.on(ek::ITEM, item)
     }
     #[inline]
     pub fn on_entity(&self, kind: u32) -> Option<T> {
-        self.lookup.read(ek::ENTITY, kind, self.name, &T::schema)
+        self.on(ek::ENTITY, kind)
     }
     #[inline]
     pub fn on_biome(&self, biome: u32) -> Option<T> {
-        self.lookup.read(ek::BIOME, biome, self.name, &T::schema)
+        self.on(ek::BIOME, biome)
     }
     #[inline]
     pub fn on_dimension(&self, dim: u32) -> Option<T> {
-        self.lookup.read(ek::DIMENSION, dim, self.name, &T::schema)
+        self.on(ek::DIMENSION, dim)
     }
     /// The stack's own value (damage taken, charge ...), else its item's.
     pub fn on_stack(&self, stack: &ItemStack) -> Option<T> {
-        self.stack_only(stack).or_else(|| self.on_item(stack.item))
+        self.on_stack_own(stack)
+            .or_else(|| self.on_item(stack.item))
     }
     /// What a stack's item has, nothing for an empty stack: fuel in a fuel slot.
-    pub fn on_filled(&self, stack: &ItemStack) -> Option<T> {
+    pub fn on_stack_item(&self, stack: &ItemStack) -> Option<T> {
         if stack.is_empty() { None } else { self.on_item(stack.item) }
     }
     /// Only what the stack itself carries.
-    pub fn stack_only(&self, stack: &ItemStack) -> Option<T> {
+    pub fn on_stack_own(&self, stack: &ItemStack) -> Option<T> {
         if stack.data == 0 {
             return None;
         }
         let mut len = 0usize;
         let p = unsafe { (host().stack_get)(stack.data, self.id(), &mut len) };
-        (!p.is_null() && len == size_of::<T>()).then(|| unsafe { std::ptr::read_unaligned(p as *const T) })
+        (!p.is_null())
+            .then(|| T::read(&mut unsafe { std::slice::from_raw_parts(p, len) }))
+            .flatten()
     }
     pub(crate) fn raw_value(&self, v: &T) -> crate::content::Pending {
-        crate::content::Pending::value(self.name, T::schema(), pod_bytes(v))
+        crate::content::Pending::value(self.name, schema_of::<T>(), abi::data::bytes_of(v))
     }
 }
 
-fn no_schema() -> String {
+/// `T::schema()`, worked out once per type: a packed struct's is built of its fields' every time.
+pub(crate) fn schema_of<T: Data>() -> &'static str {
+    thread_local! {
+        static KNOWN: std::cell::RefCell<std::collections::HashMap<std::any::TypeId, &'static str>> = Default::default();
+    }
+    KNOWN.with(|k| {
+        *k.borrow_mut()
+            .entry(std::any::TypeId::of::<T>())
+            .or_insert_with(|| T::schema().leak())
+    })
+}
+
+fn tag_schema() -> String {
     String::new()
 }
 
-/// A component without a value: membership in a group (`plant_soil`, `logs`, `ingots/iron`).
-pub struct Tag {
+fn storage_schema() -> String {
+    "storage".into()
+}
+
+/// An inventory a holder keeps besides its own, under a name: each player's ender chest, a
+/// second pocket of a backpack. Declared with `r.storage(&S, slots)`; entity kinds carry it with
+/// `.attach_storage(&S)` (`r.edit(&PLAYER).attach_storage(&S)` for another mod's kind), stacks
+/// always can.
+/// `w.inventory(S.of(holder))` reaches it and `w.open_menu(player, &MENU, S.of(holder))` shows
+/// it, its `.holder()` groups being the storage's slots. Saved with its holder, and kept when a
+/// player respawns.
+pub struct Storage {
     name: &'static str,
     lookup: Lookup,
 }
 
-impl Tag {
+impl Storage {
     pub const fn named(name: &'static str) -> Self {
-        Tag { name, lookup: Lookup::new() }
+        Storage { name, lookup: Lookup::new() }
+    }
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+    /// Its declaration, for `Registry::edit`.
+    pub fn declaration(&self) -> &'static crate::Declaration {
+        crate::Declaration::as_written(self.name)
+    }
+    /// `u32::MAX` before the registries are frozen or if nothing declared it.
+    #[inline]
+    pub fn id(&self) -> u32 {
+        self.lookup.id(self.name, &storage_schema)
+    }
+    /// Its slots, 0 before the registries are frozen.
+    pub fn slots(&self) -> u32 {
+        unsafe { (host().storage_slots)(self.id()) }
+    }
+    /// This storage of `h` (an entity, a block, a held stack), for inventory calls and menus.
+    pub fn of(&self, h: impl Into<crate::Holder>) -> crate::Holder {
+        crate::Holder { storage: self.id(), ..h.into() }
+    }
+}
+
+impl<T: Data, K: crate::kind::HasId> Component<T, K> {
+    /// Its value on entry `id` of its kind: `FALLS.on_id(w.weather())`.
+    #[inline]
+    pub fn on_id(&self, id: u32) -> Option<T> {
+        self.on(K::KIND, id)
+    }
+}
+
+/// A component without a value: membership in a group (`plant_soil`, `logs`, `ingots/iron`).
+/// `K` is the kind it is about (`crate::kind`), any kind by default, like `Component`'s.
+pub struct Tag<K = crate::kind::Any> {
+    name: &'static str,
+    lookup: Lookup,
+    _p: PhantomData<fn() -> K>,
+}
+
+impl<K: crate::kind::HasId> Tag<K> {
+    /// Entry `id` of its kind has it: `DRY.on_id(w.weather())`.
+    #[inline]
+    pub fn on_id(&self, id: u32) -> bool {
+        self.on(K::KIND, id)
+    }
+}
+
+impl<K> Tag<K> {
+    pub const fn named(name: &'static str) -> Self {
+        Tag { name, lookup: Lookup::new(), _p: PhantomData }
     }
     pub fn name(&self) -> &'static str {
         self.name
     }
     #[inline]
     pub fn id(&self) -> u32 {
-        self.lookup.id(self.name, &no_schema)
+        self.lookup.id(self.name, &tag_schema)
+    }
+    /// Entry `id` of `kind` (`abi::entry_kind`) has it.
+    #[inline]
+    pub fn on(&self, kind: u32, id: u32) -> bool {
+        self.lookup.has(kind, id, self.name, &tag_schema)
     }
     #[inline]
     pub fn on_block(&self, state: u32) -> bool {
-        self.lookup.has(ek::BLOCK, state, self.name, &no_schema)
+        self.on(ek::BLOCK, state)
     }
     #[inline]
     pub fn on_item(&self, item: u32) -> bool {
-        self.lookup.has(ek::ITEM, item, self.name, &no_schema)
+        self.on(ek::ITEM, item)
     }
     #[inline]
     pub fn on_entity(&self, kind: u32) -> bool {
-        self.lookup.has(ek::ENTITY, kind, self.name, &no_schema)
+        self.on(ek::ENTITY, kind)
     }
     #[inline]
     pub fn on_biome(&self, biome: u32) -> bool {
-        self.lookup.has(ek::BIOME, biome, self.name, &no_schema)
+        self.on(ek::BIOME, biome)
     }
     #[inline]
     pub fn on_dimension(&self, dim: u32) -> bool {
-        self.lookup.has(ek::DIMENSION, dim, self.name, &no_schema)
+        self.on(ek::DIMENSION, dim)
     }
 }
 
-/// By name, for rare lookups; keep a static `Tag` in hot code.
+/// By name, for rare lookups; a static `Tag` (`Tag::on_block`) is the fast way.
 pub fn block_has_tag(state: u32, tag: &str) -> bool {
     let id = unsafe { (host().find_component)(Str::new(tag), Str::new("")) };
-    has(ek::BLOCK, state, id)
+    table_has(ek::BLOCK, state, id)
 }
 
+/// By name, for rare lookups; a static `Tag` (`Tag::on_item`) is the fast way.
 pub fn item_has_tag(item: u32, tag: &str) -> bool {
     let id = unsafe { (host().find_component)(Str::new(tag), Str::new("")) };
-    has(ek::ITEM, item, id)
+    table_has(ek::ITEM, item, id)
 }
 
-pub(crate) fn pod_bytes<T: Copy>(v: &T) -> Vec<u8> {
+pub(crate) fn value_bytes<T: Copy>(v: &T) -> Vec<u8> {
     unsafe { std::slice::from_raw_parts(v as *const T as *const u8, size_of::<T>()).to_vec() }
 }
 
 /// Stack data (see `ItemStack::data`) beyond what `Component::on_stack` reads.
-/// The stack's own name, if a player gave it one (`with_name`).
+/// The stack's own name, if a player gave it one (`stack_with_name`).
 pub fn stack_name(stack: &ItemStack) -> Option<String> {
     let id = NAME.id();
     if stack.data == 0 || id == u32::MAX {
@@ -460,13 +633,14 @@ pub fn stack_name(stack: &ItemStack) -> Option<String> {
 /// The stack named `name` (`None` or empty: its item's name again). It shows in its tooltip and
 /// above the hotbar, and a block placed from it keeps the name (a chest's window title) until
 /// it is broken back into an item.
-pub fn with_name(stack: ItemStack, name: Option<&str>) -> ItemStack {
+pub fn stack_with_name(stack: ItemStack, name: Option<&str>) -> ItemStack {
     let b = name.filter(|n| !n.is_empty()).map(str::as_bytes);
     let data = unsafe { (host().stack_with)(stack.data, NAME.id(), b.map_or(abi::Slice::EMPTY, abi::Slice::new), b.is_none() as u32) };
     ItemStack { data, ..stack }
 }
 
 static NAME: Tag = Tag::named(abi::comp::NAME);
+static LAYERS: Tag = Tag::named(abi::comp::LAYERS);
 
 pub trait StackData: Sized {
     /// This stack with its own value of `c` set.
@@ -475,20 +649,33 @@ pub trait StackData: Sized {
     /// `count` less, empty when nothing is left.
     fn shrink(self, n: u32) -> Self;
     fn grow(self, n: u32) -> Self;
-    /// Damage taken (the `damage` stack component).
-    fn damage(&self) -> u32;
-    fn with_damage(self, d: u32) -> Self;
-    /// `amount` more damage, nothing left when that uses it up; what has no durability stays.
-    fn worn(self, amount: u32) -> Self;
+    /// Wear taken (the `wear` stack component).
+    fn wear(&self) -> u32;
+    fn with_wear(self, d: u32) -> Self;
+    /// `amount` more wear, nothing left when that uses it up; what has no durability stays.
+    fn add_wear(self, amount: u32) -> Self;
     /// How many more results of `out` this output slot takes.
     fn room_for(&self, out: ItemStack) -> u32;
     /// This output slot with `n` results of `out` more.
     fn merged(self, out: ItemStack, n: u32) -> Self;
+    /// What the stack keeps in `storage` (`r.storage`), one per slot: a tool's parts, each a
+    /// stack with data and storages of its own, as deep as a mod goes.
+    fn stacks(&self, storage: &Storage) -> Vec<ItemStack>;
+    /// The stack keeping `list` in `storage`, as many as it has slots; the rest are emptied.
+    fn with_stacks(self, storage: &Storage, list: &[ItemStack]) -> Self;
+    /// The stack showing these pictures one over the other, the first at the bottom, instead
+    /// of its item's icon: a tool made of parts (handle, head, binding). Texture names
+    /// (relative ones under `item/`), each tinted `0xRRGGBB` or not. Empty: its item's icon
+    /// again. In slots, in the hand and on the ground alike.
+    fn with_layers(self, layers: &[(&str, Option<u32>)]) -> Self;
 }
+
+/// Bytes a stack takes in a storage's value: item, count, data.
+const STACK_BYTES: usize = 12;
 
 impl StackData for ItemStack {
     fn with<T: Value>(self, c: &Component<T>, v: T) -> Self {
-        let b = pod_bytes(&v);
+        let b = value_bytes(&v);
         ItemStack { data: unsafe { (host().stack_with)(self.data, c.id(), abi::Slice::new(&b), 0) }, ..self }
     }
     fn without<T: Value>(self, c: &Component<T>) -> Self {
@@ -500,19 +687,19 @@ impl StackData for ItemStack {
     fn grow(self, n: u32) -> Self {
         ItemStack { count: self.count + n, ..self }
     }
-    fn damage(&self) -> u32 {
-        DAMAGE.stack_only(self).unwrap_or(0)
+    fn wear(&self) -> u32 {
+        DAMAGE.on_stack_own(self).unwrap_or(0)
     }
-    fn with_damage(self, d: u32) -> Self {
+    fn with_wear(self, d: u32) -> Self {
         if d == 0 { self.without(&DAMAGE) } else { self.with(&DAMAGE, d) }
     }
-    fn worn(self, amount: u32) -> Self {
-        let durability = DURABILITY.on_item(self.item).unwrap_or(0);
+    fn add_wear(self, amount: u32) -> Self {
+        let durability = DURABILITY.on_stack(&self).unwrap_or(0);
         if durability == 0 {
             return self;
         }
-        let damage = self.damage() + amount;
-        if damage >= durability { ItemStack::EMPTY } else { self.with_damage(damage) }
+        let damage = self.wear() + amount;
+        if damage >= durability { ItemStack::EMPTY } else { self.with_wear(damage) }
     }
     fn room_for(&self, out: ItemStack) -> u32 {
         let room = if self.is_empty() {
@@ -527,6 +714,58 @@ impl StackData for ItemStack {
     fn merged(self, out: ItemStack, n: u32) -> Self {
         if self.is_empty() { ItemStack { count: out.count * n, ..out } } else { self.grow(out.count * n) }
     }
+    fn stacks(&self, storage: &Storage) -> Vec<ItemStack> {
+        let slots = storage.slots();
+        let mut len = 0usize;
+        let p = if self.data == 0 { std::ptr::null() } else { unsafe { (host().stack_get)(self.data, storage.id(), &mut len) } };
+        let bytes = if p.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(p, len) } };
+        let word = |i: usize| {
+            bytes
+                .get(i..i + 4)
+                .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        (0..slots as usize)
+            .map(|i| {
+                let at = i * STACK_BYTES;
+                let s = ItemStack { item: word(at), count: word(at + 4), data: word(at + 8) };
+                if s.is_empty() { ItemStack::EMPTY } else { s }
+            })
+            .collect()
+    }
+    fn with_layers(self, layers: &[(&str, Option<u32>)]) -> Self {
+        let text = layers
+            .iter()
+            .map(|(t, tint)| {
+                let name = crate::asset("item", t);
+                tint.map_or(name.clone(), |c| format!("{name}#{:06X}", c & 0xFF_FFFF))
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let data = if text.is_empty() {
+            unsafe { (host().stack_with)(self.data, LAYERS.id(), abi::Slice::EMPTY, 1) }
+        } else {
+            unsafe { (host().stack_with)(self.data, LAYERS.id(), abi::Slice::new(text.as_bytes()), 0) }
+        };
+        ItemStack { data, ..self }
+    }
+    fn with_stacks(self, storage: &Storage, list: &[ItemStack]) -> Self {
+        let slots = storage.slots() as usize;
+        if list.iter().take(slots).all(ItemStack::is_empty) {
+            return ItemStack { data: unsafe { (host().stack_with)(self.data, storage.id(), abi::Slice::EMPTY, 1) }, ..self };
+        }
+        let b: Vec<u8> = (0..slots)
+            .flat_map(|i| {
+                let s = list
+                    .get(i)
+                    .copied()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(ItemStack::EMPTY);
+                [s.item, s.count, s.data]
+            })
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        ItemStack { data: unsafe { (host().stack_with)(self.data, storage.id(), abi::Slice::new(&b), 0) }, ..self }
+    }
 }
 
 // The components the engine reads itself.
@@ -535,11 +774,15 @@ pub static DURABILITY: Component<u32> = Component::named(abi::comp::DURABILITY);
 pub static ATTACK_DAMAGE: Component<f32> = Component::named(abi::comp::ATTACK_DAMAGE);
 pub static ATTACK_SPEED: Component<f32> = Component::named(abi::comp::ATTACK_SPEED);
 pub static USE_TICKS: Component<u32> = Component::named(abi::comp::USE_TICKS);
+pub static INVENTORY_SLOTS: Component<u32> = Component::named(abi::comp::INVENTORY);
+pub static PRECIPITATION: Component<Text> = Component::named(abi::comp::PRECIPITATION);
+/// What liquid an item is, by the millibucket (`str`): every liquid's own item has it.
+pub static FLUID: Component<Text> = Component::named(abi::comp::FLUID);
 pub static MINING_SPEED: Component<f32> = Component::named(abi::comp::MINING_SPEED);
 pub static TOOL_LEVEL: Component<u32> = Component::named(abi::comp::TOOL_LEVEL);
 pub static HARVEST_LEVEL: Component<u32> = Component::named(abi::comp::HARVEST_LEVEL);
 pub static USE_PRIORITY: Component<i32> = Component::named(abi::comp::USE_PRIORITY);
-pub static DAMAGE: Component<u32> = Component::named(abi::comp::DAMAGE);
+pub static DAMAGE: Component<u32> = Component::named(abi::comp::WEAR);
 pub static LOOT_ROLLS: Component<u32> = Component::named(abi::comp::LOOT_ROLLS);
 pub static HARDNESS: Component<f32> = Component::named(abi::comp::HARDNESS);
 pub static FRICTION: Component<f32> = Component::named(abi::comp::FRICTION);
@@ -547,17 +790,16 @@ pub static DRAG: Component<f32> = Component::named(abi::comp::DRAG);
 pub static LIGHT: Component<[u8; 3]> = Component::named(abi::comp::LIGHT);
 pub static TINT: Component<TintRef> = Component::named(abi::comp::TINT);
 pub static TINT_FACES: Component<u8> = Component::named(abi::comp::TINT_FACES);
-pub static SUPPORT_FACE: Component<u8> = Component::named(abi::comp::SUPPORT_FACE);
-pub static SUPPORT: Component<TagRef> = Component::named(abi::comp::SUPPORT);
-pub static SUPPORT_NEAR: Component<TagRef> = Component::named(abi::comp::SUPPORT_NEAR);
-pub static SPREADS_TO: Component<TagRef> = Component::named(abi::comp::SPREADS_TO);
-pub static GROW_TIME: Component<f32> = Component::named(abi::comp::GROW_TIME);
-pub static GROW_LIGHT: Component<u32> = Component::named(abi::comp::GROW_LIGHT);
+pub static SPREADS_TO: Component<Matcher> = Component::named(abi::comp::SPREADS_TO);
 pub static SPREAD_TIME: Component<f32> = Component::named(abi::comp::SPREAD_TIME);
 pub static SPREAD_LIGHT: Component<u32> = Component::named(abi::comp::SPREAD_LIGHT);
-pub static SMOTHERED_INTO: Component<BlockRef> = Component::named(abi::comp::SMOTHERED_INTO);
-pub static SMOTHER_TIME: Component<f32> = Component::named(abi::comp::SMOTHER_TIME);
+pub static SPREAD_REACH: Component<[i32; 6]> = Component::named(abi::comp::SPREAD_REACH);
 pub static AMBIENT_PARTICLE: Component<Text> = Component::named(abi::comp::AMBIENT_PARTICLE);
+pub static DRIP: Component<Text> = Component::named(abi::comp::DRIP);
+pub static SPLASH: Component<Text> = Component::named(abi::comp::SPLASH);
+pub static BUBBLE: Component<Text> = Component::named(abi::comp::BUBBLE);
+pub static SWIMS_IN: Component<Matcher> = Component::named(abi::comp::SWIMS_IN);
+pub static JOINS: Component<Matcher> = Component::named(abi::comp::JOINS);
 pub static CONDUCTOR: Tag = Tag::named(abi::comp::CONDUCTOR);
 pub static ENERGY: Component<abi::Energy> = Component::named(abi::comp::ENERGY);
 pub static WORN: Component<abi::Worn> = Component::named(abi::comp::WORN);
@@ -570,10 +812,18 @@ pub static SHADER: Component<Text> = Component::named(abi::comp::SHADER);
 pub static MODEL: Component<Text> = Component::named(abi::comp::MODEL);
 pub static ANIMATIONS: Component<Text> = Component::named(abi::comp::ANIMATIONS);
 pub static SOUND: Component<Text> = Component::named(abi::comp::SOUND);
+pub static EFFECTS: Component<Vec<abi::Effect>> = Component::named(abi::comp::EFFECTS);
+pub static MODIFIERS: Component<Vec<abi::Modifier>> = Component::named(abi::comp::MODIFIERS);
+
+/// An `abi::Effect`, its sound event and particle kind by full name.
+pub(crate) fn effect(event: &str, sound: &str, particle: &str) -> abi::Effect {
+    let name = |n: &str| if matches!(n, "" | "none") { n.to_string() } else { crate::full_name(n) };
+    abi::Effect { event: event.to_string(), sound: name(sound), particle: name(particle) }
+}
 
 /// The stack after one of it is used up (burnt as fuel, taken by a recipe): one less, and the
 /// last one leaves its `remainder` behind (a lava bucket its bucket).
-pub fn use_one(stack: ItemStack) -> ItemStack {
+pub fn consume_one(stack: ItemStack) -> ItemStack {
     match REMAINDER.on_item(stack.item) {
         Some(left) if stack.count == 1 => ItemStack::new(left.0, 1),
         _ => stack.shrink(1),

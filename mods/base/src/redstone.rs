@@ -44,7 +44,7 @@ fn slab(top: &str) -> [(&str, [f32; 4]); 6] {
 }
 
 fn toggle(u: &mut Use) -> bool {
-    u.world().cycle_prop(u.pos(), "power");
+    u.world().prop_cycle(u.pos(), "power");
     true
 }
 
@@ -61,19 +61,17 @@ pub fn register(r: &mut Registry) {
     r.block(&REDSTONE_ORE)
         .sound_group("stone")
         .hardness(3.0)
-        .mineable("pickaxe")
-        .needs_tool(tool_tier::IRON)
+        .mined_by("pickaxe", tool_tier::IRON)
         .drops("redstone", 4)
         .tag("ores")
         .tag("ores/redstone")
         .tab(&crate::tabs::NATURAL);
 
     r.block(&REDSTONE_BLOCK)
-        .signal_block()
+        .signal_constant()
         .sound_group("stone")
         .hardness(5.0)
-        .mineable("pickaxe")
-        .needs_tool(0)
+        .mined_by("pickaxe", 0)
         .tag("ore_blocks/redstone")
         .tab(&crate::tabs::REDSTONE);
 
@@ -106,13 +104,12 @@ pub fn register(r: &mut Registry) {
             let (top, torch) = if on { ("repeater_on", "redstone_torch") } else { ("repeater", "redstone_torch_off") };
             // The second post moves back with the delay.
             let z = 4.0 + p.int("delay") as f32 * 2.0;
-            s.frame(p.frame())
-                .model_box_faces([0.0, 0.0, 0.0], [16.0, 2.0, 16.0], slab(top))
+            s.model_box_faces([0.0, 0.0, 0.0], [16.0, 2.0, 16.0], slab(top))
                 .model_box_faces([7.0, 2.0, 2.0], [9.0, 7.0, 4.0], short_post(torch))
                 .model_box_faces([7.0, 2.0, z], [9.0, 7.0, z + 2.0], short_post(torch))
         })
         .on_use(|u| {
-            u.world().cycle_prop(u.pos(), "delay");
+            u.world().prop_cycle(u.pos(), "delay");
             true
         })
         .not_solid()
@@ -127,8 +124,7 @@ pub fn register(r: &mut Registry) {
             let on = p.int("power") > 0;
             let subtract = p.is("mode", "subtract");
             let (top, torch) = if on { ("comparator_on", "redstone_torch") } else { ("comparator", "redstone_torch_off") };
-            s.frame(p.frame())
-                .model_box_faces([0.0, 0.0, 0.0], [16.0, 2.0, 16.0], slab(top))
+            s.model_box_faces([0.0, 0.0, 0.0], [16.0, 2.0, 16.0], slab(top))
                 .model_box_faces([4.0, 2.0, 11.0], [6.0, 7.0, 13.0], short_post(torch))
                 .model_box_faces([10.0, 2.0, 11.0], [12.0, 7.0, 13.0], short_post(torch))
                 .model_box_faces(
@@ -138,7 +134,7 @@ pub fn register(r: &mut Registry) {
                 )
         })
         .on_use(|u| {
-            u.world().cycle_prop(u.pos(), "mode");
+            u.world().prop_cycle(u.pos(), "mode");
             true
         })
         .not_solid()
@@ -161,8 +157,7 @@ pub fn register(r: &mut Registry) {
                 ("cobblestone", side),
                 ("cobblestone", side),
             ];
-            s.frame(p.frame())
-                .model_box_faces([5.0, 0.0, 4.0], [11.0, 3.0, 12.0], base)
+            s.model_box_faces([5.0, 0.0, 4.0], [11.0, 3.0, 12.0], base)
                 .model_box_faces([7.0, 1.0, 7.0], [9.0, 11.0, 9.0], crate::blocks::stick_faces("lever"))
                 .tilted([8.0, 1.0, 8.0], Dir::East, lean)
                 .hitbox([5.0, 0.0, 4.0], [11.0, 6.0, 12.0])
@@ -178,20 +173,19 @@ pub fn register(r: &mut Registry) {
         .signal_switch()
         .states(|p, s| {
             let height = if p.is("power", "on") { 1.0 } else { 2.0 };
-            s.frame(p.frame())
-                .model_box_faces([5.0, 0.0, 6.0], [11.0, height, 10.0], all("button"))
+            s.model_box_faces([5.0, 0.0, 6.0], [11.0, height, 10.0], all("button"))
         })
         .on_use(|u| {
             let (w, p) = (u.world(), u.pos());
             // Pressed already: it comes up when its time is over.
             if w.prop(p, "power") != Some("on") {
-                w.set_prop(p, "power", "on");
-                w.schedule(p, BUTTON_TICKS);
+                w.prop_set(p, "power", "on");
+                w.schedule_tick(p, BUTTON_TICKS);
             }
             true
         })
         .on_scheduled(|e| {
-            e.world().set_prop(e.pos(), "power", "off");
+            e.world().prop_set(e.pos(), "power", "off");
         })
         .not_solid()
         .hardness(0.5)
@@ -205,24 +199,24 @@ pub fn register(r: &mut Registry) {
         let top = if sticky { "piston_top_sticky" } else { "piston_top" };
         r.block(piston)
             .facing(Facings::ALL, Toward::Player)
-            .facing_first(Dir::Up)
+            .default_facing(Dir::Up)
             .signal_piston(name, sticky)
             .states(move |p, s| {
                 let mut f = all("piston_side");
                 f[2].0 = "piston_bottom";
-                let s = s.frame(p.frame_up());
+                let s = s.orientation(Orientation::up(p.facing()));
                 if p.is("power", "on") {
                     f[3].0 = "piston_inner";
                     s.model_box_faces([0.0, 0.0, 0.0], [16.0, 12.0, 16.0], f)
                 } else {
                     f[3].0 = top;
                     s.model_box_faces([0.0, 0.0, 0.0], [16.0, 16.0, 16.0], f)
-                        .opacity(15)
+                        .light_opacity(15)
                 }
             })
             .sound_group("stone")
             .hardness(1.5)
-            .mineable("pickaxe")
+            .mined_by("pickaxe", tool_tier::HAND)
             .tab(&crate::tabs::REDSTONE);
         r.block(head)
             .facing(Facings::ALL, Toward::Player)
@@ -236,7 +230,7 @@ pub fn register(r: &mut Registry) {
                 let none = ("piston_side", UV_NO_FACE);
                 let rod = [strip, strip, none, none, strip, strip];
                 let from = if p.is("short", "true") { 0.0 } else { -4.0 };
-                s.frame(p.frame_up())
+                s.orientation(Orientation::up(p.facing()))
                     .model_box_faces([0.0, 12.0, 0.0], [16.0, 16.0, 16.0], plate)
                     .model_box_faces([6.0, from, 6.0], [10.0, 12.0, 10.0], rod)
                     .turned([1, 1, 0, 0, 1, 1])
@@ -245,7 +239,7 @@ pub fn register(r: &mut Registry) {
             })
             .sound_group("stone")
             .hardness(1.5)
-            .mineable("pickaxe")
+            .mined_by("pickaxe", tool_tier::HAND)
             .drops_nothing()
             .no_item();
     }
@@ -253,7 +247,7 @@ pub fn register(r: &mut Registry) {
     r.block(&SLIME_BLOCK)
         .sticky()
         .translucent()
-        .opacity(1)
+        .light_opacity(1)
         .friction(0.8)
         .hardness(0.0)
         .sound_group("cloth")
@@ -267,8 +261,7 @@ pub fn register(r: &mut Registry) {
         .states(|p, s| if p.is("power", "on") { s.texture("anchor_on").immovable() } else { s.texture("anchor") })
         .sound_group("stone")
         .hardness(5.0)
-        .mineable("pickaxe")
-        .needs_tool(0)
+        .mined_by("pickaxe", 0)
         .tab(&crate::tabs::REDSTONE);
 
     r.block(&FLOATER)
@@ -289,10 +282,9 @@ pub fn register(r: &mut Registry) {
             };
             let whole = [0.0, 0.0, 16.0, 16.0];
             let faces = [(side, whole), (side, whole), (side, whole), (side, whole), ("floater_front", whole), (back, whole)];
-            s.frame(p.frame_front())
-                .model_box_faces([0.0, 0.0, 0.0], [16.0, 16.0, 16.0], faces)
+            s.model_box_faces([0.0, 0.0, 0.0], [16.0, 16.0, 16.0], faces)
                 .turned([1, 3, 2, 0, 0, 0])
-                .opacity(15)
+                .light_opacity(15)
         })
         .signal_read(|w, p| match w.prop(p, "power") {
             Some("1") => 1,
@@ -301,7 +293,7 @@ pub fn register(r: &mut Registry) {
         })
         .sound_group("stone")
         .hardness(3.5)
-        .mineable("pickaxe")
+        .mined_by("pickaxe", tool_tier::HAND)
         .tab(&crate::tabs::REDSTONE);
 
     // Vanilla's copper bulb: each new pulse flips it, and a comparator reads which way it is.
@@ -314,23 +306,23 @@ pub fn register(r: &mut Registry) {
             let (side, top) = if power { ("golden_lamp_lit", "golden_lamp_top_lit") } else { ("golden_lamp", "golden_lamp_top") };
             let whole = [0.0, 0.0, 16.0, 16.0];
             let faces = [(side, whole), (side, whole), (side, whole), (side, whole), (top, whole), (top, whole)];
-            s.frame(p.frame_front())
+            s.orientation(Orientation::front(Dir::Up))
                 .model_box_faces([0.0, 0.0, 0.0], [16.0, 16.0, 16.0], faces)
                 .turned([1, 3, 2, 0, 0, 0])
-                .opacity(15)
+                .light_opacity(15)
                 .light(if power { 15 } else { 0 })
         })
         .on_signal(|e| {
             if e.rising() {
                 let (w, p) = (e.world(), e.pos());
                 let lit = w.prop(p, "lit") == Some("true");
-                w.set_prop(p, "lit", if lit { "false" } else { "true" });
+                w.prop_set(p, "lit", if lit { "false" } else { "true" });
             }
         })
         .signal_read(|w, p| if w.prop(p, "lit") == Some("true") { 15 } else { 0 })
         .sound_group("stone")
         .hardness(3.0)
-        .mineable("pickaxe")
+        .mined_by("pickaxe", tool_tier::HAND)
         .tab(&crate::tabs::REDSTONE);
 
     r.block(&OBSERVER)
@@ -349,56 +341,60 @@ pub fn register(r: &mut Registry) {
                 (front, whole),
                 (back, whole),
             ];
-            s.frame(p.frame_front())
-                .model_box_faces([0.0, 0.0, 0.0], [16.0, 16.0, 16.0], faces)
-                .opacity(15)
+            s.model_box_faces([0.0, 0.0, 0.0], [16.0, 16.0, 16.0], faces)
+                .light_opacity(15)
         })
         .sound_group("stone")
         .hardness(3.0)
-        .mineable("pickaxe")
+        .mined_by("pickaxe", tool_tier::HAND)
         .tab(&crate::tabs::REDSTONE);
 
-    r.machine(&DISPENSER, &DISPENSER_MENU)
-        .block(|b| {
-            b.sound_group("stone")
-                .facing(Facings::ALL, Toward::Player)
-                .signal_sink()
-                .states(|p, s| {
-                    // Vanilla's: a furnace's sides, or all its top with the front up or down.
-                    let d = p.facing();
-                    let side = "furnace_top";
-                    let front = "dispenser_front";
-                    s.front_faces(d, side, "furnace_top", front)
-                })
-                // With each new pulse, out of the front.
-                .on_signal(|e| {
-                    if !e.rising() {
-                        return;
-                    }
-                    let (w, p) = (e.world(), e.pos());
-                    let dir = w
-                        .prop(p, "facing")
-                        .and_then(Dir::from_name)
-                        .unwrap_or(Dir::Up)
-                        .offset();
-                    let items = w.inventory(w.block_entity(p));
-                    for i in 0..items.size() {
-                        let stack = items.get(i);
-                        if !stack.is_empty() {
-                            items.set(i, ItemStack { count: stack.count - 1, ..stack });
-                            let center = block_center(p);
-                            let at = [0, 1, 2].map(|a| center[a] + dir[a] as f64 * 0.8);
-                            w.spawn_item(at, ItemStack { count: 1, ..stack });
-                            break;
-                        }
-                    }
-                })
-                .hardness(3.5)
-                .mineable("pickaxe")
-                .tab(&crate::tabs::REDSTONE)
+    r.block(&DISPENSER)
+        .sound_group("stone")
+        .facing(Facings::ALL, Toward::Player)
+        .signal_sink()
+        .states(|_, s| {
+            // Vanilla's: a furnace's sides, or all its top with the front up or down.
+            s.front_faces("furnace_top", "furnace_top", "dispenser_front")
         })
-        .group("dispenser", Slots::chest(1))
-        .plain_screen();
+        // With each new pulse, out of the front.
+        .on_signal(|e| {
+            if !e.rising() {
+                return;
+            }
+            let (w, p) = (e.world(), e.pos());
+            let dir = w
+                .prop(p, "facing")
+                .and_then(Dir::from_name)
+                .unwrap_or(Dir::Up)
+                .offset();
+            let items = w.inventory(p);
+            for i in 0..items.len() {
+                let stack = items.get(i);
+                if !stack.is_empty() {
+                    items.set(i, ItemStack { count: stack.count - 1, ..stack });
+                    let center = block_center(p);
+                    let dir = Vec3::new(dir.x as f64, dir.y as f64, dir.z as f64);
+                    let at = center + dir * 0.8;
+                    // Shot out about as fast as vanilla's, a little to either side.
+                    let r = |_| (w.random_below(1000) as f64 / 1000.0 - 0.5) * 0.6;
+                    let v = dir * 5.0 + Vec3::new(r(0), r(1), r(2));
+                    let how = Spawn::new()
+                        .stack(ItemStack { count: 1, ..stack })
+                        .velocity(v);
+                    w.spawn_with(&ITEM, at, &how);
+                    break;
+                }
+            }
+        })
+        .hardness(3.5)
+        .mined_by("pickaxe", tool_tier::HAND)
+        .tab(&crate::tabs::REDSTONE)
+        .entity(|e| e.inventory(9))
+        .opens(&DISPENSER_MENU);
+    r.menu(&DISPENSER_MENU)
+        .group("dispenser", Slots::chest(1).holder())
+        .default_screen();
 
     const C: &RecipeKind = &base_api::CRAFTING;
     r.shaped(C, "redstone_block", 1, &["rrr", "rrr", "rrr"], &[('r', "redstone")]);

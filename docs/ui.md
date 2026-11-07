@@ -1,13 +1,13 @@
 # UI guide
 
-Screens, HUD parts and the menus of inventories and machines, and how all of it looks.\
+Screens, HUD parts and the menus of inventories and block entities, and how all of it looks.\
 Base's inventory, furnace, chest and health bars are built from the same small set of parts you get, so anything you see in the game you can make.
 
 ## Note
 Examples to copy from:
 - `mods/base/src/player.rs`: the HUD bars, the inventory and the crafting table
-- `mods/base/src/machines.rs`: the furnace and the chest, with bars that follow data
-- `mods/testmod/src/lib.rs`: a screen of its own (`about`), machine screens on a panel of its own class, an F3 panel
+- `mods/base/src/block_entities.rs`: the furnace and the chest, with bars that follow data
+- `mods/testmod/src/lib.rs`: a screen of its own (`about`), its machines' screens on a panel of its own class, an F3 panel
 - `mods/base/assets/textures/gui/` and the `color.*` lines of `mods/base/assets/lang/en_us.lang`: the base game's look
 
 ## Quick links
@@ -17,7 +17,7 @@ Examples to copy from:
 A screen is a tree of parts built by a function that receives a `Ui`. Parts that hold others take a closure for their children:
 
 ```rust
-ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
+ui.panel("panel", S::column().pad(7.0).gap(4.0), |ui| {
     ui.text("examplemod.title");
     ui.row(S::row().gap(8.0), |ui| {
         ui.group("input");
@@ -42,12 +42,12 @@ ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
 | `player_inventory(title)` | the player's inventory and hotbar in a menu |
 | `progress_bind`, `icons` | bars and icon rows driven by live values |
 
-Text is a translation key rather than a raw string, which keeps everything translatable and lets it use the rich text of the [tooltips guide](localization.md), pictures included. Text that isn't words of yours (a number, a player's name) goes in as an argument, `Arg::Text(..)` shows exactly what it holds; `Arg::Float(v, 2)` has two decimals. Any part with a style can have a tooltip too: `S::col().tooltip("examplemod.what_this_does")`, or `tooltip_args(key, &[..])` with arguments.
+Text is a translation key rather than a raw string, which keeps everything translatable and lets it use the rich text of the [tooltips guide](localization.md), pictures included. Text that isn't words of yours (a number, a player's name) goes in as an argument, `Arg::Text(..)` shows exactly what it holds; `Arg::Float(v, 2)` has two decimals. Any part with a style can have a tooltip too: `S::column().tooltip("examplemod.what_this_does")`, or `tooltip_args(key, &[..])` with arguments.
 
 The engine's own pause, death and settings screens are built from exactly these parts, so a screen that replaces one can look and work the same.
 
 ## Layout
-Layout works like flexbox, and all sizes are in GUI pixels, so the GUI scale in the settings makes them bigger or smaller. `S` describes one part, starting from `S::col()` or `S::row()` (rows center their children vertically, columns start at the top left):
+Layout works like flexbox, and all sizes are in GUI pixels, so the GUI scale in the settings makes them bigger or smaller. `S` describes one part, starting from `S::column()` or `S::row()` (rows center their children vertically, columns start at the top left):
 - `gap(n)` is the space between children and `pad(n)` the space around them inside
 - `size(w, h)` and `w(n)` fix a size, otherwise a part is as big as its content
 - `grow()` takes whatever space is left in the parent
@@ -63,21 +63,21 @@ Layout works like flexbox, and all sizes are in GUI pixels, so the GUI scale in 
 Text and bars can change while a screen is open. A binding's closure runs every frame, and the part is redrawn when the value changed.
 - `text_bind(|view, out| out.set("examplemod.energy", &[Arg::Int(stored), Arg::Int(capacity)]))` for text from data
 - `progress_bind(class, s, |view| 0.0..1.0)` for a bar, hidden while the value is negative, and `progress_bind_dir(.., dir, ..)` to fill another way, `abi::ui_dir::UP` for a flame
-- `icons(class, count, |view| value)` for a row of icons that shows a number in half-icon steps, like hearts. `.rtl()` fills it from the right, like hunger, `.dir(abi::ui_dir::UP)` any other way, and `.shaking()` makes it jump about at 4 or less, like hearts near the end. A negative value hides the row
+- `icons(class, count, |view| value)` for a row of icons that shows a number in half-icon steps, like hearts. `.from_right()` fills it from the right, like hunger, `.dir(abi::ui_dir::UP)` any other way, and `.shaking()` makes it jump about at 4 or less, like hearts near the end. A negative value hides the row
 
-`view` is a read-only look at the client, the same in HUD bindings, screens and frame hooks (`c.view()`): `view.me()` has your health and position, `view.inventory_group("core:equipment")` the stacks of a group of your inventory, `view.component(&C)` a synced component of yours, `view.game_mode()` the game mode (`view.creative()`, `view.exempt()` for anything but survival), and `view.menu_component(&C)` a component of the machine whose menu is open (it needs the `SYNC_MENU` flag on that component, see the [machines guide](machines.md#creating-a-machine)).
+`view` is a read-only look at the client, the same in HUD bindings, screens and frame hooks (`c.view()`): `view.player_state()` has your health and position, `view.inventory_group("core:equipment")` the stacks of a group of your inventory, `view.component(&C)` a synced component of yours, `view.game_mode()` the game mode (`view.creative()`, `view.outside_survival()` for anything but survival), and `view.menu_component(&C)` a component of the block entity whose menu is open (it needs the `SYNC_MENU` flag on that component, see the [block entities guide](block_entities.md#creating-one)).
 Anything the client already has is better read than mirrored into a component: base's armor bar adds up the points of what you wear, the way the server's damage does. A component read without the flag that sends it there says so in the log.
 
 ```rust
 static HEALTH: HudElement = HudElement::named("health");
 r.hud_element(&HEALTH, hud_anchor::HOTBAR_LEFT, 0, |ui| {
-    ui.icons("heart", 10, |c| if c.exempt() { -1.0 } else { c.me().map_or(20.0, |s| s.health.ceil()) });
+    ui.icons("heart", 10, |c| if c.outside_survival() { -1.0 } else { c.player_state().map_or(20.0, |s| s.health.ceil()) });
 });
 ```
 The `class` ("heart", "arrow", "flame") names the textures, see [looks](#looks).
 
 ## Screens
-`r.screen(&SCREEN, |ui| ..)` registers a screen of your own, and what it does besides showing parts is declared on it, the same properties the engine's screens have:
+A screen is a menu: `r.menu(&ABOUT).screen(|ui| ..)`. With no slots and nothing synced it stays on the client, opened by `menu_open`; with slots it is what `w.open_menu` opens from the server. What it does besides showing parts is declared on it, the same properties the engine's screens have:
 - `.pauses()`: single player stops while it is open
 - `.keep_on_escape()`: Escape doesn't close it (the death screen)
 - `.closes_on_respawn()`
@@ -85,32 +85,32 @@ The `class` ("heart", "arrow", "flame") names the textures, see [looks](#looks).
 - `.shows_chat()`: like the chat screen, the HUD leaves the messages to it and Enter sends the text of its input of class `chat`
 
 ```rust
-static ABOUT: Screen = Screen::named("about");
-r.screen(&ABOUT, |ui| {
-    ui.panel("panel", S::col().pad(8.0).gap(4.0), |ui| {
+static ABOUT: Menu = Menu::named("about");
+r.menu(&ABOUT).screen(|ui| {
+    ui.panel("panel", S::column().pad(8.0).gap(4.0), |ui| {
         ui.text("examplemod.about.title");
     });
 });
-r.client_command("about", "", |c| { c.client().open_screen(&ABOUT); });
+r.client_command("about", "", |c| { c.client().menu_open(&ABOUT); });
 ```
-`open_screen(&ABOUT)` works from a client command, a key or a button, and the command line takes it too as `--screen examplemod:about`.
+`menu_open(&ABOUT)` works from a client command, a key or a button, and the command line takes it too as `--screen examplemod:about`.
 
-Registering an engine screen's handle replaces that screen, so `r.screen(&screens::PAUSE, ..).pauses()` is your own pause screen. The engine's are in `screens::*`: `TITLE`, `PAUSE`, `SETTINGS`, `LANGUAGE`, `CONTROLS`, `SOUND`, `MOD_SETTINGS`, `MODS`, `PROFILE`, `WORLDS`, `CREATE_WORLD`, `MULTIPLAYER`, `RESOURCE_PACKS`, `SHADER_PACKS`, `CHAT` and `DEATH`. The engine's own screens open each other through the same names, so a replaced settings screen is the one the main menu's button opens.
+Registering an engine screen's handle replaces that screen, so `r.menu(&screens::PAUSE).screen(..).pauses()` is your own pause screen. The engine's are in `screens::*`: `TITLE`, `PAUSE`, `SETTINGS`, `LANGUAGE`, `CONTROLS`, `SOUND`, `MOD_SETTINGS`, `MODS`, `PROFILE`, `WORLDS`, `CREATE_WORLD`, `MULTIPLAYER`, `RESOURCE_PACKS`, `SHADER_PACKS`, `CHAT` and `DEATH`. The engine's own screens open each other through the same names, so a replaced settings screen is the one the main menu's button opens.
 
 Most of the time a whole new screen is more than you need. A screen part adds to a place of a screen and leaves the rest alone, so several mods can add their buttons to the main menu side by side:
 ```rust
 r.screen_part(&screens::TITLE, "buttons", 0, |ui| {
     ui.button("examplemod.guide", S::default(), |c| {
-        c.client().open_screen(&GUIDE);
+        c.client().menu_open(&GUIDE);
     });
 });
 ```
-The places are `buttons` and `side` (the space right of the menu) on `core:title`, and `buttons` on `core:pause` and `core:settings`; a lower order comes first. A mod that replaces one of these screens keeps the others' parts by building the place in its own: `ui.screen_parts("core:title", "buttons")`.
+The places are `buttons` and `side` (the space right of the menu) on `core:title`, and `buttons` on `core:pause` and `core:settings`; a lower order comes first. A mod that replaces one of these screens keeps the others' parts by building the place in its own: `ui.screen_parts("core:title", "buttons")`. A part is named `<mod>:<screen>/<area>` (base's on the pause screen is `base:pause/buttons`, a second one of the same mod there `/2`), and other mods move or take it out by that name: `r.remove(&ScreenPart::named("base:pause/buttons"))`.
 
 The main menu's logo is the GUI texture `logo` (drawn across the menu bar in whole multiples of its pixels) and `menu.news` shows beside it, so a pack or a mod puts its own picture there with one file. Its buttons have 9x9 icons of their own (`menu_singleplayer`, `menu_multiplayer`, `menu_mods`, `menu_settings`), Quit Game is the class `button_quit`, and the square beside Multiplayer shows the face of the player's skin.
 
 ## HUD
-`r.hud_element(name, anchor, order, |ui| ..)` puts a part on the in-game overlay. The anchor says where, and `order` 0 sits nearest the anchor's edge.
+`r.hud_element(name, anchor, order, |ui| ..)` puts a part on the in-game overlay. The anchor says where, and `order` 0 sits nearest the anchor's edge; `r.edit(&OTHER_ELEMENT).anchor(..).order(..)` moves another mod's.
 
 | anchor (`hud_anchor::..`) | where |
 |---|---|
@@ -126,10 +126,10 @@ The engine's own parts are elements like these: `core:hotbar`, `core:held_name`,
 
 F3+F6 says when each line of the F3 overlay shows: with F3, always or never. A line set to always stays on the HUD without F3, and the editor can move it like the rest. A mod's F3 panel is one row there.
 
-Labels a mod draws (`w.draw_text`, `client.draw_text`, `client.screen_text`) are text like everywhere else, icons and `{mono}` included, with a size: 1 is menu text, 2 twice that.
+Labels a mod draws (`w.draw_text`, `client.draw_text`, `client.draw_screen_text`) are text like everywhere else, icons and `{mono}` included, with a size: 1 is menu text, 2 twice that.
 
 ## Menus
-A menu is a set of slots that the server runs, plus the screen that shows them. `world.open_menu(player, &MENU, owner)` opens one, and `r.player_menu(&INVENTORY)` picks the one the inventory key opens. Its slots come in named groups, described once; the server and the screen both build them from that, so nothing is numbered by hand. Here is the crafting table:
+A menu is a set of slots that the server runs, plus the screen that shows them. `world.open_menu(player, &MENU, holder)` opens one (on an entity, a block position, a held stack, or `Holder::NONE`), and `r.player_menu(&INVENTORY)` picks the one the inventory key opens. Its slots come in named groups, described once; the server and the screen both build them from that, so nothing is numbered by hand. Here is the crafting table:
 
 ```rust
 static CRAFTING: Menu = Menu::named("crafting_table");
@@ -141,11 +141,11 @@ r.menu(&CRAFTING)
         // a slot changed: show what the grid makes
         let grid = m.group("grid");
         let cells: Vec<ItemStack> = (0..grid.len()).map(|i| grid.get(i)).collect();
-        m.group("result").set(0, recipe_match(&CRAFTING_RECIPES, &cells, 3, 3));
+        m.group("result").set(0, recipe_grid_output(&CRAFTING_RECIPES, &cells, 3, 3));
     })
     .on_take(|m| /* the result was taken: use up the grid */ {})
     .screen(|ui| {
-        ui.panel("panel", S::col().pad(7.0).gap(4.0), |ui| {
+        ui.panel("panel", S::column().pad(7.0).gap(4.0), |ui| {
             ui.row(S::row().gap(8.0), |ui| {
                 ui.group("grid");
                 ui.group("result");
@@ -154,9 +154,9 @@ r.menu(&CRAFTING)
         });
     });
 ```
-A group of a plain menu is the menu's own slots, given back to the player when the menu closes; `.equipment()` adds the player's equipment slots (drawn by `ui.equipment()`), and machines' groups are the machine's inventory. `player_inventory()` adds the player's inventory and hotbar, which `ui.player_inventory(title)` draws. The shapes and rules a group can have (`output`, `input`, `accepts`, `limit`, `large`, `background`, `tooltip`, `priority`) are listed in the [machines guide](machines.md#creating-a-machine). In `on_change` and `on_take`, `m.group(name)` reads and writes a group's slots by their place in it.
+A group of a plain menu is the menu's own slots, given back to the player when the menu closes; `.equipment()` adds the equipment slots of what it is open on, a mob's or else the player's (drawn by `ui.equipment()`), and `holder()` groups are the inventory of what it is open on (a block entity's, a mob's, a backpack's). `player_inventory()` adds the player's inventory and hotbar, which `ui.player_inventory(title)` draws. The shapes and rules a group can have (`output`, `input`, `accepts`, `limit`, `large`, `background`, `tooltip`, `priority`) are listed in the [block entities guide](block_entities.md#creating-one). In `on_change` and `on_take`, `m.group(name)` reads and writes a group's slots by their place in it.
 
-Machines are menus tied to a block, with their own data and tick. The [machines guide](machines.md) covers them, including the component flags that their screens read.
+A block entity's menu is one of these opened on its block, with the block entity's data and tick behind it. The [block entities guide](block_entities.md) covers them, including the component flags that their screens read.
 
 ## Looks
 How a part looks follows from its class by name, there is no theme file. Class `button` is the texture `gui/button.png`; its states are `gui/button_hover.png`, `_pressed`, `_disabled` (and `_focused` for inputs). A bare class is looked up in the resource packs, then in the mods from the last loaded, then in the engine, so base's `base/textures/gui/button.png` dresses every button and a mod's own class (`testmod_panel`) lives in its own folder. `mymod:thing` looks only in `mymod`. A class without a texture shows a magenta and black checkerboard, like a missing block texture, so a typo can't hide.

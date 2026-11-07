@@ -4,13 +4,14 @@
 //!
 //! ```ignore
 //! static JETPACK: Key = Key::named("jetpack");
-//! r.key(&JETPACK, "J").on_press_server(|p| { let w = p.world(); /* for p.player() */ });
+//! r.key(&JETPACK, "J").on_server(|p| { let w = p.world(); /* for p.player() */ });
 //! static SCAN: Key = Key::named("scan");
-//! r.key(&SCAN, "K").on_press(|c| { /* on this client */ });
+//! r.key(&SCAN, "K").on_client(|c| { /* on this client */ });
 //! ```
 
 use crate::abi::{self, ItemStack, Slice, Str, gizmo_kind as gk};
-use crate::{ClientView, Key, Registry, Screen, Value, World, callback, host};
+use crate::abi::{BlockPos, Vec3};
+use crate::{ClientView, Key, Menu, Registry, Value, WithComponents, World, callback, host};
 
 pub use abi::{ClientState, client_flags};
 
@@ -30,15 +31,11 @@ impl std::ops::Deref for Client {
     }
 }
 
-fn s(x: &str) -> Str {
+fn abi_str(x: &str) -> Str {
     Str::new(x)
 }
 
 impl Client {
-    pub(crate) fn ctx(&self) -> *mut abi::ClientCtx {
-        self.raw
-    }
-
     pub(crate) fn from_raw(raw: *mut abi::ClientCtx) -> Client {
         Client { raw }
     }
@@ -64,105 +61,113 @@ impl Client {
     }
 
     fn input(&self, op: u32, text: &str, x: f32, y: f32) -> bool {
-        unsafe { (host().client_input)(self.raw, op, s(text), x, y) != 0 }
+        unsafe { (host().client_input)(self.raw, op, abi_str(text), x, y) != 0 }
     }
 
-    /// Presses the key bound to `action` for `secs` (0 = a tap). False for an unknown action.
-    pub fn press(&self, action: &str, secs: f32) -> bool {
-        self.input(abi::client_input::ACTION, action, secs, 0.0)
+    /// Presses the key bound to `key` (yours from `Registry::key`, or one of `keys::*`) for
+    /// `secs` (0 = a tap). False for a key nobody registered.
+    pub fn input_action(&self, key: &Key, secs: f32) -> bool {
+        self.input(abi::client_input::ACTION, key.name(), secs, 0.0)
     }
 
     /// A key by its settings name (`Enter`, `Tab`, `KeyE`, `F3`).
-    pub fn key(&self, key: &str, secs: f32) -> bool {
+    pub fn input_key(&self, key: &str, secs: f32) -> bool {
         self.input(abi::client_input::KEY, key, secs, 0.0)
     }
 
     /// Mouse button 0 left, 1 right, 2 middle.
-    pub fn click(&self, button: u32, secs: f32) {
+    pub fn input_click(&self, button: u32, secs: f32) {
         self.input(abi::client_input::CLICK, "", secs, button as f32);
     }
 
     /// Moves the mouse to fractions of the window.
-    pub fn cursor(&self, x: f32, y: f32) {
+    pub fn input_cursor(&self, x: f32, y: f32) {
         self.input(abi::client_input::CURSOR, "", x, y);
     }
 
-    pub fn scroll(&self, steps: f32) {
+    pub fn input_scroll(&self, steps: f32) {
         self.input(abi::client_input::SCROLL, "", steps, 0.0);
     }
 
     /// Text typed into the focused field.
-    pub fn type_text(&self, text: &str) {
+    pub fn input_type(&self, text: &str) {
         self.input(abi::client_input::TYPE, text, 0.0, 0.0);
     }
 
-    fn pose_bone(&self, entity: u64, bone: &str, turn: [f32; 3], by: [f32; 3], scale: [f32; 3]) {
-        unsafe { (host().client_pose_bone)(self.raw, entity, s(bone), &turn, &by, &scale) }
+    fn bone_pose(&self, entity: u64, bone: &str, turn: [f32; 3], by: [f32; 3], scale: [f32; 3]) {
+        unsafe { (host().client_pose_bone)(self.raw, entity, abi_str(bone), &turn, &by, &scale) }
     }
 
     /// Turns a bone of `entity`'s model or of what it has on, for this frame, on top of its clips:
     /// degrees about x, y, z, the way Blockbench counts them. From `client_frame` or
-    /// `on_entity_frame`, every frame it should last.
-    pub fn turn_bone(&self, entity: u64, bone: &str, degrees: [f32; 3]) {
+    /// `client_entity_frame`, every frame it should last.
+    pub fn bone_turn(&self, entity: u64, bone: &str, degrees: [f32; 3]) {
         let [x, y, z] = degrees.map(f32::to_radians);
-        self.pose_bone(entity, bone, [-x, y, -z], [0.0; 3], [1.0; 3]);
+        self.bone_pose(entity, bone, [-x, y, -z], [0.0; 3], [1.0; 3]);
     }
 
     /// Moves a bone this far in pixels, for this frame, the same way.
-    pub fn move_bone(&self, entity: u64, bone: &str, pixels: [f32; 3]) {
-        self.pose_bone(entity, bone, [0.0; 3], pixels, [1.0; 3]);
+    pub fn bone_move(&self, entity: u64, bone: &str, pixels: [f32; 3]) {
+        self.bone_pose(entity, bone, [0.0; 3], pixels, [1.0; 3]);
     }
 
     /// Scales a bone and what hangs on it, for this frame, the same way. All 0 hides it.
-    pub fn scale_bone(&self, entity: u64, bone: &str, scale: [f32; 3]) {
-        self.pose_bone(entity, bone, [0.0; 3], [0.0; 3], scale);
+    pub fn bone_scale(&self, entity: u64, bone: &str, scale: [f32; 3]) {
+        self.bone_pose(entity, bone, [0.0; 3], [0.0; 3], scale);
     }
 
-    /// The action `entity` is playing now (`World::play_action`), until its clip is over.
-    pub fn current_action(&self, entity: u64) -> Option<String> {
+    /// The action `entity` is playing now (`World::action_play`), until its clip is over.
+    pub fn action_current(&self, entity: u64) -> Option<String> {
         let mut out = Str::new("");
-        (unsafe { (host().client_entity_action)(self.raw, entity, &mut out) } != 0).then(|| unsafe { out.as_str().to_string() })
+        (unsafe { (host().client_action_current)(self.raw, entity, &mut out) } != 0).then(|| unsafe { out.as_str().to_string() })
     }
 
     /// How long a clip of action `name` is on `entity`'s model, in seconds.
     pub fn clip_length(&self, entity: u64, name: &str) -> Option<f32> {
-        let secs = unsafe { (host().client_clip_length)(self.raw, entity, s(name)) };
+        let secs = unsafe { (host().client_clip_length)(self.raw, entity, abi_str(name)) };
         (secs >= 0.0).then_some(secs)
     }
 
-    /// The item id in `entity`'s hand, the other hand with `off_hand`; 0 for none. Other players'
-    /// stacks aren't sent, so this is the item without what is in it.
-    pub fn entity_held_item(&self, entity: u64, off_hand: bool) -> u32 {
-        unsafe { (host().client_entity_held)(self.raw, entity, off_hand as u32) }
+    /// The item id in `entity`'s `hand`; 0 for none. Other players' stacks aren't sent, so this
+    /// is the item without what is in it.
+    pub fn held_item(&self, entity: u64, hand: Hand) -> u32 {
+        unsafe { (host().client_held_item)(self.raw, entity, hand as u32) }
     }
 
     /// Where a bone of `entity`'s model or of what it has on was in the world the last frame: for
     /// sparks off a sword's tip, smoke over a lantern.
-    pub fn bone_position(&self, entity: u64, bone: &str) -> Option<[f64; 3]> {
-        let mut out = [0.0; 3];
-        (unsafe { (host().client_bone_position)(self.raw, entity, s(bone), &mut out) } != 0).then_some(out)
+    pub fn bone_position(&self, entity: u64, bone: &str) -> Option<Vec3> {
+        let mut out = Vec3::ZERO;
+        (unsafe { (host().client_bone_position)(self.raw, entity, abi_str(bone), &mut out) } != 0).then_some(out)
     }
 
-    pub fn release_all(&self) {
+    pub fn input_release_all(&self) {
         self.input(abi::client_input::RELEASE_ALL, "", 0.0, 0.0);
     }
 
-    /// The key (yours from `Registry::key`, or one of `keys::*`) was pressed this frame. Keys
-    /// belong to the world: while a screen has the input they are up.
-    pub fn pressed(&self, key: &Key) -> bool {
-        unsafe { (host().client_pressed)(self.raw, s(key.name())) & 1 != 0 }
+    /// What the key (yours from `Registry::key`, or one of `keys::*`) does now: pressed this
+    /// frame, held, for how many ticks. Keys belong to the world: while a screen has the input
+    /// they are up.
+    pub fn key(&self, key: &Key) -> abi::KeyState {
+        let mut out = abi::KeyState::default();
+        unsafe { (host().client_key_state)(self.raw, abi_str(key.name()), &mut out) };
+        out
     }
 
-    pub fn held(&self, key: &Key) -> bool {
-        unsafe { (host().client_pressed)(self.raw, s(key.name())) & 2 != 0 }
+    pub fn key_pressed(&self, key: &Key) -> bool {
+        self.key(key).pressed != 0
+    }
+
+    pub fn key_held(&self, key: &Key) -> bool {
+        self.key(key).held != 0
     }
 
     pub fn control(&self, c: &abi::PlayerControl) {
-        unsafe { (host().client_set_player)(self.raw, c) }
+        unsafe { (host().client_control)(self.raw, c) }
     }
 
     /// Turns the local player, in degrees like the F3 screen.
-    pub fn look(&self, yaw_deg: f32, pitch_deg: f32) {
+    pub fn set_look(&self, yaw_deg: f32, pitch_deg: f32) {
         self.control(&abi::PlayerControl {
             mask: abi::control_mask::LOOK,
             yaw: yaw_deg.to_radians(),
@@ -172,98 +177,90 @@ impl Client {
     }
 
     /// Puts the local player's feet at `pos` (the server takes it as a move).
-    pub fn teleport(&self, pos: [f64; 3]) {
+    pub fn teleport(&self, pos: impl Into<Vec3>) {
+        let pos = pos.into();
         self.control(&abi::PlayerControl { mask: abi::control_mask::POS | abi::control_mask::VEL, pos, ..abi::PlayerControl::DEFAULT });
     }
 
-    pub fn velocity(&self, vel: [f64; 3]) {
+    pub fn set_velocity(&self, vel: impl Into<Vec3>) {
+        let vel = vel.into();
         self.control(&abi::PlayerControl { mask: abi::control_mask::VEL, vel, ..abi::PlayerControl::DEFAULT });
     }
 
-    pub fn fly(&self, on: bool) {
+    pub fn set_flying(&self, on: bool) {
         self.control(&abi::PlayerControl { mask: abi::control_mask::FLYING, flying: on as u32, ..abi::PlayerControl::DEFAULT });
     }
 
-    /// Lies down with its feet toward `yaw` (degrees) and stays there, or gets up with `None`. Other
-    /// players see it. Where it lies is the server's to say (`World::teleport`).
-    pub fn lie_down(&self, yaw: Option<f32>) {
-        self.control(&abi::PlayerControl {
-            mask: abi::control_mask::LYING,
-            lying: yaw.map_or(f32::NAN, f32::to_radians),
-            ..abi::PlayerControl::DEFAULT
-        });
-    }
-
-    pub fn fly_speed(&self, mul: f32) {
+    pub fn set_fly_speed(&self, mul: f32) {
         self.control(&abi::PlayerControl { mask: abi::control_mask::FLY_SPEED, fly_speed: mul, ..abi::PlayerControl::DEFAULT });
     }
 
     /// Hotbar slot 0..9.
-    pub fn select(&self, slot: u32) {
+    pub fn select_slot(&self, slot: u32) {
         self.control(&abi::PlayerControl { mask: abi::control_mask::SELECTED, selected: slot, ..abi::PlayerControl::DEFAULT });
     }
 
-    fn command(&self, op: u32, text: &str, num: f64) -> u64 {
-        unsafe { (host().client_command)(self.raw, op, s(text), num) }
+    fn op(&self, op: u32, text: &str, num: f64) -> u64 {
+        unsafe { (host().client_op)(self.raw, op, abi_str(text), num) }
     }
 
-    /// A chat line or `/command`, as if typed.
-    pub fn chat(&self, line: &str) {
-        self.command(abi::client_op::CHAT, line, 0.0);
+    /// A chat line or `/command`, as if the player typed and sent it.
+    pub fn say(&self, line: &str) {
+        self.op(abi::client_op::CHAT, line, 0.0);
     }
 
     /// Captures the next frame to `path` (a bare name goes into `screenshots/`). The pixels are
     /// available a frame later through `image(id)`.
     pub fn screenshot(&self, path: &str) -> u64 {
-        self.command(abi::client_op::SCREENSHOT, path, 0.0)
+        self.op(abi::client_op::SCREENSHOT, path, 0.0)
     }
 
     pub fn quit(&self, code: i32) {
-        self.command(abi::client_op::QUIT, "", code as f64);
+        self.op(abi::client_op::QUIT, "", code as f64);
     }
 
-    pub fn open_world(&self, name: &str, seed: u64) {
-        self.command(abi::client_op::OPEN_WORLD, name, seed as f64);
+    pub fn world_open(&self, name: &str, seed: u64) {
+        self.op(abi::client_op::OPEN_WORLD, name, seed as f64);
     }
 
     /// Opens a fresh world, deleting a save of the same name first.
-    pub fn new_world(&self, name: &str, seed: u64) {
-        self.command(abi::client_op::NEW_WORLD, name, seed as f64);
+    pub fn world_create(&self, name: &str, seed: u64) {
+        self.op(abi::client_op::NEW_WORLD, name, seed as f64);
     }
 
-    pub fn leave_world(&self) {
-        self.command(abi::client_op::LEAVE_WORLD, "", 0.0);
+    pub fn world_leave(&self) {
+        self.op(abi::client_op::LEAVE_WORLD, "", 0.0);
     }
 
-    pub fn host_world(&self) {
-        self.command(abi::client_op::HOST, "", 0.0);
+    pub fn world_host(&self) {
+        self.op(abi::client_op::HOST, "", 0.0);
     }
 
-    pub fn join(&self, ticket: &str) {
-        self.command(abi::client_op::JOIN, ticket, 0.0);
+    pub fn world_join(&self, ticket: &str) {
+        self.op(abi::client_op::JOIN, ticket, 0.0);
     }
 
     /// A mod's screen or one of the engine's (`screens::*`).
-    pub fn open_screen(&self, screen: &Screen) -> bool {
-        self.command(abi::client_op::OPEN_SCREEN, screen.name(), 0.0) != 0
+    pub fn menu_open(&self, screen: &Menu) -> bool {
+        self.op(abi::client_op::OPEN_SCREEN, screen.name(), 0.0) != 0
     }
 
-    pub fn close_screen(&self) {
-        self.command(abi::client_op::CLOSE_SCREEN, "", 0.0);
+    pub fn menu_close(&self) {
+        self.op(abi::client_op::CLOSE_SCREEN, "", 0.0);
     }
 
     pub fn reload_assets(&self) {
-        self.command(abi::client_op::RELOAD_ASSETS, "", 0.0);
+        self.op(abi::client_op::RELOAD_ASSETS, "", 0.0);
     }
 
     /// Statistics over `secs`, logged as a `BENCH` line; numbers in `state().bench_*` once
     /// `state().benches` goes up.
     pub fn bench(&self, secs: f32, label: &str) {
-        self.command(abi::client_op::BENCH, label, secs as f64);
+        self.op(abi::client_op::BENCH, label, secs as f64);
     }
 
     pub fn respawn(&self) {
-        self.command(abi::client_op::RESPAWN, "", 0.0);
+        self.op(abi::client_op::RESPAWN, "", 0.0);
     }
 
     fn text(&self, which: u32, index: u32) -> String {
@@ -292,45 +289,47 @@ impl Client {
     }
 
     /// Text of the top screen's focused input field.
-    pub fn input_text(&self) -> String {
+    pub fn focused_text(&self) -> String {
         self.text(abi::client_text::INPUT, 0)
     }
 
     /// The block the client has at `pos`, `None` while that cube is not loaded.
-    pub fn block(&self, pos: [i32; 3]) -> Option<u32> {
-        let b = unsafe { (host().client_block_in)(self.raw, 0, &pos) };
-        (b != u32::MAX).then_some(b)
+    pub fn block(&self, pos: impl Into<BlockPos>) -> Option<u32> {
+        self.body_block(0, pos)
     }
 
-    /// The block the client has at `pos` of moving structure `entity`.
-    pub fn structure_block(&self, entity: u64, pos: [i32; 3]) -> Option<u32> {
+    /// The block the client has at `pos` of moving body `entity` (0: the world).
+    pub fn body_block(&self, entity: u64, pos: impl Into<BlockPos>) -> Option<u32> {
+        let pos = pos.into();
         let b = unsafe { (host().client_block_in)(self.raw, entity, &pos) };
         (b != u32::MAX).then_some(b)
     }
 
     /// Whether the cube holding `pos` is here and has been drawn.
-    pub fn cube_shown(&self, pos: [i32; 3]) -> bool {
+    pub fn cube_shown(&self, pos: impl Into<BlockPos>) -> bool {
+        let pos = pos.into();
         unsafe { (host().client_cube_shown)(self.raw, &pos) != 0 }
     }
 
     /// The light the client has at `pos` (sky level in the low byte, then block red, green,
     /// blue), `None` while that cube is not loaded.
-    pub fn light(&self, pos: [i32; 3]) -> Option<u32> {
+    pub fn light(&self, pos: impl Into<BlockPos>) -> Option<u32> {
+        let pos = pos.into();
         let l = unsafe { (host().client_light)(self.raw, &pos) };
         (l != u32::MAX).then_some(l)
     }
 
     pub fn menu_slot(&self, slot: u32) -> ItemStack {
-        unsafe { (host().client_slot)(self.raw, 1, slot) }
+        unsafe { (host().client_slot)(self.raw, abi::slot_container::MENU, slot) }
     }
 
     pub fn cursor_stack(&self) -> ItemStack {
-        unsafe { (host().client_slot)(self.raw, 2, 0) }
+        unsafe { (host().client_slot)(self.raw, abi::slot_container::CURSOR, 0) }
     }
 
-    /// The open menu as (kind, window, slot count).
-    pub fn menu(&self) -> Option<[u32; 3]> {
-        let mut out = [0; 3];
+    /// The open menu.
+    pub fn menu(&self) -> Option<abi::OpenMenu> {
+        let mut out = abi::OpenMenu::default();
         (unsafe { (host().client_menu)(self.raw, &mut out) } != 0).then_some(out)
     }
 
@@ -351,67 +350,79 @@ impl Client {
         (unsafe { (host().client_entity)(self.raw, id, &mut st) } != 0).then_some(st)
     }
 
-    /// Where an element of the top screen is (fractions of the window: x, y, w, h):
+    /// Where an element of the top screen is (fractions of the window):
     /// `slot:N`, `item:N` (creative list), `entity` (the entity figure), `scrollbar` (the first scroll bar's track), `class:name` (the first part of that theme class), `id:name` or `text:words`.
-    pub fn ui_rect(&self, query: &str) -> Option<[f32; 4]> {
-        let mut r = [0.0; 4];
-        (unsafe { (host().client_ui_rect)(self.raw, s(query), &mut r) } != 0).then_some(r)
+    pub fn ui_rect(&self, query: &str) -> Option<abi::Rect> {
+        let mut r = abi::Rect::default();
+        (unsafe { (host().client_ui_rect)(self.raw, abi_str(query), &mut r) } != 0).then_some(r)
     }
 
     /// Moves the mouse to the middle of a UI element and clicks it with `button`.
-    pub fn click_ui(&self, query: &str, button: u32) -> bool {
-        let Some([x, y, w, h]) = self.ui_rect(query) else { return false };
-        self.cursor(x + w / 2.0, y + h / 2.0);
-        self.click(button, 0.0);
+    pub fn ui_click(&self, query: &str, button: u32) -> bool {
+        let Some(r) = self.ui_rect(query) else { return false };
+        self.input_cursor(r.x + r.w / 2.0, r.y + r.h / 2.0);
+        self.input_click(button, 0.0);
         true
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw(&self, group: Option<&crate::GizmoGroup>, kind: u32, a: [f64; 3], b: [f64; 3], color: u32, key: &str, args: &[crate::Arg]) {
-        let raw = crate::ui::raw_args(args);
-        unsafe {
-            (host().client_draw)(self.raw, s(group.map_or("", |g| g.name())), kind, &a, &b, color, s(key), crate::abi::Slice::new(&raw))
-        }
+    fn draw(&self, group: Option<&crate::GizmoGroup>, kind: u32, a: Vec3, b: Vec3, color: u32) {
+        unsafe { (host().client_draw)(self.raw, abi_str(group.map_or("", |g| g.name())), kind, &a, &b, color) }
     }
 
     /// The server's `draw_*` for this frame only: always, or with a `group` while the player
     /// shows it (`/gizmo <group>`). Colors are 0xRRGGBBAA.
-    pub fn draw_line(&self, group: Option<&crate::GizmoGroup>, a: [f64; 3], b: [f64; 3], color: u32) {
-        self.draw(group, gk::LINE, a, b, color, "", &[]);
+    pub fn draw_line(&self, group: Option<&crate::GizmoGroup>, a: impl Into<Vec3>, b: impl Into<Vec3>, color: u32) {
+        self.draw(group, gk::LINE, a.into(), b.into(), color);
     }
 
-    pub fn draw_box(&self, group: Option<&crate::GizmoGroup>, min: [f64; 3], max: [f64; 3], color: u32) {
-        self.draw(group, gk::BOX, min, max, color, "", &[]);
+    pub fn draw_box(&self, group: Option<&crate::GizmoGroup>, min: impl Into<Vec3>, max: impl Into<Vec3>, color: u32) {
+        self.draw(group, gk::BOX, min.into(), max.into(), color);
     }
 
     /// See-through by `color`'s alpha (range previews, blueprints).
-    pub fn draw_fill(&self, group: Option<&crate::GizmoGroup>, min: [f64; 3], max: [f64; 3], color: u32) {
-        self.draw(group, gk::FILL, min, max, color, "", &[]);
+    pub fn draw_fill(&self, group: Option<&crate::GizmoGroup>, min: impl Into<Vec3>, max: impl Into<Vec3>, color: u32) {
+        self.draw(group, gk::FILL, min.into(), max.into(), color);
+    }
+    /// The outline of a shape, this frame.
+    pub fn draw_shape(&self, group: Option<&crate::GizmoGroup>, shape: &crate::Shape, color: u32) {
+        for (a, b) in shape.outline() {
+            self.draw_line(group, a, b, color);
+        }
     }
 
     /// The translation `key` with `args` at a world position, `size` times as big as menu text.
     #[allow(clippy::too_many_arguments)]
-    pub fn draw_text(&self, group: Option<&crate::GizmoGroup>, pos: [f64; 3], key: &str, args: &[crate::Arg], color: u32, size: f32) {
-        self.draw(group, gk::LABEL, pos, [size as f64, 0.0, 0.0], color, key, args);
+    pub fn draw_text(
+        &self,
+        group: Option<&crate::GizmoGroup>,
+        pos: impl Into<Vec3>,
+        key: &str,
+        args: &[crate::Arg],
+        color: u32,
+        size: f32,
+    ) {
+        let (pos, raw) = (pos.into(), crate::ui::raw_args(args));
+        let group = abi_str(group.map_or("", |g| g.name()));
+        unsafe { (host().client_draw_text)(self.raw, group, &pos, size, color, abi_str(key), Slice::new(&raw)) }
     }
 
     /// The translation `key` with `args`, centered at fractions of the window, `size` times as
     /// big as menu text. Part of the GUI: F1 hides it with the rest.
-    #[allow(clippy::too_many_arguments)]
-    pub fn screen_text(&self, x: f32, y: f32, key: &str, args: &[crate::Arg], color: u32, size: f32) {
-        self.draw(None, gk::SCREEN_LABEL, [x as f64, y as f64, 0.0], [size as f64, 0.0, 0.0], color, key, args);
+    pub fn draw_screen_text(&self, x: f32, y: f32, key: &str, args: &[crate::Arg], color: u32, size: f32) {
+        let raw = crate::ui::raw_args(args);
+        unsafe { (host().client_screen_text)(self.raw, x, y, size, color, abi_str(key), Slice::new(&raw)) }
     }
 
     /// Sends `value` on `channel` to the server.
     pub fn send<T: Payload>(&self, channel: &Channel<T>, value: &T) {
         let data = value.encode();
-        unsafe { (host().client_send_packet)(self.raw, s(channel.name()), s(&T::schema()), Slice::new(&data)) }
+        unsafe { (host().client_send_packet)(self.raw, abi_str(channel.name()), abi_str(&T::schema()), Slice::new(&data)) }
     }
 
     /// Runs a command as this player (`/tp ~ ~5 ~`): a client command here, any other on the
     /// server. The answer goes to `command_reply(id)`, not the chat.
     pub fn run_command(&self, line: &str) -> u32 {
-        self.command(abi::client_op::RUN_COMMAND, line, 0.0) as u32
+        self.op(abi::client_op::RUN_COMMAND, line, 0.0) as u32
     }
 
     /// The answer of `run_command`'s `id` once it came, its lines in the client's language; read
@@ -421,6 +432,14 @@ impl Client {
         let got = unsafe { (host().client_command_reply)(self.raw, id, &mut out) } != 0;
         got.then(|| unsafe { out.as_str() }.to_string())
     }
+}
+
+/// Which hand.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hand {
+    Main = abi::hand::MAIN,
+    Off = abi::hand::OFF,
 }
 
 /// What a channel carries: a `value!` struct or number (checked by its layout like events),
@@ -508,28 +527,28 @@ impl<T: Payload> Channel<T> {
 }
 
 /// RGBA pixels of a screenshot or loaded image: (width, height, pixels).
-pub fn image(id: u64) -> Option<(u32, u32, &'static [u8])> {
+pub fn image_pixels(id: u64) -> Option<(u32, u32, &'static [u8])> {
     let (mut w, mut h) = (0, 0);
-    let p = unsafe { (host().image_get)(id, &mut w, &mut h) };
+    let p = unsafe { (host().image_pixels)(id, &mut w, &mut h) };
     (!p.is_null()).then(|| (w, h, unsafe { std::slice::from_raw_parts(p, (w * h * 4) as usize) }))
 }
 
 pub fn image_load(path: &str) -> Option<u64> {
-    let id = unsafe { (host().image_load)(s(path)) };
+    let id = unsafe { (host().image_load)(abi_str(path)) };
     (id != 0).then_some(id)
 }
 
 pub fn image_save(path: &str, w: u32, h: u32, rgba: &[u8]) -> bool {
-    unsafe { (host().image_save)(s(path), Slice::new(rgba), w, h) != 0 }
+    unsafe { (host().image_save)(abi_str(path), Slice::new(rgba), w, h) != 0 }
 }
 
-pub fn image_free(id: u64) {
-    unsafe { (host().image_free)(id) }
+pub fn image_unload(id: u64) {
+    unsafe { (host().image_unload)(id) }
 }
 
 /// `--name value` from the command line.
 pub fn launch_option(name: &str) -> Option<String> {
-    let v = unsafe { (host().launch_option)(s(name)).as_str() };
+    let v = unsafe { (host().launch_option)(abi_str(name)).as_str() };
     (!v.is_empty()).then(|| v.to_string())
 }
 
@@ -555,110 +574,34 @@ impl World {
     /// Sends `value` on `channel` to `player`'s client.
     pub fn send<T: Payload>(&self, player: u64, channel: &Channel<T>, value: &T) {
         let data = value.encode();
-        unsafe { (host().send_packet)(self.raw(), player, s(channel.name()), s(&T::schema()), Slice::new(&data)) }
+        unsafe { (host().send_packet)(self.raw(), player, abi_str(channel.name()), abi_str(&T::schema()), Slice::new(&data)) }
     }
+}
 
-    /// Opens `menu` on the block entity at `pos`; false (and a logged reason) if there is none.
-    pub fn open_menu_at(&self, player: u64, menu: impl Into<crate::Id<crate::Menu>>, pos: [i32; 3]) -> bool {
-        unsafe { (host().open_menu_at)(self.raw(), player, menu.into().raw(), &pos) != 0 }
-    }
-
-    /// An inventory of `slots` not tied to a block (tests, backpacks): menus open on it like on
-    /// a chest. Never saved; remove it with `remove`.
-    pub fn virtual_inventory(&self, slots: u32, pos: [f64; 3]) -> u64 {
-        unsafe { (host().inventory_create)(self.raw(), slots, &pos) }
-    }
-
-    /// Moves an entity (players included) at the end of the tick, to `dim` or the same dimension.
-    pub fn teleport(&self, id: u64, dim: Option<&crate::Dimension>, pos: [f64; 3]) {
-        let d = dim.map_or(u32::MAX, |d| d.id());
-        unsafe { (host().entity_teleport)(self.raw(), id, d, &pos) }
-    }
-
-    /// Rain or thunder in this dimension for `ticks`, after which it changes by itself.
-    pub fn set_weather(&self, raining: bool, thunder: bool, ticks: u32) {
-        unsafe { (host().set_weather)(self.raw(), raining as u32, thunder as u32, ticks) }
-    }
-
-    pub fn raining(&self) -> bool {
-        unsafe { (host().raining)(self.raw()) != 0 }
-    }
-
-    pub fn thundering(&self) -> bool {
-        unsafe { (host().thundering)(self.raw()) != 0 }
-    }
-
-    /// A white flash on an entity for everyone who sees it (a creeper about to go off).
-    pub fn flash(&self, id: u64) {
-        unsafe { (host().entity_flash)(self.raw(), id) }
-    }
-
-    /// A player's `abi::permission` level: ask it before anything only some may do.
-    pub fn permission(&self, player: u64) -> u32 {
-        unsafe { (host().player_permission)(self.raw(), player) }
-    }
-
-    /// Gives a player a level, remembered with the world.
-    pub fn set_permission(&self, player: u64, level: u32) {
-        unsafe { (host().set_player_permission)(self.raw(), player, level) }
-    }
-
-    /// Sets this dimension's time of day (0 sunrise, 6000 noon, 18000 midnight). Only the sky and
-    /// what follows the day move: what waits on ticks keeps its pace.
-    pub fn set_day_time(&self, time: u64) {
-        unsafe { (host().set_time)(self.raw(), time) }
-    }
-
-    /// This dimension's time of day, counting on past a day. `w.time()` is another clock: ticks
-    /// the world has run, which nothing moves.
-    pub fn day_time(&self) -> u64 {
-        unsafe { (host().day_time)(self.raw()) }
-    }
-
-    /// As if `ticks` passed at once: the day moves on, and growth, machines and timers catch up.
-    pub fn skip_ticks(&self, ticks: u64) {
-        unsafe { (host().skip_ticks)(self.raw(), ticks) }
-    }
-
-    /// `abi::game_mode`.
-    pub fn set_game_mode(&self, player: u64, mode: u32) {
-        unsafe { (host().set_game_mode)(self.raw(), player, mode) }
-    }
+/// A client callback for one entity (`ClientEntityArgs`).
+fn entity_callback(f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) -> abi::Callback {
+    callback(move |a: &mut abi::ClientEntityArgs| {
+        f(&Client::from_raw(a.client), unsafe { &*(a as *const abi::ClientEntityArgs as *const ClientEntity) })
+    })
 }
 
 impl Registry {
     /// Every frame on the client, before input is handled.
     pub fn client_frame(&mut self, f: impl Fn(&Client) + Send + Sync + 'static) {
         let cb = callback(move |a: &mut abi::ClientFrameArgs| f(&Client::from_raw(a.client)));
-        unsafe { (host().reg_client_hook)(self.raw, abi::client_hook::FRAME, cb) }
+        unsafe { (host().reg_client_frame)(self.raw, cb) }
     }
 
-    /// Cosmetics of entities of `kind` on the client, every frame (wing flaps, sparks, purring),
-    /// instead of the engine's steps, idle noises and death smoke; `e.run_engine_effects()` keeps
-    /// those. One per kind: a later mod's replaces an earlier one's.
-    pub fn client_entity_frame(&mut self, kind: &crate::Entity, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
-        let cb = callback(move |a: &mut abi::ClientEntityArgs| {
-            f(&Client::from_raw(a.client), unsafe { &*(a as *const abi::ClientEntityArgs as *const ClientEntity) })
-        });
-        unsafe { (host().reg_client_entity_tick)(self.raw, s(kind.name()), cb) }
+    /// Every frame on the client for each entity of `kind`, the local player too: its effects
+    /// (wing flaps, sparks, purring), any number of mods on one kind. The engine's steps, idle
+    /// noises and death smoke go on unless the kind says otherwise (`.effect(..)`, `.own_effects()`).
+    pub fn client_entity_frame(&mut self, kind: &crate::EntityKind, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
+        drop(
+            self.edit_entity(kind.name())
+                .push(&crate::comps::entity::FRAMES, entity_callback(f)),
+        );
     }
 
-    /// Every frame on the client for each entity of `kind`, the local player too, beside whatever
-    /// else runs for them: any number of mods may watch one kind, and steps and such go on.
-    pub fn on_entity_frame(&mut self, kind: &crate::Entity, f: impl Fn(&Client, &ClientEntity) + Send + Sync + 'static) {
-        let cb = callback(move |a: &mut abi::ClientEntityArgs| {
-            f(&Client::from_raw(a.client), unsafe { &*(a as *const abi::ClientEntityArgs as *const ClientEntity) })
-        });
-        unsafe { (host().reg_client_entity_watcher)(self.raw, s(kind.name()), cb) }
-    }
-
-    /// When the top screen changes; the name is empty back in the world.
-    pub fn client_screen(&mut self, f: impl Fn(&Client, &str) + Send + Sync + 'static) {
-        let cb = callback(move |a: &mut abi::ClientScreenArgs| f(&Client::from_raw(a.client), unsafe { a.screen.as_str() }));
-        unsafe { (host().reg_client_hook)(self.raw, abi::client_hook::SCREEN, cb) }
-    }
-
-    /// Server side of `channel`: called when a client sends on it.
     /// Server side of a channel: `f` gets every value a client sends on it, with who sent it.
     pub fn packet<T: Payload>(&mut self, channel: &Channel<T>, f: impl Fn(&Packet, T) + Send + Sync + 'static) {
         let name = channel.name();
@@ -667,10 +610,10 @@ impl Registry {
                 f(unsafe { &*(a as *const abi::PacketArgs as *const Packet) }, v)
             }
         });
-        unsafe { (host().reg_packet)(self.raw, s(name), s(&T::schema()), 0, cb) }
+        unsafe { (host().reg_packet)(self.raw, abi_str(name), abi_str(&T::schema()), 0, cb) }
     }
 
-    /// Client side of channel `name`: called when the server sends on it.
+    /// Client side of `channel`: called when the server sends on it.
     pub fn client_packet<T: Payload>(&mut self, channel: &Channel<T>, f: impl Fn(&Client, T) + Send + Sync + 'static) {
         let name = channel.name();
         let cb = callback(move |a: &mut abi::ClientPacketArgs| {
@@ -678,32 +621,39 @@ impl Registry {
                 f(&Client::from_raw(a.client), v)
             }
         });
-        unsafe { (host().reg_packet)(self.raw, s(name), s(&T::schema()), 1, cb) }
+        unsafe { (host().reg_packet)(self.raw, abi_str(name), abi_str(&T::schema()), 1, cb) }
     }
 
     /// Key binding with a default key (`J`, `KeyJ`, `F6`, `space`, `lshift`, `mouse3`), listed
-    /// in Controls as `key.<ns>.<name>`; what it does with `.on_press(..)` or
-    /// `.on_press_server(..)`, or read with `Client::pressed`/`held`. Keys only act while the
+    /// in Controls as `key.<ns>.<name>`; what it does with `.on_client(..)` or
+    /// `.on_server(..)`, or read with `Client::key_pressed`/`key_held`. Keys only act while the
     /// world has the input (not while typing in the chat or with a screen open).
     pub fn key<'a>(&'a mut self, key: &'static Key, default: &str) -> KeyBuilder<'a> {
-        unsafe { (host().reg_key)(self.raw, s(key.name()), s(default)) }
-        KeyBuilder { reg: self, key }
+        self.key_entry(key)
+            .set_text(&crate::comps::key::DEFAULT, default)
+    }
+
+    fn key_entry(&mut self, key: &'static Key) -> KeyBuilder<'_> {
+        KeyBuilder { reg: self, e: crate::entry::Entry::of(key), key }
     }
 }
 
 pub struct KeyBuilder<'a> {
     reg: &'a mut Registry,
+    e: crate::entry::Entry,
     key: &'static Key,
 }
 
+crate::entry::entry_builder!(Key => KeyBuilder, key_entry;);
+
 impl KeyBuilder<'_> {
     /// On the client, every time the key goes down.
-    pub fn on_press(self, f: impl Fn(&Client) + Send + Sync + 'static) -> Self {
+    pub fn on_client(self, f: impl Fn(&Client) + Send + Sync + 'static) -> Self {
         let key = self.key;
         // By the edge of `held`, so a press is seen whichever frame hook made it.
         let was = std::sync::atomic::AtomicBool::new(false);
         self.reg.client_frame(move |c| {
-            let now = c.held(key);
+            let now = c.key_held(key);
             if now && !was.swap(now, std::sync::atomic::Ordering::Relaxed) {
                 f(c)
             } else if !now {
@@ -715,11 +665,41 @@ impl KeyBuilder<'_> {
 
     /// On the server, for the player who pressed it (`p.player()`, `p.world()`): the engine
     /// carries the press over, no channel of yours needed.
-    pub fn on_press_server(self, f: impl Fn(&Packet) + Send + Sync + 'static) -> Self {
+    pub fn on_server(self, f: impl Fn(&Packet) + Send + Sync + 'static) -> Self {
         let key = self.key;
         let channel: &'static Channel<()> = Channel::generated(format!("{}.pressed", key.name()));
         self.reg.packet(channel, move |p, ()| f(p));
-        KeyBuilder { reg: self.reg, key }.on_press(move |c| c.send(channel, &()))
+        self.on_client(move |c| c.send(channel, &()))
+    }
+}
+
+/// The keys as a mount's steering or a camera mode reads them, any action by its handle, and
+/// where the player looks (radians; a detached camera's own look).
+pub struct Keys {
+    raw: *const abi::KeysCtx,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl Keys {
+    pub(crate) fn of(raw: *const abi::KeysCtx, yaw: f32, pitch: f32) -> Keys {
+        Keys { raw, yaw, pitch }
+    }
+
+    /// Pressed, held and its charge: ticks held, and held before being let go this tick.
+    pub fn state(&self, key: &Key) -> abi::KeyState {
+        let mut out = abi::KeyState::default();
+        unsafe { (host().keys_state)(self.raw, abi_str(key.name()), &mut out) };
+        out
+    }
+
+    pub fn held(&self, key: &Key) -> bool {
+        self.state(key).held != 0
+    }
+
+    /// -1..1 from `minus` held to `plus` held: `axis(&keys::FORWARD, &keys::BACK)`.
+    pub fn axis(&self, plus: &Key, minus: &Key) -> f32 {
+        self.held(plus) as i32 as f32 - self.held(minus) as i32 as f32
     }
 }
 
@@ -733,9 +713,16 @@ pub mod keys {
     pub static JUMP: Key = Key::named("core:jump");
     pub static SNEAK: Key = Key::named("core:sneak");
     pub static SPRINT: Key = Key::named("core:sprint");
+    pub static CRAWL: Key = Key::named("core:crawl");
     pub static FLY: Key = Key::named("core:fly");
     pub static INVENTORY: Key = Key::named("core:inventory");
     pub static DROP: Key = Key::named("core:drop");
+    pub static DROP_ALL: Key = Key::named("core:drop_all");
+    pub static DISMOUNT: Key = Key::named("core:dismount");
+    pub static FLY_FASTER: Key = Key::named("core:fly_faster");
+    pub static FLY_SLOWER: Key = Key::named("core:fly_slower");
+    pub static HOTBAR_NEXT: Key = Key::named("core:hotbar_next");
+    pub static HOTBAR_PREV: Key = Key::named("core:hotbar_prev");
     pub static COMMAND: Key = Key::named("core:command");
     pub static CHAT: Key = Key::named("core:chat");
     pub static DEBUG: Key = Key::named("core:debug");
@@ -754,26 +741,26 @@ pub mod keys {
 /// The engine's screens: open them, add parts to them, or register one of these handles to
 /// replace it.
 pub mod screens {
-    use crate::Screen;
-    pub static TITLE: Screen = Screen::named("core:title");
-    pub static PAUSE: Screen = Screen::named("core:pause");
-    pub static SETTINGS: Screen = Screen::named("core:settings");
-    pub static LANGUAGE: Screen = Screen::named("core:language");
-    pub static CONTROLS: Screen = Screen::named("core:controls");
-    pub static WORLDS: Screen = Screen::named("core:worlds");
-    pub static CREATE_WORLD: Screen = Screen::named("core:create_world");
-    pub static CHAT: Screen = Screen::named("core:chat");
-    pub static INVENTORY: Screen = Screen::named("core:inventory");
-    pub static MOD_SETTINGS: Screen = Screen::named("core:mod_settings");
-    pub static DEATH: Screen = Screen::named("core:death");
-    pub static MODS: Screen = Screen::named("core:mods");
-    pub static PROFILE: Screen = Screen::named("core:profile");
-    pub static MULTIPLAYER: Screen = Screen::named("core:multiplayer");
-    pub static RESOURCE_PACKS: Screen = Screen::named("core:resource_packs");
-    pub static SHADER_PACKS: Screen = Screen::named("core:shader_packs");
-    pub static SOUND: Screen = Screen::named("core:sound");
-    pub static HUD_EDITOR: Screen = Screen::named("core:hud_editor");
-    pub static DEBUG_OPTIONS: Screen = Screen::named("core:debug_options");
+    use crate::Menu;
+    pub static TITLE: Menu = Menu::named("core:title");
+    pub static PAUSE: Menu = Menu::named("core:pause");
+    pub static SETTINGS: Menu = Menu::named("core:settings");
+    pub static LANGUAGE: Menu = Menu::named("core:language");
+    pub static CONTROLS: Menu = Menu::named("core:controls");
+    pub static WORLDS: Menu = Menu::named("core:worlds");
+    pub static CREATE_WORLD: Menu = Menu::named("core:create_world");
+    pub static CHAT: Menu = Menu::named("core:chat");
+    pub static INVENTORY: Menu = Menu::named("core:inventory");
+    pub static MOD_SETTINGS: Menu = Menu::named("core:mod_settings");
+    pub static DEATH: Menu = Menu::named("core:death");
+    pub static MODS: Menu = Menu::named("core:mods");
+    pub static PROFILE: Menu = Menu::named("core:profile");
+    pub static MULTIPLAYER: Menu = Menu::named("core:multiplayer");
+    pub static RESOURCE_PACKS: Menu = Menu::named("core:resource_packs");
+    pub static SHADER_PACKS: Menu = Menu::named("core:shader_packs");
+    pub static SOUND: Menu = Menu::named("core:sound");
+    pub static HUD_EDITOR: Menu = Menu::named("core:hud_editor");
+    pub static DEBUG_OPTIONS: Menu = Menu::named("core:debug_options");
 }
 
 /// One entity in `Registry::client_entity_frame`.
@@ -787,7 +774,7 @@ impl ClientEntity {
     pub fn kind(&self) -> u32 {
         self.0.kind
     }
-    pub fn pos(&self) -> [f64; 3] {
+    pub fn pos(&self) -> Vec3 {
         self.0.pos
     }
     pub fn yaw(&self) -> f32 {
@@ -808,10 +795,5 @@ impl ClientEntity {
     /// Seconds since the last call.
     pub fn dt(&self) -> f32 {
         self.0.dt
-    }
-    /// What the engine does for kinds without a tick: steps, idle noises, death smoke.
-    pub fn run_engine_effects(&self) {
-        let mut a = abi::ClientEntityArgs { ..self.0 };
-        unsafe { (host().client_entity_defaults)(&mut a) }
     }
 }

@@ -17,6 +17,27 @@ pub struct LoadedMod {
 }
 
 static NAMES: OnceLock<Vec<String>> = OnceLock::new();
+/// Each loaded mod's assets folder by its id, for `asset_exists` while mods register.
+static ASSET_ROOTS: std::sync::RwLock<Vec<(String, std::path::PathBuf)>> = std::sync::RwLock::new(Vec::new());
+
+/// Whether mod asset `name` (`beauty_of_nature:block/log_oak_inner`) is a file `<kind>/...<.ext>`
+/// of the mod it names. Mods' own files only: resource packs are each client's, and what a mod
+/// registers has to be the same everywhere.
+pub fn asset_exists(name: &str, kind: &str, ext: &str) -> bool {
+    let Some((ns, rel)) = name.split_once(':') else { return false };
+    if rel.is_empty() || rel.contains("..") || rel.contains('\\') || rel.starts_with('/') {
+        return false;
+    }
+    ASSET_ROOTS
+        .read()
+        .unwrap()
+        .iter()
+        .any(|(id, dir)| id == ns && dir.join(kind).join(format!("{rel}.{ext}")).is_file())
+}
+
+pub fn mod_loaded(id: &str) -> bool {
+    ASSET_ROOTS.read().unwrap().iter().any(|(m, _)| m == id)
+}
 
 pub fn mod_id_name(m: ModId) -> &'static str {
     NAMES
@@ -394,6 +415,10 @@ pub fn load(mod_dirs: &[PathBuf], cache: &Path, off_file: &Path) -> Result<Vec<L
         }
     }
 
+    *ASSET_ROOTS.write().unwrap() = metas
+        .iter()
+        .map(|m| (m.id.clone(), m.assets.clone()))
+        .collect();
     let regs: Vec<RawRegistrar> = mods
         .par_iter()
         .enumerate()

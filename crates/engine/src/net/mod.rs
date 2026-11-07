@@ -9,6 +9,7 @@ use glam::{DVec3, IVec3};
 
 use weft_abi::ItemStack;
 
+use crate::server::lod_tops::LodColumn;
 use crate::world::Cube;
 use codec::Wire;
 
@@ -169,11 +170,10 @@ impl Shown {
         Shown::new(weft_abi::show_place::CHAT, msg)
     }
 
-    /// What its place is (`hud::PLACES`).
+    /// What its place is (`hud::places`).
     pub fn look(&self) -> &'static crate::hud::Place {
-        crate::hud::PLACES
-            .get(self.place as usize)
-            .unwrap_or(&crate::hud::PLACES[0])
+        let all = crate::hud::places();
+        all.get(self.place as usize).unwrap_or(&all[0])
     }
 
     /// With what was left open as its place has it.
@@ -240,8 +240,9 @@ wire_struct! {
 }
 
 wire_struct! {
-    /// A debug shape for a gizmo group (`client::gizmo`): `kind` 0 is a line from `a` to `b`, 1 a box
-    /// between corners `a` and `b`, 2 `text` at `a`. Shown for `ticks` server ticks.
+    /// A debug shape for a gizmo group (`client::gizmo`): `kind` a `gizmo_kind` from `a` to `b`, or
+    /// `GizmoShape::TEXT`, `text` at `a` `size` times as big as menu text. Shown for `ticks`
+    /// server ticks.
     #[derive(Clone, Debug, PartialEq)]
     pub struct GizmoShape {
         pub group: String,
@@ -250,7 +251,21 @@ wire_struct! {
         pub b: DVec3,
         pub color: u32,
         pub ticks: u32,
+        pub size: f32,
         pub text: crate::ui::text::Msg,
+    }
+}
+
+impl GizmoShape {
+    /// Not a `gizmo_kind`: a label.
+    pub const TEXT: u8 = u8::MAX;
+
+    pub fn shape(group: &str, kind: u8, a: DVec3, b: DVec3, color: u32, ticks: u32) -> GizmoShape {
+        GizmoShape { group: group.into(), kind, a, b, color, ticks, size: 0.0, text: crate::ui::text::Msg::default() }
+    }
+
+    pub fn text(group: &str, at: DVec3, size: f32, color: u32, ticks: u32, text: crate::ui::text::Msg) -> GizmoShape {
+        GizmoShape { group: group.into(), kind: GizmoShape::TEXT, a: at, b: at, color, ticks, size, text }
     }
 }
 
@@ -259,7 +274,8 @@ pub type Crack = (u64, IVec3, u32, f32);
 
 /// An entity's move: id, position, yaw, pitch, crouching, and its frame: the solid body it
 /// stands on (0: the world), which clients draw it relative to.
-pub type Move = (u64, DVec3, f32, f32, crate::world::Pose, u64);
+/// An entity, where it is, its look, pose, whether it sprints, and the body it stands on.
+pub type Move = (u64, DVec3, f32, f32, crate::world::Pose, bool, u64);
 
 /// The longest message a connection takes.
 pub const MAX_MESSAGE: usize = 64 << 20;
@@ -279,6 +295,9 @@ messages! {
         /// Area edits of the dimension (`AreaFill::spec`): `all` replaces what the client has,
         /// otherwise they come after it. Clients make them on what they generate.
         Edits { dim: u32, specs: Vec<String>, all: bool },
+        /// Columns of dimension `dim` that differ from the terrain, for distant terrain (`top`
+        /// `u32::MAX` for one that doesn't any more); `all`: every one there is.
+        LodColumns { dim: u32, all: bool, cols: Vec<LodColumn> },
         /// Of the world, or of body `frame`.
         /// `extras`: what else is in cells, after `changes` (which take it away).
         Blocks { dim: u32, frame: u64, changes: Vec<(IVec3, u32)>, extras: Vec<(IVec3, Vec<u32>)> },
@@ -314,19 +333,28 @@ messages! {
         Knock { away: [f32; 3] },
         /// Velocity change in blocks per tick (a mod's push, a sprinting hit).
         Velocity { add: [f32; 3] },
+        /// A mod set the player's velocity, in blocks per tick.
+        SetVelocity([f32; 3]),
+        /// A mod turned the player: yaw and pitch in radians.
+        Look([f32; 2]),
+        /// A mod made the player fly or stop.
+        Flying(bool),
+        /// A mod put this hotbar slot in the player's hand.
+        Selected(u32),
         /// Ticks a second the server runs at.
         TickRate(u32),
         /// The player's walking speed and jump multipliers.
         /// The player's attributes that changed, by id.
         Attributes(Vec<(u32, f32)>),
-        /// Mining that block is not allowed (`question::BREAK_BLOCK`).
+        /// Mining that block is not allowed (`action::BREAK_BLOCK`).
         BreakRefused { frame: u64, pos: IVec3 },
         /// Holding the use button started on an item that takes this many ticks, or it ended.
         /// Ticks it takes, and whether in the other hand.
         Using(Option<(u32, bool)>),
-        Weather { raining: bool, thunder: bool },
-        /// A white flash on an entity.
-        Flash(u64),
+        /// The dimension's weather now (`registry::WeatherDef` by id).
+        Weather(u32),
+
+
         /// Someone else's arm swings: a hit, a use, mining.
         /// Who, and whether with the other hand.
         EntitySwing { id: u64, off: bool },
@@ -336,6 +364,9 @@ messages! {
         Permission(u32),
         /// A sprinting hit landed, which ends the sprint.
         StopSprint,
+        /// Camera mode `mode` (`u32::MAX`: the player's own again), `locked` till told; the
+        /// change over `transition` seconds (NaN: the mode's).
+        Camera { mode: u32, locked: bool, transition: f32, easing: u32 },
         /// `block`: the state it was opened on (0: none), `name`: what it belongs to is called.
         OpenMenu { kind: u32, window: u32, slots: u32, owner: u64, block: u32, name: String },
         MenuSlots(Vec<(u32, ItemStack)>),
@@ -377,6 +408,12 @@ messages! {
         /// (the client shows bodies behind the server; only the relative position agrees).
         /// `jumped`: it jumped since the last one.
         Move { pos: DVec3, yaw: f32, pitch: f32, on_ground: bool, pose: crate::world::Pose, sprint: bool, flying: bool, jumped: bool, frame: Option<(u64, DVec3)> },
+        /// Where the mount the player steers went this tick (its client moves it).
+        MountMove { pos: DVec3, yaw: f32, vel: DVec3, on_ground: bool },
+        /// Off what the player rides (`core:dismount`).
+        Dismount,
+        /// May it turn on camera mode `mode` (`camera_flags::ASK`)? Answered with `Camera`.
+        Camera(u32),
         /// Started mining this block (`frame` and `part` like `Break`'s).
         StartBreak { pos: IVec3, part: u32, frame: u64 },
         /// Stopped mining without finishing.
@@ -387,8 +424,8 @@ messages! {
         SwapHands,
         /// `frame`: the structure (entity) the block is part of, its position in the structure's
         /// coordinates; 0 for the world. `face`: of its selection that was hit.
-        /// `part`: which of what is in the cell.
-        Break { pos: IVec3, part: u32, face: u8, frame: u64 },
+        /// `part`: which of what is in the cell; `hit`: where on it, from its corner (`Use`'s).
+        Break { pos: IVec3, part: u32, face: u8, hit: [f32; 3], frame: u64 },
         /// Right click on a block: the block reacts first (chests), otherwise the held item is used or
         /// placed against the clicked face. `frame` like `Break`'s; `look` in world space.
         /// `hit`: where on the block, from its corner.

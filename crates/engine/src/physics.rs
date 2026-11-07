@@ -3,24 +3,37 @@
 //! player prediction) and the server (entities), so both agree.
 
 use glam::{DVec3, IVec3};
-use weft_abi::block_flags as bf;
+use weft_abi::{EntitySize, block_flags as bf};
 
 use crate::content::Content;
 
-/// Half width, height and eye height of a box in a pose (modern vanilla), on client and server
+/// The box of an entity in a pose (modern vanilla), on client and server
 /// alike, from its width, height and eyes standing: crouching lowers them like the player's 1.8 to
 /// 1.5 and 1.62 to 1.27, swimming to 0.6 and 0.4, whatever size it has.
-pub fn posed(size: [f32; 3], pose: crate::world::Pose) -> (f64, f64, f64) {
-    use crate::world::Pose;
+pub fn posed(size: EntitySize, pose: crate::world::Pose) -> Dims {
     let r = |v: f64| (v * 1e6).round() / 1e6;
-    let [width, height, eye] = size.map(f64::from);
-    let (height, eye) = match pose {
-        Pose::Stand => (height, eye),
-        Pose::Crouch => (r(height * 1.5 / 1.8), r(eye * 1.27 / 1.62)),
-        Pose::Swim | Pose::Crawl => (r(height * 0.6 / 1.8), r(eye * 0.4 / 1.62)),
-        Pose::Sleep => (r(height * 0.2 / 1.8), r(eye * 0.45 / 1.62)),
-    };
-    (width / 2.0, height, eye)
+    let (half_width, height, eye) = (size.width as f64 / 2.0, size.height as f64, size.eye as f64);
+    let d = pose.def();
+    if d.height == 1.0 && d.eye == 1.0 {
+        return Dims { half_width, height, eye };
+    }
+    Dims { half_width, height: r(height * d.height), eye: r(eye * d.eye) }
+}
+
+/// An entity's box as physics uses it, in blocks: half its width (from its middle to a side),
+/// its height and where its eyes are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dims {
+    pub half_width: f64,
+    pub height: f64,
+    pub eye: f64,
+}
+
+impl Dims {
+    /// The same box as mods see sizes.
+    pub fn size(&self) -> EntitySize {
+        EntitySize { width: self.half_width as f32 * 2.0, height: self.height as f32, eye: self.eye as f32 }
+    }
 }
 
 /// Where a look goes, radians: yaw 0 is north (-Z), pitch up.
@@ -203,7 +216,7 @@ impl<'a> Body<'a> {
             None => Aabb::around(pos, size.0, size.1),
         };
         let blocks = built.map(|s| (s, place));
-        Some(Body { id, aabb, delta, carry: kind.carry_height as f64, crushes: kind.is(weft_abi::entity_flags::CRUSHES), blocks })
+        Some(Body { id, aabb, delta, carry: kind.carry_height as f64, crushes: kind.is(crate::tag_bits::entity::CRUSHES), blocks })
     }
 
     /// Its solid boxes touching `area`, in world space (until `f` returns true).
@@ -436,6 +449,29 @@ fn each_solid(c: &Content, block: &impl Cells, area: Aabb, mut f: impl FnMut(Aab
     false
 }
 
+/// How far along `from`..`to` (0..1) a cube `half` each way around `from` goes before something
+/// solid stops it; what it starts inside of doesn't.
+pub fn sweep(c: &Content, block: &impl Cells, from: DVec3, to: DVec3, half: f64) -> f64 {
+    let d = to - from;
+    if d.length_squared() < 1e-12 {
+        return 1.0;
+    }
+    let h = DVec3::splat(half);
+    let area = Aabb { min: from.min(to) - h, max: from.max(to) + h };
+    let mut t = 1.0f64;
+    each_solid(c, block, area, |b| {
+        let grown = Aabb { min: b.min - h, max: b.max + h };
+        let inside = from.cmpgt(grown.min).all() && from.cmplt(grown.max).all();
+        if !inside {
+            if let Some(hit) = ray_aabb(from, d, &grown, 1.0) {
+                t = t.min(hit);
+            }
+        }
+        false
+    });
+    t
+}
+
 /// Whether `area` overlaps anything solid.
 pub fn collides(c: &Content, block: &impl Cells, area: Aabb) -> bool {
     each_solid(c, block, area, |s| s.intersects(&area))
@@ -602,8 +638,8 @@ pub fn ray_aabb(o: DVec3, d: DVec3, b: &Aabb, max: f64) -> Option<f64> {
     (t0 <= t1).then_some(t0)
 }
 
-/// Amanatides-Woo traversal. Blocks are hit where the ray crosses their selection boxes; blocks
-/// the ray starts inside are skipped.
+/// Amanatides-Woo traversal. Blocks are hit where the ray crosses their selection boxes; of
+/// blocks the ray starts inside, only what is solid where it starts (a head stuck in a block).
 /// First targetable block along the ray; with `liquids` liquids stop it too.
 pub fn raycast(c: &Content, block: &impl Cells, origin: DVec3, dir: DVec3, max: f64, liquids: bool) -> Option<Hit> {
     let dir = dir.normalize();
@@ -627,11 +663,22 @@ pub fn raycast(c: &Content, block: &impl Cells, origin: DVec3, dir: DVec3, max: 
                 if s.flags & bf::NOT_TARGETABLE != 0 && !wanted {
                     continue;
                 }
-                let near = s
-                    .selection
-                    .iter()
-                    .filter_map(|b| ray_box(local, dir, b, max))
-                    .min_by(|a, b| a.0.total_cmp(&b.0));
+                let stuck = t == 0.0
+                    && s.collision
+                        .iter()
+                        .any(|b| (0..3).all(|i| (b[i] as f64..b[i + 3] as f64).contains(&local[i])));
+                let near = if stuck {
+                    // Entered, as it were, through the face it looks most toward.
+                    let axis = (0..3)
+                        .max_by(|&a, &b| dir[a].abs().total_cmp(&dir[b].abs()))
+                        .unwrap_or(0);
+                    Some((0.0, (axis * 2) as u8 + (dir[axis] < 0.0) as u8))
+                } else {
+                    s.selection
+                        .iter()
+                        .filter_map(|b| ray_box(local, dir, b, max))
+                        .min_by(|a, b| a.0.total_cmp(&b.0))
+                };
                 if let Some((dist, face)) = near {
                     if wanted {
                         return Some(Hit { frame: 0, block: p, face, state, dist });
@@ -942,11 +989,12 @@ mod knock_tests {
     #[test]
     fn a_pose_scales_with_the_size() {
         use crate::world::Pose;
-        let (hw, h, eye) = posed([0.6, 1.8, 1.62], Pose::Stand);
-        assert!((hw - 0.3).abs() < 1e-5 && (h - 1.8).abs() < 1e-5 && (eye - 1.62).abs() < 1e-5);
-        let (_, h, eye) = posed([0.6, 1.8, 1.62], Pose::Crouch);
-        assert!((h - 1.5).abs() < 1e-5 && (eye - 1.27).abs() < 1e-5);
-        let (_, h, _) = posed([1.2, 3.6, 3.24], Pose::Crouch);
-        assert!((h - 3.0).abs() < 1e-5);
+        let player = EntitySize { width: 0.6, height: 1.8, eye: 1.62 };
+        let d = posed(player, Pose::STAND);
+        assert!((d.half_width - 0.3).abs() < 1e-5 && (d.height - 1.8).abs() < 1e-5 && (d.eye - 1.62).abs() < 1e-5);
+        let d = posed(player, Pose::CROUCH);
+        assert!((d.height - 1.5).abs() < 1e-5 && (d.eye - 1.27).abs() < 1e-5);
+        let d = posed(EntitySize { width: 1.2, height: 3.6, eye: 3.24 }, Pose::CROUCH);
+        assert!((d.height - 3.0).abs() < 1e-5);
     }
 }

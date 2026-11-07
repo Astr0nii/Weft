@@ -10,7 +10,7 @@ use rustc_hash::FxHashMap;
 use crate::assets::Assets;
 use crate::block_model::{self, FileModel};
 use crate::content::{Content, ModelBox, StateInfo};
-use weft_abi::Model;
+use weft_abi::BlockModel;
 
 #[derive(Default)]
 pub struct StateLook {
@@ -37,7 +37,7 @@ pub struct Looks {
 
 /// What a state is drawn as, a pack's model counted: all that goes by what a block shows asks here.
 pub struct Drawn<'a> {
-    pub model: Model,
+    pub model: BlockModel,
     pub boxes: &'a [ModelBox],
     pub textures: [u32; 6],
 }
@@ -46,14 +46,14 @@ impl Drawn<'_> {
     /// The textures it shows on a face. A plant has one face, the first.
     pub fn on_face(&self, dir: usize) -> Vec<u32> {
         match self.model {
-            Model::Boxes => self
+            BlockModel::Boxes => self
                 .boxes
                 .iter()
                 .filter(|b| super::mesher::box_face(b, dir).is_some())
                 .map(|b| b.textures[dir])
                 .collect(),
-            Model::Cube => vec![self.textures[dir]],
-            Model::Cross if dir == 0 => vec![self.textures[0]],
+            BlockModel::Cube => vec![self.textures[dir]],
+            BlockModel::Cross if dir == 0 => vec![self.textures[0]],
             _ => Vec::new(),
         }
     }
@@ -82,7 +82,7 @@ impl Looks {
         let look = self.state(state);
         let boxes = look.and_then(|l| l.boxes.as_deref());
         Drawn {
-            model: if boxes.is_some() { Model::Boxes } else { s.model },
+            model: if boxes.is_some() { BlockModel::Boxes } else { s.model },
             boxes: boxes.unwrap_or(&s.boxes),
             textures: look.and_then(|l| l.textures).unwrap_or(s.textures),
         }
@@ -104,7 +104,7 @@ impl Looks {
     /// The sprite a block's item shows if it is flat.
     pub fn block_sprite(&self, state: u32, s: &StateInfo) -> Option<u32> {
         let d = self.drawn(state, s);
-        if d.model == Model::Boxes {
+        if d.model == BlockModel::Boxes {
             return None;
         }
         s.item_sprite()
@@ -114,7 +114,7 @@ impl Looks {
     /// The boxes a block's item shows if it isn't.
     pub fn block_shape(&self, state: u32, s: &StateInfo) -> Vec<ModelBox> {
         let d = self.drawn(state, s);
-        if d.model == Model::Boxes && !d.boxes.is_empty() { d.boxes.to_vec() } else { vec![ModelBox::whole(d.textures)] }
+        if d.model == BlockModel::Boxes && !d.boxes.is_empty() { d.boxes.to_vec() } else { vec![ModelBox::whole(d.textures)] }
     }
 
     pub fn texture_name<'a>(&'a self, c: &'a Content, id: u32) -> Option<&'a str> {
@@ -194,14 +194,24 @@ pub fn load(assets: &Assets, c: &Content) -> (Looks, Names) {
         let Some(m) = from_pack(&format!("{ns}:block/{path}")) else { continue };
         for st in b.first_state..b.first_state + b.states {
             let s = &c.states[st as usize];
+            // The file is written for the block unturned, as the mod's own model is.
+            let t = s.turn;
+            let own = |i: usize| s.textures[t.face(i)];
             let mut look = StateLook::default();
             match &m.cube {
                 // Only a cube is kept one: it hides the faces against its neighbors. Anything
                 // else is redrawn as a cube's box.
-                Some(cube) if s.model == Model::Cube => {
-                    look.textures = Some(std::array::from_fn(|i| if cube[i].is_empty() { s.textures[i] } else { id(&cube[i]) }))
+                Some(cube) if s.model == BlockModel::Cube => {
+                    let own: [u32; 6] = std::array::from_fn(|i| if cube[i].is_empty() { own(i) } else { id(&cube[i]) });
+                    look.textures = Some(crate::content::turned_faces(t, own));
                 }
-                _ => look.boxes = Some(file_boxes(&m, &|i| s.textures[i], &mut id)).filter(|b| !b.is_empty()),
+                _ => {
+                    let boxes: Vec<ModelBox> = file_boxes(&m, &own, &mut id)
+                        .iter()
+                        .map(|b| b.turned(t))
+                        .collect();
+                    look.boxes = Some(boxes).filter(|b| !b.is_empty());
+                }
             }
             if looks.states.len() <= st as usize {
                 looks.states.resize_with(st as usize + 1, || None);

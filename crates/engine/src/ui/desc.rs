@@ -132,7 +132,8 @@ impl D {
             let on_change = d.keep(move |a: &mut abi::UiChangeArgs| {
                 crate::config::set(id, min + a.value as f64 * range);
             });
-            d.leaf(&abi::UiNode { height: 20.0, self_align: abi::ui_align::STRETCH, bind, on_change, ..node(k::SLIDER) });
+            let count = def.steps(1.0 / scale);
+            d.leaf(&abi::UiNode { height: 20.0, self_align: abi::ui_align::STRETCH, bind, on_change, count, ..node(k::SLIDER) });
         });
     }
 
@@ -144,7 +145,7 @@ impl D {
             align: abi::ui_align::STRETCH,
             gap: 4.0,
             self_align: abi::ui_align::STRETCH,
-            ..node(k::PARTS)
+            ..node(k::SCREEN_PARTS)
         });
     }
 }

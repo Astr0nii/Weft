@@ -40,7 +40,7 @@ use std::sync::{Arc, RwLock};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::looks::{Drawn, Looks, Names};
-use super::mesher::{Neighborhood, pidx};
+use super::mesher::{NORMALS, Neighborhood, pidx};
 use crate::assets::Assets;
 use crate::content::{Content, ModelBox};
 
@@ -204,8 +204,6 @@ const AXES: [([i32; 3], [i32; 3]); 6] = [
     ([1, 0, 0], [0, 1, 0]),
 ];
 
-const NORMALS: [[i32; 3]; 6] = [[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1]];
-
 fn faces(v: &str) -> u8 {
     v.split_whitespace().fold(0, |m, f| {
         m | match f {
@@ -261,7 +259,7 @@ fn tile_names(v: &str, texture: &str) -> Vec<Option<String>> {
 
 /// Whether something drawn other than as a cube shows `tex`, on a face in `faces`.
 fn off_cube(d: &Drawn, tex: u32, faces: u8) -> bool {
-    d.model != weft_abi::Model::Cube && (0..6).any(|f| faces & (1 << f) != 0 && d.on_face(f).contains(&tex))
+    d.model != weft_abi::BlockModel::Cube && (0..6).any(|f| faces & (1 << f) != 0 && d.on_face(f).contains(&tex))
 }
 
 /// The tile `name` as a model, if it has a file. A face the file names no texture for shows the
@@ -424,9 +422,7 @@ pub fn load(assets: &Assets, c: &Content, looks: &Looks, mut names: Names) -> (C
             // References like anywhere else: names, `name[prop=value]`, `#tag`, `#pattern/*`.
             let mut blocks = Vec::new();
             for b in kv.get("blocks").map_or("", |v| *v).split_whitespace() {
-                match crate::refs::Ref::parse(b)
-                    .and_then(|r| crate::refs::blocks(&r, &c.block_names, &c.blocks, &c.components, c.states.len() as u32))
-                {
+                match crate::refs::blocks(b, &c.block_names, &c.blocks, &c.components) {
                     Ok(list) => blocks.extend(list),
                     Err(e) => log::error!("{name}.ctm: blocks: {e}"),
                 }
@@ -435,9 +431,7 @@ pub fn load(assets: &Assets, c: &Content, looks: &Looks, mut names: Names) -> (C
                 let (invert, list) = v.strip_prefix('!').map_or((false, *v), |r| (true, r));
                 let mut set = vec![0u64; c.biomes.len() / 64 + 1];
                 for b in list.split_whitespace() {
-                    match crate::refs::Ref::parse(b)
-                        .and_then(|r| crate::refs::biomes(&r, &c.biome_names, &c.components, c.biomes.len() as u32))
-                    {
+                    match crate::refs::set(b, crate::components::BIOME, &c.biome_names, c.biomes.len() as u32, &c.components, "biome") {
                         Ok(list) => list
                             .into_iter()
                             .for_each(|i| set[i as usize / 64] |= 1 << (i % 64)),
@@ -552,7 +546,7 @@ impl Ctm {
             .enumerate()
             .map(|(st, s)| {
                 let d = looks.drawn(st as u32, s);
-                (d.model != weft_abi::Model::Cube || d.textures != s.textures).then(|| Box::new(std::array::from_fn(|f| d.on_face(f))))
+                (d.model != weft_abi::BlockModel::Cube || d.textures != s.textures).then(|| Box::new(std::array::from_fn(|f| d.on_face(f))))
             })
             .collect();
         if any_models {
@@ -772,21 +766,21 @@ mod tests {
 
     #[test]
     fn only_what_shows_a_texture_off_a_cube_counts() {
-        use weft_abi::Model;
+        use weft_abi::BlockModel;
         let (t, sides_only) = ([7; 6], 0b110011);
         let plain = |model| Drawn { model, boxes: &[], textures: t };
-        assert!(off_cube(&plain(Model::Cross), 7, 0b111111));
-        assert!(!off_cube(&plain(Model::Cross), 8, 0b111111));
-        assert!(!off_cube(&plain(Model::Cube), 7, 0b111111));
+        assert!(off_cube(&plain(BlockModel::Cross), 7, 0b111111));
+        assert!(!off_cube(&plain(BlockModel::Cross), 8, 0b111111));
+        assert!(!off_cube(&plain(BlockModel::Cube), 7, 0b111111));
         let top = [ModelBox::whole([0, 0, 0, 7, 0, 0])];
-        let boxes = Drawn { model: Model::Boxes, boxes: &top, textures: [0; 6] };
+        let boxes = Drawn { model: BlockModel::Boxes, boxes: &top, textures: [0; 6] };
         assert!(off_cube(&boxes, 7, 0b111111));
         assert!(!off_cube(&boxes, 7, sides_only), "not on the faces the rule is for");
         // A face the file leaves out holds a texture only to fill the field.
         let mut gone = ModelBox::whole([7; 6]);
         gone.uv = [weft_abi::UV_NO_FACE; 6];
         let gone = [gone];
-        assert!(!off_cube(&Drawn { model: Model::Boxes, boxes: &gone, textures: [0; 6] }, 7, 0b111111));
+        assert!(!off_cube(&Drawn { model: BlockModel::Boxes, boxes: &gone, textures: [0; 6] }, 7, 0b111111));
     }
 
     #[test]

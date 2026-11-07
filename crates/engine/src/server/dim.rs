@@ -2,15 +2,17 @@ use std::cmp::Reverse;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::tag_bits::damage as df;
+use crate::tag_bits::entity as ef;
 use glam::{DVec3, IVec3};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use weft_abi::{self as abi, ItemStack, block_flags as bf, damage, entity_flags as ef};
+use weft_abi::{self as abi, ItemStack, block_flags as bf, damage_cause as damage};
 
-use super::entity::{Entities, Entity, Motion, Pushed, step};
+use super::entity::{Entities, Entity, Motion, Told, step};
 use super::space::Space;
 use crate::components as comps;
-use crate::content::{AIR, Content};
+use crate::content::{AIR, Content, Then, When};
 use crate::host::{self, CallCtx};
 use crate::world::cube::VOLUME;
 use crate::world::light::{self, CubeMap, Lighter};
@@ -22,11 +24,12 @@ const CATCH_UP_PARTS: u64 = 20;
 const ITEM_LIFETIME: u64 = crate::world::TPS as u64 * 60 * 5;
 
 pub enum DimEvent {
+    /// `on`: the inventory it opened on, `None` for a menu of its own (a crafting table).
     /// `block`: the state it was opened on, 0 when opened from code.
     OpenMenu {
         player: u64,
         menu: u32,
-        owner: u64,
+        on: Option<crate::server::holder::Inv>,
         block: u32,
     },
     /// `killer`: the kind of what did it.
@@ -41,14 +44,10 @@ pub enum DimEvent {
     },
     SetWeather {
         dim: u32,
-        raining: bool,
-        thunder: bool,
+        weather: u16,
         ticks: u32,
     },
-    /// A white flash on it for those who see it.
-    Flash {
-        id: u64,
-    },
+
     /// Its arm swings for those who see it.
     EntitySwing {
         off: bool,
@@ -57,6 +56,23 @@ pub enum DimEvent {
     /// A sprinting hit landed: the client stops sprinting.
     StopSprint {
         player: u64,
+    },
+    /// `Host::force_load`.
+    ForceLoad {
+        dim: u32,
+        key: u64,
+        min: IVec3,
+        max: IVec3,
+        mode: u32,
+        ticks: u32,
+    },
+    /// `ToClient::Camera` to it.
+    Camera {
+        player: u64,
+        mode: u32,
+        locked: bool,
+        transition: f32,
+        easing: u32,
     },
     Packet {
         player: u64,
@@ -124,15 +140,19 @@ pub struct Dim {
     pub place: crate::physics::Transform,
     /// The blocks of bodies of this region, by entity.
     pub bodies: FxHashMap<u64, Box<Space>>,
+    /// Frames a mod entered (`enter_frame`), innermost last, with what was here before.
+    pub entered: Vec<(u64, Box<Space>, u64, crate::physics::Transform)>,
     pub time: u64,
     /// What `/time` moved the time of day by, from `time`.
     pub day_offset: i64,
-    pub raining: bool,
-    pub thunder: bool,
+    /// The weather now (`registry::WeatherDef`).
+    pub weather: u16,
     rng: Rng,
     /// Cubes whose copy on disk holds entities or ticks, written again even if nothing else
     /// changed: what left them must not come back from there.
     pub on_disk: FxHashSet<IVec3>,
+    /// Cubes only machines tickets keep (`server::forced`): mobs stand still, nothing grows.
+    pub idle: FxHashSet<IVec3>,
     /// Players mods see this tick (not spectators), listed once on first use.
     players: Option<Vec<u64>>,
     pub entities: Entities,
@@ -154,7 +174,7 @@ pub struct Dim {
 }
 
 fn physics_body<'a>(c: &Content, e: &Entity, built: Option<&'a Box<Space>>, delta: DVec3) -> Option<crate::physics::Body<'a>> {
-    let (hw, h, _) = e.dims(c);
+    let crate::physics::Dims { half_width: hw, height: h, .. } = e.dims(c);
     let built = built.map(|s| &**s as &dyn crate::physics::Blocks);
     crate::physics::Body::of(e.id, &c.game.entities[e.kind as usize], e.pos, (hw, h), delta, built)
 }
@@ -174,7 +194,7 @@ impl CubeMap for Cubes<'_> {
 /// world, on the server or a client: the area edits made since, then its light on its own as if
 /// open sky were above (`light::prelight`; joining the world fixes that up).
 pub fn prepare(c: &Content, dim: u32, edits: &[super::area::AreaFill], pos: IVec3, cube: &mut Cube) {
-    super::area::catch_up(c, edits, pos, cube);
+    super::area::catch_up(edits, pos, cube);
     light::prelight(c, cube, c.dims[dim as usize].sky_light);
 }
 
@@ -217,9 +237,10 @@ pub fn finish_generated(
     let def = &c.dims[dim as usize];
     if !builtin {
         let columns = cols.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
-        let mut args = abi::GenArgs { seed, cube: pos.to_array(), blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), dim, columns };
-        if let Some(cb) = def.generator {
-            host::invoke(def.owner, cb, &mut args);
+        let mut args =
+            abi::GenArgs { seed, cube: pos.to_array().into(), blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), dim, columns };
+        if let Some((by, cb)) = def.generator {
+            host::invoke(by, cb, &mut args);
         }
         place_scatters(c, def, dim, seed, pos, &mut blocks);
         let mut args = abi::GenArgs { blocks: blocks.as_mut_ptr(), biomes: biomes.as_mut_ptr(), ..args };
@@ -240,7 +261,7 @@ pub fn finish_generated(
     }
     let uniform = varied == 0 && top < max;
     let ores = place_ores(c, def, seed, pos, &mut blocks, &biomes, uniform);
-    let built = place_structures(c, def, seed, pos, &mut blocks);
+    let built = place_structures(def, seed, pos, &mut blocks);
     let mut cube =
         if uniform && !ores && !built { Cube::uniform(blocks[0], 0) } else { Cube::from_states(blocks.as_slice().try_into().unwrap()) };
     if biomes.iter().any(|&b| b != 0) {
@@ -280,47 +301,57 @@ fn place_ores(
         }
     }
     for ore in &def.ores {
-        let reach = ore.size as i32;
+        let reach = ore.reach();
         if o.y > ore.max_y.saturating_add(reach) || o.y + 15 < ore.min_y.saturating_sub(reach) {
             continue;
         }
-        if !present.iter().any(|&s| {
-            ore.replace
-                .binary_search(&c.states[s as usize].block)
-                .is_ok()
-        }) {
+        if !present
+            .iter()
+            .any(|&s| ore.state_in(&c.matchers, s).is_some())
+        {
             continue;
         }
         for nz in pos.z - 1..=pos.z + 1 {
             for ny in pos.y - 1..=pos.y + 1 {
                 for nx in pos.x - 1..=pos.x + 1 {
-                    for v in 0..ore.veins {
+                    for v in 0..ore.tries() {
                         let h = hash(seed ^ ore.salt, nx as i64, ny as i64 * 31 + v as i64, nz as i64);
-                        let mut p =
+                        let start =
                             IVec3::new(nx * 16 + (h % 16) as i32, ny * 16 + ((h >> 4) % 16) as i32, nz * 16 + ((h >> 8) % 16) as i32);
-                        // A step moves a block at most: veins starting farther away never get here.
-                        let far = (o - p).max(p - o - IVec3::splat(15)).max_element();
-                        if p.y > ore.max_y || p.y < ore.min_y || far > reach {
+                        // Veins starting farther away than they reach never get here.
+                        let far = (o - start).max(start - o - IVec3::splat(15)).max_element();
+                        if start.y > ore.max_y || start.y < ore.min_y || far > reach {
                             continue;
                         }
-                        for k in 0..ore.size {
-                            let hk = hash(h, k as i64, 0, 0);
-                            p += IVec3::new((hk % 3) as i32 - 1, ((hk >> 2) % 3) as i32 - 1, ((hk >> 4) % 3) as i32 - 1);
+                        if weft_noise::unit(hash(h, 7, 7, 7)) >= ore.weight(start.y) {
+                            continue;
+                        }
+                        for p in vein(ore, start, h) {
                             let l = p - o;
                             if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(16)).all() {
                                 let i = local_index(l);
-                                let biome_ok = ore.biome.is_none_or(|t| {
-                                    c.components
-                                        .has(comps::BIOME, biomes[(l.z * 16 + l.x) as usize] as u32, t)
-                                });
+                                let biome_ok = ore
+                                    .biome
+                                    .as_ref()
+                                    .is_none_or(|b| crate::refs::has(b, biomes[(l.z * 16 + l.x) as usize] as u32));
+                                // Vanilla's ores in caves: some of what would touch air is left out.
+                                let bare = ore.exposed > 0.0
+                                    && crate::world::DIRS.iter().any(|d| {
+                                        let n = l + *d;
+                                        n.cmpge(IVec3::ZERO).all()
+                                            && n.cmplt(IVec3::splat(16)).all()
+                                            && blocks[local_index(n)] == crate::content::AIR
+                                    })
+                                    && weft_noise::unit(hash(h, p.x as i64, p.y as i64, p.z as i64)) < ore.exposed as f64;
                                 if biome_ok
-                                    && ore
-                                        .replace
-                                        .binary_search(&c.states[blocks[i] as usize].block)
-                                        .is_ok()
+                                    && !bare
+                                    && let Some(s) = ore.state_in(&c.matchers, blocks[i])
                                 {
-                                    blocks[i] = ore.state;
+                                    blocks[i] = s;
                                     placed = true;
+                                    if !present.contains(&s) {
+                                        present.push(s);
+                                    }
                                 }
                             }
                         }
@@ -328,22 +359,69 @@ fn place_ores(
                 }
             }
         }
-        if placed && !present.contains(&ore.state) {
-            present.push(ore.state);
-        }
     }
     placed
 }
 
+/// The blocks of one vein from `start`, decided by `h` alone, so every cube it reaches agrees.
+fn vein(ore: &crate::content::OreDef, start: IVec3, h: u64) -> Vec<IVec3> {
+    use abi::vein_shape as v;
+    let ball = |c: IVec3, r: f32, out: &mut Vec<IVec3>| {
+        let n = r.ceil() as i32;
+        for z in -n..=n {
+            for y in -n..=n {
+                for x in -n..=n {
+                    if ((x * x + y * y + z * z) as f32) <= r * r {
+                        out.push(c + IVec3::new(x, y, z));
+                    }
+                }
+            }
+        }
+    };
+    let mut out = Vec::new();
+    match ore.shape {
+        v::SPHERE => ball(start, ore.shape_size[0], &mut out),
+        v::DISK => {
+            let (r, t) = (ore.shape_size[0], ore.shape_size[1].max(1.0) as i32);
+            let n = r.ceil() as i32;
+            for z in -n..=n {
+                for x in -n..=n {
+                    if ((x * x + z * z) as f32) <= r * r {
+                        for y in 0..t {
+                            out.push(start + IVec3::new(x, y - t / 2, z));
+                        }
+                    }
+                }
+            }
+        }
+        v::BLOB => {
+            // Small balls along a short random line, about `size` blocks in all.
+            let r = (ore.size as f32 * 3.0 / (4.0 * std::f32::consts::PI))
+                .cbrt()
+                .max(0.8);
+            let dir = IVec3::new((h >> 20) as i32 % 3 - 1, (h >> 24) as i32 % 3 - 1, (h >> 28) as i32 % 3 - 1);
+            ball(start, r * 0.8, &mut out);
+            ball(start + dir, r * 0.8, &mut out);
+            out.sort_unstable_by_key(|p| (p.x, p.y, p.z));
+            out.dedup();
+        }
+        _ => {
+            let mut p = start;
+            for k in 0..ore.size {
+                let hk = hash(h, k as i64, 0, 0);
+                p += IVec3::new((hk % 3) as i32 - 1, ((hk >> 2) % 3) as i32 - 1, ((hk >> 4) % 3) as i32 - 1);
+                out.push(p);
+            }
+        }
+    }
+    let reach = ore.reach();
+    out.retain(|p| (*p - start).abs().max_element() <= reach);
+    out
+}
+
 /// Where structure `s` stands in its grid cell (`cell` x, z), if it does there: its lowest
 /// corner. Depends only on the seed and the dimension's columns, so every cube agrees.
-pub fn structure_in(
-    def: &crate::content::DimensionDef,
-    c: &Content,
-    s: &crate::content::StructureDef,
-    seed: u64,
-    cell: (i32, i32),
-) -> Option<IVec3> {
+pub fn structure_in(def: &crate::content::DimensionDef, s: &crate::content::StructureDef, seed: u64, cell: (i32, i32)) -> Option<IVec3> {
     let h = hash(seed ^ s.salt, cell.0 as i64, 7, cell.1 as i64);
     if weft_noise::unit(h) >= s.chance as f64 {
         return None;
@@ -352,7 +430,9 @@ pub fn structure_in(
     let (x, z) = (cell.0 * s.spacing + ((h >> 3) % room) as i32, cell.1 * s.spacing + ((h >> 29) % room) as i32);
     let col = def.column(seed, x + s.extent.x / 2, z + s.extent.z / 2)?;
     if s.biome
-        .is_some_and(|t| !c.components.has(comps::BIOME, col.biome, t))
+        .as_ref()
+        .is_some_and(|b| !crate::refs::has(b, col.biome))
+        || !(s.y[0]..=s.y[1]).contains(&col.height)
     {
         return None;
     }
@@ -371,8 +451,21 @@ pub fn scatter_site(
     let h = hash(seed ^ s.salt, cell.0 as i64, 0, cell.1 as i64);
     let (x, z) = (cell.0 * s.cell + (h % s.cell as u64) as i32, cell.1 * s.cell + ((h >> 8) % s.cell as u64) as i32);
     let col = def.column(seed, x, z)?;
-    if col.height == i32::MIN || def.sea_level().is_some_and(|l| col.height < l) {
+    if col.height == i32::MIN
+        || def.sea_level().is_some_and(|l| col.height < l)
+        || !(s.y[0]..=s.y[1]).contains(&(col.height + 1))
+        || s.biome
+            .as_ref()
+            .is_some_and(|b| !crate::refs::has(b, col.biome))
+    {
         return None;
+    }
+    if let Some(ground) = s.ground {
+        // A zero surface state means there is no usable terrain surface.
+        let state = def.surface_block(seed, x, z);
+        if state == 0 || !c.matchers.has(ground, state) {
+            return None;
+        }
     }
     let density = s
         .density
@@ -383,10 +476,6 @@ pub fn scatter_site(
     }
     Some((IVec3::new(x, col.height + 1, z), col.biome, hash(h, 1, 2, 3)))
 }
-
-/// How far above and below its site a scattered thing may put blocks.
-const SCATTER_UP: i32 = 32;
-const SCATTER_DOWN: i32 = 16;
 
 /// A scattered thing: where it stands and its blocks (the shape callback's, made once and
 /// shared by every cube it reaches), with the corners of the box around them.
@@ -403,7 +492,7 @@ fn scatter_sites(c: &Content, def: &crate::content::DimensionDef, dim: u32, seed
     def.scatter_cache.get(seed, x, z, || {
         let o = IVec3::new(x, 0, z) * 16;
         let mut out = Vec::new();
-        let mut buf = vec![abi::ScatterBlock { offset: [0; 3], state: 0, force: 0 }; 4096];
+        let mut buf = vec![abi::ScatterBlock { offset: [0; 3].into(), state: 0, force: 0 }; 4096];
         let states = c.states.len() as u32;
         for s in &def.scatters {
             let cells = |lo: i32| (lo - s.reach).div_euclid(s.cell)..=(lo + 15 + s.reach).div_euclid(s.cell);
@@ -413,7 +502,7 @@ fn scatter_sites(c: &Content, def: &crate::content::DimensionDef, dim: u32, seed
                     let mut args = abi::ScatterArgs {
                         seed,
                         dim,
-                        pos: pos.to_array(),
+                        pos: pos.to_array().into(),
                         biome,
                         random,
                         out: buf.as_mut_ptr(),
@@ -423,11 +512,11 @@ fn scatter_sites(c: &Content, def: &crate::content::DimensionDef, dim: u32, seed
                     host::invoke(s.owner, s.shape, &mut args);
                     let blocks: Vec<abi::ScatterBlock> = buf[..(args.len as usize).min(buf.len())]
                         .iter()
-                        .filter(|b| b.state < states && (-SCATTER_DOWN..=SCATTER_UP).contains(&b.offset[1]))
+                        .filter(|b| b.state < states && (-s.reach_y[0]..=s.reach_y[1]).contains(&b.offset.y))
                         .copied()
                         .collect();
                     let (lo, hi) = blocks.iter().fold((IVec3::MAX, IVec3::MIN), |(lo, hi), b| {
-                        (lo.min(pos + IVec3::from_array(b.offset)), hi.max(pos + IVec3::from_array(b.offset)))
+                        (lo.min(pos + crate::world::ivec(b.offset)), hi.max(pos + crate::world::ivec(b.offset)))
                     });
                     if !blocks.is_empty() {
                         out.push(Site { pos, blocks, lo, hi });
@@ -462,7 +551,7 @@ fn place_scatters(c: &Content, def: &crate::content::DimensionDef, dim: u32, see
     {
         let p = site.pos;
         for b in &site.blocks {
-            let l = p + IVec3::from_array(b.offset) - o;
+            let l = p + crate::world::ivec(b.offset) - o;
             if l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(16)).all() {
                 let i = local_index(l);
                 if b.force != 0 || blocks[i] == AIR {
@@ -487,14 +576,14 @@ pub fn scattered_near(def: &crate::content::DimensionDef, c: &Content, seed: u64
 
 /// Structure blocks that fall into this cube.
 /// Returns whether it put anything in.
-fn place_structures(c: &Content, def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32]) -> bool {
+fn place_structures(def: &crate::content::DimensionDef, seed: u64, pos: IVec3, blocks: &mut [u32]) -> bool {
     let o = pos * 16;
     let mut built = false;
     for s in &def.structures {
         let cells = |lo: i32, size: i32| (lo - size).div_euclid(s.spacing)..=(lo + 15).div_euclid(s.spacing);
         for cz in cells(o.z, s.extent.z) {
             for cx in cells(o.x, s.extent.x) {
-                let Some(a) = structure_in(def, c, s, seed, (cx, cz)) else { continue };
+                let Some(a) = structure_in(def, s, seed, (cx, cz)) else { continue };
                 if a.y > o.y + 15 || a.y + s.extent.y <= o.y {
                     continue;
                 }
@@ -547,7 +636,7 @@ pub fn see_through(c: &Content, cube: &Cube) -> u16 {
 /// goes: vanilla's five times as slow with the head in a liquid, and again off the ground, and its
 /// slower rate without a tool that harvests it. All at once in creative or at 1 and up, nothing for
 /// what can't be broken.
-pub fn mining_rate(c: &Content, state: u32, tool: u32, head_wet: bool, on_ground: bool, speed: f32, creative: bool) -> f32 {
+pub fn mining_rate(c: &Content, state: u32, tool: &ItemStack, head_wet: bool, on_ground: bool, speed: f32, creative: bool) -> f32 {
     let s = &c.states[state as usize];
     if s.hardness < 0.0 {
         return 0.0;
@@ -555,27 +644,82 @@ pub fn mining_rate(c: &Content, state: u32, tool: u32, head_wet: bool, on_ground
     if creative || s.hardness == 0.0 {
         return 1.0;
     }
-    let tool_speed = if c.tool_fits(state, tool) { c.item_value::<f32>(tool, c.ids.mining_speed).unwrap_or(1.0) } else { 1.0 };
+    let tool_speed = if c.tool_fits(state, tool) {
+        c.stack_value::<f32>(tool, c.ids.mining_speed)
+            .unwrap_or(1.0)
+    } else {
+        1.0
+    };
     let secs = s.hardness * if c.harvests(state, tool) { 1.5 } else { 5.0 } / tool_speed;
     let secs = secs * if head_wet { 5.0 } else { 1.0 } * if on_ground { 1.0 } else { 5.0 } / speed;
     crate::world::TICK as f32 / secs
 }
 
 /// What an entity's move brought on it, applied after the parallel part.
-#[derive(Clone, Copy)]
 struct TickHit {
     id: u64,
     land: Option<f32>,
+    /// How far it fell before landing, and whether it fell into a liquid: for `fall_effects`.
+    fell: Option<f32>,
+    splash: bool,
     burn: bool,
-    hot: bool,
     crushed: bool,
+    /// Hazards it meets (`content::Hazard`): the state and which of its.
+    met: Vec<(u32, usize)>,
+}
+
+/// The hazards entity `e` meets, by state and which of its: those in the cells its box is in or
+/// a sixteenth from, at its eyes, under its feet. What isn't a body meets only those it is in.
+fn hazards_met(c: &Content, block: &impl crate::physics::Cells, e: &super::entity::Entity) -> Vec<(u32, usize)> {
+    use abi::hazard_at as at;
+    const GROW: f64 = 1.0 / 16.0;
+    let (b, body) = (e.aabb(c), e.is_body());
+    let mut out = Vec::new();
+    let look = |p: IVec3, out: &mut Vec<(u32, usize)>, f: &dyn Fn(&crate::content::Hazard, u32) -> bool| {
+        let Some((main, extras)) = block.cell(p) else { return };
+        for s in std::iter::once(main).chain(extras.iter().copied()) {
+            for (i, h) in c.states[s as usize].hazards.iter().enumerate() {
+                if f(h, s) && !out.contains(&(s, i)) {
+                    out.push((s, i));
+                }
+            }
+        }
+    };
+    let overlaps = |s: u32, p: IVec3, grow: f64| {
+        let st = &c.states[s as usize];
+        let whole = [[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]];
+        let boxes: &[[f32; 6]] = if st.liquid.is_some() || st.selection.is_empty() { &whole } else { &st.selection };
+        boxes
+            .iter()
+            .any(|x| (0..3).all(|i| p[i] as f64 + x[i] as f64 - grow < b.max[i] && b.min[i] < p[i] as f64 + x[i + 3] as f64 + grow))
+    };
+    let (lo, hi) = ((b.min - GROW).floor().as_ivec3(), (b.max + GROW).floor().as_ivec3());
+    for y in lo.y..=hi.y {
+        for z in lo.z..=hi.z {
+            for x in lo.x..=hi.x {
+                let p = IVec3::new(x, y, z);
+                look(p, &mut out, &|h, s| match h.at {
+                    at::INSIDE => overlaps(s, p, 0.0),
+                    at::TOUCH => body && overlaps(s, p, GROW),
+                    _ => false,
+                });
+            }
+        }
+    }
+    if body {
+        look((e.pos + DVec3::Y * e.eye(c)).floor().as_ivec3(), &mut out, &|h, _| h.at == at::HEAD);
+        if e.on_ground {
+            look((e.pos - DVec3::Y * 0.05).floor().as_ivec3(), &mut out, &|h, _| h.at == at::ON);
+        }
+    }
+    out
 }
 
 impl Dim {
     /// Writes the fields clients show (`registry::HEALTH` ...) into their synced components when
     /// they differ, so they travel like mods' components. Absent ones stay absent while default.
     pub fn mirror_fields(&mut self, c: &Content) {
-        let [health, burning, worn, shape, held, off_held, using, ..] = c.game.field_comps;
+        let [health, burning, worn, shape, held, off_held, using, .., riding] = c.game.field_comps;
         let maxes: Vec<(u64, f32)> = self
             .entities
             .list
@@ -587,7 +731,7 @@ impl Dim {
             .map(|id| (id, self.max_health(c, id)))
             .collect();
         let Entities { list, comps, inventories, .. } = &mut self.entities;
-        for e in list.iter().filter(|e| e.in_world(c)) {
+        for e in list.iter().filter(|e| e.in_world()) {
             let put = |comps: &mut FxHashMap<(u64, u32), Box<[u8]>>, comp: u32, bytes: &[u8]| match comps.get_mut(&(e.id, comp)) {
                 Some(v) if **v != *bytes => *v = bytes.into(),
                 Some(_) => {}
@@ -605,11 +749,19 @@ impl Dim {
             let items: Vec<u8> = e.worn.iter().flat_map(|i| i.to_le_bytes()).collect();
             put(comps, worn, &items);
             let mut sh = [0u8; 16];
-            for (i, v) in e.size.unwrap_or([0.0; 3]).iter().enumerate() {
+            let size = e.size.unwrap_or_default();
+            for (i, v) in [size.width, size.height, size.eye].into_iter().enumerate() {
                 sh[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
             }
             sh[12..].copy_from_slice(&e.look.unwrap_or(u32::MAX).to_le_bytes());
             put(comps, shape, &sh);
+            let rides: Vec<u8> = e.vehicle.map_or(Vec::new(), |(m, seat)| {
+                m.to_le_bytes()
+                    .into_iter()
+                    .chain((seat as u32).to_le_bytes())
+                    .collect()
+            });
+            put(comps, riding, &rides);
             if e.player {
                 let inv = inventories.get(&e.id).map_or(&[][..], |i| &i[..]);
                 let item = crate::content::in_main_hand(c, inv, e.selected);
@@ -632,11 +784,12 @@ impl Dim {
             frame: 0,
             place: Default::default(),
             bodies: FxHashMap::default(),
+            entered: Vec::new(),
             time: 1000,
             day_offset: 0,
-            raining: false,
-            thunder: false,
+            weather: 0,
             on_disk: Default::default(),
+            idle: Default::default(),
             rng: Rng(weft_noise::mix(seed ^ id as u64)),
             players: None,
             entities: Entities::default(),
@@ -670,9 +823,39 @@ impl Dim {
         Some(out)
     }
 
-    /// The block entity of the block at `p`.
+    /// From now on this is body `frame`'s blocks, as within `in_frame`, until `leave_frame`.
+    /// False if it isn't a body here.
+    pub fn enter_frame(&mut self, frame: u64) -> bool {
+        let Some(e) = self.entities.get(frame) else { return false };
+        let place = crate::physics::Transform::of(e.pos);
+        let Some(body) = self.bodies.remove(&frame) else { return false };
+        let outer = std::mem::replace(&mut self.space, body);
+        self.entered.push((frame, outer, self.frame, self.place));
+        (self.frame, self.place) = (frame, place);
+        true
+    }
+
+    pub fn leave_frame(&mut self) {
+        if let Some((frame, outer, was_frame, was_place)) = self.entered.pop() {
+            (self.frame, self.place) = (was_frame, was_place);
+            self.bodies
+                .insert(frame, std::mem::replace(&mut self.space, outer));
+        }
+    }
+
+    /// The block entity of the cell at `p`: inside a callback of a part of it, that part's (as
+    /// `seen`); else of its block, else of another in it.
     pub fn anchored(&self, p: IVec3) -> Option<u64> {
-        self.entities.anchors.get(&(self.frame, p)).copied()
+        match self.space.acting {
+            Some((at, part)) if at == p => self.anchored_part(crate::content::content(), p, part),
+            _ => self.entities.anchored(self.frame, p),
+        }
+    }
+
+    /// The block entity of the block of `state` in the cell at `p`.
+    pub fn anchored_part(&self, c: &Content, p: IVec3, state: u32) -> Option<u64> {
+        let kind = *c.game.block_entities.get(&c.states[state as usize].block)?;
+        self.entities.anchored_kind(self.frame, p, kind)
     }
 
     pub fn new_id(&self) -> u64 {
@@ -701,7 +884,7 @@ impl Dim {
     }
 
     /// `prelit`: the cube carries light from `light::prelight`.
-    pub fn insert(&mut self, c: &Content, pos: IVec3, mut cube: Cube, prelit: bool) {
+    pub fn insert(&mut self, c: &'static Content, pos: IVec3, mut cube: Cube, prelit: bool) {
         if self.space.cubes.contains_key(&pos) {
             return;
         }
@@ -734,17 +917,17 @@ impl Dim {
         let mut lives = Vec::new();
         let saved = cube.ticked != 0;
         let since = if saved { cube.ticked.min(self.time) } else { self.time };
-        let wanted = |s: u32| if saved { c.lives(s) } else { c.grows(s).is_some() };
+        let wanted = |s: u32| if saved { c.lives(s) } else { c.grows(s) };
         if cube.palette().iter().any(|&s| wanted(s)) {
-            for i in 0..VOLUME {
-                let s = cube.get(i);
-                if wanted(s) {
-                    let p = pos * 16 + crate::world::cube::offset(i);
-                    match c.grows(s) {
-                        Some(_) => self.schedule_growth(c, p, s, since),
-                        None => lives.push(p),
-                    }
-                }
+            lives.extend(
+                (0..VOLUME)
+                    .filter(|&i| wanted(cube.get(i)))
+                    .map(|i| pos * 16 + crate::world::cube::offset(i)),
+            );
+        }
+        for (i, parts) in cube.all_extras() {
+            if parts.iter().any(|&s| wanted(s)) {
+                lives.push(pos * 16 + crate::world::cube::offset(i));
             }
         }
         self.add_cube(pos, Arc::new(cube));
@@ -769,6 +952,18 @@ impl Dim {
 
     /// Drops cubes `keep` rejects; returns the ones that must be saved (modified or holding
     /// entities) together with the entities that lived in them, which leave the world.
+    /// The cubes beside the one at `pos` for its distant light (`lod_tops::Around`): loaded, or
+    /// as `gone` has them.
+    pub fn around(&self, pos: IVec3, gone: impl Fn(IVec3) -> Option<Arc<Cube>>) -> crate::server::lod_tops::Around {
+        [IVec3::NEG_X, IVec3::X, IVec3::NEG_Z, IVec3::Z].map(|d| {
+            self.space
+                .cubes
+                .get(&(pos + d))
+                .cloned()
+                .or_else(|| gone(pos + d))
+        })
+    }
+
     pub fn retain_cubes(&mut self, c: &Content, keep: impl Fn(IVec3) -> bool) -> Vec<(IVec3, Arc<Cube>, Vec<u64>)> {
         let mut out = Vec::new();
         let gone: FxHashSet<IVec3> = self
@@ -786,7 +981,7 @@ impl Dim {
         // One pass over entities and growth for all cubes leaving, not one per cube (a crowd of
         // mobs times thousands of cubes).
         let mut inside: FxHashMap<IVec3, Vec<u64>> = FxHashMap::default();
-        for e in self.entities.list.iter().filter(|e| e.saved_with_cube(c)) {
+        for e in self.entities.list.iter().filter(|e| e.saved_with_cube()) {
             let cp = cube_of(e.pos.floor().as_ivec3());
             if gone.contains(&cp) {
                 inside.entry(cp).or_default().push(e.id);
@@ -855,8 +1050,14 @@ impl Dim {
     }
 
     /// `carried`: the block is coming or going with what it has, so nothing of that is made or
-    /// broken.
+    /// broken. What else is in the cell stays with the same block, a property changing; it goes
+    /// with another block.
     pub(super) fn write_block(&mut self, c: &'static Content, p: IVec3, state: u32, carried: bool) -> Option<u32> {
+        self.write_cell(c, p, state, None, carried)
+    }
+
+    /// The cell at `p` holds `state` and `extras` (`None`: as `write_block` says).
+    pub(super) fn write_cell(&mut self, c: &'static Content, p: IVec3, state: u32, extras: Option<Vec<u32>>, carried: bool) -> Option<u32> {
         if !c.dims[self.id as usize].editable {
             return None;
         }
@@ -866,20 +1067,18 @@ impl Dim {
         }
         let cube = Arc::make_mut(self.space.cubes.get_mut(&cp)?);
         let i = local_index(p);
-        // What else is in the cell stays with the same block, a property changing; it goes with
-        // another block (`set_cell` keeps it whatever comes).
+        let had = cube.extras(i).to_vec();
         let same = state != AIR && c.states[cube.get(i) as usize].block == c.states[state as usize].block;
-        let extras = cube.extras(i).to_vec();
+        let extras = extras.unwrap_or_else(|| if same { had.clone() } else { Vec::new() });
         let old = cube.set(i, state);
-        if !extras.is_empty() {
-            if same {
-                cube.set_extras(i, extras.clone());
-            }
-            if old != state {
-                self.space
-                    .extra_changes
-                    .push((p, if same { extras } else { Vec::new() }));
-            }
+        cube.set_extras(i, extras.clone());
+        // Clients lose what else is in a cell with its block, so it comes again after it.
+        if extras != had || (old != state && !extras.is_empty()) {
+            self.extras_changed(c, p, &had, extras.clone());
+        }
+        if !carried && (old != state || extras != had) {
+            let before: Vec<u32> = std::iter::once(old).chain(had).collect();
+            self.block_entities_follow(c, p, &before, &[&[state][..], &extras].concat());
         }
         if old == state {
             return Some(old);
@@ -909,40 +1108,52 @@ impl Dim {
             self.space.signals.block_changed(c, p, old, state);
         }
         let from = self.space.growing_at.unwrap_or(self.time);
-        if c.grows(state).is_none() {
-            self.space.growth.remove(&p);
-        } else if !self.space.growth.contains_key(&p) {
-            self.schedule_growth(c, p, state, from);
-        }
-        // What may now happen with time: here, to the block it covers or uncovers, and around a
-        // block that spreads.
+        // What may now happen with time: here, from now on, to the block it covers or uncovers,
+        // and around a block that spreads.
+        self.space.growth.remove(&p);
         self.consider(c, p, from);
         self.consider(c, p - IVec3::Y, from);
-        if c.states[state as usize].spread.is_some() {
-            for dy in -3..=1 {
-                for dz in -1..=1 {
-                    for dx in -1..=1 {
+        if let Some(sp) = c.states[state as usize].spread {
+            for dy in sp.min.y..=sp.max.y {
+                for dz in sp.min.z..=sp.max.z {
+                    for dx in sp.min.x..=sp.max.x {
                         self.consider(c, p + IVec3::new(dx, dy, dz), from);
                     }
                 }
             }
         }
-        let (ob, nb) = (c.states[old as usize].block, c.states[state as usize].block);
-        if ob != nb && !carried {
-            if let Some(id) = self.anchored(p) {
-                if let Some(items) = self.entities.inventories.get(&id).cloned() {
-                    for s in items.into_iter().filter(|s| !s.is_empty()) {
-                        self.spawn_item(c, p.as_dvec3() + DVec3::splat(0.5), s);
-                    }
-                }
-                self.entities.remove(id);
-            }
-            if let Some(&kind) = c.game.block_entities.get(&nb) {
-                self.add_block_entity(c, p, kind);
-            }
+        if !carried && c.states[old as usize].block != c.states[state as usize].block {
             self.signal_block_gone(c, p, old, state);
         }
         Some(old)
+    }
+
+    /// Block entities go with their blocks from the cell at `p` and come with new ones, what one
+    /// held dropped.
+    fn block_entities_follow(&mut self, c: &Content, p: IVec3, before: &[u32], after: &[u32]) {
+        let blocks = |parts: &[u32]| -> Vec<u32> { parts.iter().map(|&s| c.states[s as usize].block).collect() };
+        let (was, now) = (blocks(before), blocks(after));
+        for &b in was.iter().filter(|b| !now.contains(b)) {
+            let Some(id) = c
+                .game
+                .block_entities
+                .get(&b)
+                .and_then(|&kind| self.entities.anchored_kind(self.frame, p, kind))
+            else {
+                continue;
+            };
+            if let Some(items) = self.entities.inventories.get(&id).cloned() {
+                for s in items.into_iter().filter(|s| !s.is_empty()) {
+                    self.spawn_item(c, p.as_dvec3() + DVec3::splat(0.5), s);
+                }
+            }
+            self.entities.remove(id);
+        }
+        for b in now.iter().filter(|b| !was.contains(b)) {
+            if let Some(&kind) = c.game.block_entities.get(b) {
+                self.add_block_entity(c, p, kind);
+            }
+        }
     }
 
     /// All that is in the cell at `p`, the block `get` gives first. Air has none.
@@ -958,18 +1169,25 @@ impl Dim {
         self.get(p) == Some(part) || self.space.extras(p).contains(&part)
     }
 
-    /// What else is in the cell at `p` is now `extras`: it is saved and sent, and those around
-    /// hear of it.
-    pub(super) fn set_extras(&mut self, p: IVec3, extras: Vec<u32>) {
+    /// What else is in the cell at `p` went from `had` to `extras`: it is saved and sent, lit, and
+    /// those around hear of it.
+    fn extras_changed(&mut self, c: &Content, p: IVec3, had: &[u32], extras: Vec<u32>) {
         let cp = cube_of(p);
-        let Some(cube) = self.space.cubes.get_mut(&cp) else { return };
-        if cube.extras(local_index(p)) == extras {
-            return;
-        }
-        Arc::make_mut(cube).set_extras(local_index(p), extras.clone());
-        self.space.extra_changes.push((p, extras));
+        self.space.extra_changes.push((p, extras.clone()));
         self.space.modified.insert(cp);
         self.space.edited.insert(cp);
+        let glows = |parts: &[u32]| parts.iter().any(|&s| c.states[s as usize].light != [0; 3]);
+        if glows(had) || glows(&extras) {
+            if self.frame != 0 {
+                self.space.relight.insert(cp);
+                self.space.emitters_changed = true;
+            } else {
+                let sky = c.dims[self.id as usize].sky_light;
+                let Space { cubes, body_light, .. } = &mut *self.space;
+                let changed = light::parts_changed(&mut Cubes(cubes), c, sky, body_light, p);
+                self.space.light_dirty.extend(changed);
+            }
+        }
         self.space.neighbor_queue.push_back((p, p));
         for d in DIRS {
             self.space.neighbor_queue.push_back((p + d, p));
@@ -978,20 +1196,14 @@ impl Dim {
 
     /// The block the cell at `p` stands for and what else is in it.
     fn set_cell(&mut self, c: &'static Content, p: IVec3, main: u32, extras: Vec<u32>) {
-        if self.get(p) != Some(main) {
-            self.write_block(c, p, main, false);
-        }
-        self.set_extras(p, extras);
+        self.write_cell(c, p, main, Some(extras), false);
     }
 
-    /// Whether a block has what only one in a cell can: a block entity, a circuit, light of its
-    /// own or growth. That one is what the cell stands for.
+    /// Whether a block has what only one in a cell can: a circuit or a block entity (what moves
+    /// cells carries one). That one is what the cell stands for.
     fn must_be_main(c: &Content, state: u32) -> bool {
         let s = &c.states[state as usize];
-        s.signal.kind != abi::signal_kind::NONE
-            || s.light != [0; 3]
-            || c.game.block_entities.contains_key(&s.block)
-            || c.grows(state).is_some()
+        s.signal.kind != abi::signal_kind::NONE || c.game.block_entities.contains_key(&s.block)
     }
 
     /// Puts another block in the cell at `p` with what is there, whatever its shape.
@@ -1010,7 +1222,7 @@ impl Dim {
             self.set_cell(c, p, state, extras);
         } else {
             extras.push(state);
-            self.set_extras(p, extras);
+            self.set_cell(c, p, main, extras);
         }
         true
     }
@@ -1063,16 +1275,14 @@ impl Dim {
             .sum()
     }
 
-    /// Whether a liquid source may be in the cell at `p` along with what is in it.
-    pub(super) fn can_hold_liquid(&self, c: &Content, p: IVec3) -> bool {
+    /// Whether the source `liquid` may be in the cell at `p` along with what is in it: all of it
+    /// may share a cell with that liquid (`shares_cell`), and leaves it room.
+    pub(super) fn can_hold_liquid(&self, c: &Content, p: IVec3, liquid: u32) -> bool {
         let parts = self.parts(p);
         let solids = parts
             .iter()
             .filter(|&&s| c.states[s as usize].liquid.is_none());
-        solids
-            .clone()
-            .all(|&s| c.states[s as usize].flags & bf::HOLDS_LIQUID != 0)
-            && solids.map(|&s| Self::fill_of(c, s)).sum::<f32>() < 0.999
+        solids.clone().all(|&s| c.may_share(s, liquid)) && solids.map(|&s| Self::fill_of(c, s)).sum::<f32>() < 0.999
     }
 
     /// A liquid goes from a cell that can't hold it (any more), or that it just flowed through.
@@ -1085,7 +1295,7 @@ impl Dim {
             return;
         };
         let source = c.liquids[c.states[liquid as usize].liquid.unwrap_or(0) as usize].first_state == liquid;
-        if self.parts(p).len() > 1 && !(source && self.can_hold_liquid(c, p)) {
+        if self.parts(p).len() > 1 && !(source && self.can_hold_liquid(c, p, liquid)) {
             self.replace_part(c, p, liquid, AIR);
         }
     }
@@ -1098,15 +1308,15 @@ impl Dim {
         self.entities.insert(c, e);
     }
 
-    /// Whether a saved block entity still has its block: the block at its anchor is one that
-    /// has this kind, and no other entity took the place.
+    /// Whether a saved block entity still has its block: a block in the cell at its anchor has
+    /// this kind, and no other entity took the place.
     pub fn block_entity_fits(&self, c: &Content, e: &Entity) -> bool {
         e.anchor.is_some_and(|a| {
-            self.anchored(a).is_none()
+            self.entities.anchored_kind(self.frame, a, e.kind).is_none()
                 && self
-                    .get(a)
-                    .and_then(|s| c.game.block_entities.get(&c.states[s as usize].block))
-                    == Some(&e.kind)
+                    .parts(a)
+                    .iter()
+                    .any(|s| c.game.block_entities.get(&c.states[*s as usize].block) == Some(&e.kind))
         })
     }
 
@@ -1125,23 +1335,22 @@ impl Dim {
     /// generator placed, or a block a mod gave an entity after the world was saved.
     pub fn add_missing_block_entities(&mut self, c: &Content, pos: IVec3) {
         let Some(cube) = self.space.cubes.get(&pos).cloned() else { return };
-        if !cube.palette().iter().any(|&s| {
+        let has = |s: u32| {
             c.game
                 .block_entities
                 .contains_key(&c.states[s as usize].block)
-        }) {
-            return;
-        }
-        for i in 0..VOLUME {
-            let Some(&kind) = c
-                .game
-                .block_entities
-                .get(&c.states[cube.get(i) as usize].block)
-            else {
-                continue;
-            };
+        };
+        let mains = cube.palette().iter().any(|&s| has(s));
+        let parts = cube
+            .all_extras()
+            .filter(|(_, parts)| parts.iter().any(|&s| has(s)));
+        let cells = (0..if mains { VOLUME } else { 0 })
+            .map(|i| (i, cube.get(i)))
+            .chain(parts.flat_map(|(i, parts)| parts.iter().map(move |&s| (i, s))));
+        for (i, state) in cells {
+            let Some(&kind) = c.game.block_entities.get(&c.states[state as usize].block) else { continue };
             let p = pos * 16 + crate::world::cube::offset(i);
-            if self.anchored(p).is_none() {
+            if self.entities.anchored_kind(self.frame, p, kind).is_none() {
                 self.add_block_entity(c, p, kind);
             }
         }
@@ -1184,45 +1393,66 @@ impl Dim {
             .0
     }
 
-    /// Falling blocks that came down: placed where they landed, on what they landed on, else
-    /// dropped as loot.
+    /// Body `id` falls under its weight from now on and lands as blocks (`land_falling`).
+    pub fn body_fall(&mut self, id: u64) {
+        if !self.bodies.contains_key(&id) {
+            return;
+        }
+        if let Some(e) = self
+            .entities
+            .get_mut(id)
+            .filter(|e| e.motion != Motion::Parked)
+        {
+            e.falls = true;
+            e.motion = Motion::Free;
+        }
+    }
+
+    /// Falling bodies that came down: each block placed where it landed, on what it landed on,
+    /// else dropped as loot.
     fn land_falling(&mut self, c: &'static Content) {
         let bodies = &self.bodies;
-        let landed: Vec<(u64, DVec3, u32, bool, Option<u64>)> = self
+        let landed: Vec<(u64, DVec3, Vec<(IVec3, u32)>, bool, Option<u64>)> = self
             .entities
             .list
             .iter()
-            // One without its block (loaded from a save mid-fall) just goes.
-            .filter(|e| e.kind == c.game.falling_kind && !e.removed && e.motion != Motion::Parked)
-            .map(|e| {
-                (
-                    e,
-                    bodies
-                        .get(&e.id)
-                        .and_then(|s| s.get(IVec3::ZERO))
-                        .unwrap_or(AIR),
-                )
-            })
-            .filter(|(e, state)| *state == AIR || e.on_ground || e.age > 600)
-            .map(|(e, state)| (e.id, e.pos, state, e.on_ground, e.frame))
+            .filter(|e| e.falls && !e.removed && e.motion != Motion::Parked)
+            .filter(|e| e.on_ground || e.age > 600 || bodies.get(&e.id).is_none_or(|s| s.all_blocks().is_empty()))
+            .map(|e| (e.id, e.pos, bodies.get(&e.id).map_or(Vec::new(), |s| s.all_blocks()), e.on_ground, e.frame))
             .collect();
-        for (id, pos, state, ground, on) in landed {
-            if state == AIR {
+        for (id, pos, blocks, ground, on) in landed {
+            // One without its blocks (loaded from a save mid-fall) just goes.
+            if blocks.is_empty() {
                 self.entities.remove(id);
                 continue;
             }
-            let entity = self.entities.anchors.get(&(id, IVec3::ZERO)).copied();
+            let entities: Vec<Option<u64>> = blocks
+                .iter()
+                .map(|(local, _)| self.entities.anchored(id, *local))
+                .collect();
             self.in_frame(on.unwrap_or(0), |d| {
-                let p = d.place.to_local(pos).floor().as_ivec3();
-                let under = d.get(p);
-                let free = under.is_some_and(|s| c.states[s as usize].flags & bf::REPLACEABLE != 0 || s == AIR);
-                if ground && free && d.supported(c, p, state) {
-                    if let Some(s) = under.filter(|&s| s != AIR && c.states[s as usize].liquid.is_none()) {
-                        d.drop_block_loot(c, p, s, ItemStack::EMPTY, false, None);
+                let cell = crate::physics::Transform::of(d.place.to_local(pos)).cell(None);
+                let mut down = Vec::new();
+                let mut broke = Vec::new();
+                for ((local, state), entity) in blocks.into_iter().zip(entities) {
+                    let p = cell + local;
+                    let under = d.get(p);
+                    let free = under.is_some_and(|s| c.states[s as usize].flags & bf::REPLACEABLE != 0 || s == AIR);
+                    if ground && free && d.supported(c, p, state) {
+                        if let Some(s) = under.filter(|&s| s != AIR && c.states[s as usize].liquid.is_none()) {
+                            d.drop_block_loot(c, p, s, ItemStack::EMPTY, false, 0);
+                        }
+                        down.push(super::structure::Carried { local, to: p, state, entity });
+                    } else {
+                        broke.push((p, state, entity));
                     }
-                    d.put_down(c, id, vec![super::structure::Carried { local: IVec3::ZERO, to: p, state, entity }], Vec::new(), None);
-                } else {
+                }
+                if down.is_empty() {
                     d.entities.remove(id);
+                } else {
+                    d.put_down(c, id, down, Vec::new(), None);
+                }
+                for (p, state, entity) in broke {
                     d.broke_landing(c, p, state, entity);
                 }
             });
@@ -1248,7 +1478,8 @@ impl Dim {
     }
 
     pub fn spawn_item(&mut self, c: &Content, pos: DVec3, stack: ItemStack) -> u64 {
-        if stack.is_empty() {
+        // A liquid by the millibucket spills away instead: it only lives in liquid slots.
+        if stack.is_empty() || c.item_fluid.contains_key(&stack.item) {
             return 0;
         }
         let id = self.new_id();
@@ -1273,12 +1504,11 @@ impl Dim {
         &mut self,
         c: &'static Content,
         state: u32,
-        pick: impl Fn(&crate::content::BlockCallbacks) -> Option<abi::Callback>,
+        pick: impl Fn(&crate::content::BlockCallbacks) -> Option<(abi::ModId, abi::Callback)>,
         args: impl FnOnce(*mut abi::WorldCtx) -> A,
     ) -> Option<A> {
-        let block = c.block_of(state);
-        let cb = pick(&block.cb)?;
-        Some(self.call(block.owner, cb, args))
+        let (owner, cb) = pick(&c.block_of(state).cb)?;
+        Some(self.call(owner, cb, args))
     }
 
     /// A melee hit of `attacker` on `target`, the same for players and mobs: the `ATTACK`
@@ -1287,7 +1517,7 @@ impl Dim {
     /// between hits, like vanilla's; players are only held back by the target's hurt time.
     pub fn attack(&mut self, c: &'static Content, attacker: u64, target: u64, held: ItemStack) -> bool {
         let (Some(me), Some(t)) = (self.entities.get(attacker), self.entities.get(target)) else { return false };
-        if target == attacker || !t.is_body(c) || me.attack_cooldown > 0 {
+        if target == attacker || !t.is_body() || me.attack_cooldown > 0 {
             return false;
         }
         let (kind, player) = (me.kind, me.player);
@@ -1296,7 +1526,8 @@ impl Dim {
             return false;
         }
         let base = if held.item != 0 {
-            c.items.get(held.item as usize).map_or(1.0, |i| i.attack)
+            c.stack_value::<f32>(&held, c.ids.attack_damage)
+                .unwrap_or(1.0)
         } else if player {
             1.0
         } else {
@@ -1340,7 +1571,7 @@ impl Dim {
         let hit = self.damage(c, target, dmg, attacker, damage::ATTACK);
         if hit && crit {
             if let Some(t) = self.entities.get(target) {
-                let (pos, id) = (t.pos + DVec3::Y * (t.dims(c).1 * 0.5), self.id);
+                let (pos, id) = (t.pos + DVec3::Y * (t.dims(c).height * 0.5), self.id);
                 self.events.push(DimEvent::Particles {
                     dim: id,
                     burst: abi::ParticleBurst {
@@ -1350,9 +1581,9 @@ impl Dim {
                             .get(abi::particle::CRIT)
                             .copied()
                             .unwrap_or(0),
-                        pos: pos.to_array(),
+                        pos: pos.to_array().into(),
                         count: 16,
-                        spread: [0.3, 0.5, 0.3],
+                        spread: [0.3, 0.5, 0.3].into(),
                         speed: 3.0,
                         ..abi::ParticleBurst::DEFAULT
                     },
@@ -1383,7 +1614,7 @@ impl Dim {
                 .list
                 .iter()
                 .filter(|e| {
-                    e.is_body(c)
+                    e.is_body()
                         && e.id != attacker
                         && e.id != target
                         && (e.pos - center).length_squared() <= 2.0
@@ -1401,28 +1632,97 @@ impl Dim {
     /// How charged a player's next swing is, 0..1.
     pub fn swing_strength(&self, c: &Content, player: u64, held: ItemStack) -> f32 {
         let Some(e) = self.entities.get(player) else { return 1.0 };
-        crate::content::swing_charge(
-            c,
-            held.item,
-            e.swing_ticks as f32,
-            self.attribute(c, player, super::extend::ATTACK_SPEED, false) as f32,
-        )
+        crate::content::swing_charge(c, &held, e.swing_ticks as f32, self.attribute(c, player, super::extend::ATTACK_SPEED, false) as f32)
     }
 
+    /// What everyone near sees of a fall: dust where entity `id` landed from `fell` blocks up
+    /// (vanilla's, from a fall that would hurt), and a splash where it fell into a liquid with
+    /// one (`comp::SPLASH`, `comp::BUBBLE`).
+    pub fn fall_effects(&mut self, c: &'static Content, id: u64, fell: Option<f32>, splash: bool) {
+        let Some(e) = self.entities.get(id) else { return };
+        let (pos, w) = (e.pos, e.dims(c).half_width as f32);
+        let mut bursts = Vec::new();
+        let safe = super::entity::SAFE_FALL;
+        let under = self
+            .get((pos - DVec3::Y * 0.2).floor().as_ivec3())
+            .unwrap_or(AIR);
+        let kind = c.states[under as usize].effects[crate::content::block_event::LAND].particle;
+        if let Some(drop) = fell.filter(|&d| d > safe && under != AIR && kind != u32::MAX) {
+            // Vanilla's `checkFallDamage`, and what its particles make of no speed of their own.
+            let count = (150.0 * (0.2 + (drop - safe).ceil() / 15.0).min(2.5)) as u32;
+            bursts.push(abi::ParticleBurst {
+                kind,
+                block: under,
+                pos: pos.to_array().into(),
+                count,
+                velocity: [0.0, 2.0, 0.0].into(),
+                speed: 3.6,
+                outward: 1,
+                ..abi::ParticleBurst::DEFAULT
+            });
+        }
+        let liquid = splash
+            .then(|| crate::physics::liquid_at(c, &*self.space, pos))
+            .flatten()
+            .map(|l| c.liquids[l as usize].first_state);
+        if let Some(state) = liquid {
+            for (comp, count) in [(abi::comp::SPLASH, 24), (abi::comp::BUBBLE, 12)] {
+                let Some(&kind) = c
+                    .components
+                    .id(comp)
+                    .and_then(|id| c.components.text(comps::BLOCK, state, id))
+                    .and_then(|n| c.game.particle_names.get(n))
+                else {
+                    continue;
+                };
+                bursts.push(abi::ParticleBurst {
+                    kind,
+                    pos: pos.to_array().into(),
+                    count,
+                    spread: [w * 2.0, 0.2, w * 2.0].into(),
+                    speed: 3.0,
+                    velocity: [0.0, 3.0, 0.0].into(),
+                    ..abi::ParticleBurst::DEFAULT
+                });
+            }
+        }
+        let dim = self.id;
+        self.events.extend(
+            bursts
+                .into_iter()
+                .map(|burst| DimEvent::Particles { dim, burst }),
+        );
+    }
+
+    /// Damage to an entity, or with a negative `amount` healing: one entry for every change of
+    /// health that mods may watch or change.
     pub fn damage(&mut self, c: &'static Content, id: u64, amount: f32, source: u64, cause: u32) -> bool {
         let Some(e) = self.entities.get(id) else { return false };
         let k = &c.game.entities[e.kind as usize];
-        if k.is(ef::NOT_IN_WORLD) {
+        if !e.alive() || amount.is_nan() {
             return false;
         }
-        // The void gets through everything, or /kill would silently fail.
-        if !e.alive() || (cause != damage::VOID && (k.is(ef::INVULNERABLE) || e.mode.invulnerable())) {
+        if amount < 0.0 {
+            return self.heal(c, id, -amount, source, cause);
+        }
+        let Some(def) = c.game.damage_causes.get(cause as usize) else {
+            crate::host::misuse("damage", || format!("no damage cause {cause}"));
+            return false;
+        };
+        let immune = c
+            .damage_immune
+            .get(cause as usize)
+            .copied()
+            .flatten()
+            .is_some_and(|t| c.components.has(crate::components::ENTITY, e.kind, t));
+        // The void gets through everything, or /clear would silently fail.
+        if immune || (!def.has(df::PIERCES_INVULNERABLE) && (k.is(ef::INVULNERABLE) || e.mode.invulnerable())) {
             return false;
         }
-        let recovering = e.hurt_cooldown > 0 && cause != damage::VOID;
+        let recovering = e.hurt_cooldown > 0 && !def.has(df::IGNORES_COOLDOWN);
         // One path: the `HURT` veto, the `DAMAGE` chain, then the `ENTITY_HURT` event.
         let mut q = abi::Query { entity: id, other: source, cause, amount: amount as f64, ..abi::Query::DEFAULT };
-        if !self.ask(c, abi::question::HURT, &mut q) {
+        if !self.ask(c, abi::action::HURT, &mut q) {
             return false;
         }
         let amount =
@@ -1438,14 +1738,23 @@ impl Dim {
             return false;
         }
         let amount = landing;
-        self.emit_engine(c, abi::event::ENTITY_HURT, &abi::Hurt { entity: id, source, amount, cause });
+        self.emit_engine(c, abi::action::HURT, &abi::Hurt { entity: id, source, amount, cause });
         let knock = self
             .entities
             .get(source)
-            .filter(|_| !recovering)
+            .filter(|_| !recovering && !def.has(df::NO_KNOCKBACK))
             .map(|s| s.pos);
+        // A death mods may refuse (a totem): it lives on with one health.
+        let dying = self
+            .entities
+            .get(id)
+            .is_some_and(|e| e.health - amount <= 0.0);
+        let spared = dying && {
+            let mut q = abi::Query { entity: id, other: source, cause, amount: amount as f64, ..abi::Query::DEFAULT };
+            !self.ask(c, abi::action::DIE, &mut q)
+        };
         let Some(e) = self.entities.get_mut(id) else { return false };
-        e.health = (e.health - amount).max(0.0);
+        e.health = if spared { 1.0 } else { (e.health - amount).max(0.0) };
         e.last_hurt = if recovering { last + amount } else { amount };
         if !recovering {
             e.hurt_cooldown = 10;
@@ -1463,17 +1772,24 @@ impl Dim {
             }
         }
         let (health, player, pos, kind, on_fire, height) = (e.health, e.player, e.pos, e.kind, e.fire > 0, e.height(c));
-        let sounds = k.sounds;
-        use crate::registry::entity_sound;
-        self.sound(sounds[if health <= 0.0 { entity_sound::DEATH } else { entity_sound::HURT }], pos + DVec3::Y * (height * 0.5), 1.0, 0.0);
+        let effects = k.effects;
+        use crate::registry::entity_event;
+        if health <= 0.0 || !def.has(df::SILENT) {
+            self.sound(
+                effects[if health <= 0.0 { entity_event::DEATH } else { entity_event::HURT }].sound,
+                pos + DVec3::Y * (height * 0.5),
+                1.0,
+                0.0,
+            );
+        }
         if let Some(away) = knocked {
-            self.entities.pushed.push((id, Pushed::Knock(away)));
+            self.entities.told.push((id, Told::Knock(away)));
         }
         if health <= 0.0 {
             self.entities.killed.push(id);
         }
         if health <= 0.0 {
-            self.emit_engine(c, abi::event::ENTITY_DIED, &abi::Death { entity: id, killer: source, kind, cause, pos: pos.to_array() });
+            self.emit_engine(c, abi::action::DIE, &abi::Death { entity: id, source: source, kind, cause, pos: pos.to_array().into() });
             if !player {
                 let by_player = self.entities.get(source).is_some_and(|s| s.player);
                 let tool = self
@@ -1482,14 +1798,8 @@ impl Dim {
                     .filter(|s| s.player)
                     .map(|_| self.entities.held(source))
                     .unwrap_or_default();
-                let ctx = crate::loot::Ctx {
-                    tool,
-                    by_player,
-                    on_fire: on_fire || cause == damage::FIRE || cause == damage::LAVA,
-                    mined: 0,
-                    state: 0,
-                };
-                for s in self.roll_loot(c, &k.name, &ctx) {
+                let ctx = crate::loot::Ctx { tool, by_player, on_fire: on_fire || def.has(df::BURNING), ..Default::default() };
+                for s in self.roll_loot(c, &k.name, &ctx, pos, source) {
                     self.spawn_item(c, pos + DVec3::Y * 0.5, s);
                 }
             }
@@ -1504,26 +1814,20 @@ impl Dim {
         true
     }
 
-    /// A head stuck in a solid block: vanilla's 1 damage, with the usual pause between hits.
-    fn suffocate(&mut self, c: &'static Content) {
-        if self.time % 10 != 0 {
-            return;
+    /// `amount` more health up to the most it has, through the `HEAL` chain; the dead stay dead.
+    /// No hurt pause, knockback, sound or armor: none of damage's consequences.
+    fn heal(&mut self, c: &'static Content, id: u64, amount: f32, source: u64, cause: u32) -> bool {
+        let q = abi::Query { entity: id, other: source, cause, amount: amount as f64, ..abi::Query::DEFAULT };
+        let amount = self.compute(c, abi::chain::HEAL, amount as f64, &q, false) as f32;
+        let max = self.max_health(c, id);
+        let Some(e) = self.entities.get_mut(id) else { return false };
+        let gained = (e.health + amount).min(max) - e.health;
+        if gained <= 0.0 || !gained.is_finite() {
+            return false;
         }
-        let stuck: Vec<u64> = self
-            .entities
-            .list
-            .iter()
-            .filter(|e| e.is_body(c) && !e.flying)
-            .filter(|e| {
-                let head = (e.pos + DVec3::Y * e.eye(c)).floor().as_ivec3();
-                self.get(head)
-                    .is_some_and(|s| c.states[s as usize].flags & bf::SOLID != 0 && c.tight[s as usize].opacity >= 15)
-            })
-            .map(|e| e.id)
-            .collect();
-        for id in stuck {
-            self.damage(c, id, 1.0, 0, damage::SUFFOCATE);
-        }
+        e.health += gained;
+        self.emit_engine(c, abi::event::ENTITY_HEALED, &abi::Hurt { entity: id, source, amount: gained, cause });
+        true
     }
 
     /// Far below the world's floor: vanilla's 4 damage, 64 blocks under it.
@@ -1537,7 +1841,7 @@ impl Dim {
             .entities
             .list
             .iter()
-            .filter(|e| e.in_world(c) && e.pos.y < limit && e.mode != crate::world::GameMode::Spectator)
+            .filter(|e| e.in_world() && e.pos.y < limit && !e.mode.has(crate::tag_bits::game_mode::NOCLIP))
             .map(|e| e.id)
             .collect();
         for id in falling {
@@ -1572,7 +1876,7 @@ impl Dim {
         self.players = None;
         self.tick_blocks_first(c);
         self.fall_into_void(c);
-        self.suffocate(c);
+        self.source_modifiers(c);
         self.natural_spawns(c);
         self.tick_entities(c);
         self.tick_bodies(c);
@@ -1603,13 +1907,13 @@ impl Dim {
                 }
                 if c.states[state as usize].liquid.is_some() {
                     self.liquid_tick(c, p, state);
-                } else {
+                } else if !self.neighbor_rules(c, p, state, true) {
                     self.as_part(p, state, |d| {
                         d.call_block(
                             c,
                             state,
                             |b| b.on_scheduled,
-                            |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: 0 },
+                            |w| abi::BlockEventArgs { world: w, pos: p.to_array().into(), state, other: [0; 3].into(), entity: 0 },
                         )
                     });
                 }
@@ -1674,7 +1978,7 @@ impl Dim {
         let list = &self.entities.list;
         self.players.get_or_insert_with(|| {
             list.iter()
-                .filter(|e| e.player && !e.removed && e.mode != crate::world::GameMode::Spectator)
+                .filter(|e| e.player && !e.removed && !e.mode.has(crate::tag_bits::game_mode::HIDDEN))
                 .map(|e| e.id)
                 .collect()
         })
@@ -1787,7 +2091,7 @@ impl Dim {
         }
     }
 
-    /// Natural spawning (`abi::SpawnDesc`) around this region's players every two seconds.
+    /// Natural spawning (`abi::comp::spawn`) around this region's players every two seconds.
     fn natural_spawns(&mut self, c: &'static Content) {
         // Nothing spawns where nothing may change (the debug blocks, the void).
         if self.time % 40 != 0 || c.game.spawns.is_empty() || !c.dims[self.id as usize].editable {
@@ -1798,7 +2102,6 @@ impl Dim {
             return;
         }
         let cats = &c.game.categories;
-        let daylight = self.daylight(c);
         let players: Vec<DVec3> = self
             .entities
             .list
@@ -1812,59 +2115,107 @@ impl Dim {
                 .entities
                 .list
                 .iter()
-                .filter(|e| e.is_body(c) && !e.player && (e.pos - p).length_squared() < 64.0 * 64.0)
+                .filter(|e| e.is_body() && !e.player)
             {
-                count[c.game.entities[e.kind as usize].category as usize] += 1;
+                let cat = c.game.entities[e.kind as usize].category as usize;
+                if (e.pos - p).length_squared() < cats[cat].cap_radius * cats[cat].cap_radius {
+                    count[cat] += 1;
+                }
             }
             for _ in 0..4 {
                 let a = self.rng.float() as f64 * std::f64::consts::TAU;
                 let r = 20.0 + self.rng.float() as f64 * 25.0;
                 let (x, z) = ((p.x + a.cos() * r).floor() as i32, (p.z + a.sin() * r).floor() as i32);
-                // First spot with room for a mob, scanning down from above the player.
-                // Unloaded counts as solid; liquids are not solid.
+                // Per rule, the first spot of its kind with room for its mob, scanning down from
+                // above the player. Unloaded counts as solid; liquids are not solid.
                 let state = |y: i32| self.get(IVec3::new(x, y, z)).map(|s| &c.states[s as usize]);
                 let solid = |y: i32| state(y).is_none_or(|s| s.flags & bf::SOLID != 0);
+                let air = |y: i32| !solid(y) && state(y).is_some_and(|s| s.liquid.is_none());
+                let wet = |y: i32| state(y).is_some_and(|s| s.liquid.is_some());
                 let top = p.y.floor() as i32 + 16;
-                let Some(y) = (top - 32..top)
-                    .rev()
-                    .find(|&y| solid(y - 1) && !solid(y) && state(y).is_some_and(|s| s.liquid.is_none()) && !solid(y + 1))
-                else {
-                    continue;
+                let spot_for = |s: &crate::registry::SpawnRule| -> Option<(i32, IVec3)> {
+                    use abi::spawn_place as sp;
+                    let h = s.height;
+                    let (y, rests_on) = match s.place {
+                        sp::IN_LIQUID => {
+                            let y = (top - 32..top)
+                                .rev()
+                                .find(|&y| (0..h).all(|k| wet(y - k)))?;
+                            (y - h + 1, IVec3::new(x, y - h + 1, z))
+                        }
+                        sp::CEILING => {
+                            let y = (top - 32..top)
+                                .rev()
+                                .find(|&y| solid(y + 1) && (0..h).all(|k| air(y - k)))?;
+                            (y - h + 1, IVec3::new(x, y + 1, z))
+                        }
+                        _ => {
+                            let y = (top - 32..top)
+                                .rev()
+                                .find(|&y| solid(y - 1) && air(y) && (1..h.max(2)).all(|k| !solid(y + k)))?;
+                            (y, IVec3::new(x, y - 1, z))
+                        }
+                    };
+                    Some((y, rests_on))
                 };
-                let spot = IVec3::new(x, y, z);
-                let light = abi::light::effective(self.light(spot), daylight);
-                let biome = self
-                    .space
-                    .cubes
-                    .get(&cube_of(spot))
-                    .map_or(0, |cube| cube.biome((x & 15) as usize, (z & 15) as usize)) as u32;
-                let ground = self.get(spot - IVec3::Y).unwrap_or(AIR);
-                let fits = |s: &crate::registry::SpawnRule| {
-                    count[s.category as usize] < cats[s.category as usize].cap
-                        && s.dimension.is_none_or(|d| d == self.id)
-                        && (s.light[0]..=s.light[1]).contains(&light)
-                        && (s.y[0]..=s.y[1]).contains(&y)
+                let biome_at = |spot: IVec3| {
+                    self.space
+                        .cubes
+                        .get(&cube_of(spot))
+                        .map_or(0, |cube| cube.biome((x & 15) as usize, (z & 15) as usize)) as u32
+                };
+                let fits = |s: &crate::registry::SpawnRule| -> Option<(i32, u32)> {
+                    if count[s.category as usize] >= cats[s.category as usize].cap || !s.dims.is_empty() && !s.dims.contains(&self.id) {
+                        return None;
+                    }
+                    let (y, rests_on) = spot_for(s)?;
+                    let spot = IVec3::new(x, y, z);
+                    ((s.y[0]..=s.y[1]).contains(&y)
                         && s.biome
-                            .is_none_or(|t| c.components.has(comps::BIOME, biome, t))
-                        && s.ground
-                            .is_none_or(|t| c.components.has(comps::BLOCK, ground, t))
+                            .as_ref()
+                            .is_none_or(|b| crate::refs::has(b, biome_at(spot))))
+                    .then(|| (y, self.get(rests_on).unwrap_or(AIR)))
                 };
+                let spots: Vec<Option<(i32, u32)>> = c.game.spawns.iter().map(fits).collect();
+                // Asked about the spot and what it rests on.
+                let found: Vec<Option<i32>> = c
+                    .game
+                    .spawns
+                    .iter()
+                    .zip(spots)
+                    .map(|(s, at)| {
+                        let (y, ground) = at?;
+                        let pos = DVec3::new(x as f64 + 0.5, y as f64, z as f64 + 0.5);
+                        let ask = crate::conditions::Ask { pos, state: ground, ..Default::default() };
+                        s.when
+                            .is_none_or(|w| crate::conditions::on_server(self, c, w, &ask))
+                            .then_some(y)
+                    })
+                    .collect();
                 let total: u32 = c
                     .game
                     .spawns
                     .iter()
-                    .filter(|s| fits(s))
-                    .map(|s| s.weight)
+                    .zip(&found)
+                    .filter(|(_, y)| y.is_some())
+                    .map(|(s, _)| s.weight)
                     .sum();
                 if total == 0 {
                     continue;
                 }
                 let mut pick = (self.rng.next() % total as u64) as u32;
-                let Some(rule) = c.game.spawns.iter().filter(|s| fits(s)).find(|s| {
-                    let hit = pick < s.weight;
-                    pick = pick.saturating_sub(s.weight);
-                    hit
-                }) else {
+                let Some((rule, y)) = c
+                    .game
+                    .spawns
+                    .iter()
+                    .zip(found)
+                    .filter_map(|(s, y)| y.map(|y| (s, y)))
+                    .find(|(s, _)| {
+                        let hit = pick < s.weight;
+                        pick = pick.saturating_sub(s.weight);
+                        hit
+                    })
+                else {
                     continue;
                 };
                 if self.rng.float() >= rule.chance {
@@ -1923,8 +2274,14 @@ impl Dim {
     fn tick_entities(&mut self, c: &'static Content) {
         // Mod logic: one call per kind and callback with every entity of that kind.
         let mut by_kind: FxHashMap<(u64, u32), Vec<u64>> = FxHashMap::default();
+        // Copied, mods' calls borrow the region; empty but where only machines are kept.
+        let idle = (!self.idle.is_empty()).then(|| self.idle.clone());
+        let still = |e: &super::entity::Entity| {
+            idle.as_ref()
+                .is_some_and(|i| !e.player && e.anchor.is_none() && i.contains(&cube_of(e.pos.floor().as_ivec3())))
+        };
         for e in &self.entities.list {
-            if !e.removed && (!e.player || e.alive()) {
+            if !e.removed && (!e.player || e.alive()) && !still(e) {
                 by_kind
                     .entry((e.block_frame(), e.kind))
                     .or_default()
@@ -1947,10 +2304,11 @@ impl Dim {
         }
         self.fire_timers(c);
         self.navigation(c);
+        self.steer_mounts(c);
 
         let gravity = c.dims[self.id as usize].gravity as f64;
         let day = self.daylight(c);
-        let raining = self.raining;
+        let sheltered = c.game.weathers[self.weather as usize].shelters();
         let players: Vec<DVec3> = self
             .entities
             .list
@@ -2000,7 +2358,7 @@ impl Dim {
             .par_iter_mut()
             .with_min_len(64)
             .filter_map(|e| {
-                if e.removed {
+                if e.removed || still(e) {
                     return None;
                 }
                 e.age += 1;
@@ -2014,35 +2372,39 @@ impl Dim {
                     // Mods saw it this tick; the next `Move` tells of the next.
                     e.jumped = false;
                 }
-                if e.player && (!e.alive() || e.mode == crate::world::GameMode::Spectator) {
+                if e.player && (!e.alive() || e.mode.has(crate::tag_bits::game_mode::NO_INTERACT)) {
                     return None;
                 }
                 let k = &c.game.entities[e.kind as usize];
-                if k.is(ef::NOT_IN_WORLD) {
-                    return None;
-                }
-                let mut land = None;
+                let (mut land, mut fell, mut splash) = (None, None, false);
                 let mut crushed = false;
                 // Players move on their client, bodies moved above; the rest here.
                 if !e.player && !k.is(ef::SOLID) {
+                    let (wet, falling) = (e.in_liquid, -e.vel.y * crate::world::TICK);
                     let s = step(c, e, gravity, &block, bodies);
                     crushed = s.crushed;
+                    (fell, splash) = (s.land, super::entity::splashes(wet, e.in_liquid, falling));
                     land = s.land.and_then(|fall| super::entity::fall_damage(k, fall));
                 }
-                // The liquids where the entity is now, and whether they burn.
-                let burning = [e.pos, e.pos + DVec3::Y * crate::physics::body_level(e.height(c))].map(|p| {
-                    crate::physics::Cells::liquid(&block, c, p.floor().as_ivec3())
-                        .and_then(|s| c.states[s as usize].liquid)
-                        .map(|l| c.liquids[l as usize].burns())
-                });
-                // Like vanilla lava: 15 seconds of fire and 4 damage while inside.
-                let hot = burning.contains(&Some(true));
-                let wet = burning.contains(&Some(false));
-                if hot {
-                    e.fire = e.fire.max(300);
+                // The liquids where the entity is now, and whether they burn; what sets it on fire
+                // keeps it burning.
+                let wet = [e.pos, e.pos + DVec3::Y * crate::physics::body_level(e.height(c))]
+                    .iter()
+                    .any(|p| {
+                        crate::physics::Cells::liquid(&block, c, p.floor().as_ivec3())
+                            .and_then(|s| c.states[s as usize].liquid)
+                            .is_some_and(|l| !c.liquids[l as usize].burns())
+                    });
+                let met = hazards_met(c, &block, e);
+                let hot = met
+                    .iter()
+                    .any(|&(s, i)| c.states[s as usize].hazards[i].fire > 0);
+                // What sets things burning burns a dropped stack up, as lava and fire do in vanilla.
+                if hot && !e.item.is_empty() {
+                    e.removed = true;
                 }
                 // Sunlight sets them on fire for 8 seconds; burning hurts once a second, water puts it out.
-                if k.is(ef::BURNS_IN_SUN) && day > 0.5 && !raining && e.age % crate::world::TPS as u64 == 0 && !e.in_liquid {
+                if k.is(ef::BURNS_IN_SUN) && day > 0.5 && !sheltered && e.age % crate::world::TPS as u64 == 0 && !e.in_liquid {
                     let head = (e.pos + DVec3::Y * e.eye(c)).floor().as_ivec3();
                     let sky = cubes
                         .get(&cube_of(head))
@@ -2071,23 +2433,54 @@ impl Dim {
                         e.removed = true;
                     }
                 }
-                (land.is_some() || burn || hot || crushed).then_some(TickHit { id: e.id, land, burn, hot, crushed })
+                (land.is_some() || fell.is_some() || splash || burn || crushed || !met.is_empty()).then_some(TickHit {
+                    id: e.id,
+                    land,
+                    fell,
+                    splash,
+                    burn,
+                    crushed,
+                    met,
+                })
             })
             .collect();
         for (i, push) in super::entity::soft_push(c, &self.entities.list) {
             self.entities.list[i].vel += push;
         }
-        for &TickHit { id, land, burn, hot, crushed } in &hits {
+        self.seat_riders(c);
+        for TickHit { id, land, fell, splash, burn, crushed, met } in hits {
+            self.fall_effects(c, id, fell, splash);
             if let Some(amount) = land {
                 self.damage(c, id, amount, 0, damage::FALL);
+                self.riders_fall(c, id, amount);
             }
             if crushed {
                 self.damage(c, id, 1.0, 0, damage::CRUSH);
             }
-            if hot {
-                self.damage(c, id, 4.0, 0, damage::LAVA);
-            } else if burn {
+            if burn {
                 self.damage(c, id, 1.0, 0, damage::FIRE);
+            }
+            for (state, i) in met {
+                let h = c.states[state as usize].hazards[i];
+                let Some(e) = self
+                    .entities
+                    .get(id)
+                    .filter(|_| h.every <= 1 || (self.time + id) % h.every as u64 == 0)
+                else {
+                    continue;
+                };
+                let ask = crate::conditions::Ask { pos: e.pos, entity: id, state, body: Some(e.body()), ..Default::default() };
+                if h.when
+                    .is_some_and(|w| !crate::conditions::on_server(self, c, w, &ask))
+                {
+                    continue;
+                }
+                if let Some(e) = self.entities.get_mut(id) {
+                    e.fire = e.fire.max(h.fire);
+                }
+                if let Some(cause) = h.cause {
+                    self.damage(c, id, h.damage, 0, cause);
+                }
             }
         }
         self.items(c);
@@ -2229,7 +2622,7 @@ impl Dim {
             .entities
             .list
             .iter()
-            .filter(|e| e.player && !e.removed && e.alive() && e.mode != crate::world::GameMode::Spectator)
+            .filter(|e| e.player && !e.removed && e.alive() && !e.mode.has(crate::tag_bits::game_mode::HIDDEN))
             .map(|e| (e.id, e.pos))
             .collect();
         // Who is next to whom, once a merge is due: everyone asking everyone was the one thing
@@ -2273,7 +2666,7 @@ impl Dim {
                 })
             {
                 let mut q = abi::Query { entity: pid, other: id, item: stack.item, amount: stack.count as f64, ..abi::Query::DEFAULT };
-                if !self.ask(c, abi::question::PICKUP_ITEM, &mut q) {
+                if !self.ask(c, abi::action::PICKUP_ITEM, &mut q) {
                     continue;
                 }
                 let rest = self.entities.insert_item(c, pid, stack);
@@ -2286,11 +2679,7 @@ impl Dim {
                         .copied()
                         .unwrap_or(u32::MAX);
                     self.sound(pickup, pos, 1.0, 0.0);
-                    self.emit_engine(
-                        c,
-                        abi::event::ITEM_PICKED_UP,
-                        &abi::Pickup { player: pid, stack: ItemStack { count: taken, ..stack } },
-                    );
+                    self.emit_engine(c, abi::action::PICKUP_ITEM, &abi::Pickup { player: pid, stack: ItemStack { count: taken, ..stack } });
                 }
                 if let Some(e) = self.entities.get_mut(id) {
                     if rest.is_empty() {
@@ -2361,13 +2750,17 @@ impl Dim {
 
     /// A part of the cell at `p` hears of a change at `from`.
     fn neighbor_changed(&mut self, c: &'static Content, p: IVec3, state: u32, from: IVec3) {
-        if c.states[state as usize].signal.kind == abi::signal_kind::WIRE && self.wire_support(c, p, state) {
+        if self.sides_fall(c, p, state) || self.neighbor_rules(c, p, state, false) {
             return;
         }
-        if !self.supported(c, p, state) {
-            self.break_off(c, p, state);
-            return;
+        for r in &c.states[state as usize].rules {
+            if let When::Neighbor(d) = r.when
+                && d > 0
+            {
+                self.schedule(p, d);
+            }
         }
+        self.consider(c, p, self.time);
         if c.states[state as usize].liquid.is_some() {
             self.liquid_neighbor(c, p, state);
             return;
@@ -2377,42 +2770,127 @@ impl Dim {
                 c,
                 state,
                 |b| b.on_neighbor,
-                |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: from.to_array(), entity: 0 },
+                |w| abi::BlockEventArgs { world: w, pos: p.to_array().into(), state, other: from.to_array().into(), entity: 0 },
             )
         });
     }
 
-    /// The block `state` would be held up at `p` (unloaded neighbors count as holding).
-    fn supported(&self, c: &'static Content, p: IVec3, state: u32) -> bool {
-        let Some((side, _)) = c.states[state as usize].support else { return true };
-        let at = p + DIRS[side as usize];
-        let Some(n) = self.get(at) else { return true };
-        if !c.supports(state, n) && !self.space.extras(at).iter().any(|&e| c.supports(state, e)) {
+    /// The block `state` would be held up at `p`: no neighbor rule of it breaks it, and what it
+    /// lies on holds (unloaded neighbors count as holding).
+    fn supported(&mut self, c: &'static Content, p: IVec3, state: u32) -> bool {
+        if self.sides_held(c, p, state) != c.states[state as usize].sides {
             return false;
         }
-        // Something the support must stand next to (water by sugar cane); a stack of the same
-        // block is held by the one at its bottom.
-        match c.states[state as usize].support_near {
-            Some(t) if c.states[n as usize].block != c.states[state as usize].block => {
-                [IVec3::X, -IVec3::X, IVec3::Z, -IVec3::Z].iter().any(|d| {
-                    self.get(at + *d).is_none_or(|s| c.block_has(s, Some(t)))
-                        || self
-                            .space
-                            .extras(at + *d)
-                            .iter()
-                            .any(|&s| c.block_has(s, Some(t)))
-                })
-            }
-            _ => true,
+        let ask = self.ask_at(p, state);
+        !c.states[state as usize]
+            .rules
+            .iter()
+            .filter(|r| matches!(r.when, When::Neighbor(_)) && r.then == Then::Break)
+            .any(|r| {
+                r.cond
+                    .is_none_or(|w| crate::conditions::on_server(self, c, w, &ask))
+            })
+    }
+
+    /// What `state` at `p` asks its conditions about.
+    /// Light counts with the daylight of the moment being caught up on, if it is one.
+    fn ask_at(&self, p: IVec3, state: u32) -> crate::conditions::Ask<'static> {
+        let daylight = self
+            .space
+            .growing_at
+            .map(|at| self.daylight_at(crate::content::content(), at));
+        crate::conditions::Ask {
+            pos: self.place.to_world(p.as_dvec3() + DVec3::splat(0.5)),
+            state,
+            daylight,
+            own_frame: true,
+            ..Default::default()
         }
+    }
+
+    /// `part`'s neighbor rules, those at once or (`later`) those after a while: the first that
+    /// holds is done. Whether one was.
+    fn neighbor_rules(&mut self, c: &'static Content, p: IVec3, part: u32, later: bool) -> bool {
+        let ask = self.ask_at(p, part);
+        for r in &c.states[part as usize].rules {
+            let When::Neighbor(d) = r.when else { continue };
+            if (d > 0) == later
+                && c.acts(part, r.then)
+                && r.cond
+                    .is_none_or(|w| crate::conditions::on_server(self, c, w, &ask))
+            {
+                self.act(c, p, part, r.then);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// What a rule of `part` of the cell at `p` does.
+    fn act(&mut self, c: &'static Content, p: IVec3, part: u32, then: Then) {
+        match then {
+            Then::Become(s) => {
+                self.replace_part(c, p, part, s);
+            }
+            Then::Grow => match c.block_of(part).cb.on_grow {
+                Some(_) => {
+                    self.as_part(p, part, |d| {
+                        d.call_block(
+                            c,
+                            part,
+                            |b| b.on_grow,
+                            |w| abi::BlockEventArgs { world: w, pos: p.to_array().into(), state: part, other: [0; 3].into(), entity: 0 },
+                        )
+                    });
+                }
+                None => {
+                    if let Some(next) = c.grown(part) {
+                        self.replace_part(c, p, part, next);
+                    }
+                }
+            },
+            Then::Break => self.break_off(c, p, part),
+            Then::Fall => {
+                self.fall_block(c, p);
+            }
+        }
+    }
+
+    /// Which sides of an `on_sides` block something holds up; the unloaded holds.
+    fn sides_held(&self, c: &Content, p: IVec3, state: u32) -> u8 {
+        let mask = c.states[state as usize].sides;
+        (0..6u8)
+            .filter(|&f| {
+                mask & 1 << f != 0
+                    && self
+                        .get(p + DIRS[f as usize])
+                        .is_none_or(|s| crate::wire::holds_wire(c, s))
+            })
+            .fold(0, |m, f| m | 1 << f)
+    }
+
+    /// Sides of an `on_sides` block that lost what held them up come off, each dropping what it
+    /// would alone. Whether any did.
+    fn sides_fall(&mut self, c: &'static Content, p: IVec3, state: u32) -> bool {
+        let (mask, left) = (c.states[state as usize].sides, self.sides_held(c, p, state));
+        if left == mask {
+            return false;
+        }
+        let def = c.block_of(state);
+        for f in (0..6u8).filter(|&f| (mask ^ left) & 1 << f != 0) {
+            self.drop_block_loot(c, p, def.with_sides(state, 1 << f), ItemStack::EMPTY, false, 0);
+        }
+        self.block_dust(c, p, state);
+        self.replace_part(c, p, state, if left == 0 { AIR } else { def.with_sides(state, left) });
+        true
     }
 
     /// Breaks a block that lost its support, dropping what it drops.
     pub(super) fn break_off(&mut self, c: &'static Content, p: IVec3, state: u32) {
         self.replace_part(c, p, state, AIR);
         self.block_dust(c, p, state);
-        self.drop_block_loot(c, p, state, ItemStack::EMPTY, false, None);
-        self.emit_engine(c, abi::event::BLOCK_BROKEN, &abi::BlockChange { player: 0, pos: p.to_array(), state, item: 0 });
+        self.drop_block_loot(c, p, state, ItemStack::EMPTY, false, 0);
+        self.emit_engine(c, abi::action::BREAK_BLOCK, &abi::BlockChange { player: 0, pos: p.to_array().into(), state, item: 0 });
     }
 
     /// What happened since the last settling takes effect: neighbor updates, then events.
@@ -2466,10 +2944,10 @@ impl Dim {
         }
     }
 
-    /// What `question::BREAK_BLOCK` says about it.
+    /// What `action::BREAK_BLOCK` says about it.
     pub fn may_break(&mut self, c: &'static Content, p: IVec3, state: u32, item: u32, player: u64) -> bool {
-        let mut q = abi::Query { entity: player, pos: p.to_array(), state, item, ..abi::Query::DEFAULT };
-        self.ask(c, abi::question::BREAK_BLOCK, &mut q)
+        let mut q = abi::Query { entity: player, pos: p.to_array().into(), state, item, ..abi::Query::DEFAULT };
+        self.ask(c, abi::action::BREAK_BLOCK, &mut q)
     }
 
     /// The surface of a liquid counts, not only the block it is in.
@@ -2481,13 +2959,13 @@ impl Dim {
     /// it holds and where it is now.
     pub fn mining_rate_of(&mut self, c: &Content, player: u64, frame: u64, pos: IVec3, part: u32) -> f32 {
         let Some(e) = self.entities.get(player) else { return 0.0 };
-        let (wet, on_ground, creative) = (self.head_in_liquid(c, e), e.on_ground, e.mode == crate::world::GameMode::Creative);
-        let tool = self.entities.held(player).item;
+        let (wet, on_ground, creative) = (self.head_in_liquid(c, e), e.on_ground, e.mode.has(crate::tag_bits::game_mode::INSTANT_BREAK));
+        let tool = self.entities.held(player);
         let speed = self.attribute(c, player, super::extend::MINING_SPEED, false) as f32;
         let state = self
             .in_frame(frame, |d| d.aimed_part(c, pos, part))
             .unwrap_or(AIR);
-        mining_rate(c, state, tool, wet, on_ground, speed, creative)
+        mining_rate(c, state, &tool, wet, on_ground, speed, creative)
     }
 
     /// Pushes an entity, by blocks per second. Its client moves a player, so the push goes there.
@@ -2495,7 +2973,7 @@ impl Dim {
         let Some(e) = self.entities.get_mut(id) else { return };
         if e.player {
             let add = (v / crate::world::TPS as f64).as_vec3().to_array();
-            self.entities.pushed.push((id, Pushed::Add(add)));
+            self.entities.told.push((id, Told::Add(add)));
         } else {
             e.vel += v;
         }
@@ -2508,38 +2986,46 @@ impl Dim {
         let hit = self.attack(c, attacker, target, held);
         // Bare hands wear nothing, whatever sits in the slot doing nothing.
         if hit && player && !held.is_empty() {
-            super::actions::wear(
-                c,
-                self,
-                attacker,
-                slot,
-                c.item_value::<u32>(held.item, c.ids.wear_per_hit)
-                    .unwrap_or(2),
-            );
+            super::actions::wear(c, self, attacker, slot, c.stack_value::<u32>(&held, c.ids.wear_per_hit).unwrap_or(2));
         }
         hit
     }
 
-    /// Breaks a block as if mined with `tool`: asks interceptors, rolls its loot (if `drops`),
-    /// tells the block and fires `block_broken`.
-    /// `break_block` of what a player hit on `face`: a piece of wire, with other pieces in the
-    /// cell, goes alone.
-    pub fn break_face(&mut self, c: &'static Content, p: IVec3, part: u32, face: u8, tool: ItemStack, player: u64, drops: bool) -> bool {
+    /// `break_part` of what a player hit at `hit` on `face`: the piece hit, if the state has
+    /// pieces (`StateInfo::piece_hit`), goes alone.
+    #[allow(clippy::too_many_arguments)]
+    pub fn break_piece(
+        &mut self,
+        c: &'static Content,
+        p: IVec3,
+        part: u32,
+        face: u8,
+        hit: [f32; 3],
+        tool: ItemStack,
+        player: u64,
+        drops: bool,
+    ) -> bool {
         let state = self.aimed_part(c, p, part);
-        let after = crate::wire::after_break(c, state, face);
-        if after == AIR {
+        let Some(&piece) = c.states[state as usize]
+            .piece_hit(hit, face)
+            .filter(|piece| piece.left != AIR)
+        else {
             return self.break_part(c, p, state, tool, player, drops);
-        }
-        if !self.may_break(c, p, state, tool.item, player) {
+        };
+        if !self.may_break(c, p, piece.alone, tool.item, player) {
             return false;
         }
-        self.set(c, p, after);
-        self.block_dust(c, p, state);
-        self.sound(c.states[state as usize].sounds[crate::content::block_sound::BREAK], p.as_dvec3() + DVec3::splat(0.5), 1.0, 0.0);
+        self.replace_part(c, p, state, piece.left);
+        self.block_dust(c, p, piece.alone);
+        self.sound(c.states[state as usize].effects[crate::content::block_event::BREAK].sound, p.as_dvec3() + DVec3::splat(0.5), 1.0, 0.0);
         if drops {
-            self.drop_block_loot(c, p, state, tool, true, None);
+            self.drop_block_loot(c, p, piece.alone, tool, true, 0);
         }
-        self.emit_engine(c, abi::event::BLOCK_BROKEN, &abi::BlockChange { player, pos: p.to_array(), state, item: tool.item });
+        self.emit_engine(
+            c,
+            abi::action::BREAK_BLOCK,
+            &abi::BlockChange { player, pos: p.to_array().into(), state: piece.alone, item: tool.item },
+        );
         true
     }
 
@@ -2562,7 +3048,7 @@ impl Dim {
         if can { part } else { self.get(p).unwrap_or(AIR) }
     }
 
-    /// `break_block` of all that is in the cell but its liquid, which stays.
+    /// `break_block` of all that is in the cell that can be aimed at: a liquid in it stays.
     pub fn break_block(&mut self, c: &'static Content, p: IVec3, tool: ItemStack, player: u64, drops: bool) -> bool {
         let Some(main) = self.get(p) else { return false };
         if self.space.extras(p).is_empty() {
@@ -2572,7 +3058,7 @@ impl Dim {
         for part in self
             .parts(p)
             .into_iter()
-            .filter(|&s| c.states[s as usize].liquid.is_none())
+            .filter(|&s| c.states[s as usize].flags & bf::NOT_TARGETABLE == 0)
         {
             any |= self.break_part(c, p, part, tool, player, drops);
         }
@@ -2591,18 +3077,29 @@ impl Dim {
         if !self.may_break(c, p, state, tool.item, player) {
             return false;
         }
-        // The block entity's own name goes back onto the block's item.
-        let name = self
-            .anchored(p)
-            .and_then(|id| self.entities.comps.get(&(id, c.game.name_comp)))
-            .map(|b| String::from_utf8_lossy(b).into_owned());
+        // What the block entity carries goes back onto the block's item.
+        let carried = self.anchored_part(c, p, state).map_or(0, |id| {
+            crate::stack::intern(
+                c.game
+                    .carried
+                    .iter()
+                    .filter_map(|&comp| {
+                        self.entities
+                            .comps
+                            .get(&(id, comp))
+                            .map(|v| (comp, v.clone()))
+                    })
+                    .filter(|(_, v)| !v.is_empty())
+                    .collect(),
+            )
+        });
         self.replace_part(c, p, state, AIR);
         self.block_dust(c, p, state);
-        self.sound(c.states[state as usize].sounds[crate::content::block_sound::BREAK], p.as_dvec3() + DVec3::splat(0.5), 1.0, 0.0);
+        self.sound(c.states[state as usize].effects[crate::content::block_event::BREAK].sound, p.as_dvec3() + DVec3::splat(0.5), 1.0, 0.0);
         if drops {
-            self.drop_block_loot(c, p, state, tool, true, name.as_deref());
+            self.drop_block_loot(c, p, state, tool, true, carried);
         }
-        self.emit_engine(c, abi::event::BLOCK_BROKEN, &abi::BlockChange { player, pos: p.to_array(), state, item: tool.item });
+        self.emit_engine(c, abi::action::BREAK_BLOCK, &abi::BlockChange { player, pos: p.to_array().into(), state, item: tool.item });
         true
     }
 
@@ -2634,8 +3131,7 @@ impl Dim {
                 .all(|&s| c.states[s as usize].flags & bf::REPLACEABLE != 0);
         let mut point = hit;
         point[axis] = if replacing { if up { OUTSIDE } else { 1.0 - OUTSIDE } } else { hit[axis] + if up { OUTSIDE } else { -OUTSIDE } };
-        let is_wire = c.states[state as usize].signal.kind == abi::signal_kind::WIRE;
-        let inside = !is_wire && (0.0..1.0).contains(&point[axis]) && !replacing;
+        let inside = (0.0..1.0).contains(&point[axis]) && !replacing;
         let beside = |off: IVec3| std::array::from_fn(|a| point[a] - off[a] as f32);
         if replacing || inside {
             if self.place(c, clicked, face, state, look, if replacing { point } else { beside(IVec3::ZERO) }, player, item) {
@@ -2666,20 +3162,14 @@ impl Dim {
         player: u64,
         item: u32,
     ) -> bool {
-        // Wire goes on the clicked face, next to any already in the cell.
         if self.get(p).is_none() || self.space.signals.reserved(p) {
             return false;
         }
-        let is_wire = c.states[state as usize].signal.kind == abi::signal_kind::WIRE;
-        let on_wire = if is_wire { self.wire_placed(c, p, face, state) } else { None };
-        if is_wire && (on_wire.is_none() || !self.space.extras(p).is_empty()) {
-            return false;
-        }
         let def = c.block_of(state);
-        let mut chosen = on_wire.unwrap_or(def.first_state);
-        if let (Some(cb), false) = (def.cb.placement, is_wire) {
+        let mut chosen = def.first_state;
+        if let Some((owner, cb)) = def.cb.placement {
             let mut args = abi::PlaceArgs {
-                pos: p.to_array(),
+                pos: p.to_array().into(),
                 face: face as u32,
                 look,
                 state: def.first_state,
@@ -2687,7 +3177,7 @@ impl Dim {
                 hit,
                 placed: 0,
             };
-            host::invoke(def.owner, cb, &mut args);
+            host::invoke(owner, cb, &mut args);
             if args.state >= def.first_state && args.state < def.first_state + def.states {
                 chosen = args.state;
             } else {
@@ -2697,29 +3187,38 @@ impl Dim {
         let parts = self.parts(p);
         // The same block may take it in.
         let mut merged = None;
-        if !is_wire && let Some(cb) = def.cb.merge {
+        if let Some((owner, cb)) = def.cb.merge {
             for &part in parts
                 .iter()
                 .filter(|&&s| c.states[s as usize].block == c.states[chosen as usize].block)
             {
-                let mut args =
-                    abi::PlaceArgs { pos: p.to_array(), face: face as u32, look, state: part, first: def.first_state, hit, placed: chosen };
-                host::invoke(def.owner, cb, &mut args);
+                let mut args = abi::PlaceArgs {
+                    pos: p.to_array().into(),
+                    face: face as u32,
+                    look,
+                    state: part,
+                    first: def.first_state,
+                    hit,
+                    placed: chosen,
+                };
+                host::invoke(owner, cb, &mut args);
                 if args.state != part && args.state >= def.first_state && args.state < def.first_state + def.states {
                     merged = Some((part, args.state));
                     break;
                 }
             }
         }
-        // What is there in the way goes if placing replaces it, or there is no room.
+        // What is there in the way goes if placing replaces it, or there is no room. A liquid
+        // fills its whole cell.
         let mut replaced = Vec::new();
-        if merged.is_none() && !is_wire {
+        if merged.is_none() {
             for &part in &parts {
                 let there = &c.states[part as usize];
-                if there.liquid.is_some() || !c.overlap(part, chosen) || c.may_share(part, chosen) {
+                if !(there.liquid.is_some() || c.overlap(part, chosen)) || c.may_share(part, chosen) {
                     continue;
                 }
-                if there.flags & bf::REPLACEABLE == 0 {
+                // Tall grass doesn't replace tall grass: that would only use the item up.
+                if there.flags & bf::REPLACEABLE == 0 || there.block == c.states[chosen as usize].block {
                     return false;
                 }
                 replaced.push(part);
@@ -2745,13 +3244,13 @@ impl Dim {
             self.entities
                 .list
                 .iter()
-                .any(|e| e.is_body(c) && e.id != self.frame && !self.bodies.contains_key(&e.id) && e.aabb(c).intersects(&part))
+                .any(|e| e.is_body() && e.id != self.frame && !self.bodies.contains_key(&e.id) && e.aabb(c).intersects(&part))
         });
         if taken {
             return false;
         }
-        let mut q = abi::Query { entity: player, pos: p.to_array(), state: chosen, item, ..abi::Query::DEFAULT };
-        if !self.ask(c, abi::question::PLACE_BLOCK, &mut q) {
+        let mut q = abi::Query { entity: player, pos: p.to_array().into(), state: chosen, item, ..abi::Query::DEFAULT };
+        if !self.ask(c, abi::action::PLACE_BLOCK, &mut q) {
             return false;
         }
         // What it replaces (a flower, tall grass) drops what it would when broken, unlike vanilla,
@@ -2759,10 +3258,10 @@ impl Dim {
         let creative = self
             .entities
             .get(player)
-            .is_some_and(|e| e.mode == crate::world::GameMode::Creative);
+            .is_some_and(|e| e.mode.has(crate::tag_bits::game_mode::NO_COSTS));
         for &gone in &replaced {
-            if !creative && c.states[gone as usize].block != c.states[chosen as usize].block {
-                self.drop_block_loot(c, p, gone, ItemStack::EMPTY, false, None);
+            if !creative {
+                self.drop_block_loot(c, p, gone, ItemStack::EMPTY, false, 0);
             }
             self.replace_part(c, p, gone, AIR);
         }
@@ -2771,16 +3270,13 @@ impl Dim {
                 self.replace_part(c, p, part, whole);
                 chosen = whole;
             }
-            None if is_wire => {
-                self.set(c, p, chosen);
-            }
             None => {
                 self.add_part(c, p, chosen);
             }
         }
         self.drain_if_no_room(c, p);
-        self.sound(c.states[chosen as usize].sounds[crate::content::block_sound::PLACE], p.as_dvec3() + DVec3::splat(0.5), 1.0, 0.0);
-        self.emit_engine(c, abi::event::BLOCK_PLACED, &abi::BlockChange { player, pos: p.to_array(), state: chosen, item });
+        self.sound(c.states[chosen as usize].effects[crate::content::block_event::PLACE].sound, p.as_dvec3() + DVec3::splat(0.5), 1.0, 0.0);
+        self.emit_engine(c, abi::action::PLACE_BLOCK, &abi::BlockChange { player, pos: p.to_array().into(), state: chosen, item });
         true
     }
 
@@ -2792,17 +3288,21 @@ impl Dim {
         }
         let opens = c.block_of(state).opens;
         if c.block_of(state).cb.on_use.is_some() || opens.is_some() {
-            let mut q = abi::Query { entity: player, pos: p.to_array(), state, ..abi::Query::DEFAULT };
-            if !self.ask(c, abi::question::USE_BLOCK, &mut q) {
+            let mut q = abi::Query { entity: player, pos: p.to_array().into(), state, ..abi::Query::DEFAULT };
+            if !self.ask(c, abi::action::USE_BLOCK, &mut q) {
                 // Refused uses are consumed: no item use or placement behind them.
                 return true;
             }
+            let item = self.entities.held(player).item;
+            self.emit_engine(c, abi::action::USE_BLOCK, &abi::BlockChange { player, pos: p.to_array().into(), state, item });
         }
         if let Some(menu) = opens {
             // Its block entity's menu, or one of its own (a crafting table).
-            let owner = self.anchored(p).unwrap_or(0);
+            let on = self
+                .anchored_part(c, p, state)
+                .map(|id| crate::server::holder::Inv::own(crate::server::holder::At::Entity(id)));
             self.events
-                .push(crate::server::DimEvent::OpenMenu { player, menu, owner, block: state });
+                .push(DimEvent::OpenMenu { player, menu, on, block: state });
             return true;
         }
         let r = self.as_part(p, state, |d| {
@@ -2810,21 +3310,10 @@ impl Dim {
                 c,
                 state,
                 |b| b.on_use,
-                |w| abi::UseArgs { world: w, pos: p.to_array(), state, face: face as u32, player, handled: 0 },
+                |w| abi::UseArgs { world: w, pos: p.to_array().into(), state, face: face as u32, player, handled: 0 },
             )
         });
         r.is_some_and(|a| a.handled != 0)
-    }
-
-    /// The next growth step of the block at `p`, drawn like a random tick would come (an
-    /// exponential wait with the block's mean) from `from`, deterministically from the place and
-    /// time.
-    fn schedule_growth(&mut self, c: &Content, p: IVec3, state: u32, from: u64) {
-        let Some((mean, _)) = c.grows(state) else {
-            self.space.growth.remove(&p);
-            return;
-        };
-        self.schedule_at(p, mean, from);
     }
 
     /// What time does to `p` next, in `mean` ticks on average from `from` (an exponential wait
@@ -2837,44 +3326,63 @@ impl Dim {
         self.space.growth_queue.push(Reverse((at, p.x, p.y, p.z)));
     }
 
-    /// Covered (`smother`) or something near spreads onto it: schedules the change if it can
-    /// happen now. Growing blocks have their own steps; one change waits at a time.
-    fn consider(&mut self, c: &Content, p: IVec3, from: u64) {
+    /// What may happen to the cell at `p` by itself, and how often (a share per tick): a rule
+    /// now and then of a part of it that may hold some time, and something spreading onto it.
+    fn chances(&mut self, c: &'static Content, p: IVec3) -> Vec<(Chance, f64)> {
+        let mut out = Vec::new();
+        for part in self.parts(p) {
+            let ask = self.ask_at(p, part);
+            for (i, r) in c.states[part as usize].rules.iter().enumerate() {
+                let When::Random(mean) = r.when else { continue };
+                if c.acts(part, r.then)
+                    && r.cond
+                        .is_none_or(|w| crate::conditions::may_server(self, c, w, &ask))
+                {
+                    out.push((Chance::Rule(part, i), 1.0 / mean));
+                }
+            }
+        }
+        if let Some(state) = self.get(p).filter(|&s| c.spread_target(s)) {
+            let covered = self
+                .get(p + IVec3::Y)
+                .is_some_and(|s| c.states[s as usize].flags & bf::OPAQUE != 0);
+            if let (Some((_, sp)), n) = self.spreaders_near(c, p, state, covered) {
+                out.push((Chance::Spread, n as f64 / sp.mean));
+            }
+        }
+        out
+    }
+
+    /// What time does to `p` next, from `from`, if anything can: one wait for all its chances
+    /// together. One waits at a time.
+    fn consider(&mut self, c: &'static Content, p: IVec3, from: u64) {
         if self.space.growth.contains_key(&p) {
             return;
         }
-        let Some(state) = self.get(p) else { return };
-        if c.grows(state).is_some() {
-            return;
+        let rate: f64 = self.chances(c, p).iter().map(|x| x.1).sum();
+        if rate > 0.0 {
+            self.schedule_at(p, 1.0 / rate, from);
         }
-        let covered = self
-            .get(p + IVec3::Y)
-            .is_some_and(|s| c.states[s as usize].flags & bf::OPAQUE != 0);
-        let mean = match c.states[state as usize].smother {
-            Some((_, mean)) if covered => mean,
-            Some(_) => return,
-            None if covered || !c.spread_target(state) => return,
-            None => match self.spreaders_near(c, p, state) {
-                (Some((_, mean, _)), n) => mean / n as f64,
-                _ => return,
-            },
-        };
-        self.schedule_at(p, mean, from);
     }
 
-    /// A block that spreads onto `state` at `p` from where it reaches (1 sideways, 1 below to 3
-    /// above): its state, mean ticks and light needed, and how many there are.
-    fn spreaders_near(&self, c: &Content, p: IVec3, state: u32) -> (Option<(u32, f64, u32)>, u32) {
+    /// A block that spreads onto `state` at `p` from where it reaches it (and, while `covered`,
+    /// one that spreads onto covered blocks): its state and rule, and how many there are.
+    fn spreaders_near(&self, c: &Content, p: IVec3, state: u32, covered: bool) -> (Option<(u32, crate::content::Spread)>, u32) {
         let mut first = None;
         let mut n = 0;
-        for dy in -1..=3 {
-            for dz in -1..=1 {
-                for dx in -1..=1 {
-                    let Some(s) = self.get(p + IVec3::new(dx, dy, dz)) else { continue };
-                    if let Some((tag, mean, light)) = c.states[s as usize].spread
-                        && c.components.has(comps::BLOCK, state, tag)
+        let (lo, hi) = c.spread_search;
+        for dy in lo.y..=hi.y {
+            for dz in lo.z..=hi.z {
+                for dx in lo.x..=hi.x {
+                    let at = IVec3::new(dx, dy, dz);
+                    let Some(s) = self.get(p + at) else { continue };
+                    if let Some(sp) = c.states[s as usize].spread
+                        && (!covered || !sp.open_top)
+                        && (-at).cmpge(sp.min).all()
+                        && (-at).cmple(sp.max).all()
+                        && c.matchers.has(sp.to, state)
                     {
-                        first.get_or_insert((s, mean, light));
+                        first.get_or_insert((s, sp));
                         n += 1;
                     }
                 }
@@ -2883,34 +3391,31 @@ impl Dim {
         (first, n)
     }
 
-    /// A scheduled change of a block that does not grow comes due at `at`: a covered block
-    /// turns, an uncovered one with light above takes what spreads onto it. Too dark: it tries
-    /// again later.
-    fn react(&mut self, c: &'static Content, p: IVec3, state: u32, at: u64) {
+    /// Something spreading onto the block at `p` comes due at `at`: it takes it where the light
+    /// is enough, else tries again later.
+    fn spread_onto(&mut self, c: &'static Content, p: IVec3, state: u32, at: u64) {
         let covered = self
             .get(p + IVec3::Y)
             .is_some_and(|s| c.states[s as usize].flags & bf::OPAQUE != 0);
-        self.space.growing_at = Some(at);
-        match c.states[state as usize].smother {
-            Some((into, _)) if covered => {
+        if let (Some((into, sp)), _) = self.spreaders_near(c, p, state, covered) {
+            // Covered, the light of its brightest side.
+            let light = if sp.open_top {
+                self.light(p + IVec3::Y)
+            } else {
+                crate::world::DIRS
+                    .iter()
+                    .map(|&d| self.light(p + d))
+                    .max_by_key(|&l| abi::light::effective(l, 1.0))
+                    .unwrap_or(0)
+            };
+            if abi::light::effective(light, self.daylight_at(c, at)) >= sp.light {
                 self.set(c, p, into);
             }
-            Some(_) => {}
-            None if covered => {}
-            None => {
-                if let (Some((into, _, need)), _) = self.spreaders_near(c, p, state) {
-                    if abi::light::effective(self.light(p + IVec3::Y), self.daylight_at(c, at)) >= need {
-                        self.set(c, p, into);
-                    } else {
-                        self.consider(c, p, at);
-                    }
-                }
-            }
         }
-        self.space.growing_at = None;
     }
 
-    /// Growth steps due by now, in time order (catching up on unloaded time included).
+    /// What time does comes due, in time order (catching up on unloaded time included): of the
+    /// cell's chances one is picked by how often it comes, and done if it holds then.
     fn grow(&mut self, c: &'static Content) {
         while let Some(&Reverse((at, x, y, z))) = self.space.growth_queue.peek() {
             if at > self.time {
@@ -2921,40 +3426,43 @@ impl Dim {
             if self.space.growth.get(&p) != Some(&at) {
                 continue;
             }
-            self.space.growth.remove(&p);
-            let Some(state) = self.get(p) else { continue };
-            let Some((_, need)) = c.grows(state) else {
-                self.react(c, p, state, at);
-                continue;
-            };
-            // Support that went away without a neighbor noticing (water two blocks off).
-            if !self.supported(c, p, state) {
-                self.break_off(c, p, state);
+            // Where only machines are kept, it waits as in an unloaded cube.
+            if self.idle.contains(&cube_of(p)) {
                 continue;
             }
-            let light = abi::light::effective(self.light(p), self.daylight_at(c, at));
+            self.space.growth.remove(&p);
             self.space.growing_at = Some(at);
-            if light >= need {
-                match c.block_of(state).cb.on_grow {
-                    Some(_) => {
-                        self.call_block(
-                            c,
-                            state,
-                            |b| b.on_grow,
-                            |w| abi::BlockEventArgs { world: w, pos: p.to_array(), state, other: [0; 3], entity: 0 },
-                        );
-                    }
-                    None => {
-                        if let Some(next) = c.grown(state) {
-                            self.set(c, p, next);
+            // A rule breaking it whose cause no neighbor noticed (water two blocks off).
+            let parts = self.parts(p);
+            if !parts.iter().any(|&s| self.neighbor_rules(c, p, s, false)) {
+                let chances = self.chances(c, p);
+                let total: f64 = chances.iter().map(|x| x.1).sum();
+                let mut pick = weft_noise::unit(hash(0x6F1 ^ at, p.x as i64, p.y as i64, p.z as i64)) * total;
+                if let Some(&(chance, _)) = chances.iter().find(|x| {
+                    pick -= x.1;
+                    pick < 0.0
+                }) {
+                    match chance {
+                        Chance::Rule(part, i) => {
+                            let r = c.states[part as usize].rules[i];
+                            let ask = self.ask_at(p, part);
+                            if self.has_part(p, part)
+                                && r.cond
+                                    .is_none_or(|w| crate::conditions::on_server(self, c, w, &ask))
+                            {
+                                self.act(c, p, part, r.then);
+                            }
+                        }
+                        Chance::Spread => {
+                            if let Some(state) = self.get(p) {
+                                self.spread_onto(c, p, state, at);
+                            }
                         }
                     }
                 }
             }
-            // The next step counts from this one, not from now.
-            if let Some(now) = self.get(p).filter(|&s| c.grows(s).is_some()) {
-                self.schedule_growth(c, p, now, at);
-            }
+            // The next counts from this one, not from now.
+            self.consider(c, p, at);
             self.space.growing_at = None;
         }
     }
@@ -3009,7 +3517,10 @@ impl Dim {
 
     /// Vanilla's 4x4x4 pieces of a broken block flying apart, for everyone watching.
     pub fn block_dust(&mut self, c: &Content, p: IVec3, state: u32) {
-        let Some(&kind) = c.game.particle_names.get(abi::particle::BLOCK) else { return };
+        let kind = c.states[state as usize].effects[crate::content::block_event::BREAK].particle;
+        if kind == u32::MAX {
+            return;
+        }
         // Vanilla's: a grid over each box of its shape, a piece every quarter block or at least two
         // along a side, far enough from the box's faces not to start inside a neighbor.
         for b in &c.states[state as usize].selection {
@@ -3022,9 +3533,9 @@ impl Dim {
             let spread = [0, 1, 2].map(|i| size[i] * (0.5 - 0.5 / cells[i] as f32));
             let burst = abi::ParticleBurst {
                 kind,
-                pos,
-                spread,
-                velocity: [0.0, 2.0, 0.0],
+                pos: pos.into(),
+                spread: spread.into(),
+                velocity: [0.0, 2.0, 0.0].into(),
                 speed: 3.6,
                 outward: 1,
                 count: cells[0] * cells[1] * cells[2],
@@ -3039,7 +3550,8 @@ impl Dim {
     /// Spawns what a block's loot table gives for `tool`; `mined`: by that tool, not by the world
     /// (support, liquids), which always harvests.
     /// `own_name`: what a renamed block entity was called, given back to the block's item.
-    pub fn drop_block_loot(&mut self, c: &'static Content, p: IVec3, state: u32, tool: ItemStack, mined: bool, own_name: Option<&str>) {
+    /// `carried`: stack data the block's own item gets (what its block entity carried).
+    pub fn drop_block_loot(&mut self, c: &'static Content, p: IVec3, state: u32, tool: ItemStack, mined: bool, carried: u32) {
         let b = c.block_of(state);
         let own_item = c
             .items
@@ -3047,10 +3559,14 @@ impl Dim {
             .position(|i| i.block == Some(b.first_state))
             .map(|i| i as u32);
         for _ in 0..c.block_value::<u32>(state, c.ids.loot_rolls).unwrap_or(1) {
-            for s in
-                self.roll_loot(c, &b.name, &crate::loot::Ctx { tool, mined: if mined { state } else { 0 }, state, ..Default::default() })
-            {
-                let s = if Some(s.item) == own_item { crate::stack::with_name(s, own_name) } else { s };
+            for s in self.roll_loot(
+                c,
+                &b.name,
+                &crate::loot::Ctx { tool, mined: if mined { state } else { 0 }, state, ..Default::default() },
+                p.as_dvec3() + DVec3::splat(0.5),
+                0,
+            ) {
+                let s = if Some(s.item) == own_item && carried != 0 { crate::stack::merged_data(s, carried) } else { s };
                 self.spawn_item(c, p.as_dvec3() + DVec3::splat(0.5), s);
             }
         }
@@ -3266,4 +3782,12 @@ impl Dim {
     pub fn set_rng(&mut self, seed: u64) {
         self.rng = Rng(seed);
     }
+}
+
+/// What may happen to a cell with time (`Dim::chances`).
+#[derive(Clone, Copy)]
+enum Chance {
+    /// Rule `.1` of part `.0`.
+    Rule(u32, usize),
+    Spread,
 }
