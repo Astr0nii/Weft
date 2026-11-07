@@ -20,10 +20,10 @@ pub trait View {
     fn weather(&self) -> u32;
     /// Something falls from the sky (the weather isn't `comps::weather::DRY`): rain, snow.
     fn raining(&self) -> bool {
-        !crate::comps::weather::DRY.on(crate::abi::entry_kind::WEATHER, self.weather())
+        !crate::comps::weather::DRY.on_id(self.weather())
     }
     fn thundering(&self) -> bool {
-        crate::comps::weather::LIGHTNING.on(crate::abi::entry_kind::WEATHER, self.weather())
+        crate::comps::weather::LIGHTNING.on_id(self.weather())
     }
     fn day_time(&self) -> u64;
     /// The block at `pos`, `None` where it isn't loaded.

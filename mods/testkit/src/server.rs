@@ -625,7 +625,7 @@ const OPS: &[(&str, &str, Run)] = &[
         // Biomes of every block within `r` of the player, and where glow crystals are.
         let r: i32 = int(cmd, "r")?;
         let crystal = Block::lookup("testmod:glow_crystal").ok_or("no crystal block")?;
-        let cave = Tag::named("cave");
+        let cave: Tag = Tag::named("cave");
         let mut biomes: std::collections::BTreeMap<&str, u32> = Default::default();
         let (mut in_cave, mut elsewhere) = (0, 0);
         for y in me[1] - r..=me[1] + r {
@@ -778,13 +778,13 @@ const OPS: &[(&str, &str, Run)] = &[
             .map(|s| format!("{}x{}", item_name(s.item), s.count))
             .collect();
         drops.sort();
-        let oil = Tag::named("testkit:edited");
+        let oil: Tag = Tag::named("testkit:edited");
         let probe = |dx: i32| name_of(ek::BIOME, MARS.column(w.seed(), PROBE[0] + dx, PROBE[1]).biome) == "base:plains";
         let size = w
             .kind_size(EDITED_KIND.name())
             .map_or([0.0; 3], |s| [s.width, s.height, s.eye]);
         // Each state of the lamp: light, opacity, warmth, lit tag.
-        let lit = Tag::named("testkit:lit");
+        let lit: Tag = Tag::named("testkit:lit");
         let lamp: Vec<String> = (LAMP.id()..LAMP.id() + 2)
             .map(|s| {
                 let i = block_info(s).map_or(([0; 3], 0), |i| (i.light, i.opacity));
@@ -798,12 +798,12 @@ const OPS: &[(&str, &str, Run)] = &[
             MAX_STACK.on_item(i).unwrap_or(0),
             ATTACK_DAMAGE.on_item(i).unwrap_or(0.0),
             WARMTH.on_biome(b).unwrap_or(0.0),
-            Tag::named("edited_a").on_biome(b),
+            Tag::<kind::Biome>::named("edited_a").on_id(b),
             format!(
                 "{}/{}/{}",
-                !comps::weather::DRY.on(abi::entry_kind::WEATHER, STORM.id()),
-                comps::weather::LIGHTNING.on(abi::entry_kind::WEATHER, STORM.id()),
-                comps::weather::UNSHELTERED.on(abi::entry_kind::WEATHER, STORM.id())
+                !comps::weather::DRY.on_id(STORM.id()),
+                comps::weather::LIGHTNING.on_id(STORM.id()),
+                comps::weather::UNSHELTERED.on_id(STORM.id())
             ),
             w.attribute(player, &GRIT),
             recipe_process(&base_api::SMELTING, i).is_none(),

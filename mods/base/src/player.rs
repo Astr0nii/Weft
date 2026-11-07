@@ -234,7 +234,7 @@ pub fn register(r: &mut Registry) {
 }
 
 fn armor_applies(cause: u32) -> bool {
-    !comps::damage_cause::BYPASSES_ARMOR.on(abi::entry_kind::DAMAGE_CAUSE, cause)
+    !comps::damage_cause::BYPASSES_ARMOR.on_id(cause)
 }
 
 /// The `result` slot shows what the `grid` makes.

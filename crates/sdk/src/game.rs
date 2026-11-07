@@ -283,7 +283,7 @@ impl World {
     }
     /// A player whose mode spares it damage, hunger and air (creative, spectator).
     pub fn outside_survival(&self, id: u64) -> bool {
-        crate::comps::game_mode::INVULNERABLE.on(abi::entry_kind::GAME_MODE, self.game_mode(id))
+        crate::comps::game_mode::INVULNERABLE.on_id(self.game_mode(id))
     }
     /// The id of its game mode (`game_modes::CREATIVE.id()`): survival for what isn't a player.
     pub fn game_mode(&self, id: u64) -> u32 {

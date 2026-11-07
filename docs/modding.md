@@ -205,7 +205,7 @@ r.set("base:stone", &HARDNESS, 3.0);                // the engine's own block pr
 // Reading
 if let Some(ticks) = FUEL.on_item(stack.item) { /* burn it */ }
 if HOT.on_block(state) { /* harm player */ }
-if comps::weather::LIGHTNING.on(entry_kind::WEATHER, w.weather()) { /* any kind's entries */ }
+if comps::weather::LIGHTNING.on_id(w.weather()) { /* typed by kind, `.on(entry_kind::X, id)` for any */ }
 ```
 
 Component and tag names are not things a mod owns, they are a vocabulary.\

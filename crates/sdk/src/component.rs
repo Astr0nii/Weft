@@ -432,7 +432,7 @@ impl<T: Data, K> Component<T, K> {
         self.lookup.id(self.name, &T::schema)
     }
     /// Its value on entry `id` of `kind` (`abi::entry_kind`): a weather's, a game mode's, any
-    /// kind's but those without a table (recipes, ores, sky objects ...).
+    /// kind's but word sets and component declarations.
     #[inline]
     pub fn on(&self, kind: u32, id: u32) -> Option<T> {
         self.lookup.read(kind, id, self.name, &T::schema)
@@ -540,15 +540,33 @@ impl Storage {
     }
 }
 
-/// A component without a value: membership in a group (`plant_soil`, `logs`, `ingots/iron`).
-pub struct Tag {
-    name: &'static str,
-    lookup: Lookup,
+impl<T: Data, K: crate::kind::HasId> Component<T, K> {
+    /// Its value on entry `id` of its kind: `FALLS.on_id(w.weather())`.
+    #[inline]
+    pub fn on_id(&self, id: u32) -> Option<T> {
+        self.on(K::KIND, id)
+    }
 }
 
-impl Tag {
+/// A component without a value: membership in a group (`plant_soil`, `logs`, `ingots/iron`).
+/// `K` is the kind it is about (`crate::kind`), any kind by default, like `Component`'s.
+pub struct Tag<K = crate::kind::Any> {
+    name: &'static str,
+    lookup: Lookup,
+    _p: PhantomData<fn() -> K>,
+}
+
+impl<K: crate::kind::HasId> Tag<K> {
+    /// Entry `id` of its kind has it: `DRY.on_id(w.weather())`.
+    #[inline]
+    pub fn on_id(&self, id: u32) -> bool {
+        self.on(K::KIND, id)
+    }
+}
+
+impl<K> Tag<K> {
     pub const fn named(name: &'static str) -> Self {
-        Tag { name, lookup: Lookup::new() }
+        Tag { name, lookup: Lookup::new(), _p: PhantomData }
     }
     pub fn name(&self) -> &'static str {
         self.name
@@ -557,7 +575,7 @@ impl Tag {
     pub fn id(&self) -> u32 {
         self.lookup.id(self.name, &tag_schema)
     }
-    /// Entry `id` of `kind` (`abi::entry_kind`) has it: `DRY.on(entry_kind::WEATHER, w.weather())`.
+    /// Entry `id` of `kind` (`abi::entry_kind`) has it.
     #[inline]
     pub fn on(&self, kind: u32, id: u32) -> bool {
         self.lookup.has(kind, id, self.name, &tag_schema)
