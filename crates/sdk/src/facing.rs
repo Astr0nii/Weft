@@ -90,6 +90,10 @@ impl Facings {
         }
         Facings(bits)
     }
+    /// The directions opposite these.
+    pub const fn opposite(self) -> Facings {
+        Facings((self.0 & 0b01_0101) << 1 | (self.0 >> 1) & 0b01_0101)
+    }
     pub fn allows(self, d: Dir) -> bool {
         self.0 & (1 << d as u8) != 0
     }
@@ -108,19 +112,29 @@ pub enum Toward {
     Player,
     /// Out of the face that was clicked (torches and ladders on walls, logs along it).
     Face,
-    /// Where the player looks (an observer watching what it was placed against).
+    /// Where the player looks (an observer watching what it was placed against, stairs).
     Away,
+    /// Away from the side of its cell nearest where it was clicked, along the clicked face if
+    /// that is a wall (a vertical slab against a wall, on a floor against its near edge).
+    Hit,
 }
 
 impl Toward {
-    /// The facing for a placement: clicked face (0..6) and look direction.
-    /// A clicked face the block cannot face (a ladder on a floor) falls back to the player's
-    /// look, front towards the player.
-    pub fn choose(self, allowed: Facings, face: u32, look: [f32; 3]) -> Dir {
+    /// The facing for a placement: clicked face (0..6), look direction and where it was clicked
+    /// (0..1 in its cell). A clicked face the block cannot face (a ladder on a floor) falls back
+    /// to the player's look, front towards the player.
+    pub fn choose(self, allowed: Facings, face: u32, look: [f32; 3], hit: [f32; 3]) -> Dir {
         if self == Toward::Face && allowed.allows(Dir::from_face(face)) {
             return Dir::from_face(face);
         }
-        let at = if self == Toward::Away { look } else { [-look[0], -look[1], -look[2]] };
+        let at = match self {
+            Toward::Away => look,
+            Toward::Hit => {
+                let axis = face as usize / 2;
+                std::array::from_fn(|i| if axis == 1 || i == axis { 0.5 - hit[i] } else { 0.0 })
+            }
+            _ => [-look[0], -look[1], -look[2]],
+        };
         // Horizontal-only blocks go by the horizontal part of the look alone.
         if allowed.0 & Facings::VERTICAL.0 == 0 { Dir::nearest([at[0], 0.0, at[2]], allowed) } else { Dir::nearest(at, allowed) }
     }
@@ -221,8 +235,10 @@ mod tests {
         assert_eq!(f.count(), 3);
         assert_eq!(f.dirs().collect::<Vec<_>>(), [Dir::East, Dir::Up, Dir::North]);
         assert_eq!(Dir::from_name("north"), Some(Dir::North));
-        assert_eq!(Toward::Player.choose(Facings::HORIZONTAL, 3, [0.0, -0.9, -0.4]), Dir::South);
-        assert_eq!(Toward::Face.choose(f, 3, [0.0, -1.0, 0.0]), Dir::Up);
+        assert_eq!(Toward::Player.choose(Facings::HORIZONTAL, 3, [0.0, -0.9, -0.4], [0.5; 3]), Dir::South);
+        assert_eq!(Toward::Face.choose(f, 3, [0.0, -1.0, 0.0], [0.5; 3]), Dir::Up);
+        assert_eq!(Toward::Hit.choose(Facings::HORIZONTAL, 3, [0.0, -1.0, 0.0], [0.9, 0.0, 0.6]), Dir::West);
+        assert_eq!(Facings::only(&[Dir::Down, Dir::East]).opposite(), Facings::only(&[Dir::Up, Dir::West]));
     }
 }
 
@@ -277,7 +293,7 @@ mod turning_tests {
     #[test]
     fn away_looks_where_the_player_does() {
         let look = [0.0, 0.0, -1.0];
-        assert_eq!(Toward::Away.choose(Facings::HORIZONTAL, 0, look), Dir::North);
-        assert_eq!(Toward::Player.choose(Facings::HORIZONTAL, 0, look), Dir::South);
+        assert_eq!(Toward::Away.choose(Facings::HORIZONTAL, 0, look, [0.5; 3]), Dir::North);
+        assert_eq!(Toward::Player.choose(Facings::HORIZONTAL, 0, look, [0.5; 3]), Dir::South);
     }
 }

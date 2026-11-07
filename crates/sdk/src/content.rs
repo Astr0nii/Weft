@@ -1071,6 +1071,7 @@ impl Registry {
             item: true,
             item_texture: String::new(),
             facing: None,
+            sides: None,
             signal: None,
             placement: None,
             merge: None,
@@ -1576,6 +1577,8 @@ pub struct BlockBuilder<'a> {
     item: bool,
     item_texture: String,
     facing: Option<(crate::Facings, crate::Toward)>,
+    /// `on_sides`: the sides it may lie on.
+    pub(crate) sides: Option<crate::Facings>,
     signal: Option<SignalBuild>,
     placement: Option<std::sync::Arc<dyn Fn(&Place, &mut Props) + Send + Sync>>,
     merge: Option<Box<dyn Fn(&Place, &mut Props) + Send + Sync>>,
@@ -2227,8 +2230,8 @@ impl BlockBuilder<'_> {
         }
         let attaches = signal.is_some_and(|b| b.attaches);
         let switch = signal.is_some_and(|b| b.kind == abi::signal_kind::SWITCH);
-        if self.facing.is_some() || self.placement.is_some() || attaches || self.axis {
-            let (facing, axis, user) = (self.facing, self.axis, self.placement.take());
+        if self.facing.is_some() || self.placement.is_some() || attaches || self.axis || self.sides.is_some() {
+            let (facing, axis, sides, user) = (self.facing, self.axis, self.sides, self.placement.take());
             let defaults = Props {
                 values: self
                     .props
@@ -2239,7 +2242,16 @@ impl BlockBuilder<'_> {
             let cb = callback(move |a: &mut abi::PlaceArgs| {
                 let mut p = defaults.clone();
                 if let Some((allowed, toward)) = facing {
-                    p.set("facing", toward.choose(allowed, a.face, a.look).name());
+                    p.set("facing", toward.choose(allowed, a.face, a.look, a.hit).name());
+                }
+                // Against what was clicked, like a torch; the engine adds it to what is there.
+                if let Some(allowed) = sides {
+                    let on = crate::Toward::Face
+                        .choose(allowed.opposite(), a.face, a.look, a.hit)
+                        .opposite();
+                    for d in allowed.dirs() {
+                        p.set(d.name(), if d == on { "true" } else { "false" });
+                    }
                 }
                 if axis {
                     p.set("axis", ["x", "y", "z"][a.face as usize / 2 % 3]);
@@ -3173,10 +3185,6 @@ impl Place {
     /// In `merge`: a property of how its item would go.
     pub fn placed(&self, prop: &str) -> Option<&'static str> {
         crate::world::state_prop(self.args.placed, prop)
-    }
-    /// Which way around the player looks.
-    pub fn look_facing(&self) -> crate::Dir {
-        crate::Dir::nearest(self.args.look, crate::Facings::HORIZONTAL)
     }
 }
 

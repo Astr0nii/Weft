@@ -2994,7 +2994,7 @@ impl Dim {
         }
         let is_wire = def.sides != 0;
         if is_wire {
-            match self.sides_placed(c, p, face, look, chosen) {
+            match self.sides_placed(c, p, chosen) {
                 Some(s) if self.space.extras(p).is_empty() => chosen = s,
                 _ => return false,
             }

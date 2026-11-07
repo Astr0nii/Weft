@@ -2019,23 +2019,14 @@ impl Dim {
     /// A player adding a side of an `on_sides` block to a cell, against the face clicked (the
     /// allowed side nearest the look when that one isn't): the state, if that can be done. Its
     /// other properties are those of what is there already, else of `placed`.
-    pub(super) fn sides_placed(&self, c: &Content, p: IVec3, face: u8, look: [f32; 3], placed: u32) -> Option<u32> {
+    pub(super) fn sides_placed(&self, c: &Content, p: IVec3, placed: u32) -> Option<u32> {
         let cur = self.get(p)?;
         let def = c.block_of(placed);
-        let on = if def.sides & (1 << (face ^ 1)) != 0 {
-            face ^ 1
-        } else {
-            (0..6u8)
-                .filter(|f| def.sides & (1 << f) != 0)
-                .max_by(|a, b| {
-                    let dot = |f: u8| {
-                        (0..3)
-                            .map(|i| DIRS[f as usize][i] as f32 * look[i])
-                            .sum::<f32>()
-                    };
-                    dot(*a).total_cmp(&dot(*b))
-                })?
-        };
+        // The side its placement chose.
+        let on = wire::mask(c, placed).trailing_zeros() as u8;
+        if on >= 6 {
+            return None;
+        }
         let (mut mask, mut base) = (0, placed);
         if c.states[cur as usize].block == c.states[placed as usize].block {
             (mask, base) = (wire::mask(c, cur), cur);

@@ -1179,8 +1179,8 @@ pub async fn block_shapes(t: T) -> R {
         "base:oak_planks_stairs[facing=east]",
         "base:oak_planks_slab",
         "base:oak_planks_slab[type=top]",
-        "base:bricks_vertical_slab[side=north]",
-        "base:bricks_vertical_slab[side=west]",
+        "base:bricks_vertical_slab[facing=south]",
+        "base:bricks_vertical_slab[facing=east]",
         "base:sandstone_slab[type=double]",
         "base:spruce_planks_stairs[facing=south,half=top]",
         "base:mossy_cobblestone_stairs[facing=north]",
@@ -1325,12 +1325,12 @@ pub async fn block_shapes(t: T) -> R {
     t.frames(3).await?;
     t.press("core:use");
     t.secs(0.3).await?;
-    t.check(t.block(cell).await?.contains("side=north"), format!("against the wall it is on: {}", t.block(cell).await?));
+    t.check(t.block(cell).await?.contains("facing=south"), format!("against the wall it is on: {}", t.block(cell).await?));
     aim(&t, centre(cell, 0.5, 0.5, 0.5));
     t.frames(3).await?;
     t.press("core:use");
     t.secs(0.3).await?;
-    t.check(t.block(cell).await?.contains("side=double"), format!("and a second one joins it: {}", t.block(cell).await?));
+    t.check(t.block(cell).await?.contains("double=true"), format!("and a second one joins it: {}", t.block(cell).await?));
     t.set(cell, "air").await?;
 
     // Corners, by vanilla's rules: what is behind a stair crossways makes it an outer corner, what
@@ -1369,9 +1369,9 @@ pub async fn block_shapes(t: T) -> R {
     let up = t.state().pos;
     t.check(up.y >= f[1] as f64 + 0.99, format!("up the stairs, one block: {up:?}"));
     let v = add(f, [-16, 0, 2]);
-    t.set(v, "base:oak_planks_vertical_slab[side=north]")
+    t.set(v, "base:oak_planks_vertical_slab[facing=south]")
         .await?;
-    t.set(add(v, [0, 1, 0]), "base:oak_planks_vertical_slab[side=north]")
+    t.set(add(v, [0, 1, 0]), "base:oak_planks_vertical_slab[facing=south]")
         .await?;
     t.c().teleport(centre(v, 0.5, 0.0, 2.5));
     t.c().set_look(0.0, 0.0);

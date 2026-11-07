@@ -7,7 +7,7 @@ use crate::abi::BlockPos;
 use crate::component::Tag;
 use crate::content::{Block, BlockBuilder, Place, Props, Registry, State, WithComponents};
 use crate::world::state_prop;
-use crate::{Dir, Facings};
+use crate::{Dir, Facings, Orientation, Toward};
 
 /// How neighboring stairs find each other: every stair has it.
 static STAIRS: Tag = Tag::named("stairs");
@@ -15,20 +15,6 @@ static STAIRS: Tag = Tag::named("stairs");
 fn pos_step(pos: BlockPos, side: Dir) -> BlockPos {
     let o = side.offset();
     [pos.x + o.x, pos.y + o.y, pos.z + o.z].into()
-}
-
-/// The part of a layer towards `a` (and `b`, for a corner), in 1/16 of a block: (x, z) ranges.
-fn towards(a: Dir, b: Option<Dir>) -> ([f32; 2], [f32; 2]) {
-    let (mut x, mut z) = ([0.0, 16.0], [0.0, 16.0]);
-    for side in std::iter::once(a).chain(b) {
-        match side {
-            Dir::North => z = [0.0, 8.0],
-            Dir::South => z = [8.0, 16.0],
-            Dir::East => x = [8.0, 16.0],
-            _ => x = [0.0, 8.0],
-        }
-    }
-    (x, z)
 }
 
 /// Whether what is placed goes in the top half.
@@ -76,29 +62,37 @@ impl Registry {
             .tag("stairs")
             .signal_blocker()
             .holds_liquid()
-            .prop("facing", ["north", "east", "south", "west"])
+            .facing(Facings::HORIZONTAL, Toward::Away)
             .prop("half", ["bottom", "top"])
             .prop("shape", ["straight", "inner_left", "inner_right", "outer_left", "outer_right"])
             .states(|p: &Props, mut s| {
-                let (low, high) = if p.is("half", "top") { ([8.0, 16.0], [0.0, 8.0]) } else { ([0.0, 8.0], [8.0, 16.0]) };
-                s = s.model_box([0.0, low[0], 0.0], [16.0, low[1], 16.0]);
-                let f = p.facing();
-                let parts = match p.get("shape") {
-                    "outer_left" => vec![towards(f, Some(f.counter_clockwise()))],
-                    "outer_right" => vec![towards(f, Some(f.clockwise()))],
-                    "inner_left" => vec![towards(f, None), towards(f.counter_clockwise(), Some(f.opposite()))],
-                    "inner_right" => vec![towards(f, None), towards(f.clockwise(), Some(f.opposite()))],
-                    _ => vec![towards(f, None)],
-                };
-                for (x, z) in parts {
-                    s = s.model_box([x[0], high[0], z[0]], [x[1], high[1], z[1]]);
+                // Written going up to the north; the top half is the same turned over about that
+                // way, which swaps its left and right.
+                let mut shape = p.get("shape");
+                if p.is("half", "top") {
+                    s = s.orientation(Orientation::new(Dir::Up, p.facing()));
+                    shape = match shape {
+                        "inner_left" => "inner_right",
+                        "inner_right" => "inner_left",
+                        "outer_left" => "outer_right",
+                        "outer_right" => "outer_left",
+                        straight => straight,
+                    };
                 }
-                s
+                s = s.model_box([0.0, 0.0, 0.0], [16.0, 8.0, 16.0]);
+                let (x, z) = match shape {
+                    "outer_left" => ([0.0, 8.0], [0.0, 8.0]),
+                    "outer_right" => ([8.0, 16.0], [0.0, 8.0]),
+                    _ => ([0.0, 16.0], [0.0, 8.0]),
+                };
+                s = s.model_box([x[0], 8.0, z[0]], [x[1], 16.0, z[1]]);
+                match shape {
+                    "inner_left" => s.model_box([0.0, 8.0, 8.0], [8.0, 16.0, 16.0]),
+                    "inner_right" => s.model_box([8.0, 8.0, 8.0], [16.0, 16.0, 16.0]),
+                    _ => s,
+                }
             })
-            .placement(|p, props| {
-                props.set("facing", p.look_facing().name());
-                props.set("half", if upper_half(p) { "top" } else { "bottom" });
-            })
+            .placement(|p, props| props.set("half", if upper_half(p) { "top" } else { "bottom" }))
             .derived("shape", |n| stair_shape(&n.world(), n.pos()))
     }
 
@@ -133,48 +127,19 @@ impl Registry {
     pub fn vertical_slabs<'a>(&'a mut self, sources: &str) -> BlockBuilder<'a> {
         self.shapes_of("vertical_slab", sources, "_vertical_slab")
             .tag("vertical_slabs")
-            .prop("side", ["north", "south", "east", "west", "double"])
-            .states(|p: &Props, s| match p.get("side") {
-                "double" => s.loot_rolls(2),
-                side => {
-                    let (x, z) = towards(Dir::from_name(side).unwrap_or(Dir::North), None);
-                    s.model_box([x[0], 0.0, z[0]], [x[1], 16.0, z[1]])
-                        .signal_blocker()
-                        .holds_liquid()
-                }
-            })
-            .placement(|p, props| {
-                let (x, z) = (p.hit().x - 0.5, p.hit().z - 0.5);
-                let along_x = match p.face() {
-                    Dir::West | Dir::East => true,
-                    Dir::North | Dir::South => false,
-                    _ => x.abs() > z.abs(),
-                };
-                let side = match along_x {
-                    true => {
-                        if x > 0.0 {
-                            "east"
-                        } else {
-                            "west"
-                        }
-                    }
-                    false => {
-                        if z > 0.0 {
-                            "south"
-                        } else {
-                            "north"
-                        }
-                    }
-                };
-                props.set("side", side);
+            .facing(Facings::HORIZONTAL, Toward::Hit)
+            .prop("double", ["false", "true"])
+            .states(|p: &Props, s| match p.is("double", "true") {
+                true => s.loot_rolls(2),
+                // Written against the south side of its cell, facing away from it.
+                false => s
+                    .model_box([0.0, 0.0, 8.0], [16.0, 16.0, 16.0])
+                    .signal_blocker()
+                    .holds_liquid(),
             })
             .merge(|p, props| {
-                let there = Dir::from_name(props.get("side"));
-                if p.placed("side")
-                    .and_then(Dir::from_name)
-                    .is_some_and(|side| Some(side.opposite()) == there)
-                {
-                    props.set("side", "double");
+                if p.placed("facing").and_then(Dir::from_name) == Some(props.facing().opposite()) {
+                    props.set("double", "true");
                 }
             })
     }
@@ -222,7 +187,8 @@ impl BlockBuilder<'_> {
     }
 
     /// `on_sides`, with a plate of the block's textures on each side or not (wire draws itself).
-    pub(crate) fn sides(self, allowed: Facings, plates: bool) -> Self {
+    pub(crate) fn sides(mut self, allowed: Facings, plates: bool) -> Self {
+        self.sides = Some(allowed);
         let sides: Vec<Dir> = allowed.dirs().collect();
         // With plates, the first state, the item's, lies on the first side.
         let mut b = sides.iter().enumerate().fold(self, |b, (i, d)| {
