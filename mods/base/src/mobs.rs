@@ -126,7 +126,16 @@ fn cow_model() -> Model {
         &[([-6.0, -10.0, -7.0], [12.0, 18.0, 10.0], [18.0, 4.0]), ([-2.0, 2.0, -8.0], [4.0, 6.0, 1.0], [52.0, 0.0])],
     )
     .rotation(-90.0, 0.0, 0.0);
-    let mut parts = vec![head, body];
+    let left_ear = ModelPart::new("leftEar", [-4.0, 12.0, -9.0])
+        .cuboid([0.0, 8.0, -3.0], [3.0, 2.0, 1.0], [18.0, 32.0])
+        .rotation(0.0, 0.0, 15.0)
+        .mirrored()
+        .child_of(0);
+    let right_ear = ModelPart::new("rightEar", [4.0, 12.0, -9.0])
+        .cuboid([-3.0, 8.0, -3.0], [3.0, 2.0, 1.0], [18.0, 32.0])
+        .rotation(0.0, 0.0, -15.0)
+        .child_of(0);
+    let mut parts = vec![head, body, left_ear, right_ear];
     parts.extend(vanilla_legs(4.0, 12.0));
     Model::from(parts).uv_size(64, 64)
 }
