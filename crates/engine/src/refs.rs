@@ -1,4 +1,4 @@
-//! What mods, files, commands and rich text name blocks, items and biomes with, parsed here and
+//! What mods, files, commands and rich text name entries of any kind with, parsed here and
 //! nowhere else:
 //! - `base:stone`: that thing (a block with all its states),
 //! - `base:furnace[lit=true]`: the block's states with those property values,
@@ -70,31 +70,30 @@ pub fn tag_name(text: &str) -> Result<&str, String> {
     }
 }
 
-/// The block states a reference stands for.
-pub fn states(r: &Ref, names: &FxHashMap<String, u32>, blocks: &[BlockDef], c: &Components, state_count: u32) -> Result<Vec<u32>, String> {
-    match r {
-        Ref::Name(name, props) => blocks[*names
-            .get(*name)
-            .ok_or_else(|| format!("unknown block {name}"))? as usize]
-            .matching(props),
-        Ref::Tags(p) => {
-            let t = tags(c, p)?;
-            Ok((0..state_count)
-                .filter(|&s| t.iter().any(|&t| c.has(comps::BLOCK, s, t)))
-                .collect())
-        }
-    }
-}
-
 use weft_abi::matcher_terms as terms;
 
 /// A bit per block state: what a matcher stands for. A plain `#tag` no block carries takes
 /// nothing: tags are a vocabulary, and a rule may name one only another mod's blocks will have.
 pub fn compile(text: &str, names: &FxHashMap<String, u32>, blocks: &[BlockDef], c: &Components) -> Result<Vec<u64>, String> {
-    if terms(text).next().is_none() {
-        return Err("an empty matcher".into());
-    }
     let count = blocks.last().map_or(0, |b| b.first_state + b.states);
+    let name = |n: &str, props: &[(&str, &str)]| -> Result<Vec<u32>, String> {
+        blocks[*names.get(n).ok_or_else(|| format!("unknown block {n}"))? as usize].matching(props)
+    };
+    compile_in(text, comps::BLOCK, count, c, &name)
+}
+
+/// What `text` stands for among the `count` entries of `kind` (a block's are its states), a bit
+/// each, read as a matcher. `name` says what a name, with the properties after it, stands for.
+pub fn compile_in(
+    text: &str,
+    kind: usize,
+    count: u32,
+    c: &Components,
+    name: &dyn Fn(&str, &[(&str, &str)]) -> Result<Vec<u32>, String>,
+) -> Result<Vec<u64>, String> {
+    if terms(text).next().is_none() {
+        return Err("an empty reference".into());
+    }
     let words = (count as usize).div_ceil(64);
     let (mut yes, mut no, mut positive) = (vec![0u64; words], vec![0u64; words], false);
     for term in terms(text) {
@@ -105,12 +104,18 @@ pub fn compile(text: &str, names: &FxHashMap<String, u32>, blocks: &[BlockDef], 
                 (&mut yes, term)
             }
         };
-        let r = Ref::parse(t)?;
-        if matches!(r, Ref::Tags(p) if !p.contains('*') && c.id(p).is_none()) {
-            continue;
-        }
-        for s in states(&r, names, blocks, c, count)? {
-            out[s as usize / 64] |= 1 << (s % 64);
+        let ids = match Ref::parse(t)? {
+            Ref::Tags(p) if !p.contains('*') && c.id(p).is_none() => continue,
+            Ref::Tags(p) => {
+                let t = tags(c, p)?;
+                (0..count)
+                    .filter(|&i| t.iter().any(|&t| c.has(kind, i, t)))
+                    .collect()
+            }
+            Ref::Name(n, props) => name(n, &props)?,
+        };
+        for i in ids {
+            out[i as usize / 64] |= 1 << (i % 64);
         }
     }
     if !positive {
@@ -121,6 +126,36 @@ pub fn compile(text: &str, names: &FxHashMap<String, u32>, blocks: &[BlockDef], 
     }
     yes.iter_mut().zip(&no).for_each(|(y, n)| *y &= !n);
     Ok(yes)
+}
+
+/// The entries of `kind` (`count` of them, `names` by name) a reference text stands for: what
+/// any place taking several of a kind reads, names and tags alike. `what` names the kind in
+/// errors.
+pub fn set(text: &str, kind: usize, names: &FxHashMap<String, u32>, count: u32, c: &Components, what: &str) -> Result<Vec<u32>, String> {
+    let name = |n: &str, props: &[(&str, &str)]| -> Result<Vec<u32>, String> {
+        if !props.is_empty() {
+            return Err(format!("{n}: a {what} has no properties"));
+        }
+        names
+            .get(n)
+            .map(|&i| vec![i])
+            .ok_or_else(|| format!("unknown {what} {n}"))
+    };
+    let bits = compile_in(text, kind, count, c, &name)?;
+    Ok((0..count).filter(|&i| has(&bits, i)).collect())
+}
+
+/// The one entry a name stands for, where only one fits (a recipe's result, a loot line): a tag
+/// stands for every entry with it, so it is an error here.
+pub fn one(text: &str, names: &FxHashMap<String, u32>, what: &str) -> Result<u32, String> {
+    match Ref::parse(text)? {
+        Ref::Name(n, props) if props.is_empty() => names
+            .get(n)
+            .copied()
+            .ok_or_else(|| format!("unknown {what} {n}")),
+        Ref::Name(n, _) => Err(format!("{n}: a {what} has no properties")),
+        Ref::Tags(_) => Err(format!("{}: one {what} goes here, name it (a tag stands for several)", text.trim())),
+    }
 }
 
 #[inline]
@@ -215,100 +250,25 @@ impl Matchers {
 }
 
 /// The blocks (definition index) a reference stands for.
-pub fn blocks(r: &Ref, names: &FxHashMap<String, u32>, blocks: &[BlockDef], c: &Components, state_count: u32) -> Result<Vec<u32>, String> {
-    let mut out: Vec<u32> = match r {
-        Ref::Name(name, props) if props.is_empty() => vec![
-            *names
-                .get(*name)
-                .ok_or_else(|| format!("unknown block {name}"))?,
-        ],
-        _ => states(r, names, blocks, c, state_count)?
-            .into_iter()
-            .map(|s| {
-                blocks
-                    .iter()
-                    .position(|b| s >= b.first_state && s < b.first_state + b.states)
-                    .unwrap_or(0) as u32
-            })
-            .collect(),
-    };
-    out.sort_unstable();
-    out.dedup();
-    Ok(out)
+pub fn blocks(text: &str, names: &FxHashMap<String, u32>, blocks: &[BlockDef], c: &Components) -> Result<Vec<u32>, String> {
+    let set = compile(text, names, blocks, c)?;
+    Ok(blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| (b.first_state..b.first_state + b.states).any(|s| has(&set, s)))
+        .map(|(i, _)| i as u32)
+        .collect())
 }
 
-/// One block state: a name with properties picks that state (the rest at their defaults), a
-/// tag its preferred block's first state.
-pub fn state(r: &Ref, names: &FxHashMap<String, u32>, blocks: &[BlockDef], c: &Components) -> Result<u32, String> {
-    match r {
+/// One block state: a name with properties picks that state, the rest at their defaults.
+pub fn state(text: &str, names: &FxHashMap<String, u32>, blocks: &[BlockDef]) -> Result<u32, String> {
+    match Ref::parse(text)? {
         Ref::Name(name, props) => blocks[*names
-            .get(*name)
+            .get(name)
             .ok_or_else(|| format!("unknown block {name}"))? as usize]
-            .state_of(props),
-        Ref::Tags(p) => {
-            let t = tags(c, p)?;
-            blocks
-                .iter()
-                .find(|b| t.iter().any(|&t| c.has(comps::BLOCK, b.first_state, t)))
-                .map(|b| b.first_state)
-                .ok_or_else(|| format!("no block has #{p}"))
-        }
+            .state_of(&props),
+        Ref::Tags(_) => Err(format!("{}: one block goes here, name it (a tag stands for several)", text.trim())),
     }
-}
-
-/// The biomes a reference stands for: a biome by name, or every biome with the tags.
-pub fn biomes(r: &Ref, names: &FxHashMap<String, u32>, c: &Components, count: u32) -> Result<Vec<u32>, String> {
-    match r {
-        Ref::Name(name, props) if props.is_empty() => Ok(vec![
-            *names
-                .get(*name)
-                .ok_or_else(|| format!("unknown biome {name}"))?,
-        ]),
-        Ref::Name(name, _) => Err(format!("{name}: a biome has no properties")),
-        Ref::Tags(p) => {
-            let t = tags(c, p)?;
-            Ok((0..count)
-                .filter(|&b| t.iter().any(|&t| c.has(comps::BIOME, b, t)))
-                .collect())
-        }
-    }
-}
-
-/// Items carrying each tag, the preferred first: in mod load order, then registration order.
-/// "The item of a tag" (a recipe's output, a loot entry, a tab icon) is the first of its list.
-pub fn tag_items(c: &Components, ordered: &[u32]) -> FxHashMap<u32, Vec<u32>> {
-    let mut out: FxHashMap<u32, Vec<u32>> = FxHashMap::default();
-    for &i in ordered {
-        for t in c.of(comps::ITEM, i).filter(|&t| c.is_tag(t)) {
-            out.entry(t).or_default().push(i);
-        }
-    }
-    out
-}
-
-/// The items a reference stands for (a name with properties is no item).
-pub fn items(r: &Ref, names: &FxHashMap<String, u32>, c: &Components, by_tag: &FxHashMap<u32, Vec<u32>>) -> Result<Vec<u32>, String> {
-    match r {
-        Ref::Name(name, props) if props.is_empty() => Ok(vec![
-            *names
-                .get(*name)
-                .ok_or_else(|| format!("unknown item {name}"))?,
-        ]),
-        Ref::Name(name, _) => Err(format!("{name}: an item has no properties")),
-        Ref::Tags(p) => {
-            let mut out: Vec<u32> = tags(c, p)?
-                .iter()
-                .flat_map(|t| by_tag.get(t).cloned().unwrap_or_default())
-                .collect();
-            out.dedup();
-            if out.is_empty() { Err(format!("no item has #{p}")) } else { Ok(out) }
-        }
-    }
-}
-
-/// One item: the named one, or the preferred item of a tag.
-pub fn item(r: &Ref, names: &FxHashMap<String, u32>, c: &Components, by_tag: &FxHashMap<u32, Vec<u32>>) -> Result<u32, String> {
-    items(r, names, c, by_tag).map(|v| v[0])
 }
 
 #[cfg(test)]

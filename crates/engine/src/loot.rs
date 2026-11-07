@@ -84,7 +84,6 @@ pub fn harvested(item: &str) -> abi::LootPool {
 
 pub struct Resolve<'a> {
     pub items: &'a FxHashMap<String, u32>,
-    pub tag_items: &'a FxHashMap<u32, Vec<u32>>,
     pub components: &'a Components,
 }
 
@@ -93,12 +92,10 @@ impl Resolve<'_> {
         if s.is_empty() {
             return 0;
         }
-        crate::refs::Ref::parse(s)
-            .and_then(|r| crate::refs::item(&r, self.items, self.components, self.tag_items))
-            .unwrap_or_else(|e| {
-                errors.push(format!("loot table {table}: {e}"));
-                0
-            })
+        crate::refs::one(s, self.items, "item").unwrap_or_else(|e| {
+            errors.push(format!("loot table {table}: {e}"));
+            0
+        })
     }
 
     /// A condition naming a tag nobody declares could never pass: an error, not a silent no.

@@ -1486,15 +1486,6 @@ unsafe extern "C" fn find(kind: u32, name: Str, count: *mut u32) -> u32 {
         names.position(|n| n == name).map(|i| i as u32)
     }
     let id = match kind {
-        // `#tag`: the first block carrying it, in mod load order (biome surfaces by tag).
-        // `#tag`: its preferred block (mod load order) or item.
-        abi::entry_kind::BLOCK if name.starts_with('#') => crate::refs::Ref::parse(name)
-            .ok()
-            .and_then(|r| crate::refs::state(&r, &c.block_names, &c.blocks, &c.components).ok())
-            .inspect(|&s| n = c.block_of(s).states),
-        abi::entry_kind::ITEM if name.starts_with('#') => crate::refs::Ref::parse(name)
-            .ok()
-            .and_then(|r| crate::refs::item(&r, &c.item_names, &c.components, &c.tag_items).ok()),
         abi::entry_kind::BLOCK if name.contains('[') => c.state_by_name(name),
         abi::entry_kind::BLOCK => c.block_names.get(name).map(|&b| {
             n = c.blocks[b as usize].states;

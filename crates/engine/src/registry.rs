@@ -1713,7 +1713,6 @@ pub fn freeze(
     dim_names: &FxHashMap<String, u32>,
     c: &Components,
     decls: &[ComponentDecl],
-    tag_items: &FxHashMap<u32, Vec<u32>>,
     order: &dyn Fn(ModId) -> u32,
     tables: &mut crate::entries::Tables,
     mod_name: &dyn Fn(ModId) -> String,
@@ -2180,10 +2179,11 @@ pub fn freeze(
         }
     }
 
-    let _ = items;
-    let tag_names: FxHashMap<&str, u32> = tag_items
-        .keys()
-        .map(|&t| (c.names[t as usize].as_str(), t))
+    // The tags items carry, what `{m}` in a recipe goes through.
+    let tag_names: FxHashMap<&str, u32> = (1..items.len() as u32)
+        .flat_map(|i| c.of(comps::ITEM, i))
+        .filter(|&t| c.is_tag(t))
+        .map(|t| (c.names[t as usize].as_str(), t))
         .collect();
     let mut expanded = Vec::new();
     for r in recipes {
@@ -2203,19 +2203,28 @@ pub fn freeze(
                 return Ingredient::Empty;
             }
         };
+        // One tag stays a tag, read when matching; anything wider is the items it stands for.
         let found = match &r {
-            crate::refs::Ref::Tags(p) if !p.contains('*') => {
-                crate::refs::items(&r, item_names, c, tag_items).map(|_| Ingredient::Tag(c.id(p).unwrap_or(u32::MAX)))
+            crate::refs::Ref::Tags(p) if !p.contains('*') && !s.trim().contains(' ') => {
+                Ok(c.id(p).map_or(Ingredient::Any(Vec::new()), Ingredient::Tag))
             }
-            crate::refs::Ref::Tags(_) => crate::refs::items(&r, item_names, c, tag_items).map(Ingredient::Any),
-            _ => crate::refs::item(&r, item_names, c, tag_items).map(Ingredient::Item),
+            crate::refs::Ref::Name(..) if !s.trim().contains(' ') => crate::refs::one(s, item_names, "item").map(Ingredient::Item),
+            _ => crate::refs::set(s, comps::ITEM, item_names, items.len() as u32, c, "item").map(Ingredient::Any),
         };
         found.unwrap_or_else(|e| {
             errors.push(format!("recipe: {e}"));
             Ingredient::Empty
         })
     };
-    let one = |s: &str| crate::refs::Ref::parse(s).and_then(|r| crate::refs::item(&r, item_names, c, tag_items));
+    // A result by tag (`#planks/{m}`, logs into planks of the same material) is the first item
+    // with it in mod load order; anything else names its item.
+    let one = |s: &str| match crate::refs::Ref::parse(s)? {
+        crate::refs::Ref::Tags(_) => crate::refs::set(s, comps::ITEM, item_names, items.len() as u32, c, "item")?
+            .into_iter()
+            .min_by_key(|&i| items[i as usize].order)
+            .ok_or_else(|| format!("no item is {}", s.trim())),
+        _ => crate::refs::one(s, item_names, "item"),
+    };
     let recipes = expanded;
     for r in recipes {
         if !g.recipe_kinds.contains_key(&r.kind) {

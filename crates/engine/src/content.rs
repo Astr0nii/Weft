@@ -885,8 +885,6 @@ pub struct Content {
     pub matchers: crate::refs::Matchers,
     /// (`mineable/<class>`, `tools/<class>`) component ids per tool class.
     pub tool_classes: Vec<(u32, Option<u32>)>,
-    /// Items carrying each tag, the preferred first (`refs::tag_items`).
-    pub tag_items: FxHashMap<u32, Vec<u32>>,
     /// Every texture by name (`<ns>:block/..`, `<ns>:item/..`, `<ns>:particle/..`); blocks, items
     /// and particles hold ids into it, and the client loads this one list.
     pub textures: Vec<String>,
@@ -1187,16 +1185,14 @@ impl Content {
         self.parse_state(name).ok()
     }
 
-    /// Like `state_by_name`, saying what is wrong; a tag gives its preferred block.
+    /// Like `state_by_name`, saying what is wrong.
     pub fn parse_state(&self, text: &str) -> Result<u32, String> {
-        crate::refs::state(&crate::refs::Ref::parse(text)?, &self.block_names, &self.blocks, &self.components)
+        crate::refs::state(text, &self.block_names, &self.blocks)
     }
 
-    /// An item by reference: its name, or the preferred item of a tag (`#ingots/iron`).
+    /// An item by name.
     pub fn item_by_ref(&self, text: &str) -> Option<u32> {
-        crate::refs::Ref::parse(text)
-            .and_then(|r| crate::refs::item(&r, &self.item_names, &self.components, &self.tag_items))
-            .ok()
+        crate::refs::one(text, &self.item_names, "item").ok()
     }
 
     /// The value of property `name` in `state`.
@@ -1660,10 +1656,7 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
     let (fluid_items, item_fluid) = fluid_items(&item_defs, &liquids, &components, &mut errors);
     let tabs = entries_of(&mut games, abi::entry_kind::CREATIVE_TAB);
     let creative_tabs = creative_tabs(&mods, tabs, &item_defs, &item_names, &components, &mut tables, &mod_name, &mut errors);
-    let mut ordered_items: Vec<u32> = (1..item_defs.len() as u32).collect();
-    ordered_items.sort_by_key(|&i| item_defs[i as usize].order);
-    let tag_items = crate::refs::tag_items(&components, &ordered_items);
-    let loot = freeze_loot(&mut games, &item_defs, &item_names, &tag_items, look, &mut tables, &mod_name, &mut errors);
+    let loot = freeze_loot(&mut games, &item_defs, &item_names, look, &mut tables, &mod_name, &mut errors);
     let stack_flags = collect_stack_flags(&decls, &components);
     let order_of = |m: ModId| mods.get(m.0 as usize).map_or(u32::MAX, |m| m.order);
     let mut game = crate::registry::freeze(
@@ -1677,7 +1670,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         &dim_names,
         &components,
         &decls,
-        &tag_items,
         &order_of,
         &mut tables,
         &mod_name,
@@ -1792,7 +1784,6 @@ pub fn freeze(mut mods: Vec<ModMeta>, regs: Vec<RawRegistrar>) -> Result<Content
         shares_cell,
         matchers,
         tool_classes,
-        tag_items,
         textures: textures.names,
         crack_textures,
         fire_texture,
@@ -2841,7 +2832,6 @@ fn freeze_loot(
     games: &mut [crate::registry::RawGame],
     item_defs: &[ItemDef],
     item_names: &FxHashMap<String, u32>,
-    tag_items: &FxHashMap<u32, Vec<u32>>,
     look: Lookups,
     tables: &mut crate::entries::Tables,
     mod_name: &dyn Fn(ModId) -> String,
@@ -2867,7 +2857,7 @@ fn freeze_loot(
         })
         .collect();
     all.extend(raw);
-    let resolve = crate::loot::Resolve { items: item_names, tag_items, components };
+    let resolve = crate::loot::Resolve { items: item_names, components };
     let (made, _) = tables.bake(all, abi::entry_kind::LOOT, mod_name, errors, |e, errors| (e.name.clone(), resolve.table(e, errors)));
     made.into_iter().collect()
 }
