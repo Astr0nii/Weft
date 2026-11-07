@@ -1,8 +1,8 @@
 //! Mobs: zombies and spiders at night or in the dark, pigs and cows on grass by day.
 
+use weft_sdk::abi::MeshVertex;
 use weft_sdk::ai;
 use weft_sdk::*;
-use weft_sdk::abi::MeshVertex;
 
 pub static ZOMBIE: EntityKind = EntityKind::named("zombie");
 pub static SPIDER: EntityKind = EntityKind::named("spider");
@@ -36,35 +36,20 @@ fn polygon(part: ModelPart, size: [f32; 2], uv: [f32; 4], two_sided: bool) -> Mo
     let [x, y, z] = part.pivot;
     let [width, height] = size;
     let [u, v, uv_width, uv_height] = uv;
-    let a = MeshVertex {
-        pos: [x, y, z],
-        uv: [u, v],
-    };
-    let b = MeshVertex {
-        pos: [x + width, y, z],
-        uv: [u + uv_width, v],
-    };
-    let c = MeshVertex {
-        pos: [x + width, y + height, z],
-        uv: [u + uv_width, v + uv_height],
-    };
-    let d = MeshVertex {
-        pos: [x, y + height, z],
-        uv: [u, v + uv_height],
-    };
+    let a = MeshVertex { pos: [x, y, z], uv: [u, v] };
+    let b = MeshVertex { pos: [x + width, y, z], uv: [u + uv_width, v] };
+    let c = MeshVertex { pos: [x + width, y + height, z], uv: [u + uv_width, v + uv_height] };
+    let d = MeshVertex { pos: [x, y + height, z], uv: [u, v + uv_height] };
     if two_sided {
-        part.mesh(vec![a, b, c, a, c, d]).mesh(vec![a, c, b, a, d, c])
+        part.mesh(vec![a, b, c, a, c, d])
+            .mesh(vec![a, c, b, a, d, c])
     } else {
         part.mesh(vec![a, b, c, a, c, d])
     }
 }
 fn rotate_vertex(v: MeshVertex, pivot: [f32; 3], degrees: [f32; 3]) -> MeshVertex {
     let [rx, ry, rz] = degrees.map(f32::to_radians);
-    let (mut x, mut y, mut z) = (
-        v.pos[0] - pivot[0],
-        v.pos[1] - pivot[1],
-        v.pos[2] - pivot[2],
-    );
+    let (mut x, mut y, mut z) = (v.pos[0] - pivot[0], v.pos[1] - pivot[1], v.pos[2] - pivot[2]);
     let (s, c) = rx.sin_cos();
     let (ny, nz) = (y * c - z * s, y * s + z * c);
     y = ny;
@@ -77,31 +62,21 @@ fn rotate_vertex(v: MeshVertex, pivot: [f32; 3], degrees: [f32; 3]) -> MeshVerte
     let (nx, ny) = (x * c - y * s, x * s + y * c);
     x = nx;
     y = ny;
-    MeshVertex {
-        pos: [x + pivot[0], y + pivot[1], z + pivot[2]],
-        uv: v.uv,
-    }
+    MeshVertex { pos: [x + pivot[0], y + pivot[1], z + pivot[2]], uv: v.uv }
 }
 fn polygon_at(part: ModelPart, offset: [f32; 3], size: [f32; 2], uv: [f32; 4], rotation: [f32; 3], two_sided: bool) -> ModelPart {
-    let anchor = [
-        part.pivot[0] + offset[0],
-        part.pivot[1] + offset[1],
-        part.pivot[2] + offset[2],
-    ];
+    let anchor = [part.pivot[0] + offset[0], part.pivot[1] + offset[1], part.pivot[2] + offset[2]];
     let [x, y, z] = anchor;
     let [width, height] = size;
     let [u, v, uv_width, uv_height] = uv;
-    let make = |pos: [f32; 3], uv: [f32; 2]| rotate_vertex(
-        MeshVertex { pos, uv },
-        anchor,
-        rotation,
-    );
+    let make = |pos: [f32; 3], uv: [f32; 2]| rotate_vertex(MeshVertex { pos, uv }, anchor, rotation);
     let a = make([x, y, z], [u, v]);
     let b = make([x + width, y, z], [u + uv_width, v]);
     let c = make([x + width, y + height, z], [u + uv_width, v + uv_height]);
     let d = make([x, y + height, z], [u, v + uv_height]);
     if two_sided {
-        part.mesh(vec![a, b, c, a, c, d]).mesh(vec![a, c, b, a, d, c])
+        part.mesh(vec![a, b, c, a, c, d])
+            .mesh(vec![a, c, b, a, d, c])
     } else {
         part.mesh(vec![a, b, c, a, c, d])
     }
@@ -140,9 +115,7 @@ fn skeleton_model() -> Model {
 /// Vanilla's sheep
 fn sheep_model() -> Model {
     let wool = |p: [f32; 2]| [p[0], p[1] + 32.0];
-    let head = vanilla_part("head", [0.0, 6.0, -8.0], &[(
-        [-4.0, -4.0, -6.0], [8.0, 8.0, 8.0], [0.0, 32.0]
-    )]);
+    let head = vanilla_part("head", [0.0, 6.0, -8.0], &[([-4.0, -4.0, -6.0], [8.0, 8.0, 8.0], [0.0, 32.0])]);
     let body = vanilla_part("body", [0.0, 5.0, 2.0], &[([-4.0, -10.0, -7.0], [8.0, 16.0, 6.0], [28.0, 8.0])])
         .cuboid([-4.5, -8.0, -9.0], [9.0, 18.0, 8.0], [16.0, 0.0])
         .inflated(1.75)
@@ -170,19 +143,16 @@ fn sheep_model() -> Model {
 
 /// Vanilla's chicken: 64 x 32.
 fn chicken_model() -> Model {
-    let leg = |name, x| polygon_at(
-        polygon(
-            ModelPart::new(name, [x, 5.0, 0.0]),
-            [1.0, -5.0],
-            [26.0, 3.0, 1.0, 5.0],
+    let leg = |name, x| {
+        polygon_at(
+            polygon(ModelPart::new(name, [x, 5.0, 0.0]), [1.0, -5.0], [26.0, 3.0, 1.0, 5.0], true),
+            [-1.0, -4.9, -3.0],
+            [3.0, 3.0],
+            [27.0, 3.0, 3.0, 3.0],
+            [90.0, 0.0, 0.0],
             true,
-        ),
-        [-1.0, -4.9, -3.0],
-        [3.0, 3.0],
-        [27.0, 3.0, 3.0, 3.0],
-        [90.0, 0.0, 0.0],
-        true,
-    );
+        )
+    };
     Model::from(vec![
         vanilla_part(
             "head",
@@ -198,18 +168,10 @@ fn chicken_model() -> Model {
         vanilla_part("wing1", [4.0, 13.0, 0.0], &[([-1.0, 0.0, -3.0], [1.0, 4.0, 6.0], [24.0, 13.0])]),
         leg("rightLeg", -2.0),
         leg("leftLeg", 1.0),
-        polygon(
-            ModelPart::new("comb", [0.0, 17.0, -7.0]),
-            [4.0, -3.0],
-            [31.0, 3.0, 4.0, 3.0],
-            true,
-        ).child_of(0).rotation(0.0, -90.0, 0.0),
-        polygon(
-            ModelPart::new("tail", [0.0, 13.0, 2.0]),
-            [6.0, -6.0],
-            [36.0, 3.0, 6.0, 6.0],
-            true,
-        ).rotation(0.0, -90.0, 0.0),
+        polygon(ModelPart::new("comb", [0.0, 17.0, -7.0]), [4.0, -3.0], [31.0, 3.0, 4.0, 3.0], true)
+            .child_of(0)
+            .rotation(0.0, -90.0, 0.0),
+        polygon(ModelPart::new("tail", [0.0, 13.0, 2.0]), [6.0, -6.0], [36.0, 3.0, 6.0, 6.0], true).rotation(0.0, -90.0, 0.0),
     ])
     .uv_size(64, 32)
 }
