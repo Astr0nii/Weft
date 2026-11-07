@@ -182,6 +182,10 @@ pub fn asset_exists(name: &str, kind: &str, ext: &str) -> bool {
 /// item, `..`, an absolute path) is a load error. Gives `ns:folder/path` (or `ns:path` for an
 /// empty folder).
 pub(crate) fn asset(folder: &str, name: &str) -> String {
+    // Said of the source by a block made of others, the engine fills it in (`{source.side}`).
+    if name.contains("{source") {
+        return name.to_string();
+    }
     let (ns, path) = name.split_once(':').unwrap_or((mod_id(), name));
     if let Err(why) = asset_check(folder, ns, path) {
         let shown = if folder.is_empty() { String::new() } else { format!(" in {folder}/") };

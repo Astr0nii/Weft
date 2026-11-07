@@ -1908,7 +1908,9 @@ crate::data! {
 
 crate::data! {
     /// A template of blocks (`comp::block::SHAPES_OF`): one for each full cube among `sources`
-    /// (names and `#tags`, space separated), named as that one plus `suffix`.
+    /// (names and `#tags`, space separated, `!` leaving out), named as that one plus `suffix`.
+    /// Texts in its values may say `{source}` and `{source.side}` (its texture there), `a | b` for
+    /// the first texture that exists.
     pub struct ShapesOf { pub sources: alloc::string::String, pub suffix: alloc::string::String }
 }
 

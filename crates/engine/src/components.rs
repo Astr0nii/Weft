@@ -89,6 +89,41 @@ pub fn written_as_text(schema: &str) -> bool {
     abi::data::is_text(schema)
 }
 
+/// `bytes` of `schema` with every text in them put through `f`, whatever holds it.
+pub fn map_texts(schema: &str, bytes: &[u8], f: &mut dyn FnMut(&str) -> String) -> Option<Vec<u8>> {
+    use abi::data::{self as d, Data};
+    let s = schema.trim();
+    let mut out = Vec::new();
+    // Packed values one after another, a struct's fields or an array's elements.
+    let mut seq = |schemas: &mut dyn Iterator<Item = &str>, out: &mut Vec<u8>| -> Option<()> {
+        let mut at = 0;
+        for t in schemas {
+            let rest = bytes.get(at..)?;
+            out.extend(map_texts(t, rest, f)?);
+            at += d::value_len(t, rest)?;
+        }
+        Some(())
+    };
+    if d::is_text(s) {
+        let text: String = d::from_bytes(bytes.get(..d::value_len(s, bytes)?)?)?;
+        d::write_text(&f(&text), &mut out);
+    } else if d::layout(s).is_some() {
+        out.extend_from_slice(bytes.get(..d::value_len(s, bytes)?)?);
+    } else if let Some(inner) = s.strip_prefix('<').and_then(|r| r.strip_suffix('>')) {
+        seq(&mut d::fields(inner)?.into_iter().map(|f| f.1), &mut out)?;
+    } else if let Some(t) = d::list_of(s) {
+        let all = d::items(s, bytes)?;
+        (all.len() as u32).write(&mut out);
+        for i in all {
+            out.extend(map_texts(t, i, f)?);
+        }
+    } else {
+        let (t, n) = s.strip_prefix('[')?.strip_suffix(']')?.rsplit_once(';')?;
+        seq(&mut std::iter::repeat_n(t, n.trim().parse().ok()?), &mut out)?;
+    }
+    Some(out)
+}
+
 /// Byte size a schema implies, if it is a primitive.
 fn primitive_size(schema: &str) -> Option<usize> {
     Some(match schema {

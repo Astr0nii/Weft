@@ -831,12 +831,13 @@ fn expand_templates(
         return (Vec::new(), Vec::new());
     }
     templates.sort_by(|&a, &b| blocks[a].name.cmp(&blocks[b].name));
+    // What any template takes; what it leaves out (`!#tag`) is checked per template.
     let words: Vec<String> = templates
         .iter()
         .flat_map(|&t| {
             let of: abi::ShapesOf = blocks[t].or(b::SHAPES_OF, abi::ShapesOf::default());
-            of.sources
-                .split_whitespace()
+            abi::matcher_terms(&of.sources)
+                .filter(|w| !w.starts_with('!'))
                 .map(str::to_string)
                 .collect::<Vec<_>>()
         })
@@ -901,7 +902,10 @@ fn expand_templates(
                 Some(pattern) => tags.iter().any(|t| matches(pattern, t)),
                 None => source.name == w,
             };
-            if model_of(first.or(b::MODEL, BlockModel::Cube as u32)) != BlockModel::Cube || !of.sources.split_whitespace().any(fits) {
+            let terms: Vec<&str> = abi::matcher_terms(&of.sources).collect();
+            let taken =
+                terms.iter().any(|w| !w.starts_with('!') && fits(w)) && !terms.iter().any(|w| w.strip_prefix('!').is_some_and(fits));
+            if model_of(first.or(b::MODEL, BlockModel::Cube as u32)) != BlockModel::Cube || !taken {
                 continue;
             }
             let name = format!("{}{}", source.name, of.suffix);
@@ -920,15 +924,16 @@ fn expand_templates(
                     .filter(|t| **t == r.from)
                     .for_each(|t| *t = r.to.clone());
             }
+            let of_source = |v: RawValue| of_source(v, &source.name, &textures);
             let parts: Vec<Part> = states
                 .iter()
                 .enumerate()
                 .map(|(i, own)| {
                     let v = shaped(own.clone(), first, &textures, &format!("{short}/{id}"));
-                    (full_key(&props, i as u32), v.into_iter().map(set_op).collect())
+                    (full_key(&props, i as u32), v.into_iter().map(of_source).map(set_op).collect())
                 })
                 .collect();
-            let mut values = template.values.clone();
+            let mut values: Vec<RawValue> = template.values.iter().cloned().map(of_source).collect();
             values.retain(|v| v.name != b::SHAPES_OF);
             shapes.push((name.clone(), source.name.clone(), format!("shape.{short}")));
             if let Some(i) = item {
@@ -962,6 +967,50 @@ fn expand_templates(
         })
         .collect();
     (made, shapes)
+}
+
+/// `v` of a block made of `source` (its name) with `{source}` in its texts as that name and
+/// `{source.side}` (`top`, `bottom`, or a face: `north`..) as its texture there. Of texts with
+/// alternatives (`{source.side}_inner | {source.top}`) the first texture that exists is taken.
+fn of_source(v: RawValue, source: &str, textures: &[String; 6]) -> RawValue {
+    if !v.bytes.windows(7).any(|w| w == b"{source") {
+        return v;
+    }
+    let face = |name: &str| match name {
+        "side" => Some(4),
+        "top" => Some(3),
+        "bottom" => Some(2),
+        n => abi::FACE_NAMES.iter().position(|f| *f == n),
+    };
+    let one = |t: &str| -> String {
+        let mut out = t.trim().replace("{source}", source);
+        while let Some(at) = out.find("{source.") {
+            let Some(end) = out[at..].find('}') else { break };
+            let tex = face(&out[at + 8..at + end])
+                .map_or("", |f| textures[f].as_str())
+                .to_string();
+            out.replace_range(at..at + end + 1, &tex);
+        }
+        out
+    };
+    let mut f = |t: &str| -> String {
+        if !t.contains("{source") {
+            return t.to_string();
+        }
+        let all: Vec<String> = t.split('|').map(one).collect();
+        let exists = |n: &&String| crate::modloader::asset_exists(n, "textures", "png");
+        all.iter()
+            .find(exists)
+            .or(all.last())
+            .cloned()
+            .unwrap_or_default()
+    };
+    let bytes = crate::components::map_texts(&v.schema, &v.bytes, &mut f).unwrap_or(v.bytes);
+    let text = v
+        .text
+        .as_ref()
+        .map(|_| abi::data::from_bytes::<String>(&bytes).unwrap_or_default());
+    RawValue { bytes, text, ..v }
 }
 
 /// A template's state `own` made of `source`'s first state: its textures and light filter; for a
@@ -1019,5 +1068,18 @@ mod tests {
         assert_eq!(picked(&props, 8, "lit=true,lit=false").unwrap(), Vec::<u32>::new());
         assert!(picked(&props, 8, "age=1").is_err() && picked(&props, 8, "lit=maybe").is_err());
         assert_eq!(full_key(&props, 5), "facing=south,lit=true");
+    }
+
+    #[test]
+    fn values_of_the_source() {
+        let textures: [String; 6] = std::array::from_fn(|i| format!("m:block/log{}", if i / 2 == 1 { "_top" } else { "" }));
+        let mut e = Entry::default();
+        e.set(b::MODEL_TEXTURES, vec![abi::ModelTexture { name: "inside".into(), texture: "{source.side}_none | {source.top}".into() }]);
+        e.set(abi::comp::item::BLOCK, "{source}".to_string());
+        let [list, name] = [&e.values[0], &e.values[1]].map(|v| of_source(v.clone(), "m:log", &textures));
+        let list: Vec<abi::ModelTexture> = abi::data::from_bytes(&list.bytes).unwrap();
+        // No such texture: the next one.
+        assert_eq!(list[0].texture, "m:block/log_top");
+        assert_eq!(name.text.as_deref(), Some("m:log"));
     }
 }
