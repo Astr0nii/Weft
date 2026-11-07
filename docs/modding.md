@@ -245,7 +245,7 @@ base_api = { path = "../../mods/base/api" }
 ```rust
 r.on_event(&base_api::SMELTED, |b| for s in b.iter() { /* s.furnace, s.input, s.output */ });
 ```
-The mod itself uses the same crate, so there's one declaration of everything, and other mods depend on types only, never on the mod's code. The engine still compares the layouts at load.
+The mod itself uses the same crate, so there's one declaration of everything, and other mods depend on types only, never on the mod's code. The engine still compares the layouts at load. Without depending on it, `r.has_mod("othermod")` tells whether it is loaded (all mods are known before any registers), to add what goes with it only then. A batch has the world too: `b.world()` in `r.on_event(&actions::USE_BLOCK, |b| ..)`, and each `BlockChange` the player, position, state and item.
 
 ## Content builders
 
@@ -298,6 +298,7 @@ Anywhere a block is named as text, `base:furnace[lit=true]` picks a state: in st
 - `tool("pickaxe", tier)`, `mining_speed(speed)`
 - `attack_damage`, `attack_speed(per_second)` (hitting before it has recharged does less; a sword is 1.6, and without it an item swings at an empty hand's 4) and `sweeps()` (a full swing on the ground also does 1 damage to what stands next to the target)
 - Advancements read tags, so yours count by tagging them: `cooked_meat` on food, `hostile` and `livestock` on mobs, `logs`, `torches`, `furnaces`, etc etc
+- `no_tab()`: in no creative tab nor its search, still obtainable (a variant you hand out, a spoiler); another mod brings it back with `.untag(abi::comp::NO_TAB)`
 - `no_creative_break()`: in creative it doesn't break blocks, like a sword. Both sides know, so nothing flickers; a rule that depends on more is `actions::BREAK_BLOCK`, which is asked when mining starts and tells the client no right away
 - `spawns(&ENTITY)`: used on a block it puts the entity there. Every entity already has an egg of its own, see below
 - `places(&BLOCK)`

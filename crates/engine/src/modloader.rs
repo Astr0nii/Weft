@@ -35,6 +35,10 @@ pub fn asset_exists(name: &str, kind: &str, ext: &str) -> bool {
         .any(|(id, dir)| id == ns && dir.join(kind).join(format!("{rel}.{ext}")).is_file())
 }
 
+pub fn mod_loaded(id: &str) -> bool {
+    ASSET_ROOTS.read().unwrap().iter().any(|(m, _)| m == id)
+}
+
 pub fn mod_id_name(m: ModId) -> &'static str {
     NAMES
         .get()

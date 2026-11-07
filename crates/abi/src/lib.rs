@@ -1355,6 +1355,9 @@ pub mod comp {
     pub const SPAWN_EGG: &str = "spawn_egg";
     /// On an item: in creative it doesn't break blocks (a sword). Client and server both read it.
     pub const NO_CREATIVE_BREAK: &str = "no_creative_break";
+    /// Tag of items in no creative tab nor its search (one a mod hands out, a variant), though
+    /// obtainable like any.
+    pub const NO_TAB: &str = "no_tab";
     pub const MINING_SPEED: &str = "mining_speed";
     pub const TOOL_LEVEL: &str = "tool_level";
     /// The block drops its loot only to a fitting tool of at least this level (0 = any tier).
@@ -3518,6 +3521,8 @@ pub struct Host {
     pub attribute_explain: unsafe extern "C" fn(world: *mut WorldCtx, entity: u64, name: Str) -> f64,
     /// An entry: a new one, an edit, a replacement or a removal (`EntryDesc::mode`).
     pub reg_entry: unsafe extern "C" fn(reg: *mut Registrar, entry: *const EntryDesc),
+    /// Whether mod `id` is loaded, known from before any mod registers.
+    pub mod_loaded: unsafe extern "C" fn(id: Str) -> u32,
     /// Whether condition `text` (`condition`) holds at `pos` for `entity` (0 for nobody); 0 for
     /// one that doesn't, or doesn't parse (said once in the log).
     pub holds: unsafe extern "C" fn(world: *mut WorldCtx, text: Str, pos: Vec3, entity: u64) -> u32,

@@ -494,6 +494,8 @@ pub struct Client {
     /// Finished meshes not uploaded yet (the frame's budget ran out).
     meshes: std::collections::VecDeque<world::MeshResult>,
     pub fov: f32,
+    /// Share of the widening by sprinting and flying that shows (`core:fov_effects`).
+    pub fov_effects: f32,
     /// Brightness setting, 0 moody .. 1 bright.
     pub brightness: f32,
     pub entities: FxHashMap<u64, ClientEntity>,
@@ -811,6 +813,7 @@ impl Client {
             spent: 0.0,
             rest: 0.0,
             fov: 70.0,
+            fov_effects: 1.0,
             brightness: 0.5,
             entities: FxHashMap::default(),
             inventory: vec![ItemStack::EMPTY; content().game.player_layout.slots as usize],
@@ -1108,12 +1111,11 @@ impl Client {
     /// Eye and view widen or drop over a few frames like vanilla, not in one jump.
     fn ease_camera(&mut self, input: &Input, dt: f64) {
         let k = (dt * 12.0).min(1.0);
-        let sneaking = input.held("core:sneak") && !self.player.flying;
         let eye_target = self.player.dims().eye;
         self.player.eye += (eye_target - self.player.eye) * k;
-        let moving = input.held("core:forward");
-        let fov_target =
-            if self.player.flying { 1.1 } else { 1.0 } + if input.held("core:sprint") && moving && !sneaking { 0.15 } else { 0.0 };
+        // Running as it does, not the key held: no wider view too hungry to sprint.
+        let wider = if self.player.flying { 0.1 } else { 0.0 } + if self.player.sprinting { 0.15 } else { 0.0 };
+        let fov_target = 1.0 + wider * self.fov_effects;
         self.player.fov_mul += (fov_target - self.player.fov_mul) * k as f32;
         self.camera_keys(input);
     }
@@ -2698,8 +2700,9 @@ fn step_player(p: &mut LocalPlayer, input: &Input, block: &impl physics::Cells, 
     let sneak = input.held("core:sneak");
     let crawl = input.held("core:crawl");
     let jump = input.held("core:jump");
-    // Sprinting needs forward movement and stops when walking backwards, sneaking or crawling.
-    let sprint = input.held("core:sprint") && fwd_in > 0.0 && !sneak && !crawl && !p.using && (p.can_sprint || p.flying);
+    // Sprinting needs forward movement and stops when walking backwards, sneaking or crawling; in
+    // flight the sneak key goes down and keeps it.
+    let sprint = input.held("core:sprint") && fwd_in > 0.0 && (!sneak || p.flying) && !crawl && !p.using && (p.can_sprint || p.flying);
     // A liquid it swims in, at the eyes, or at the feet once it lies down.
     let low = p.pose.def().tilt != weft_abi::pose_tilt::UPRIGHT;
     let swim_at = p.pos + DVec3::Y * if low { 0.1 } else { p.dims().eye };

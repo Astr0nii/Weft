@@ -705,9 +705,7 @@ fn bake_state(
     } else {
         vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
     };
-    let selection: Vec<[f32; 6]> = if !outline.is_empty() {
-        outline
-    } else if !hitbox.is_empty() {
+    let selection: Vec<[f32; 6]> = if !hitbox.is_empty() {
         hitbox
     } else if model == BlockModel::Cube {
         vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
@@ -755,6 +753,7 @@ fn bake_state(
         boxes,
         collision,
         selection,
+        outline,
         hardness: 1.0,
         friction: 0.6,
         drag: 1.0,
@@ -790,6 +789,7 @@ fn air() -> StateInfo {
         boxes: Vec::new(),
         collision: Vec::new(),
         selection: Vec::new(),
+        outline: Vec::new(),
         hardness: -1.0,
         friction: 0.6,
         drag: 1.0,

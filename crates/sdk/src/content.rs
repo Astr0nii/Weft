@@ -1006,6 +1006,12 @@ impl Registry {
         self.ns
     }
 
+    /// Whether mod `id` is loaded, to register what goes with it only then (all mods are known
+    /// before any registers, whatever the order).
+    pub fn has_mod(&self, id: &str) -> bool {
+        unsafe { (crate::host().mod_loaded)(abi::Str::new(id)) != 0 }
+    }
+
     /// `<this mod>:<path>`, numbered `/2`, `/3`.. when this mod gave it already.
     pub(crate) fn derive_name(&mut self, path: &str) -> String {
         let base = format!("{}:{path}", self.ns);
@@ -1766,6 +1772,10 @@ impl<'a> BlockBuilder<'a> {
     pub fn tab(self, tab: &CreativeTab) -> Self {
         self.tag(&tab_tag(tab))
     }
+    /// Its item is in no creative tab (`.untag(abi::comp::NO_TAB)` brings it back).
+    pub fn no_tab(self) -> Self {
+        self.tag(abi::comp::NO_TAB)
+    }
 
     /// Sounds from the group `<ns>:block.<group>` (`.break`, `.place`, `.step`, `.hit` events);
     /// a name with a namespace is used as it is (`base:block.stone` from another mod).
@@ -2504,6 +2514,11 @@ impl ItemBuilder<'_> {
     /// Creative inventory tab, see `Registry::creative_tab`.
     pub fn tab(self, tab: &CreativeTab) -> Self {
         self.tag(&tab_tag(tab))
+    }
+    /// In no creative tab nor its search, still obtainable (`.untag(abi::comp::NO_TAB)` brings it
+    /// back).
+    pub fn no_tab(self) -> Self {
+        self.tag(abi::comp::NO_TAB)
     }
     /// Worn in equipment `slot` (any mod's), where it shows on the wearer's model over the parts
     /// the slot covers: `texture` (under `entity/`, like `armor/iron_1`) in the wearer's skin

@@ -1869,6 +1869,7 @@ fn update_game(r: &mut Running, dt: f64, frame_start: Instant) {
             s.set_paused(paused && !s.is_hosting());
         }
         g.client.fov = r.settings.fov();
+        g.client.fov_effects = r.settings.fov_effects();
         g.client.brightness = r.settings.brightness();
         g.client.first_person_model = r.settings.first_person_model();
         g.client.entity_render.show_avatars = r.settings.show_avatars();

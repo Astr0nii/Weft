@@ -168,6 +168,7 @@ pub static HOST: Host = Host {
     attribute_remove_modifier,
     attribute_explain,
     reg_entry,
+    mod_loaded,
     roll_loot,
     holds,
     break_block,
@@ -1894,6 +1895,10 @@ unsafe extern "C" fn reg_entry(r: *mut abi::Registrar, d: *const abi::EntryDesc)
         let e = crate::entries::RawEntry::copy(r.owner, &*d);
         r.game.entries.push(e);
     }
+}
+
+unsafe extern "C" fn mod_loaded(id: Str) -> u32 {
+    unsafe { crate::modloader::mod_loaded(id.as_str()) as u32 }
 }
 
 unsafe extern "C" fn holds(w: *mut abi::WorldCtx, text: Str, pos: abi::Vec3, entity: u64) -> u32 {

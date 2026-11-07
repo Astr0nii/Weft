@@ -92,8 +92,9 @@ impl Server {
             }
             Some(())
         });
+        // Where it can't be placed, it is used like any item (a seed's own use, a bucket of it).
         if !matches!(placed, Some(Some(()))) {
-            return false;
+            return self.use_in_hand(c, pi, slot, (frame == 0).then_some((pos, face)), false);
         }
         if !creative {
             r.entities

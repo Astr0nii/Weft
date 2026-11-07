@@ -2387,6 +2387,10 @@ impl Dim {
                 let hot = met
                     .iter()
                     .any(|&(s, i)| c.states[s as usize].hazards[i].fire > 0);
+                // What sets things burning burns a dropped stack up, as lava and fire do in vanilla.
+                if hot && !e.item.is_empty() {
+                    e.removed = true;
+                }
                 // Sunlight sets them on fire for 8 seconds; burning hurts once a second, water puts it out.
                 if k.is(ef::BURNS_IN_SUN) && day > 0.5 && !sheltered && e.age % crate::world::TPS as u64 == 0 && !e.in_liquid {
                     let head = (e.pos + DVec3::Y * e.eye(c)).floor().as_ivec3();
@@ -3201,7 +3205,8 @@ impl Dim {
                 if !(there.liquid.is_some() || c.overlap(part, chosen)) || c.may_share(part, chosen) {
                     continue;
                 }
-                if there.flags & bf::REPLACEABLE == 0 {
+                // Tall grass doesn't replace tall grass: that would only use the item up.
+                if there.flags & bf::REPLACEABLE == 0 || there.block == c.states[chosen as usize].block {
                     return false;
                 }
                 replaced.push(part);
@@ -3243,7 +3248,7 @@ impl Dim {
             .get(player)
             .is_some_and(|e| e.mode.has(crate::tag_bits::game_mode::NO_COSTS));
         for &gone in &replaced {
-            if !creative && c.states[gone as usize].block != c.states[chosen as usize].block {
+            if !creative {
                 self.drop_block_loot(c, p, gone, ItemStack::EMPTY, false, 0);
             }
             self.replace_part(c, p, gone, AIR);

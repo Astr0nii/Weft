@@ -103,6 +103,9 @@ impl Settings {
     pub fn fov(&self) -> f32 {
         number("core:fov") as f32
     }
+    pub fn fov_effects(&self) -> f32 {
+        number("core:fov_effects") as f32
+    }
     pub fn sensitivity(&self) -> f32 {
         number("core:sensitivity") as f32
     }

@@ -19,6 +19,7 @@ settings.view_distance = Дальность прорисовки: {0} кубов
 settings.lod_distance = Дальний рельеф: {0} кубов
 settings.cloud_height = Подъём облаков: {0} блоков
 settings.fov = Поле зрения: {0}
+settings.fov_effects = Эффекты поля зрения: {0}%
 settings.gui_scale = Масштаб интерфейса: {0}
 settings.gui_scale.auto = Авто
 settings.vsync = Вертикальная синхронизация: {0}

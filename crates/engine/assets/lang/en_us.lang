@@ -45,6 +45,7 @@ settings.view_distance = View distance: {0} cubes
 settings.lod_distance = Distant terrain: {0} cubes
 settings.cloud_height = Clouds elevation: {0} blocks
 settings.fov = Field of view: {0}
+settings.fov_effects = FOV effects: {0}%
 settings.gui_scale = GUI scale: {0}
 settings.gui_scale.auto = Auto
 settings.vsync = VSync: {0}

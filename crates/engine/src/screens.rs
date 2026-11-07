@@ -662,6 +662,8 @@ impl Screen for SettingsScreen {
                     } else {
                         d.button("settings.chat", &[], 300.0, false, screen("core:chat_settings"));
                     }
+                    // Below the screens a short window must show without scrolling.
+                    d.slider("settings.fov_effects", "core:fov_effects", 100.0);
                     d.button("settings.first_person_model", &[on_off(s.first_person_model())], 300.0, false, |r| {
                         r.settings
                             .set("first_person_model", !r.settings.first_person_model() as u8 as f64);

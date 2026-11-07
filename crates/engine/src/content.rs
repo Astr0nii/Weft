@@ -115,9 +115,12 @@ pub struct StateInfo {
     pub collision: Vec<[f32; 6]>,
     /// `abi::comp::block::LIQUID_WALLS`; `Content::liquid_walls` has them worked out.
     pub liquid_walls: u8,
-    /// What rays pick and what is outlined and cracked, in block units: worked out once at
-    /// freeze, so all three agree.
+    /// What rays pick and the room it takes in its cell, in block units: its hitbox, else its
+    /// model's boxes, a plant's cross, the whole block.
     pub selection: Vec<[f32; 6]>,
+    /// What is outlined and cracked when it isn't `selection` (a hollow log outlined whole, the
+    /// flower in it still picked); empty: `selection`. See `outlined`.
+    pub outline: Vec<[f32; 6]>,
     pub hardness: f32,
     pub friction: f32,
     pub drag: f32,
@@ -210,6 +213,11 @@ pub struct Piece {
 }
 
 impl StateInfo {
+    /// What is outlined and cracked.
+    pub fn outlined(&self) -> &[[f32; 6]] {
+        if self.outline.is_empty() { &self.selection } else { &self.outline }
+    }
+
     /// The piece a hit at `point` (from the cell's corner) on `face` breaks off; `None`: all of it.
     pub fn piece_hit(&self, point: [f32; 3], face: u8) -> Option<&Piece> {
         let n = weft_abi::FACE_DIRS[face as usize % 6];
@@ -1593,7 +1601,11 @@ fn creative_tabs(
         .collect();
     ordered.sort_by_key(|&i| items[i as usize].order);
     let mut leftover: Vec<(usize, Vec<u32>)> = Vec::new();
-    for i in ordered {
+    let hidden = c.id(abi::comp::NO_TAB);
+    for i in ordered
+        .into_iter()
+        .filter(|&i| hidden.is_none_or(|t| !c.has(comps::ITEM, i, t)))
+    {
         let def = &items[i as usize];
         // A misspelt tab would quietly send the item to misc.
         for id in c.of(comps::ITEM, i).filter(|id| !tab_of.contains_key(id)) {
