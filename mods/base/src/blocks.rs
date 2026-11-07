@@ -297,7 +297,7 @@ pub fn register(r: &mut Registry) {
         .fog(0x050533, 96.0)
         .bucket(Item::generated("water_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
     r.liquid(&LAVA)
-        .block(|b| b.light(15).drag(0.4).tag("lava"))
+        .block(|b| b.light(15).drag(0.4).tag("lava").tag("cools_into_stone"))
         .flow_delay(30)
         .drop_off(2)
         .slope_find(2)
@@ -305,7 +305,7 @@ pub fn register(r: &mut Registry) {
         .fog(0x991A00, 1.0)
         .no_overlay()
         .bucket(Item::generated("lava_bucket".into()), &crate::items::BUCKET, &crate::tabs::TOOLS);
-    r.liquid_reaction("#hot", "#water")
+    r.liquid_reaction("#cools_into_stone", "#water")
         .source_turns_into("obsidian")
         .flowing_turns_into("cobblestone")
         .below_turns_into("stone");
