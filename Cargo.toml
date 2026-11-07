@@ -37,7 +37,7 @@ libloading = "0.9"
 lz4_flex = "0.14"
 png = "0.18"
 rustc-hash = "2"
-arboard = { version = "3", default-features = false }
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 iroh = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
