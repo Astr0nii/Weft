@@ -918,6 +918,51 @@ pub async fn movement_attributes(t: T) -> R {
 
 /// Mobs move by the player's rules: a pig pushed across ice slides further than on grass, walks
 /// slower through oil, and climbs a ladder it walks into.
+/// A ladder (`on_sides`, walls only) goes against the wall clicked, a second wall of its cell
+/// adds a side, and a side whose wall goes falls off, then the rest.
+pub async fn ladder_sides(t: T) -> R {
+    t.flat().await?;
+    let f = t.feet();
+    let c = add(f, [0, 1, -3]);
+    let (north, west) = (add(c, [0, 0, -1]), add(c, [-1, 0, 0]));
+    for w in [north, west] {
+        t.set(w, "cobblestone").await?;
+    }
+    t.op("mode creative").await?;
+    t.op("put me 0 ladder 8").await?;
+    let at = |p: [i32; 3]| format!("/tp {} {} {}", p[0] as f64 + 0.5, p[1] - 1, p[2] as f64 + 0.5);
+    let side = |d: &str| format!("prop {} {} {} {d}", c[0], c[1], c[2]);
+    t.cmd(&at(add(c, [0, 0, 2]))).await?;
+    t.secs(0.3).await?;
+    t.look_at(north);
+    t.frames(3).await?;
+    t.press("core:use");
+    t.secs(0.4).await?;
+    t.check_eq(t.op(&side("north")).await?, "true".to_string(), "on the wall clicked");
+    t.check_eq(t.op(&side("west")).await?, "false".to_string(), "and only there");
+    t.cmd(&at(add(c, [2, 0, 0]))).await?;
+    t.secs(0.3).await?;
+    t.look_at(west);
+    t.frames(3).await?;
+    t.press("core:use");
+    t.secs(0.4).await?;
+    t.check_eq(t.op(&side("west")).await?, "true".to_string(), "a second wall of the cell adds a side");
+    t.check_eq(t.op(&side("north")).await?, "true".to_string(), "keeping the first");
+    t.cmd(&at(add(c, [1, 0, 1]))).await?;
+    t.secs(0.3).await?;
+    t.look_at(c);
+    t.frames(3).await?;
+    t.shot("two_sides").await?;
+    t.set(north, "air").await?;
+    t.secs(0.3).await?;
+    t.check_eq(t.op(&side("north")).await?, "false".to_string(), "a side without its wall falls off");
+    t.check_eq(t.op(&side("west")).await?, "true".to_string(), "the other stays");
+    t.set(west, "air").await?;
+    t.secs(0.3).await?;
+    t.check_eq(t.op(&format!("get {} {} {}", c[0], c[1], c[2])).await?, "core:air".to_string(), "with no side left it goes");
+    Ok(())
+}
+
 pub async fn mob_physics(t: T) -> R {
     t.flat().await?;
     t.cmd("/rule core:mob_spawning 0").await?;
@@ -994,7 +1039,7 @@ pub async fn mob_physics(t: T) -> R {
     let wall = add(f, [6, 0, -6]);
     t.fill(add(wall, [0, 0, -1]), add(wall, [0, 5, 1]), "stone")
         .await?;
-    t.fill(add(wall, [-1, 0, -1]), add(wall, [-1, 5, 1]), "base:ladder[facing=west]")
+    t.fill(add(wall, [-1, 0, -1]), add(wall, [-1, 5, 1]), "base:ladder[north=false,south=false,west=false,east=true]")
         .await?;
     let id = t
         .op(&format!("spawn base:pig {} {} {}", wall[0] - 2, wall[1], wall[2]))

@@ -33,12 +33,12 @@ r.ore(&TIN_ORE).y(-64, 90).veins(5).vein_size(8).replaces("#stone_ore_replaceabl
 - `veins(n)`: how many veins are started per cube
 - `vein_size(n)`: blocks in a vein
 - `dimension(&D)`: only there (call it again for more). Another mod's dimension is a handle with its full name, `Dimension::named("base:overworld")`
-- `replaces(..)`: what the ore may replace, block names or `#tags` separated by spaces
+- `replaces(..)`: which blocks the ore may replace ([written like this](modding.md#references))
 - `replaces_with("#granite", &GRANITE_IRON_ORE)`: where the vein meets these, that block goes instead, so a vein doesn't stop at a stone border
 - `exposed(0.5)`: leaves out that share of what would touch a cave, as vanilla's gold and diamonds
 - `biome("#cave")`: only in biomes with this tag, underground ones included
 
-An ore is named like its block, so `r.edit(base::IRON_ORE.ore()).veins(10)` changes base's iron: what you set replaces its own, what you `replaces` adds to its list, and `r.remove(base::IRON_ORE.ore())` takes it out of the world.
+An ore is named like its block, so `r.edit(base::IRON_ORE.ore()).veins(10)` changes base's iron: what you set replaces its own (`replaces` too: a block in `#stone_ore_replaceables` is in every ore's way), and `r.remove(base::IRON_ORE.ore())` takes it out of the world.
 
 ## Structures
 A structure is a template, a fixed shape of blocks, that the engine places on the surface now and then. You draw a template in layers from the bottom up: each layer is a list of rows along z, and each character in a row is one block along x. A key says which block a character means, a space leaves whatever is already there, and `air` clears it. `fill(block, from, to)` adds a box instead. Its blocks are checked when the game loads, so a typo is an error then, and the same template serves a structure, a moving body (`.body(&TEMPLATE)` on an entity) and code (`w.place_template(&TEMPLATE, pos)`).
@@ -61,7 +61,7 @@ Structures stand on the surface of the dimension's [terrain](#terrain). A dimens
 
 ## Spawns
 `r.natural_spawn(entity)` decides where a mob shows up by itself:
-- `biome(tag)` and `ground(tag)`: the mob needs a biome with that tag, and a block with that tag under it
+- `biome(tag)` and `ground(blocks)`: the mob needs a biome with that tag, and one of [those blocks](modding.md#references) under it
 - `place(SpawnPlace::in_liquid("#water"))` or `place(SpawnPlace::ceiling())`: a spot in a liquid or hanging under a block instead of on the ground. The mob's own height decides how much room it needs
 - `dimension(&D)`: only in that dimension
 - `light(min, max)` and `y(min, max)`: the light level (0 to 15) and heights it needs

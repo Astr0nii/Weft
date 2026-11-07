@@ -1755,7 +1755,7 @@ impl Dim {
                     let going = (0..6u8)
                         .filter(|f| mask & (1 << f) != 0 && held_by(*f))
                         .fold(0u8, |m, f| m | 1 << f);
-                    (going != 0).then(|| c.block_of(state).first_state + going as u32)
+                    (going != 0).then(|| c.block_of(state).with_sides(state, going))
                 } else {
                     let support = info
                         .support
@@ -1992,8 +1992,8 @@ impl Dim {
         }
     }
 
-    /// Pieces of wire that lost what held them up come off; the unloaded holds.
-    pub(super) fn wire_support(&mut self, c: &'static Content, p: IVec3, state: u32) -> bool {
+    /// Sides of an `on_sides` block that lost what held them up come off; the unloaded holds.
+    pub(super) fn sides_support(&mut self, c: &'static Content, p: IVec3, state: u32) -> bool {
         let mask = wire::mask(c, state);
         let mut left = mask;
         for f in 0..6u8 {
@@ -2012,18 +2012,33 @@ impl Dim {
             self.drop_block_loot(c, p, state, abi::ItemStack::EMPTY, false, 0);
         }
         self.block_dust(c, p, state);
-        self.set(c, p, if left == 0 { AIR } else { c.block_of(state).first_state + left as u32 });
+        self.set(c, p, if left == 0 { AIR } else { c.block_of(state).with_sides(state, left) });
         true
     }
 
-    /// A player adding a piece of wire to a cell: the state, if that can be done.
-    pub(super) fn wire_placed(&self, c: &Content, p: IVec3, face: u8, wire_state: u32) -> Option<u32> {
+    /// A player adding a side of an `on_sides` block to a cell, against the face clicked (the
+    /// allowed side nearest the look when that one isn't): the state, if that can be done. Its
+    /// other properties are those of what is there already, else of `placed`.
+    pub(super) fn sides_placed(&self, c: &Content, p: IVec3, face: u8, look: [f32; 3], placed: u32) -> Option<u32> {
         let cur = self.get(p)?;
-        let on = face ^ 1;
-        let first = c.block_of(wire_state).first_state;
-        let mut mask = 0;
-        if c.states[cur as usize].block == c.states[wire_state as usize].block {
-            mask = wire::mask(c, cur);
+        let def = c.block_of(placed);
+        let on = if def.sides & (1 << (face ^ 1)) != 0 {
+            face ^ 1
+        } else {
+            (0..6u8)
+                .filter(|f| def.sides & (1 << f) != 0)
+                .max_by(|a, b| {
+                    let dot = |f: u8| {
+                        (0..3)
+                            .map(|i| DIRS[f as usize][i] as f32 * look[i])
+                            .sum::<f32>()
+                    };
+                    dot(*a).total_cmp(&dot(*b))
+                })?
+        };
+        let (mut mask, mut base) = (0, placed);
+        if c.states[cur as usize].block == c.states[placed as usize].block {
+            (mask, base) = (wire::mask(c, cur), cur);
         } else if c.states[cur as usize].flags & bf::REPLACEABLE == 0 {
             return None;
         }
@@ -2034,7 +2049,7 @@ impl Dim {
         {
             return None;
         }
-        Some(first + (mask | 1 << on) as u32)
+        Some(def.with_sides(base, mask | 1 << on))
     }
 }
 

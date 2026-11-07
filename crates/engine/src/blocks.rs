@@ -23,8 +23,8 @@ pub(crate) struct Blocks {
     /// The menu each block but air opens, by name.
     pub opens_names: Vec<String>,
     pub block_names: FxHashMap<String, u32>,
-    /// What may share a cell with a block though their shapes overlap.
-    pub shares: Vec<(String, Vec<String>)>,
+    /// What may share a cell with a block though their shapes overlap (a matcher).
+    pub shares: Vec<(String, String)>,
     /// Made by templates: (name, source, lang key).
     pub shapes: Vec<(String, String, String)>,
     /// (block, [(texture, its replacement)]): its item's follow.
@@ -34,20 +34,27 @@ pub(crate) struct Blocks {
 }
 
 /// Every mod's block entries in load order, frozen. Templates copy their item in `items` for each
-/// block they make; `hot` blocks burn what touches them; `tex` gives a texture's id.
+/// block they make; `hot` blocks burn what touches them; `liquids` are liquids' blocks; `tex`
+/// gives a texture's id.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn freeze(
     raw: Vec<RawEntry>,
     items: &mut Folded,
     hot: &[String],
+    liquids: &[String],
     read_model: &dyn Fn(&str) -> Option<String>,
     tex: &mut dyn FnMut(&str) -> u32,
     mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) -> Blocks {
     let mut f = entries::fold("block", raw, mod_name, errors);
-    for e in f.entries.iter_mut().filter(|e| hot.contains(&e.name)) {
-        e.parts
-            .push((String::new(), vec![set_op(RawValue::tag(abi::comp::HOT))]));
+    for e in &mut f.entries {
+        for (list, tag) in [(hot, abi::comp::HOT), (liquids, abi::comp::LIQUIDS)] {
+            if list.contains(&e.name) {
+                e.parts
+                    .push((String::new(), vec![set_op(RawValue::tag(tag))]));
+            }
+        }
     }
     let (tagged, named): (Vec<RawEntry>, Vec<RawEntry>) = std::mem::take(&mut f.patterns)
         .into_iter()
@@ -84,6 +91,7 @@ pub(crate) fn freeze(
             props: Vec::new(),
             opens: None,
             cb: BlockCallbacks::default(),
+            sides: 0,
         }],
         block_values: vec![(crate::registry::ENGINE, vec![Vec::new()])],
         opens_names: Vec::new(),
@@ -123,6 +131,9 @@ pub(crate) fn freeze(
                     }
                 }
             }
+            if s.or(abi::comp::HARDNESS, 1.0f32) < 0.0 && !liquids.contains(&e.name) {
+                s.0.push(Cow::Owned(RawValue::tag(abi::comp::UNBREAKABLE)));
+            }
             let (info, head) = bake_state(&e.name, index, &s, &retexture, file.as_ref(), tex, errors);
             if !head.is_empty() {
                 heads.push((out.states.len(), head));
@@ -134,6 +145,25 @@ pub(crate) fn freeze(
                     .map(Cow::into_owned)
                     .collect(),
             );
+        }
+        // On its sides: which ones each state lies on, from its `west`..`south` properties.
+        let on_sides = state_values
+            .first()
+            .is_some_and(|v: &Vec<RawValue>| v.iter().any(|x| x.name == abi::comp::block::ON_SIDES));
+        let side_props: Vec<(u8, &Prop)> = props
+            .iter()
+            .filter(|_| on_sides)
+            .filter_map(|p| {
+                let f = abi::FACE_NAMES.iter().position(|n| *n == p.name)?;
+                (p.values.len() == 2 && p.values.iter().any(|v| v == "true")).then_some((f as u8, p))
+            })
+            .collect();
+        let sides = side_props.iter().fold(0u8, |m, (f, _)| m | 1 << f);
+        for (i, st) in out.states[first as usize..].iter_mut().enumerate() {
+            st.sides = side_props
+                .iter()
+                .filter(|(_, p)| p.values[(i as u32 / p.stride) as usize % 2] == "true")
+                .fold(0, |m, (f, _)| m | 1 << f);
         }
         // What a state gives, from its `power` property: two values are off and full.
         let power = props
@@ -162,9 +192,8 @@ pub(crate) fn freeze(
         out.block_values.push((e.owner, state_values));
         out.opens_names
             .push(e.text(b::OPENS).unwrap_or_default().to_string());
-        let shares: Vec<String> = e.or(b::SHARES_CELL, Vec::new());
-        if !shares.is_empty() {
-            out.shares.push((e.name.clone(), shares));
+        if let Some(shares) = e.text(b::SHARES_CELL).filter(|t| !t.is_empty()) {
+            out.shares.push((e.name.clone(), shares.to_string()));
         }
         if !retexture.is_empty() {
             out.retextures.push((e.name.clone(), retexture));
@@ -182,7 +211,7 @@ pub(crate) fn freeze(
             signal_gate: e.callback(b::SIGNAL_GATE),
         };
         out.block_defs
-            .push(BlockDef { name: e.name, owner: e.owner, first_state: first, states: count, props, cb, opens: None });
+            .push(BlockDef { name: e.name, owner: e.owner, first_state: first, states: count, props, cb, opens: None, sides });
     }
     out.block_names = out
         .block_defs
@@ -584,10 +613,20 @@ fn bake_state(
     }
     let opacity = opacity.unwrap_or(if flags & bf::OPAQUE != 0 { 15 } else { 0 });
     let filter: [u8; 3] = s.or(b::LIGHT_FILTER, [0; 3]);
+    let turn = match s.get::<u8>(b::TURN) {
+        Some(i) => weft_abi::Turn::from_index(i).unwrap_or_else(|| {
+            errors.push(format!("{name}: turn {i} is none of the 24"));
+            weft_abi::Turn::NONE
+        }),
+        None => weft_abi::Turn::NONE,
+    };
     let sixteenths = |name: &str| -> Vec<[f32; 6]> {
         s.or::<Vec<[f32; 6]>>(name, Vec::new())
             .into_iter()
-            .map(|x| x.map(|v| v / 16.0))
+            .map(|x| {
+                let (a, b) = turn.bounds([x[0], x[1], x[2]], [x[3], x[4], x[5]], 16.0);
+                [a[0], a[1], a[2], b[0], b[1], b[2]].map(|v| v / 16.0)
+            })
             .collect()
     };
     let (hitbox, outline) = (sixteenths(b::HITBOX), sixteenths(b::OUTLINE));
@@ -602,6 +641,7 @@ fn bake_state(
             textures: std::array::from_fn(|i| tex(if x.textures[i].is_empty() { textures[i] } else { x.textures[i] })),
             uv: x.uv,
         })
+        .map(|b| if turn == weft_abi::Turn::NONE { b } else { b.turned(turn) })
         .collect();
     boxes.shrink_to_fit();
     let of_model = || -> Vec<[f32; 6]> {
@@ -639,9 +679,15 @@ fn bake_state(
     } else {
         vec![[0.0, 0.0, 0.0, 1.0, 1.0, 1.0]]
     };
+    let own: [u32; 6] = if model == BlockModel::None { [0; 6] } else { std::array::from_fn(|i| tex(textures[i])) };
     let info = StateInfo {
-        liquid_walls: s.or(b::LIQUID_WALLS, u8::MAX),
+        liquid_walls: match s.or(b::LIQUID_WALLS, u8::MAX) {
+            u8::MAX => u8::MAX,
+            walls => turn.faces(walls),
+        },
         block,
+        turn,
+        sides: 0,
         flags,
         // Light, tint, hardness, friction, drag and support come from components.
         light: [0; 3],
@@ -663,8 +709,8 @@ fn bake_state(
             ..Signal::default()
         },
         // A box model's faces default to these (the particles of breaking it show them too).
-        textures: if model == BlockModel::None { [0; 6] } else { std::array::from_fn(|i| tex(textures[i])) },
-        turns: s.or(b::TURNS, [0u8; 6]).map(|t| t % 4),
+        textures: crate::content::turned_faces(turn, own),
+        turns: crate::content::turned_pictures(turn, s.or(b::TURNS, [0u8; 6]).map(|t| t % 4)),
         boxes,
         collision,
         selection,
@@ -684,6 +730,8 @@ fn bake_state(
 
 fn air() -> StateInfo {
     StateInfo {
+        turn: weft_abi::Turn::NONE,
+        sides: 0,
         liquid_walls: u8::MAX,
         grow: None,
         signal: Signal::default(),

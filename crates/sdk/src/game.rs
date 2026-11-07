@@ -7,7 +7,7 @@ use crate::content::{
 use crate::ui::{Ui, ui_cb};
 use crate::{Id, Registry, WithComponents, World, callback, comps, host, qualify};
 
-pub use abi::{EYE_SHARE, Energy, EntityState, component_flags, damage_cause, damage_flags, entity_flags, slot_flags};
+pub use abi::{EYE_SHARE, Energy, EntityState, component_flags, damage_cause, entity_flags, slot_flags};
 
 /// The engine's player kind, for hooks and components on players.
 pub static PLAYER: EntityKind = EntityKind::named("core:player");
@@ -283,7 +283,7 @@ impl World {
     }
     /// A player whose mode spares it damage, hunger and air (creative, spectator).
     pub fn outside_survival(&self, id: u64) -> bool {
-        crate::GameMode::flags_of(self.game_mode(id)) & abi::game_mode_flags::INVULNERABLE != 0
+        crate::comps::game_mode::INVULNERABLE.on(abi::entry_kind::GAME_MODE, self.game_mode(id))
     }
     /// The id of its game mode (`game_modes::CREATIVE.id()`): survival for what isn't a player.
     pub fn game_mode(&self, id: u64) -> u32 {
@@ -1970,9 +1970,10 @@ impl SpawnBuilder<'_> {
         self.reg.derived.retain(|n| *n != derived);
         self
     }
-    /// Only on blocks with this tag (under the spot; what `place` says it rests on).
-    pub fn ground(self, tag: &str) -> Self {
-        self.set_text(&comps::spawn::GROUND, tag)
+    /// Only on blocks `what` takes (a block matcher; under the spot, what `place` says it rests
+    /// on).
+    pub fn ground(self, what: &str) -> Self {
+        self.set_text(&comps::spawn::GROUND, what)
     }
     /// What kind of spot it takes: on the ground (the default), in a liquid, under a ceiling.
     /// The mob's height decides how much room it needs.

@@ -15,10 +15,13 @@ weft_noise = { path = "crates/noise" }
 weft_render = { path = "crates/render" }
 weft_engine = { path = "crates/engine" }
 weft_vulkan = { path = "backends/vulkan" }
+weft_wgpu = { path = "backends/wgpu" }
 base_api = { path = "mods/base/api" }
 
 ash = "0.38"
 ash-window = "0.13"
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "dx12", "naga-ir"] }
+pollster = "0.4"
 gpu-allocator = { version = "0.28", default-features = false, features = ["vulkan", "std"] }
 winit = "0.30"
 raw-window-handle = "0.6"

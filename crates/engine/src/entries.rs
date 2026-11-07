@@ -289,21 +289,29 @@ pub fn bake_by<D, K: Ord>(
     key: impl FnMut(&Entry) -> K,
     make: impl FnMut(&Entry, &mut Vec<String>) -> D,
 ) -> (Vec<D>, FxHashMap<String, u32>) {
-    let what = abi::entry_kind::NAMES
+    finish(fold(kind_name(kind), raw, mod_name, errors), errors, key, make)
+}
+
+fn kind_name(kind: u32) -> &'static str {
+    abi::entry_kind::NAMES
         .get(kind as usize)
         .copied()
-        .unwrap_or("entry");
-    let f = fold(what, raw, mod_name, errors);
-    finish(f, errors, key, make)
+        .unwrap_or("entry")
 }
 
 /// The rest of `bake_by`, for a kind folded early (what liquids' heat says of their blocks).
 pub fn finish<D, K: Ord>(
-    mut f: Folded,
+    f: Folded,
     errors: &mut Vec<String>,
     key: impl FnMut(&Entry) -> K,
     mut make: impl FnMut(&Entry, &mut Vec<String>) -> D,
 ) -> (Vec<D>, FxHashMap<String, u32>) {
+    let (entries, names) = order(f, errors, key);
+    (entries.iter().map(|e| make(e, errors)).collect(), names)
+}
+
+/// The entries in id order, ids written into the handles, and their names.
+fn order<K: Ord>(mut f: Folded, errors: &mut Vec<String>, key: impl FnMut(&Entry) -> K) -> (Vec<Entry>, FxHashMap<String, u32>) {
     f.report_missing(errors);
     f.entries.sort_by_cached_key(key);
     f.apply_patterns(errors);
@@ -314,7 +322,78 @@ pub fn finish<D, K: Ord>(
         .enumerate()
         .map(|(i, e)| (e.name.clone(), i as u32))
         .collect();
-    (f.entries.iter().map(|e| make(e, errors)).collect(), names)
+    (f.entries, names)
+}
+
+/// Kinds without a component table: their registered entries aren't what the game numbers
+/// (recipes expand, sky objects go by dimension and screen parts by order, ores and the like go
+/// into each dimension, word sets are merged by name, component declarations are the components),
+/// or nothing reads them by id yet (tint kinds, creative tabs).
+pub const NO_TABLE: [u32; 14] = {
+    use abi::entry_kind as k;
+    [
+        k::SKY,
+        k::SCREEN_PART,
+        k::WORDS,
+        k::COMPONENT,
+        k::RECIPE,
+        k::LOOT,
+        k::ORE,
+        k::SCATTER,
+        k::DECORATION,
+        k::STRUCTURE,
+        k::SPAWN,
+        k::TERRAIN,
+        k::TINT_KIND,
+        k::CREATIVE_TAB,
+    ]
+};
+
+/// Kinds baked through here keep their entries, in id order, for their component tables
+/// (`Components::add_table`); the others' ids aren't the ones the game uses (recipes expand,
+/// sky objects go by dimension), so they get none.
+#[derive(Default)]
+pub struct Tables(pub Vec<(u32, Vec<Entry>)>);
+
+impl Tables {
+    pub fn bake<D>(
+        &mut self,
+        raw: Vec<RawEntry>,
+        kind: u32,
+        mod_name: &dyn Fn(ModId) -> String,
+        errors: &mut Vec<String>,
+        make: impl FnMut(&Entry, &mut Vec<String>) -> D,
+    ) -> (Vec<D>, FxHashMap<String, u32>) {
+        self.bake_by(raw, kind, mod_name, errors, |_| (), make)
+    }
+
+    pub fn bake_by<D, K: Ord>(
+        &mut self,
+        raw: Vec<RawEntry>,
+        kind: u32,
+        mod_name: &dyn Fn(ModId) -> String,
+        errors: &mut Vec<String>,
+        key: impl FnMut(&Entry) -> K,
+        make: impl FnMut(&Entry, &mut Vec<String>) -> D,
+    ) -> (Vec<D>, FxHashMap<String, u32>) {
+        self.finish(kind, fold(kind_name(kind), raw, mod_name, errors), errors, key, make)
+    }
+
+    pub fn finish<D, K: Ord>(
+        &mut self,
+        kind: u32,
+        f: Folded,
+        errors: &mut Vec<String>,
+        key: impl FnMut(&Entry) -> K,
+        mut make: impl FnMut(&Entry, &mut Vec<String>) -> D,
+    ) -> (Vec<D>, FxHashMap<String, u32>) {
+        // Their components were declared by this list, before anything was baked.
+        debug_assert!(!NO_TABLE.contains(&kind), "{} has no table", kind_name(kind));
+        let (entries, names) = order(f, errors, key);
+        let out = entries.iter().map(|e| make(e, errors)).collect();
+        self.0.push((kind, entries));
+        (out, names)
+    }
 }
 
 /// Whether an EDIT's name is a pattern, not one entry.

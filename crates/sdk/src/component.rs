@@ -95,16 +95,25 @@ impl TextValue for Text {}
 impl TextValue for BlockRef {}
 impl TextValue for ItemRef {}
 impl TextValue for BlockList {}
-impl TextValue for TagRef {}
+impl TextValue for Matcher {}
 impl TextValue for TintRef {}
 
-/// A tag a component names (`#plant_soil`), read back as the tag's component id.
+/// Which blocks, as a component names them: a block matcher (`set_text(&SUPPORT, "#plant_soil
+/// !base:sand")`, syntax in `docs/modding.md`), compiled once when the game loads and read back
+/// as its id.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TagRef(pub u32);
+pub struct Matcher(pub u32);
 
-unsafe impl Value for TagRef {}
-raw_data!(TagRef, "tag");
+impl Matcher {
+    /// Whether it takes block state `state`.
+    pub fn has(&self, state: u32) -> bool {
+        unsafe { (host().matcher_has)(self.0, state) != 0 }
+    }
+}
+
+unsafe impl Value for Matcher {}
+raw_data!(Matcher, "match");
 
 /// A tint kind a component names (`core:grass`), read back as its number.
 #[repr(transparent)]
@@ -247,7 +256,9 @@ pub fn entries_with(kind: u32, name: &str) -> Vec<u32> {
 
 const UNRESOLVED: u32 = u32::MAX - 1;
 const MISSING: u32 = u32::MAX;
-const KINDS: usize = ek::COUNT;
+/// Kinds whose place in the table a handle caches (block to dimension: what hot code reads);
+/// the others are looked up on each read.
+const CACHED: usize = ek::DIMENSION as usize + 1;
 
 static NO_BITS: u64 = 0;
 
@@ -276,12 +287,21 @@ impl Slot {
 
 struct Lookup {
     id: AtomicU32,
-    slots: [Slot; KINDS],
+    slots: [Slot; CACHED],
+}
+
+/// Where one component sits in one kind's table: its bit's word in entry 0's row.
+struct Place {
+    bits: *const u64,
+    words: u32,
+    entries: u32,
+    data: *const u8,
+    stride: u32,
 }
 
 impl Lookup {
     const fn new() -> Lookup {
-        Lookup { id: AtomicU32::new(UNRESOLVED), slots: [const { Slot::new() }; KINDS] }
+        Lookup { id: AtomicU32::new(UNRESOLVED), slots: [const { Slot::new() }; CACHED] }
     }
 
     fn id(&self, name: &str, schema: &dyn Fn() -> String) -> u32 {
@@ -298,28 +318,63 @@ impl Lookup {
         id
     }
 
+    /// Where it sits in `kind`'s table: cached in the handle for the first kinds.
     #[inline]
-    fn has(&self, kind: u32, entry: u32, name: &str, schema: &dyn Fn() -> String) -> bool {
-        let s = &self.slots[kind as usize];
+    fn place(&self, kind: u32, name: &str, schema: &dyn Fn() -> String) -> Option<Place> {
+        let Some(s) = self.slots.get(kind as usize) else { return self.find(kind, name, schema) };
         let mut bits = s.bits.load(Ordering::Acquire);
         if bits.is_null() {
             bits = self.fill(kind, name, schema);
             if bits.is_null() {
-                return false;
+                return None;
             }
         }
-        entry < s.entries.load(Ordering::Relaxed)
-            && unsafe { *bits.add((entry * s.words.load(Ordering::Relaxed)) as usize) } >> (self.id.load(Ordering::Relaxed) % 64) & 1 != 0
+        Some(Place {
+            bits,
+            words: s.words.load(Ordering::Relaxed),
+            entries: s.entries.load(Ordering::Relaxed),
+            data: s.data.load(Ordering::Relaxed),
+            stride: s.stride.load(Ordering::Relaxed),
+        })
+    }
+
+    fn find(&self, kind: u32, name: &str, schema: &dyn Fn() -> String) -> Option<Place> {
+        let id = self.id(name, schema);
+        let t = component_table()?;
+        let k = t.kinds.get(kind as usize)?;
+        if id >= t.components {
+            // Nothing uses it: every check says no.
+            return Some(Place { bits: &NO_BITS, words: 0, entries: 0, data: std::ptr::null(), stride: 0 });
+        }
+        let col = unsafe { *k.columns.add(id as usize) };
+        Some(Place {
+            bits: unsafe { k.bits.add((id / 64) as usize) },
+            words: k.words,
+            entries: k.entries,
+            data: col.data,
+            stride: col.stride,
+        })
+    }
+
+    #[inline]
+    fn has(&self, kind: u32, entry: u32, name: &str, schema: &dyn Fn() -> String) -> bool {
+        self.place(kind, name, schema)
+            .is_some_and(|p| self.has_at(&p, entry))
+    }
+
+    #[inline]
+    fn has_at(&self, p: &Place, entry: u32) -> bool {
+        entry < p.entries && unsafe { *p.bits.add((entry * p.words) as usize) } >> (self.id.load(Ordering::Relaxed) % 64) & 1 != 0
     }
 
     #[inline]
     fn read<T: Data>(&self, kind: u32, entry: u32, name: &str, schema: &dyn Fn() -> String) -> Option<T> {
-        if !self.has(kind, entry, name, schema) {
+        let p = self.place(kind, name, schema)?;
+        if !self.has_at(&p, entry) {
             return None;
         }
-        let s = &self.slots[kind as usize];
-        let stride = s.stride.load(Ordering::Relaxed) as usize;
-        let at = unsafe { s.data.load(Ordering::Relaxed).add(entry as usize * stride) };
+        let stride = p.stride as usize;
+        let at = unsafe { p.data.add(entry as usize * stride) };
         let mut cell = unsafe { std::slice::from_raw_parts(at as *const u8, stride) };
         if T::FIXED {
             return (stride == size_of::<T>())
@@ -339,23 +394,14 @@ impl Lookup {
 
     #[cold]
     fn fill(&self, kind: u32, name: &str, schema: &dyn Fn() -> String) -> *mut u64 {
-        let id = self.id(name, schema);
-        let Some(t) = component_table() else { return std::ptr::null_mut() };
+        let Some(p) = self.find(kind, name, schema) else { return std::ptr::null_mut() };
         let s = &self.slots[kind as usize];
-        let k = &t.kinds[kind as usize];
-        let bits = if id < t.components {
-            let col = unsafe { *k.columns.add(id as usize) };
-            s.words.store(k.words, Ordering::Relaxed);
-            s.entries.store(k.entries, Ordering::Relaxed);
-            s.data.store(col.data as *mut u8, Ordering::Relaxed);
-            s.stride.store(col.stride, Ordering::Relaxed);
-            unsafe { k.bits.add((id / 64) as usize) as *mut u64 }
-        } else {
-            // Nothing uses it: every check says no.
-            &NO_BITS as *const u64 as *mut u64
-        };
-        s.bits.store(bits, Ordering::Release);
-        bits
+        s.words.store(p.words, Ordering::Relaxed);
+        s.entries.store(p.entries, Ordering::Relaxed);
+        s.data.store(p.data as *mut u8, Ordering::Relaxed);
+        s.stride.store(p.stride, Ordering::Relaxed);
+        s.bits.store(p.bits as *mut u64, Ordering::Release);
+        p.bits as *mut u64
     }
 }
 
@@ -385,25 +431,31 @@ impl<T: Data, K> Component<T, K> {
     pub fn id(&self) -> u32 {
         self.lookup.id(self.name, &T::schema)
     }
+    /// Its value on entry `id` of `kind` (`abi::entry_kind`): a weather's, a game mode's, any
+    /// kind's but those without a table (recipes, ores, sky objects ...).
+    #[inline]
+    pub fn on(&self, kind: u32, id: u32) -> Option<T> {
+        self.lookup.read(kind, id, self.name, &T::schema)
+    }
     #[inline]
     pub fn on_block(&self, state: u32) -> Option<T> {
-        self.lookup.read(ek::BLOCK, state, self.name, &T::schema)
+        self.on(ek::BLOCK, state)
     }
     #[inline]
     pub fn on_item(&self, item: u32) -> Option<T> {
-        self.lookup.read(ek::ITEM, item, self.name, &T::schema)
+        self.on(ek::ITEM, item)
     }
     #[inline]
     pub fn on_entity(&self, kind: u32) -> Option<T> {
-        self.lookup.read(ek::ENTITY, kind, self.name, &T::schema)
+        self.on(ek::ENTITY, kind)
     }
     #[inline]
     pub fn on_biome(&self, biome: u32) -> Option<T> {
-        self.lookup.read(ek::BIOME, biome, self.name, &T::schema)
+        self.on(ek::BIOME, biome)
     }
     #[inline]
     pub fn on_dimension(&self, dim: u32) -> Option<T> {
-        self.lookup.read(ek::DIMENSION, dim, self.name, &T::schema)
+        self.on(ek::DIMENSION, dim)
     }
     /// The stack's own value (damage taken, charge ...), else its item's.
     pub fn on_stack(&self, stack: &ItemStack) -> Option<T> {
@@ -505,25 +557,30 @@ impl Tag {
     pub fn id(&self) -> u32 {
         self.lookup.id(self.name, &tag_schema)
     }
+    /// Entry `id` of `kind` (`abi::entry_kind`) has it: `DRY.on(entry_kind::WEATHER, w.weather())`.
+    #[inline]
+    pub fn on(&self, kind: u32, id: u32) -> bool {
+        self.lookup.has(kind, id, self.name, &tag_schema)
+    }
     #[inline]
     pub fn on_block(&self, state: u32) -> bool {
-        self.lookup.has(ek::BLOCK, state, self.name, &tag_schema)
+        self.on(ek::BLOCK, state)
     }
     #[inline]
     pub fn on_item(&self, item: u32) -> bool {
-        self.lookup.has(ek::ITEM, item, self.name, &tag_schema)
+        self.on(ek::ITEM, item)
     }
     #[inline]
     pub fn on_entity(&self, kind: u32) -> bool {
-        self.lookup.has(ek::ENTITY, kind, self.name, &tag_schema)
+        self.on(ek::ENTITY, kind)
     }
     #[inline]
     pub fn on_biome(&self, biome: u32) -> bool {
-        self.lookup.has(ek::BIOME, biome, self.name, &tag_schema)
+        self.on(ek::BIOME, biome)
     }
     #[inline]
     pub fn on_dimension(&self, dim: u32) -> bool {
-        self.lookup.has(ek::DIMENSION, dim, self.name, &tag_schema)
+        self.on(ek::DIMENSION, dim)
     }
 }
 
@@ -716,9 +773,9 @@ pub static LIGHT: Component<[u8; 3]> = Component::named(abi::comp::LIGHT);
 pub static TINT: Component<TintRef> = Component::named(abi::comp::TINT);
 pub static TINT_FACES: Component<u8> = Component::named(abi::comp::TINT_FACES);
 pub static SUPPORT_FACE: Component<u8> = Component::named(abi::comp::SUPPORT_FACE);
-pub static SUPPORT: Component<TagRef> = Component::named(abi::comp::SUPPORT);
-pub static SUPPORT_NEAR: Component<TagRef> = Component::named(abi::comp::SUPPORT_NEAR);
-pub static SPREADS_TO: Component<TagRef> = Component::named(abi::comp::SPREADS_TO);
+pub static SUPPORT: Component<Matcher> = Component::named(abi::comp::SUPPORT);
+pub static SUPPORT_NEAR: Component<Matcher> = Component::named(abi::comp::SUPPORT_NEAR);
+pub static SPREADS_TO: Component<Matcher> = Component::named(abi::comp::SPREADS_TO);
 pub static GROW_TIME: Component<f32> = Component::named(abi::comp::GROW_TIME);
 pub static GROW_LIGHT: Component<u32> = Component::named(abi::comp::GROW_LIGHT);
 pub static SPREAD_TIME: Component<f32> = Component::named(abi::comp::SPREAD_TIME);
@@ -730,7 +787,8 @@ pub static AMBIENT_PARTICLE: Component<Text> = Component::named(abi::comp::AMBIE
 pub static DRIP: Component<Text> = Component::named(abi::comp::DRIP);
 pub static SPLASH: Component<Text> = Component::named(abi::comp::SPLASH);
 pub static BUBBLE: Component<Text> = Component::named(abi::comp::BUBBLE);
-pub static SWIMS_IN: Component<Text> = Component::named(abi::comp::SWIMS_IN);
+pub static SWIMS_IN: Component<Matcher> = Component::named(abi::comp::SWIMS_IN);
+pub static JOINS: Component<Matcher> = Component::named(abi::comp::JOINS);
 pub static CONDUCTOR: Tag = Tag::named(abi::comp::CONDUCTOR);
 pub static ENERGY: Component<abi::Energy> = Component::named(abi::comp::ENERGY);
 pub static WORN: Component<abi::Worn> = Component::named(abi::comp::WORN);

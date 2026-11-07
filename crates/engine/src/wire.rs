@@ -16,7 +16,7 @@ pub fn dir_name(d: u8) -> &'static str {
 
 /// The faces a wire state lies on.
 pub fn mask(c: &Content, state: u32) -> u8 {
-    if c.states[state as usize].signal.kind == sk::WIRE { (state - c.block_of(state).first_state) as u8 } else { 0 }
+    c.states[state as usize].sides
 }
 
 /// Whether wire can't pass through a block on its way past an edge.
@@ -174,7 +174,7 @@ pub fn after_break(c: &Content, state: u32, face: u8) -> u32 {
     // A flat piece is hit on its broad side, which looks away from what holds it up.
     let hit = if face < 6 && m & (1 << (face ^ 1)) != 0 { face ^ 1 } else { m.trailing_zeros() as u8 };
     let left = m & !(1 << hit);
-    if left == 0 { crate::content::AIR } else { c.block_of(state).first_state + left as u32 }
+    if left == 0 { crate::content::AIR } else { c.block_of(state).with_sides(state, left) }
 }
 
 #[cfg(test)]

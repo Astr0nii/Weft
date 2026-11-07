@@ -746,6 +746,7 @@ pub struct SpawnRule {
     pub entity: u32,
     pub category: u32,
     pub biome: Option<u32>,
+    /// Matcher of the block it rests on.
     pub ground: Option<u32>,
     /// `abi::spawn_place`.
     pub place: u32,
@@ -1321,13 +1322,47 @@ pub const ENGINE_EVENTS: &[(&str, &str, u32)] = {
     ]
 };
 
+/// The engine's own entries of a kind, before every mod's (settings aside: they come of the keys).
+pub fn engine_entries(kind: u32) -> Vec<RawEntry> {
+    match kind {
+        ek::PARTICLE => engine_particles(),
+        ek::SOUND_CATEGORY => engine_sound_categories(),
+        ek::SOUND => engine_sounds(),
+        ek::ENTITY_CATEGORY => engine_categories(),
+        ek::CAMERA => engine_cameras(),
+        ek::ATTRIBUTE => engine_attributes(),
+        ek::DAMAGE_CAUSE => engine_damage_causes(),
+        ek::GAME_MODE => engine_game_modes(),
+        ek::POSE => engine_poses(),
+        ek::PRECIPITATION => engine_precipitations(),
+        ek::TEXT_PLACE => crate::hud::engine_places(),
+        ek::WEATHER => engine_weathers(),
+        ek::ENTITY_EFFECT => abi::entity_effect::NAMES
+            .iter()
+            .map(|n| RawEntry::engine(kind, n))
+            .collect(),
+        ek::CONDITION => abi::condition::NAMES
+            .iter()
+            .map(|n| RawEntry::engine(kind, n))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// FNV-1a, for names stored in saves.
 pub fn name_hash(s: &str) -> u64 {
     weft_noise::fnv(s.as_bytes())
 }
 
 /// A natural spawning rule with its names resolved; `None` (and an error) for a name that isn't there.
-fn bake_spawn(e: &Entry, g: &Game, c: &Components, dim_names: &FxHashMap<String, u32>, errors: &mut Vec<String>) -> Option<SpawnRule> {
+fn bake_spawn(
+    e: &Entry,
+    g: &Game,
+    c: &Components,
+    mut matcher: impl FnMut(&str) -> Result<u32, String>,
+    dim_names: &FxHashMap<String, u32>,
+    errors: &mut Vec<String>,
+) -> Option<SpawnRule> {
     use abi::comp::{common as p, spawn as s};
     let what = format!("spawn rule {}", e.name);
     let name = e.text(s::ENTITY).unwrap_or_default();
@@ -1338,7 +1373,7 @@ fn bake_spawn(e: &Entry, g: &Game, c: &Components, dim_names: &FxHashMap<String,
     let ground = match e.text(s::GROUND).unwrap_or_default() {
         "" => None,
         t => Some(
-            crate::refs::tag(c, t)
+            matcher(t)
                 .map_err(|err| errors.push(format!("{what}: ground: {err}")))
                 .ok()?,
         ),
@@ -1685,6 +1720,8 @@ pub fn freeze(
     mut raws: Vec<RawGame>,
     entities: Entities,
     block_names: &FxHashMap<String, u32>,
+    block_defs: &[crate::content::BlockDef],
+    matchers: &mut crate::refs::Matchers,
     item_names: &FxHashMap<String, u32>,
     items: &[crate::content::ItemDef],
     dim_names: &FxHashMap<String, u32>,
@@ -1692,6 +1729,7 @@ pub fn freeze(
     decls: &[ComponentDecl],
     tag_items: &FxHashMap<u32, Vec<u32>>,
     order: &dyn Fn(ModId) -> u32,
+    tables: &mut crate::entries::Tables,
     mod_name: &dyn Fn(ModId) -> String,
     errors: &mut Vec<String>,
 ) -> Game {
@@ -1725,38 +1763,13 @@ pub fn freeze(
     g.platform_kind = g.entity_names[PLATFORM];
     g.client_frames.sort_by_key(|h| order(h.0));
     let configs = take_kind(&mut entries, ek::CONFIG);
-    let builtin = |kind: u32| -> Vec<RawEntry> {
-        match kind {
-            ek::PARTICLE => engine_particles(),
-            ek::SOUND_CATEGORY => engine_sound_categories(),
-            ek::SOUND => engine_sounds(),
-            ek::ENTITY_CATEGORY => engine_categories(),
-            ek::CAMERA => engine_cameras(),
-            ek::ATTRIBUTE => engine_attributes(),
-            ek::DAMAGE_CAUSE => engine_damage_causes(),
-            ek::GAME_MODE => engine_game_modes(),
-            ek::POSE => engine_poses(),
-            ek::PRECIPITATION => engine_precipitations(),
-            ek::TEXT_PLACE => crate::hud::engine_places(),
-            ek::WEATHER => engine_weathers(),
-            ek::ENTITY_EFFECT => abi::entity_effect::NAMES
-                .iter()
-                .map(|n| RawEntry::engine(kind, n))
-                .collect(),
-            ek::CONDITION => abi::condition::NAMES
-                .iter()
-                .map(|n| RawEntry::engine(kind, n))
-                .collect(),
-            _ => Vec::new(),
-        }
-    };
     let mut kind = |kind: u32| {
-        let mut all = builtin(kind);
+        let mut all = engine_entries(kind);
         all.extend(take_kind(&mut entries, kind));
         all
     };
     // Ids by name.
-    let (particles, names) = bake_by(kind(ek::PARTICLE), ek::PARTICLE, mod_name, errors, |e| e.name.clone(), |e, _| e.clone());
+    let (particles, names) = tables.bake_by(kind(ek::PARTICLE), ek::PARTICLE, mod_name, errors, |e| e.name.clone(), |e, _| e.clone());
     g.particle_names = names;
     freeze_particles(&mut g, &particles, errors);
     let (sky, _) = bake(kind(ek::SKY), ek::SKY, mod_name, errors, |e, errors| bake_sky(e, dim_names, errors));
@@ -1767,13 +1780,13 @@ pub fn freeze(
     for list in &mut g.sky {
         list.sort_by_key(|s| s.order);
     }
-    (g.huds, _) = bake(kind(ek::HUD_ELEMENT), ek::HUD_ELEMENT, mod_name, errors, |e, _| {
+    (g.huds, _) = tables.bake(kind(ek::HUD_ELEMENT), ek::HUD_ELEMENT, mod_name, errors, |e, _| {
         use abi::comp::hud_element as h;
         let (owner, cb) = e.callback(h::CALL).unwrap_or((e.owner, Callback::NONE));
         let anchor = e.text(h::ANCHOR).unwrap_or_default().to_string();
         HudElement { name: e.name.clone(), title: crate::ui::text::dotted(&e.name), anchor, order: e.or(h::ORDER, 0), owner, cb }
     });
-    (g.bone_motions, _) = bake(kind(ek::BONE_MOTION), ek::BONE_MOTION, mod_name, errors, |e, _| {
+    (g.bone_motions, _) = tables.bake(kind(ek::BONE_MOTION), ek::BONE_MOTION, mod_name, errors, |e, _| {
         use abi::comp::bone_motion as b;
         let (model, bone) = e.name.rsplit_once('/').unwrap_or((&e.name, ""));
         let motion = crate::model::BoneMotion { gravity: e.or(b::GRAVITY, 0.0), spring: e.or(b::SPRING, 0.0), drag: e.or(b::DRAG, 0.0) };
@@ -1787,12 +1800,18 @@ pub fn freeze(
     });
     g.screen_parts.sort_by_key(|p| (p.order, order(p.owner)));
     let (recipes, _) = bake(kind(ek::RECIPE), ek::RECIPE, mod_name, errors, |e, _| raw_recipe(e));
-    (g.sound_categories, _) = bake(kind(ek::SOUND_CATEGORY), ek::SOUND_CATEGORY, mod_name, errors, |e, _| {
+    (g.sound_categories, _) = tables.bake(kind(ek::SOUND_CATEGORY), ek::SOUND_CATEGORY, mod_name, errors, |e, _| {
         SoundCategory::new(&e.name, e.has(abi::comp::SOUND_CATEGORY_WORLD))
     });
-    (g.sounds, g.sound_names) =
-        bake_by(kind(ek::SOUND), ek::SOUND, mod_name, errors, |e| e.name.clone(), |e, errors| bake_sound(e, &g.sound_categories, errors));
-    (g.keys, _) = bake(kind(ek::KEY), ek::KEY, mod_name, errors, |e, errors| {
+    (g.sounds, g.sound_names) = tables.bake_by(
+        kind(ek::SOUND),
+        ek::SOUND,
+        mod_name,
+        errors,
+        |e| e.name.clone(),
+        |e, errors| bake_sound(e, &g.sound_categories, errors),
+    );
+    (g.keys, _) = tables.bake(kind(ek::KEY), ek::KEY, mod_name, errors, |e, errors| {
         let key = e
             .text(abi::comp::KEY_DEFAULT)
             .unwrap_or_default()
@@ -1822,11 +1841,11 @@ pub fn freeze(
     );
     all.extend(configs);
     // By name: a mod's settings come together on its screen.
-    (g.configs, g.config_names) = bake_by(all, ek::CONFIG, mod_name, errors, |e| e.name.clone(), crate::config::bake);
+    (g.configs, g.config_names) = tables.bake_by(all, ek::CONFIG, mod_name, errors, |e| e.name.clone(), crate::config::bake);
     g.mob_spawning = g.config_names["core:mob_spawning"];
     g.keep_inventory = g.config_names["core:keep_inventory"];
     g.simulation_distance = g.config_names["core:simulation_distance"];
-    (g.categories, _) = bake(kind(ek::ENTITY_CATEGORY), ek::ENTITY_CATEGORY, mod_name, errors, |e, _| bake_category(e));
+    (g.categories, _) = tables.bake(kind(ek::ENTITY_CATEGORY), ek::ENTITY_CATEGORY, mod_name, errors, |e, _| bake_category(e));
     for k in g
         .entities
         .iter_mut()
@@ -1837,13 +1856,13 @@ pub fn freeze(
             None => errors.push(format!("entity {}: no category {}", k.name, k.category_name)),
         }
     }
-    (g.cameras, g.camera_names) = bake(kind(ek::CAMERA), ek::CAMERA, mod_name, errors, |e, _| bake_camera(e));
-    (g.attributes, g.attr_names) = bake(kind(ek::ATTRIBUTE), ek::ATTRIBUTE, mod_name, errors, |e, _| {
+    (g.cameras, g.camera_names) = tables.bake(kind(ek::CAMERA), ek::CAMERA, mod_name, errors, |e, _| bake_camera(e));
+    (g.attributes, g.attr_names) = tables.bake(kind(ek::ATTRIBUTE), ek::ATTRIBUTE, mod_name, errors, |e, _| {
         let [min, max] = e.or(abi::comp::attribute::RANGE, [f64::NEG_INFINITY, f64::INFINITY]);
         let default = e.or(abi::comp::attribute::DEFAULT, 0.0);
         AttrDef { hash: name_hash(&e.name), comp: c.id(&e.name), name: e.name.clone(), default, min: min.min(max), max }
     });
-    let (recipe_kinds, names) = bake(kind(ek::RECIPE_KIND), ek::RECIPE_KIND, mod_name, errors, |e, _| {
+    let (recipe_kinds, names) = tables.bake(kind(ek::RECIPE_KIND), ek::RECIPE_KIND, mod_name, errors, |e, _| {
         use abi::comp::recipe_kind as r;
         let layout = e.callback(r::LAYOUT);
         let def = RecipeKindDef {
@@ -1862,7 +1881,7 @@ pub fn freeze(
     (g.recipe_kind_defs, g.recipe_kinds) = (recipe_kinds.into_iter().collect(), names);
     // The other hand numbered last, as the player's layout has it.
     let off_last = |e: &Entry| e.name == abi::OFF_HAND_SLOT;
-    let (equipment, _) = bake_by(kind(ek::EQUIPMENT_SLOT), ek::EQUIPMENT_SLOT, mod_name, errors, off_last, |e, _| {
+    let (equipment, _) = tables.bake_by(kind(ek::EQUIPMENT_SLOT), ek::EQUIPMENT_SLOT, mod_name, errors, off_last, |e, _| {
         let bones: Vec<String> = e.or(abi::comp::equipment_slot::COVERS, Vec::new());
         let background = e
             .text(abi::comp::equipment_slot::BACKGROUND)
@@ -1870,21 +1889,23 @@ pub fn freeze(
             .to_string();
         EquipmentSlot { name: e.name.clone(), roles: crate::model::roles_of(&bones), bones, background }
     });
-    (g.damage_causes, g.damage_cause_names) = bake(kind(ek::DAMAGE_CAUSE), ek::DAMAGE_CAUSE, mod_name, errors, |e, _| bake_damage_cause(e));
-    (g.game_modes, g.game_mode_names) = bake(kind(ek::GAME_MODE), ek::GAME_MODE, mod_name, errors, |e, _| bake_game_mode(e));
-    (g.poses, g.pose_names) = bake(kind(ek::POSE), ek::POSE, mod_name, errors, |e, _| bake_pose(e));
+    (g.damage_causes, g.damage_cause_names) =
+        tables.bake(kind(ek::DAMAGE_CAUSE), ek::DAMAGE_CAUSE, mod_name, errors, |e, _| bake_damage_cause(e));
+    (g.game_modes, g.game_mode_names) = tables.bake(kind(ek::GAME_MODE), ek::GAME_MODE, mod_name, errors, |e, _| bake_game_mode(e));
+    (g.poses, g.pose_names) = tables.bake(kind(ek::POSE), ek::POSE, mod_name, errors, |e, _| bake_pose(e));
     (g.precipitations, g.precipitation_names) =
-        bake(kind(ek::PRECIPITATION), ek::PRECIPITATION, mod_name, errors, |e, _| bake_precipitation(e));
-    (g.text_places, g.text_place_names) = bake(kind(ek::TEXT_PLACE), ek::TEXT_PLACE, mod_name, errors, |e, _| crate::hud::Place::bake(e));
+        tables.bake(kind(ek::PRECIPITATION), ek::PRECIPITATION, mod_name, errors, |e, _| bake_precipitation(e));
+    (g.text_places, g.text_place_names) =
+        tables.bake(kind(ek::TEXT_PLACE), ek::TEXT_PLACE, mod_name, errors, |e, _| crate::hud::Place::bake(e));
     (g.entity_effects, g.entity_effect_names) =
-        bake(kind(ek::ENTITY_EFFECT), ek::ENTITY_EFFECT, mod_name, errors, |e, _| EntityEffectDef {
+        tables.bake(kind(ek::ENTITY_EFFECT), ek::ENTITY_EFFECT, mod_name, errors, |e, _| EntityEffectDef {
             name: e.name.clone(),
             shader: e
                 .text(abi::comp::ENTITY_EFFECT_SHADER)
                 .unwrap_or(&e.name)
                 .to_string(),
         });
-    (g.conditions, g.condition_names) = bake(kind(ek::CONDITION), ek::CONDITION, mod_name, errors, |e, _| ConditionDef {
+    (g.conditions, g.condition_names) = tables.bake(kind(ek::CONDITION), ek::CONDITION, mod_name, errors, |e, _| ConditionDef {
         name: e.name.clone(),
         answer: e
             .callback(abi::comp::CONDITION_CALL)
@@ -1901,7 +1922,7 @@ pub fn freeze(
         g.conditions
             .push(ConditionDef { name: m.name.clone(), answer: Answer::Mode(crate::world::GameMode(i as u16)) });
     }
-    (g.music, _) = bake(kind(ek::MUSIC), ek::MUSIC, mod_name, errors, |e, errors| {
+    (g.music, _) = tables.bake(kind(ek::MUSIC), ek::MUSIC, mod_name, errors, |e, errors| {
         use abi::comp::music as m;
         let dimension = e
             .text(m::DIMENSION)
@@ -1922,7 +1943,7 @@ pub fn freeze(
         }
         MusicDef { name: e.name.clone(), tracks: e.or(m::TRACKS, Vec::new()), dimension, when }
     });
-    (g.weathers, g.weather_names) = bake(kind(ek::WEATHER), ek::WEATHER, mod_name, errors, |e, errors| {
+    (g.weathers, g.weather_names) = tables.bake(kind(ek::WEATHER), ek::WEATHER, mod_name, errors, |e, errors| {
         let mut d = bake_weather(e);
         if !d.sound_name.is_empty() {
             d.sound = g.sound_names.get(&d.sound_name).copied();
@@ -1949,7 +1970,10 @@ pub fn freeze(
     g.pose_order = (0..g.poses.len() as u16).map(crate::world::Pose).collect();
     g.pose_order
         .sort_by_key(|p| std::cmp::Reverse(g.poses[p.0 as usize].priority));
-    let (spawns, _) = bake(kind(ek::SPAWN), ek::SPAWN, mod_name, errors, |e, errors| bake_spawn(e, &g, c, dim_names, errors));
+    let (spawns, _) = bake(kind(ek::SPAWN), ek::SPAWN, mod_name, errors, |e, errors| {
+        let ground = |text: &str| matchers.add(text, block_names, block_defs, c);
+        bake_spawn(e, &g, c, ground, dim_names, errors)
+    });
     g.spawns = spawns.into_iter().flatten().collect();
     // Natural spawning (`spawns`) runs while this is on.
 
@@ -2082,7 +2106,7 @@ pub fn freeze(
     world_ticks.sort_by_key(|h: &(ModId, Callback)| order(h.0));
     g.world_ticks = world_ticks;
 
-    (g.menus, g.menu_names) = bake_by(kind(ek::MENU), ek::MENU, mod_name, errors, |e| e.name.clone(), |e, _| bake_menu(e));
+    (g.menus, g.menu_names) = tables.bake_by(kind(ek::MENU), ek::MENU, mod_name, errors, |e| e.name.clone(), |e, _| bake_menu(e));
     let groups: Vec<(String, u32, u32, u32)> = entities
         .player_groups
         .into_iter()

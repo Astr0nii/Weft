@@ -8,6 +8,11 @@
 //! A name nothing has and a tag pattern no tag matches are errors at load, said with the mod and
 //! the call. Recipes have one more form, the bound variable `#ores/{m}` -> `#ingots/{m}`
 //! (`registry::expand_variables`).
+//!
+//! Where a rule asks which blocks (support, spreading, ores, liquid reactions, fills...) it takes
+//! a matcher: such references apart by spaces, `!` before one to leave what it names out. A state
+//! matches if one of the others names it and none of the `!` ones does; only `!` ones: anything
+//! but those. Each text is compiled once into a bit per state (`Matchers`).
 
 use rustc_hash::FxHashMap;
 
@@ -78,6 +83,134 @@ pub fn states(r: &Ref, names: &FxHashMap<String, u32>, blocks: &[BlockDef], c: &
                 .filter(|&s| t.iter().any(|&t| c.has(comps::BLOCK, s, t)))
                 .collect())
         }
+    }
+}
+
+use weft_abi::matcher_terms as terms;
+
+/// A bit per block state: what a matcher stands for. A plain `#tag` no block carries takes
+/// nothing: tags are a vocabulary, and a rule may name one only another mod's blocks will have.
+pub fn compile(text: &str, names: &FxHashMap<String, u32>, blocks: &[BlockDef], c: &Components) -> Result<Vec<u64>, String> {
+    if terms(text).next().is_none() {
+        return Err("an empty matcher".into());
+    }
+    let count = blocks.last().map_or(0, |b| b.first_state + b.states);
+    let words = (count as usize).div_ceil(64);
+    let (mut yes, mut no, mut positive) = (vec![0u64; words], vec![0u64; words], false);
+    for term in terms(text) {
+        let (out, t) = match term.strip_prefix('!') {
+            Some(t) => (&mut no, t),
+            None => {
+                positive = true;
+                (&mut yes, term)
+            }
+        };
+        let r = Ref::parse(t)?;
+        if matches!(r, Ref::Tags(p) if !p.contains('*') && c.id(p).is_none()) {
+            continue;
+        }
+        for s in states(&r, names, blocks, c, count)? {
+            out[s as usize / 64] |= 1 << (s % 64);
+        }
+    }
+    if !positive {
+        yes.fill(u64::MAX);
+        if count % 64 != 0 {
+            yes[words - 1] = (1 << (count % 64)) - 1;
+        }
+    }
+    yes.iter_mut().zip(&no).for_each(|(y, n)| *y &= !n);
+    Ok(yes)
+}
+
+#[inline]
+pub fn has(set: &[u64], state: u32) -> bool {
+    set.get(state as usize / 64)
+        .is_some_and(|w| w >> (state % 64) & 1 != 0)
+}
+
+/// The states of a set as runs: (first, count).
+pub fn runs(set: &[u64], states: u32) -> Vec<(u32, u32)> {
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    for s in (0..states).filter(|&s| has(set, s)) {
+        match out.last_mut() {
+            Some((first, n)) if *first + *n == s => *n += 1,
+            _ => out.push((s, 1)),
+        }
+    }
+    out
+}
+
+/// Every matcher the content names, each text compiled once (`compile`): a check in hot code is
+/// one bit test.
+#[derive(Default)]
+pub struct Matchers {
+    by_text: FxHashMap<String, u32>,
+    words: usize,
+    bits: Vec<u64>,
+    /// What fills keep (`keep`, `only`), made at run time: every fill of a world stays in its
+    /// list, and most say the same.
+    kept: std::sync::Mutex<FxHashMap<(String, String), std::sync::Arc<[u64]>>>,
+}
+
+impl Matchers {
+    pub fn new(states: usize) -> Matchers {
+        Matchers { words: states.div_ceil(64), ..Matchers::default() }
+    }
+
+    /// The id of `text`'s matcher, compiled now if it is new. One that fails still gets an id
+    /// (matching nothing), so ids handed out before stay in step; the error is said once.
+    pub fn add(&mut self, text: &str, names: &FxHashMap<String, u32>, blocks: &[BlockDef], c: &Components) -> Result<u32, String> {
+        if let Some(&id) = self.by_text.get(text) {
+            return Ok(id);
+        }
+        let id = self.by_text.len() as u32;
+        self.by_text.insert(text.to_string(), id);
+        let set = compile(text, names, blocks, c);
+        let at = self.bits.len();
+        self.bits.resize(at + self.words, 0);
+        let set = set?;
+        self.bits[at..at + self.words].copy_from_slice(&set[..self.words]);
+        Ok(id)
+    }
+
+    /// The states a fill leaves as they are: those `keep` takes, and with `only` given those it
+    /// doesn't (an empty text: none).
+    pub fn kept(
+        &self,
+        keep: &str,
+        only: &str,
+        names: &FxHashMap<String, u32>,
+        blocks: &[BlockDef],
+        c: &Components,
+    ) -> Result<std::sync::Arc<[u64]>, String> {
+        let key = (keep.to_string(), only.to_string());
+        if let Some(k) = self.kept.lock().unwrap().get(&key) {
+            return Ok(k.clone());
+        }
+        let set = |text: &str| match self.by_text.get(text) {
+            Some(&m) => Ok(self.set(m).to_vec()),
+            None => compile(text, names, blocks, c),
+        };
+        let mut kept = if keep.is_empty() { vec![0; self.words] } else { set(keep)? };
+        if !only.is_empty() {
+            kept.iter_mut().zip(set(only)?).for_each(|(k, o)| *k |= !o);
+        }
+        let kept: std::sync::Arc<[u64]> = kept.into();
+        self.kept.lock().unwrap().insert(key, kept.clone());
+        Ok(kept)
+    }
+
+    pub fn set(&self, m: u32) -> &[u64] {
+        let at = m as usize * self.words;
+        self.bits.get(at..at + self.words).unwrap_or(&[])
+    }
+
+    #[inline]
+    pub fn has(&self, m: u32, state: u32) -> bool {
+        self.bits
+            .get(m as usize * self.words + state as usize / 64)
+            .is_some_and(|w| w >> (state % 64) & 1 != 0)
     }
 }
 
@@ -192,6 +325,9 @@ mod tests {
         assert!(Ref::parse("#").is_err());
         assert!(Ref::parse("base:furnace[lit").is_err());
         assert!(Ref::parse("base:furnace[lit]").is_err());
+        // A matcher's terms: a state's properties may have spaces between them.
+        let t: Vec<&str> = terms(" base:furnace[lit=true, facing=east]  !#logs ").collect();
+        assert_eq!(t, ["base:furnace[lit=true, facing=east]", "!#logs"]);
         assert_eq!(tag_name("#plant_soil"), Ok("plant_soil"));
         assert!(tag_name("plant_soil").is_err());
     }

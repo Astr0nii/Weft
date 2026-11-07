@@ -349,7 +349,7 @@ impl Server {
         let def = &c.dims[dim as usize];
         let in_view = |cp: IVec3| views.iter().any(|v| v.contains_in(def, cp));
         // Blocks it keeps may be anywhere in terrain: such cubes are generated.
-        let keeps = fill.keeps_any(c);
+        let keeps = fill.keeps_any();
         let d = &self.dims[dim as usize];
         let (lo, hi) = fill.shape.bounds();
         let (lo, hi) = (((lo - 17.0) / 16.0).floor().as_ivec3(), ((hi + 17.0) / 16.0).floor().as_ivec3());
@@ -455,7 +455,7 @@ pub(super) fn send_far(
             None => {
                 n += 1;
                 let Some((mut cube, _)) = storage.and_then(|s| s.lock().load(p.dim, pos)) else { continue };
-                dim.catch_up_edits(c, pos, &mut cube);
+                dim.catch_up_edits(pos, &mut cube);
                 Arc::new(cube)
             }
         };

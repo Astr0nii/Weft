@@ -54,17 +54,7 @@ pub static DIAMOND_BLOCK: Block = Block::named("diamond_block");
 pub static COAL_BLOCK: Block = Block::named("coal_block");
 pub static WOOL: Block = Block::named("wool");
 
-/// Log axis along the clicked face, like vanilla.
-fn axis_placement(p: &Place, props: &mut Props) {
-    props.set(
-        "axis",
-        match p.face() {
-            Dir::West | Dir::East => "x",
-            Dir::North | Dir::South => "z",
-            _ => "y",
-        },
-    );
-}
+static HOE_TAG: Tag = Tag::named("tools/hoe");
 
 /// A log that grows into a tree of `leaves` (a cone, like a spruce, when `cone`).
 fn log(r: &mut Registry, handle: &'static Block, wood: &str, leaves: &str, cone: bool) {
@@ -81,18 +71,8 @@ fn log(r: &mut Registry, handle: &'static Block, wood: &str, leaves: &str, cone:
         .tag(&format!("logs/{wood}"))
         .set(&FLAMMABLE, 5)
         .set(&FUEL, 300)
-        .prop("axis", ["y", "x", "z"])
-        .states(move |p, s| match p.get("axis") {
-            "y" => s.textures(&top, &side, &top),
-            // The bark runs along the log.
-            "x" => s
-                .faces([&top, &top, &side, &side, &side, &side])
-                .face_turns([0, 0, 1, 1, 1, 1]),
-            _ => s
-                .faces([&side, &side, &side, &side, &top, &top])
-                .face_turns([1, 1, 0, 0, 0, 0]),
-        })
-        .placement(axis_placement)
+        .axis()
+        .textures(&top, &side, &top)
         .tab(&crate::tabs::NATURAL);
 }
 
@@ -175,6 +155,7 @@ pub fn register(r: &mut Registry) {
         .hardness(0.5)
         .mined_by("shovel", tool_tier::HAND)
         .tag("dirt")
+        .tag("tillable")
         .tab(&crate::tabs::NATURAL);
     r.block(&GRASS)
         .sound_group("grass")
@@ -184,6 +165,7 @@ pub fn register(r: &mut Registry) {
         .mined_by("shovel", tool_tier::HAND)
         .drops("dirt", 1)
         .tag("dirt")
+        .tag("tillable")
         // Vanilla's pace: a minute or so under a block, many minutes to cover bare dirt.
         .spreads("#grass_spreads_to", 765.0, 9)
         .smothered_into("dirt", 68.0)
@@ -195,6 +177,7 @@ pub fn register(r: &mut Registry) {
         .mined_by("shovel", tool_tier::HAND)
         .drops("dirt", 1)
         .tag("dirt")
+        .tag("tillable")
         .tab(&crate::tabs::NATURAL);
     r.block(&SAND)
         .sound_group("sand")
@@ -446,17 +429,10 @@ pub fn register(r: &mut Registry) {
         .light_rgb(15, 13, 10)
         .hardness(0.0)
         .tab(&crate::tabs::FUNCTIONAL);
-    // Facing away from the solid wall it hangs on.
+    // On walls only, up to four in one block.
     r.block(&LADDER)
         .sound_group("wood")
-        .facing(Facings::HORIZONTAL, Toward::Face)
-        .states(|p, s| {
-            let d = p.facing();
-            // Against the wall to the north when it faces south.
-            s.oriented(weft_sdk::signal::Orientation::new(Dir::Down, d.opposite()))
-                .model_box([0.0, 0.0, 0.0], [16.0, 16.0, 1.0])
-                .needs(d.opposite(), "")
-        })
+        .on_sides(Facings::HORIZONTAL)
         .climbable()
         .not_solid()
         .hardness(0.4)
@@ -529,6 +505,19 @@ pub fn register(r: &mut Registry) {
     r.tag("crop_soil", &["farmland"]);
     r.tag("grass_spreads_to", &["dirt"]);
     r.tag("animal_spawn", &["grass"]);
+
+    r.edit_pattern::<kind::Block>("#tillable").on_use(till_soil);
+}
+
+fn till_soil(u: &mut Use) -> bool {
+    let (w, pos, player) = (u.world(), u.pos(), u.player());
+    let held = w.inventory(player).get(w.selected_slot(player));
+
+    if HOE_TAG.on_item(held.item) {
+        w.set_block(pos, FARMLAND.id());
+        return true;
+    }
+    false
 }
 
 pub use weft_sdk::shapes::{TORCH_FACINGS, stick_faces, torch_state};

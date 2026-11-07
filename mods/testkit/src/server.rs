@@ -344,7 +344,7 @@ fn clock(w: &World, p: [i32; 3]) -> Result<String, String> {
         }
         Ok(s)
     };
-    let wire = Block::lookup("base:redstone").ok_or("no redstone")? + (1 << 2);
+    let wire = state_with(Block::lookup("base:redstone").ok_or("no redstone")?, "down", "true").ok_or("no redstone on a floor")?;
     let at = |x: i32, z: i32| [p[0] + x, p[1], p[2] + z];
     w.set_block(at(0, 0), state("base:stone", &[])?);
     w.set_block(at(1, 0), state("base:redstone_torch", &[("attach", "west")])?);
@@ -416,7 +416,7 @@ const OPS: &[(&str, &str, Run)] = &[
     ("rsbuild", "<at:pos> <seed:int>", |w, cmd, _, _| crate::tests::redstone::build_turned(w, int::<u64>(cmd, "seed")?, pos(cmd, "at")?)),
     ("rsfill", "<at:pos> <half:int>", |w, cmd, _, _| {
         let (p, half) = (pos(cmd, "at")?, int::<i32>(cmd, "half")?);
-        let s = Block::lookup("base:redstone").ok_or("no redstone")? + (1 << 2);
+        let s = state_with(Block::lookup("base:redstone").ok_or("no redstone")?, "down", "true").ok_or("no redstone on a floor")?;
         for x in -half..half {
             for z in -half..half {
                 w.set_block([p[0] + x, p[1], p[2] + z], s);
@@ -474,6 +474,11 @@ const OPS: &[(&str, &str, Run)] = &[
         if missed > 0 { Err(format!("{missed} blocks not loaded")) } else { Ok(volume.to_string()) }
     }),
     ("get", "<pos:pos>", |w, cmd, _, _| Ok(block_name(w.block(pos(cmd, "pos")?)).to_string())),
+    ("prop", "<pos:pos> <name:word>", |w, cmd, _, _| {
+        Ok(w.prop(pos(cmd, "pos")?, word(cmd, "name")?)
+            .unwrap_or("none")
+            .to_string())
+    }),
     ("parts", "<pos:pos>", |w, cmd, _, _| {
         Ok(w.parts(pos(cmd, "pos")?)
             .into_iter()
@@ -512,7 +517,7 @@ const OPS: &[(&str, &str, Run)] = &[
         // The same through the area edit: one call, done at the end of the tick.
         let r: i32 = int(cmd, "r")?;
         w.fill(Shape::ball([me[0] as f64 + 0.5, me[1] as f64 + 0.5, me[2] as f64 + 0.5], r as f64), 0)
-            .keep_unbreakable();
+            .keep("#unbreakable");
         Ok(String::new())
     }),
     ("group", "@owner <name:word>", |w, cmd, _, _| {
@@ -794,7 +799,12 @@ const OPS: &[(&str, &str, Run)] = &[
             ATTACK_DAMAGE.on_item(i).unwrap_or(0.0),
             WARMTH.on_biome(b).unwrap_or(0.0),
             Tag::named("edited_a").on_biome(b),
-            Weather::flags_of(STORM.id()),
+            format!(
+                "{}/{}/{}",
+                !comps::weather::DRY.on(abi::entry_kind::WEATHER, STORM.id()),
+                comps::weather::LIGHTNING.on(abi::entry_kind::WEATHER, STORM.id()),
+                comps::weather::UNSHELTERED.on(abi::entry_kind::WEATHER, STORM.id())
+            ),
             w.attribute(player, &GRIT),
             recipe_process(&base_api::SMELTING, i).is_none(),
             drops.join(","),

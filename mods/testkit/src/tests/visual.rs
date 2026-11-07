@@ -175,7 +175,7 @@ pub async fn break_overlay(t: T) -> R {
     let wall = add(f, [0, 0, -2]);
     t.fill(wall, add(wall, [0, 1, 0]), "cobblestone").await?;
     let ladder = add(wall, [0, 0, 1]);
-    t.set(ladder, "ladder[facing=south]").await?;
+    t.set(ladder, "ladder[west=false,north=true]").await?;
     t.look_at(ladder);
     t.frames(3).await?;
     let (w, h) = (t.state().window[0], t.state().window[1]);

@@ -239,9 +239,9 @@ pub async fn edits(t: T) -> R {
     t.flat().await?;
     t.check_eq(
         t.op("edited").await?,
-        "8 3 2 true 7 4 true base:cobblestonex2,testkit:editedx1 true true true true [0.9, 2.5, 1.0] 3 4/15/1.5/false,4/3/1.5/true 40 true"
+        "8 3 2 true true/true/false 4 true base:cobblestonex2,testkit:editedx1 true true true true [0.9, 2.5, 1.0] 3 4/15/1.5/false,4/3/1.5/true 40 true"
             .to_string(),
-        "max stack, damage, warmth, tag, a weather's flags, an attribute's default, a recipe removed, a loot table's pools, a liquid's id, its block's and item's tag, a column of Mars, Mars' tag, an entity kind's size and eye, its value after the edits, a block's states after an edit of every state and one of a key (light, opacity, a value set by tag, a tag set on one state), a stair's states and their edited light",
+        "max stack, damage, warmth, tag, a weather's tags, an attribute's default, a recipe removed, a loot table's pools, a liquid's id, its block's and item's tag, a column of Mars, Mars' tag, an entity kind's size and eye, its value after the edits, a block's states after an edit of every state and one of a key (light, opacity, a value set by tag, a tag set on one state), a stair's states and their edited light",
     );
     // The edit of the menu adds two slots to the equipment (four and the other hand) and the
     // player's 36.
@@ -1100,17 +1100,15 @@ pub async fn dimensions(t: T) -> R {
     t.cmd(&format!("/setblock {} {y} {z} base:stone", x + 1))
         .await?;
     t.check_eq(t.block([x + 1, y, z]).await?, "core:air".to_string(), "debug blocks refuse /setblock");
-    // Breaking is refused like placing, and nothing holds the grid up.
-    let at = t.op("find 160 base:stone").await?;
-    let s: Vec<i32> = at
-        .split_whitespace()
-        .filter_map(|v| v.parse().ok())
-        .collect();
-    let [sx, sy, sz] = s[..] else { return Err(format!("no stone among the debug blocks: {at}")) };
+    // Breaking is refused like placing, and nothing holds the grid up: the debug block beside
+    // the water's.
+    let (sx, sy, sz) = (x + 2, y, z);
+    let was = t.block([sx, sy, sz]).await?;
+    t.check(was != "core:air", format!("a debug block beside the water: {was}"));
     // Refused, not just undone: a refused break sends the block back to the player's client.
     let broke = t.op(&format!("break {sx} {sy} {sz}")).await?;
     t.check_eq(broke, "0".to_string(), "breaking a debug block is refused");
-    t.check_eq(t.block([sx, sy, sz]).await?, "base:stone".to_string(), "debug blocks refuse breaking");
+    t.check_eq(t.block([sx, sy, sz]).await?, was, "debug blocks refuse breaking");
     t.check_eq(t.block([sx, sy - 1, sz]).await?, "core:air".to_string(), "no floor under the debug blocks");
     t.cmd("/rule core:mob_spawning 1").await?;
     t.secs(4.5).await?;

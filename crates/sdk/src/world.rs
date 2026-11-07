@@ -267,6 +267,15 @@ pub fn state_with(state: u32, name: &str, value: &str) -> Option<u32> {
     (s != u32::MAX).then_some(s)
 }
 
+/// `state` turned by `o` with the world around it (a structure placed turned, a wrench): its
+/// `facing`, `axis` or sides turned; itself where its block can't turn so.
+pub fn state_turned(state: u32, o: crate::Orientation) -> u32 {
+    match unsafe { (host().state_turned)(state, o.turn().index()) } {
+        u32::MAX => state,
+        s => s,
+    }
+}
+
 pub fn state_flags(state: u32) -> u32 {
     unsafe { (host().state_flags)(state) }
 }

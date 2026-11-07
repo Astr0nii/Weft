@@ -603,13 +603,10 @@ impl Dim {
     /// Goes where it was going, if that is free: otherwise it breaks there, what it holds with it.
     fn land_block(&mut self, c: &'static Content, at: IVec3, state: u32, entity: Option<u64>, signal: Moved) {
         match self.get(at) {
-            // Wire joins the wire there, each piece holding on by itself.
-            Some(there)
-                if c.states[there as usize].block == c.states[state as usize].block
-                    && c.states[state as usize].signal.kind == abi::signal_kind::WIRE =>
-            {
-                let first = c.block_of(state).first_state;
-                self.write_block(c, at, first + ((there - first) | (state - first)), true);
+            // Sides join the sides there, each holding on by itself.
+            Some(there) if c.states[there as usize].block == c.states[state as usize].block && c.states[state as usize].sides != 0 => {
+                let sides = c.states[there as usize].sides | c.states[state as usize].sides;
+                self.write_block(c, at, c.block_of(state).with_sides(state, sides), true);
             }
             Some(there) if there == AIR || c.states[there as usize].flags & abi::block_flags::REPLACEABLE != 0 => {
                 if c.states[state as usize].signal.kind == abi::signal_kind::OBSERVER {

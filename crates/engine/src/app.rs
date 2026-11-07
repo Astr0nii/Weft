@@ -33,6 +33,9 @@ use crate::ui::{Kind, Ui};
 
 pub type BackendFactory = fn(&BackendDesc) -> Result<Box<dyn Backend>, weft_render::Error>;
 
+/// The renderers the game was built with, by the name `core:renderer` chooses them by.
+pub type Renderers = &'static [(&'static str, BackendFactory)];
+
 #[derive(Clone, Debug)]
 pub struct Options {
     pub run_dir: PathBuf,
@@ -51,6 +54,8 @@ pub struct Options {
     /// Benchmarks: force vsync off / a view distance without touching saved settings.
     pub no_vsync: bool,
     pub view: Option<i32>,
+    /// `core:renderer` for this run only.
+    pub renderer: Option<String>,
 }
 
 pub enum Request {
@@ -177,6 +182,8 @@ pub(crate) const CLIENT_COMMANDS: &[(&str, &str, fn(&mut Running, &crate::comman
 
 pub(crate) struct Running {
     gpu: Box<dyn Backend>,
+    /// Which of the game's renderers `gpu` is.
+    renderer: &'static str,
     window: Arc<Window>,
     depth: (TextureId, u32, u32),
     list: CommandList,
@@ -255,16 +262,16 @@ pub(crate) struct Running {
 }
 
 struct App {
-    factory: BackendFactory,
+    renderers: Renderers,
     opts: Options,
     run: Option<Running>,
     error: Option<String>,
 }
 
-pub fn run(factory: BackendFactory, opts: Options) -> Result<(), String> {
+pub fn run(renderers: Renderers, opts: Options) -> Result<(), String> {
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App { factory, opts, run: None, error: None };
+    let mut app = App { renderers, opts, run: None, error: None };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
     match app.error {
         Some(e) => Err(e),
@@ -328,6 +335,9 @@ impl App {
         if let Some(v) = self.opts.view {
             crate::config::override_for_run("core:view_distance", &v.to_string());
         }
+        if let Some(r) = &self.opts.renderer {
+            crate::config::override_for_run("core:renderer", r);
+        }
         let mut settings = Settings::new(&self.opts.run_dir);
         let icon = crate::assets::decode_png_file(&engine_assets(self.opts.dev).join("icon.png"))
             .and_then(|(w, h, px)| winit::window::Icon::from_rgba(px, w, h).ok());
@@ -352,14 +362,27 @@ impl App {
         }
         let window = Arc::new(el.create_window(attrs).map_err(|e| e.to_string())?);
         let size = window.inner_size();
-        let mut gpu = (self.factory)(&BackendDesc {
-            window: &*window,
-            width: size.width,
-            height: size.height,
-            vsync: settings.vsync(),
-            debug: self.opts.gpu_debug,
-        })
-        .map_err(|e| e.to_string())?;
+        let desc =
+            BackendDesc { window: &*window, width: size.width, height: size.height, vsync: settings.vsync(), debug: self.opts.gpu_debug };
+        // The chosen renderer, and the others if it can't start on this machine.
+        let chosen = settings.renderer();
+        let mut order: Vec<_> = self.renderers.iter().collect();
+        order.sort_by_key(|r| r.0 != chosen);
+        let mut failed = Vec::new();
+        let mut gpu = None;
+        for &(name, factory) in order {
+            match factory(&desc) {
+                Ok(g) => {
+                    gpu = Some((g, name));
+                    break;
+                }
+                Err(e) => {
+                    log::warn!("renderer {name}: {e}");
+                    failed.push(format!("{name}: {e}"));
+                }
+            }
+        }
+        let (mut gpu, renderer) = gpu.ok_or_else(|| failed.join("; "))?;
 
         let mut roots: Vec<(String, PathBuf)> = vec![("core".into(), engine_assets(self.opts.dev))];
         roots.extend(mods.iter().map(|m| (m.id.clone(), m.assets.clone())));
@@ -397,9 +420,10 @@ impl App {
         settings.read_only = self.opts.automated;
         crate::shaders::pin_time(self.opts.automated && !recording());
         let depth = make_depth(&mut *gpu, size.width, size.height);
-        let gpu_name = gpu.device_name().to_string();
+        let gpu_name = format!("{} ({})", gpu.device_name(), gpu.name());
         let mut r = Running {
             gpu,
+            renderer,
             window,
             depth,
             list: CommandList::default(),
@@ -520,6 +544,7 @@ impl Running {
             },
             look: &self.look,
             assets: &self.assets,
+            renderer: self.renderer,
         }
     }
 
@@ -1040,7 +1065,7 @@ impl Running {
         let Some((_, ui)) = self.screens.last_mut() else { return UiCallbacks::default() };
         if self.input.pressed_button(0) {
             ui.pressed = hovered;
-            ui.focused = hovered.filter(|&h| matches!(ui.nodes[h].kind, Kind::Input { .. }));
+            ui.focused = hovered.filter(|&h| matches!(ui.nodes[h].kind, Kind::Input { .. } | Kind::Slider { .. }));
             ui.anchor = None;
             if let Some(h) = hovered {
                 if let Kind::Text(t) = &ui.nodes[h].kind {
@@ -1100,6 +1125,19 @@ impl Running {
                     if let Some(cb) = on_change {
                         text_changed = Some((cb.clone(), value.clone()));
                     }
+                }
+            } else if let Kind::Slider { value, on_change, steps, .. } = &mut ui.nodes[f].kind {
+                let by: f32 = [(KeyCode::ArrowLeft, -1.0), (KeyCode::ArrowRight, 1.0)]
+                    .into_iter()
+                    .filter(|(k, _)| self.input.pressed_or_repeated(Key::Code(*k)))
+                    .map(|(_, by)| by)
+                    .sum();
+                if by != 0.0 {
+                    let n = (*steps).max(1) as f32;
+                    let v = (((*value * n).round() + by) / n).clamp(0.0, 1.0);
+                    *value = v;
+                    slider = Some((on_change.clone(), v));
+                    self.quads_dirty = true;
                 }
             }
         }

@@ -193,15 +193,66 @@ pub fn stick_faces(t: &str) -> [(&str, [f32; 4]); 6] {
 /// it, by vanilla's numbers.
 pub fn torch_state<'a>(d: Dir, s: State<'a>, texture: &str) -> State<'a> {
     let faces = stick_faces(texture);
-    let s = s.texture(texture).needs(d.opposite(), "");
+    let s = s.texture(texture);
     if d.horizontal() {
-        s.oriented(crate::signal::Orientation::leaning(d.opposite()))
+        // Written against a wall to its west.
+        s.orientation(crate::Orientation::leaning(d.opposite()))
+            .needs(Dir::West, "")
             .model_box_faces([-1.0, 3.5, 7.0], [1.0, 13.5, 9.0], faces)
             .tilted([0.0, 3.5, 8.0], Dir::South, -22.5)
             .hitbox([0.0, 3.0, 5.5], [5.0, 13.0, 10.5])
     } else {
-        s.oriented(crate::signal::Orientation::new(d.opposite(), Dir::North))
+        s.orientation(crate::Orientation::new(d.opposite(), Dir::North))
+            .needs(Dir::Down, "")
             .model_box_faces([7.0, 0.0, 7.0], [9.0, 10.0, 9.0], faces)
             .hitbox([6.0, 0.0, 6.0], [10.0, 10.0, 10.0])
     }
+}
+
+impl BlockBuilder<'_> {
+    /// A layer one pixel thick against sides of its cell (vines, ladders, glow lichen, a wall
+    /// sign's plate): a property per side in `allowed` (`north` .. `down`, `"true"` where it lies).
+    /// It goes against the face clicked, or the allowed side nearest the look when that one
+    /// isn't; its own item put into its cell adds a side, up to every allowed one; a side with
+    /// nothing solid behind it falls off, and breaking takes one side at a time. Redstone wire
+    /// is the same with a drawing of its own. `Facings::HORIZONTAL` for ladders (walls only),
+    /// `Facings::ALL` for vines everywhere.
+    pub fn on_sides(self, allowed: Facings) -> Self {
+        self.sides(allowed, true)
+    }
+
+    /// `on_sides`, with a plate of the block's textures on each side or not (wire draws itself).
+    pub(crate) fn sides(self, allowed: Facings, plates: bool) -> Self {
+        let sides: Vec<Dir> = allowed.dirs().collect();
+        // With plates, the first state, the item's, lies on the first side.
+        let mut b = sides.iter().enumerate().fold(self, |b, (i, d)| {
+            let values = if plates && i == 0 { ["true", "false"] } else { ["false", "true"] };
+            b.prop(d.name(), values)
+        });
+        if plates {
+            for &d in &sides {
+                let (min, max) = plate(d);
+                b = b.state_where(&format!("{}=true", d.name()), move |s| s.model_box(min, max));
+            }
+            let none = sides
+                .iter()
+                .map(|d| format!("{}=false", d.name()))
+                .collect::<Vec<_>>()
+                .join(",");
+            b = b.state_where(&none, |s| s.air());
+        }
+        b.tag(crate::abi::comp::block::ON_SIDES)
+    }
+}
+
+/// The plate against side `d`, in 1/16 of a block.
+fn plate(d: Dir) -> ([f32; 3], [f32; 3]) {
+    let (mut min, mut max) = ([0.0; 3], [16.0; 3]);
+    let axis = d.face() as usize / 2;
+    if d.face() % 2 == 0 {
+        max[axis] = 1.0;
+    } else {
+        min[axis] = 15.0;
+    }
+    (min, max)
 }

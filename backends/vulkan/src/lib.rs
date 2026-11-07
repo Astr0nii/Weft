@@ -14,43 +14,6 @@ const FRAMES: usize = 2;
 const MAX_MARKS: u32 = 16;
 const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 
-struct Slab<T> {
-    items: Vec<Option<T>>,
-    free: Vec<u32>,
-}
-
-impl<T> Slab<T> {
-    fn new() -> Self {
-        Slab { items: Vec::new(), free: Vec::new() }
-    }
-    fn insert(&mut self, v: T) -> u32 {
-        if let Some(i) = self.free.pop() {
-            self.items[i as usize] = Some(v);
-            i
-        } else {
-            self.items.push(Some(v));
-            self.items.len() as u32 - 1
-        }
-    }
-    fn remove(&mut self, i: u32) -> Option<T> {
-        let v = self.items.get_mut(i as usize)?.take();
-        if v.is_some() {
-            self.free.push(i);
-        }
-        v
-    }
-    fn get(&self, i: u32) -> &T {
-        self.items[i as usize]
-            .as_ref()
-            .expect("stale render handle")
-    }
-    fn get_mut(&mut self, i: u32) -> &mut T {
-        self.items[i as usize]
-            .as_mut()
-            .expect("stale render handle")
-    }
-}
-
 struct Buffer {
     raw: vk::Buffer,
     alloc: Allocation,
@@ -605,9 +568,9 @@ impl VulkanBackend {
                 want_size: (desc.width, desc.height),
                 vsync: desc.vsync,
                 dirty_swapchain: true,
-                buffers: Slab::new(),
-                textures: Slab::new(),
-                pipelines: Slab::new(),
+                buffers: Slab::default(),
+                textures: Slab::default(),
+                pipelines: Slab::default(),
                 uploads: Vec::new(),
                 global_layout,
                 global_pool,

@@ -27,6 +27,8 @@ pub struct BuildCx<'a> {
     pub size: glam::Vec2,
     pub look: &'a crate::ui::look::Look,
     pub assets: &'a crate::assets::Assets,
+    /// The renderer drawing now (`core:renderer` may have chosen another for the next start).
+    pub renderer: &'a str,
 }
 
 impl BuildCx<'_> {
@@ -622,6 +624,17 @@ impl Screen for SettingsScreen {
                         r.settings.set("vsync", !r.settings.vsync() as u8 as f64);
                         r.handle(vec![Request::Rebuild]);
                     });
+                    let chosen = s.renderer();
+                    let key = if chosen == cx.renderer { "settings.renderer" } else { "settings.renderer.restart" };
+                    d.button(key, &[Arg::Key(format!("settings.renderer.{chosen}"))], 300.0, false, |r| {
+                        let id = crate::config::by_name("core:renderer").unwrap_or(0);
+                        let count = crate::content::content().game.configs[id as usize]
+                            .choices
+                            .len()
+                            .max(1);
+                        crate::config::set(id, (crate::config::get(id) + 1.0) % count as f64);
+                        r.handle(vec![Request::Rebuild]);
+                    });
 
                     let row = abi::UiNode {
                         row: 1,
@@ -863,11 +876,13 @@ impl Screen for ConfigScreen {
                                 );
                                 if !locked {
                                     let (min, range) = (d.min, (d.max - d.min).max(1e-9));
+                                    let unit = if d.kind == weft_abi::config_kind::INT { 1.0 } else { range / 100.0 };
                                     ui.add(
                                         Kind::Slider {
                                             value: 0.0,
                                             bind: Box::new(move |_: &Ctx| ((crate::config::get(id) - min) / range) as f32),
                                             on_change: Rc::new(move |_: &mut Ctx, f: f32| crate::config::set(id, min + f as f64 * range)),
+                                            steps: d.steps(unit),
                                         },
                                         Style::default().h(20.0).stretch(),
                                     );
@@ -1072,9 +1087,6 @@ impl Screen for Controls {
         let conflicts = cx.input.conflicts();
         let waiting = self.waiting.clone();
         frame(ui, cx, "controls.title", |ui| {
-            if let Some((a, _)) = &waiting {
-                label(ui, cx, "controls.press", &[Arg::Name(text::Name::Key(a.clone()))], "default");
-            }
             let list = ui.panel(
                 "panel",
                 Style::default()

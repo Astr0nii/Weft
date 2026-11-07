@@ -192,7 +192,7 @@ impl CubeMap for Cubes<'_> {
 /// world, on the server or a client: the area edits made since, then its light on its own as if
 /// open sky were above (`light::prelight`; joining the world fixes that up).
 pub fn prepare(c: &Content, dim: u32, edits: &[super::area::AreaFill], pos: IVec3, cube: &mut Cube) {
-    super::area::catch_up(c, edits, pos, cube);
+    super::area::catch_up(edits, pos, cube);
     light::prelight(c, cube, c.dims[dim as usize].sky_light);
 }
 
@@ -303,11 +303,10 @@ fn place_ores(
         if o.y > ore.max_y.saturating_add(reach) || o.y + 15 < ore.min_y.saturating_sub(reach) {
             continue;
         }
-        if !present.iter().any(|&s| {
-            ore.replace
-                .binary_search(&c.states[s as usize].block)
-                .is_ok()
-        }) {
+        if !present
+            .iter()
+            .any(|&s| ore.state_in(&c.matchers, s).is_some())
+        {
             continue;
         }
         for nz in pos.z - 1..=pos.z + 1 {
@@ -333,7 +332,6 @@ fn place_ores(
                                     c.components
                                         .has(comps::BIOME, biomes[(l.z * 16 + l.x) as usize] as u32, t)
                                 });
-                                let was = c.states[blocks[i] as usize].block;
                                 // Vanilla's ores in caves: some of what would touch air is left out.
                                 let bare = ore.exposed > 0.0
                                     && crate::world::DIRS.iter().any(|d| {
@@ -343,8 +341,10 @@ fn place_ores(
                                             && blocks[local_index(n)] == crate::content::AIR
                                     })
                                     && weft_noise::unit(hash(h, p.x as i64, p.y as i64, p.z as i64)) < ore.exposed as f64;
-                                if biome_ok && !bare && ore.replace.binary_search(&was).is_ok() {
-                                    let s = ore.state_in(was);
+                                if biome_ok
+                                    && !bare
+                                    && let Some(s) = ore.state_in(&c.matchers, blocks[i])
+                                {
                                     blocks[i] = s;
                                     placed = true;
                                     if !present.contains(&s) {
@@ -462,16 +462,10 @@ pub fn scatter_site(
     {
         return None;
     }
-    if !s.ground.is_empty() {
-        // The terrain surface is a state ID; the scatter constraint stores block IDs.
+    if let Some(ground) = s.ground {
         // A zero surface state means there is no usable terrain surface.
         let state = def.surface_block(seed, x, z);
-        if state == 0
-            || state as usize >= c.states.len()
-            || s.ground
-                .binary_search(&c.states[state as usize].block)
-                .is_err()
-        {
+        if state == 0 || !c.matchers.has(ground, state) {
             return None;
         }
     }
@@ -2123,8 +2117,7 @@ impl Dim {
                         && (s.y[0]..=s.y[1]).contains(&y)
                         && s.biome
                             .is_none_or(|t| c.components.has(comps::BIOME, biome_at(spot), t))
-                        && s.ground
-                            .is_none_or(|t| c.components.has(comps::BLOCK, ground, t)))
+                        && s.ground.is_none_or(|m| c.matchers.has(m, ground)))
                     .then_some(y)
                 };
                 let found: Vec<Option<i32>> = c.game.spawns.iter().map(fits).collect();
@@ -2668,7 +2661,7 @@ impl Dim {
 
     /// A part of the cell at `p` hears of a change at `from`.
     fn neighbor_changed(&mut self, c: &'static Content, p: IVec3, state: u32, from: IVec3) {
-        if c.states[state as usize].signal.kind == abi::signal_kind::WIRE && self.wire_support(c, p, state) {
+        if c.states[state as usize].sides != 0 && self.sides_support(c, p, state) {
             return;
         }
         if !self.supported(c, p, state) {
@@ -2700,14 +2693,14 @@ impl Dim {
         // Something the support must stand next to (water by sugar cane); a stack of the same
         // block is held by the one at its bottom.
         match c.states[state as usize].support_near {
-            Some(t) if c.states[n as usize].block != c.states[state as usize].block => {
+            Some(m) if c.states[n as usize].block != c.states[state as usize].block => {
                 [IVec3::X, -IVec3::X, IVec3::Z, -IVec3::Z].iter().any(|d| {
-                    self.get(at + *d).is_none_or(|s| c.block_has(s, Some(t)))
+                    self.get(at + *d).is_none_or(|s| c.matchers.has(m, s))
                         || self
                             .space
                             .extras(at + *d)
                             .iter()
-                            .any(|&s| c.block_has(s, Some(t)))
+                            .any(|&s| c.matchers.has(m, s))
                 })
             }
             _ => true,
@@ -2945,7 +2938,7 @@ impl Dim {
                 .all(|&s| c.states[s as usize].flags & bf::REPLACEABLE != 0);
         let mut point = hit;
         point[axis] = if replacing { if up { OUTSIDE } else { 1.0 - OUTSIDE } } else { hit[axis] + if up { OUTSIDE } else { -OUTSIDE } };
-        let is_wire = c.states[state as usize].signal.kind == abi::signal_kind::WIRE;
+        let is_wire = c.block_of(state).sides != 0;
         let inside = !is_wire && (0.0..1.0).contains(&point[axis]) && !replacing;
         let beside = |off: IVec3| std::array::from_fn(|a| point[a] - off[a] as f32);
         if replacing || inside {
@@ -2977,18 +2970,13 @@ impl Dim {
         player: u64,
         item: u32,
     ) -> bool {
-        // Wire goes on the clicked face, next to any already in the cell.
+        // What lies on sides of its cell goes on the clicked face, next to any already there.
         if self.get(p).is_none() || self.space.signals.reserved(p) {
             return false;
         }
-        let is_wire = c.states[state as usize].signal.kind == abi::signal_kind::WIRE;
-        let on_wire = if is_wire { self.wire_placed(c, p, face, state) } else { None };
-        if is_wire && (on_wire.is_none() || !self.space.extras(p).is_empty()) {
-            return false;
-        }
         let def = c.block_of(state);
-        let mut chosen = on_wire.unwrap_or(def.first_state);
-        if let (Some((owner, cb)), false) = (def.cb.placement, is_wire) {
+        let mut chosen = def.first_state;
+        if let Some((owner, cb)) = def.cb.placement {
             let mut args = abi::PlaceArgs {
                 pos: p.to_array().into(),
                 face: face as u32,
@@ -3003,6 +2991,13 @@ impl Dim {
                 chosen = args.state;
             } else {
                 host::misuse("placement", || format!("{} chose state {}, not one of its own", def.name, args.state));
+            }
+        }
+        let is_wire = def.sides != 0;
+        if is_wire {
+            match self.sides_placed(c, p, face, look, chosen) {
+                Some(s) if self.space.extras(p).is_empty() => chosen = s,
+                _ => return false,
             }
         }
         let parts = self.parts(p);
@@ -3199,7 +3194,7 @@ impl Dim {
                         && (!covered || !sp.open_top)
                         && (-at).cmpge(sp.min).all()
                         && (-at).cmple(sp.max).all()
-                        && c.components.has(comps::BLOCK, state, sp.tag)
+                        && c.matchers.has(sp.to, state)
                     {
                         first.get_or_insert((s, sp));
                         n += 1;

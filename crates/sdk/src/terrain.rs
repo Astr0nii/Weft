@@ -684,13 +684,10 @@ impl ScatterBuilder<'_> {
     pub fn reach(self, blocks: i32) -> Self {
         self.set(&crate::comps::scatter::REACH, blocks)
     }
-    /// Only place where the surface block is one of these blocks (full names, `base:sand`) or
-    /// tags (`.ground("#plant_soil")`). Without this constraint, any valid surface is allowed.
-    pub fn ground(mut self, blocks: &str) -> Self {
-        for b in blocks.split_whitespace() {
-            self = self.push(&crate::comps::scatter::GROUND, b.to_string());
-        }
-        self
+    /// Only where `what` takes the surface block (a block matcher, `.ground("#plant_soil")`).
+    /// Without this, any surface does.
+    pub fn ground(self, what: &str) -> Self {
+        self.set_text(&crate::comps::scatter::GROUND, what)
     }
     /// How far above and below its site the shape may put blocks (a giant tree, roots going
     /// deep); what goes further is left out.

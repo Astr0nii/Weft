@@ -123,7 +123,7 @@ impl Dim {
         let mine = c.liquids[l as usize].first_state;
         c.reactions
             .iter()
-            .find(|r| r.falls_into.is_some() && c.matches(&r.liquid, mine) && c.matches(&r.touching, state))
+            .find(|r| r.falls_into.is_some() && c.matchers.has(r.liquid, mine) && c.matchers.has(r.touching, state))
             .and_then(|r| r.falls_into)
     }
 
@@ -251,7 +251,7 @@ impl Dim {
             let hit = c
                 .reactions
                 .iter()
-                .find(|r| c.matches(&r.liquid, state) && c.matches(&r.touching, n));
+                .find(|r| c.matchers.has(r.liquid, state) && c.matchers.has(r.touching, n));
             if let Some(b) = hit.and_then(|r| if f.source { r.source } else { r.flowing }) {
                 // In with a block it just goes: what it would turn into has no room.
                 if self.space.extras(p).is_empty() && self.get(p) == Some(state) {

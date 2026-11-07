@@ -212,7 +212,7 @@ pub fn fields(inner: &str) -> Option<Vec<(&str, &str)>> {
 
 /// Schemas written as text: `str` and the references the engine resolves at freeze.
 pub fn is_text(schema: &str) -> bool {
-    matches!(schema, "str" | "block" | "blocks" | "item" | "tag" | "tint")
+    matches!(schema, "str" | "block" | "blocks" | "item" | "match" | "tint")
 }
 
 /// Bytes of one value of `schema` at the front of `bytes`.

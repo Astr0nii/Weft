@@ -257,10 +257,12 @@ pub enum Kind {
         max: usize,
         on_change: Option<Rc<dyn Fn(&mut Ctx, &str)>>,
     },
+    /// Focused by a click, the arrow keys move it a step of `steps` across.
     Slider {
         value: f32,
         bind: FloatBind,
         on_change: Rc<dyn Fn(&mut Ctx, f32)>,
+        steps: u32,
     },
     /// Engine-drawn content (slots, 3D previews) identified by a tag.
     Custom {

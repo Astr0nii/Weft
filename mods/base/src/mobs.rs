@@ -372,8 +372,7 @@ fn blast(w: &World, id: u64, at: Vec3, radius: f64) {
     // Vanilla's: one going off in a liquid breaks nothing, and liquids don't break at all.
     if w.block_flags(block_pos_of(at)) & abi::block_flags::LIQUID == 0 {
         w.fill(Shape::blast(at, radius, w.random()), 0)
-            .keep(Filter::unbreakable())
-            .keep(Filter::liquids());
+            .keep("#unbreakable #liquids");
     }
     w.spawn_particles(&Particle::named("core:poof"), at)
         .count(40)

@@ -24,7 +24,7 @@ pub fn register(r: &mut Registry) {
         .prop("lit", ["false", "true"])
         .states(|p, s| {
             let lit = p.is("lit", "true");
-            let s = s.front_faces(p.facing(), "furnace_side", "furnace_top", if lit { "furnace_front_lit" } else { "furnace_front" });
+            let s = s.front_faces("furnace_side", "furnace_top", if lit { "furnace_front_lit" } else { "furnace_front" });
             if lit { s.light_rgb(13, 11, 8) } else { s }
         })
         .hardness(3.5)
@@ -65,8 +65,8 @@ pub fn register(r: &mut Registry) {
     r.block(&CHEST)
         .sound_group("wood")
         .facing(Facings::HORIZONTAL, Toward::Player)
-        .states(|p, s| {
-            s.front_faces(p.facing(), "chest_side", "chest_top", "chest_front")
+        .states(|_, s| {
+            s.front_faces("chest_side", "chest_top", "chest_front")
                 .model_box([1.0, 0.0, 1.0], [15.0, 14.0, 15.0])
         })
         .hardness(2.5)
