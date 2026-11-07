@@ -468,27 +468,7 @@ impl Storage {
                 crate::server::lod_tops::DimTops::read(&dir.join("lod.bin"), c, dim as u32, meta.seed, &mut |w| ids.runtime_id(w))
             })
             .collect();
-        let mut storage =
-            Storage { meta, ids, regions: FxHashMap::default(), dim_dirs, on_disk, saved, last_written: FxHashMap::default(), lod };
-        storage.rebuild_spans(c);
-        storage
-    }
-
-    /// Columns saved before spans existed: read those cubes once so a building keeps its shape.
-    fn rebuild_spans(&mut self, c: &Content) {
-        let seed = self.meta.seed;
-        for dim in 0..self.lod.len() {
-            let positions = self.lod[dim].take_rebuild(c, dim as u32, seed);
-            if positions.is_empty() {
-                continue;
-            }
-            log::info!("distant structures: reading {} saved cubes", positions.len());
-            for pos in positions {
-                let Some((cube, _)) = self.load(dim as u32, pos) else { continue };
-                self.lod[dim].saved(c, dim as u32, seed, pos, &cube);
-            }
-            let _ = self.lod[dim].take_changed();
-        }
+        Storage { meta, ids, regions: FxHashMap::default(), dim_dirs, on_disk, saved, last_written: FxHashMap::default(), lod }
     }
 
     fn region(&mut self, dim: u32, r: IVec3) -> Option<&mut Region> {
@@ -537,7 +517,7 @@ impl Storage {
         Some((cube?, data[4 + len..].to_vec()))
     }
 
-    pub fn save(&mut self, c: &Content, dim: u32, pos: IVec3, cube: &Cube, entities: &[u8]) {
+    pub fn save(&mut self, c: &Content, dim: u32, pos: IVec3, cube: &Cube, around: &crate::server::lod_tops::Around, entities: &[u8]) {
         if !c.dims[dim as usize].saved {
             return;
         }
@@ -575,7 +555,7 @@ impl Storage {
         }
         self.saved[dim as usize].insert(pos);
         let seed = self.meta.seed;
-        self.lod[dim as usize].saved(c, dim, seed, pos, &cube);
+        self.lod[dim as usize].saved(c, dim, seed, pos, &cube, around);
     }
 
     pub fn flush(&mut self) {
