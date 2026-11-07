@@ -947,7 +947,7 @@ fn bake_damage_cause(e: &Entry) -> DamageCauseDef {
     let text = |c: &str| e.text(c).unwrap_or_default().to_string();
     DamageCauseDef {
         name: e.name.clone(),
-        flags: e.flags(&crate::tag_bits::damage::TAGS),
+        flags: e.flags(crate::tag_bits::damage::TAGS),
         death_message: text(d::DEATH_MESSAGE),
         death_message_by: text(d::DEATH_MESSAGE_BY),
     }
@@ -1191,7 +1191,7 @@ fn bake_game_mode(e: &Entry) -> GameModeDef {
     use abi::comp::game_mode as m;
     GameModeDef {
         name: e.name.clone(),
-        flags: e.flags(&crate::tag_bits::game_mode::TAGS),
+        flags: e.flags(crate::tag_bits::game_mode::TAGS),
         modifiers: e
             .or::<Vec<abi::ModeModifier>>(m::MODIFIERS, Vec::new())
             .into_iter()
@@ -1455,7 +1455,7 @@ fn bake_entity(e: &Entry) -> EntityKind {
         height: size.height,
         eye: e.or(k::EYE, size.height * EYE),
         speed: e.or(k::SPEED, 3.0),
-        flags: (ef::FALL_DAMAGE | ef::PUSHABLE | e.flags(&crate::tag_bits::entity::TAGS)) & !e.flags(&crate::tag_bits::entity::OFF),
+        flags: (ef::FALL_DAMAGE | ef::PUSHABLE | e.flags(crate::tag_bits::entity::TAGS)) & !e.flags(crate::tag_bits::entity::OFF),
         category: 0,
         category_name: text(k::CATEGORY),
         texture: e
@@ -1535,7 +1535,7 @@ fn bake_menu(e: &Entry) -> MenuDef {
         on_tick: e.callback(m::ON_TICK),
         screen: e.callback(m::SCREEN),
         on_key: e.callback(m::ON_KEY),
-        flags: e.flags(&crate::tag_bits::screen::TAGS),
+        flags: e.flags(crate::tag_bits::screen::TAGS),
     }
 }
 
@@ -2541,7 +2541,7 @@ fn freeze_particles(g: &mut Game, entries: &[Entry], errors: &mut Vec<String>) {
         let hits = rules
             .iter()
             .any(|r| matches!(r.event, pe::LAND | pe::WALL | pe::CEILING));
-        let flags = e.flags(&crate::tag_bits::particle::TAGS) | if hits { crate::tag_bits::particle::COLLIDE } else { 0 };
+        let flags = e.flags(crate::tag_bits::particle::TAGS) | if hits { crate::tag_bits::particle::COLLIDE } else { 0 };
         let [life_min, life_max] = e.or(p::LIFE, [0.5f32, 1.0]);
         let [size_min, size_max] = e.or(p::SIZE, [0.1f32, 0.2]);
         let [color, color_end] = e.or(p::COLOR, [0xFFFFFFFFu32; 2]);
@@ -2774,7 +2774,7 @@ fn bake_camera(e: &Entry) -> CameraMode {
     use abi::comp::camera as c;
     CameraMode {
         name: e.name.clone(),
-        flags: e.flags(&crate::tag_bits::camera::TAGS),
+        flags: e.flags(crate::tag_bits::camera::TAGS),
         key: e.text(c::KEY).filter(|k| !k.is_empty()).map(str::to_string),
         call: e.callback(c::CALL),
         transition: e

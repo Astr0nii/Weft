@@ -450,7 +450,7 @@ pub fn bake(e: &Entry, errors: &mut Vec<String>) -> ConfigDef {
         max,
         step: e.or(c::STEP, 0.0),
         choices: e.or(c::CHOICES, Vec::new()),
-        flags: e.flags(&crate::tag_bits::config::TAGS),
+        flags: e.flags(crate::tag_bits::config::TAGS),
         scope: e.or(c::SCOPE, scope::CLIENT),
         text: e.text(c::TEXT).unwrap_or_default().to_string(),
     };
