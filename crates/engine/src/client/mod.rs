@@ -1006,6 +1006,10 @@ impl Client {
             self.conn.send(ToServer::OpenInventory);
         }
         self.step_physics(input, dt);
+        // Where the camera goes by: placed before the physics step, the body would trail it by
+        // part of a tick and catch up on each tick.
+        let pos = self.smooth_pos();
+        (self.me.pos, self.me.target) = (pos, pos);
         self.update_camera(input, dt as f32);
         let look = self.aim(input);
         self.act(input, dt, look);
@@ -2310,12 +2314,12 @@ impl Client {
             .inventory
             .get(w.start as usize..w.end as usize)
             .map_or(Vec::new(), |s| s.iter().filter(|s| !s.is_empty()).map(|s| s.item).collect());
-        let (pos, held, off_held) = (self.smooth_pos(), self.shown_held().item, self.off_held().item);
+        let (held, off_held) = (self.shown_held().item, self.off_held().item);
         let using = self
             .using
             .map(|(left, all)| (1.0 - left / all.max(1.0), self.using_off));
         let me = &mut self.me;
-        (me.pos, me.target, me.yaw, me.target_yaw, me.pitch) = (pos, pos, self.player.yaw, self.player.yaw, self.player.pitch);
+        (me.yaw, me.target_yaw, me.pitch) = (self.player.yaw, self.player.yaw, self.player.pitch);
         (me.worn, me.held, me.off_held, me.using) = (worn, held, off_held, using);
         (me.arm_swing, me.swing_off, me.pose, me.walked) = (self.hand_swing, self.hand_swing_off, self.player.pose, me.walk);
         me.sprinting = self.player.sprinting && self.player.on_ground;
