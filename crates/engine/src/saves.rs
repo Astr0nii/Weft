@@ -517,7 +517,7 @@ impl Storage {
         Some((cube?, data[4 + len..].to_vec()))
     }
 
-    pub fn save(&mut self, c: &Content, dim: u32, pos: IVec3, cube: &Cube, entities: &[u8]) {
+    pub fn save(&mut self, c: &Content, dim: u32, pos: IVec3, cube: &Cube, around: &crate::server::lod_tops::Around, entities: &[u8]) {
         if !c.dims[dim as usize].saved {
             return;
         }
@@ -555,7 +555,7 @@ impl Storage {
         }
         self.saved[dim as usize].insert(pos);
         let seed = self.meta.seed;
-        self.lod[dim as usize].saved(c, dim, seed, pos, &cube);
+        self.lod[dim as usize].saved(c, dim, seed, pos, &cube, around);
     }
 
     pub fn flush(&mut self) {

@@ -353,9 +353,7 @@ fn vs_lod(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V
     if a.x + a.z < a.y + a.w {
         c = (c + 1u) % 4u;
     }
-    let lo = lod_pos(w0, w2) - vec3(0.0, 0.125, 0.0);
-    let size = lod_size(w2, w3);
-    let local = lo + CORNERS[dir * 4u + c] * size;
+    let local = lod_pos(w0, w2) + lod_corner(w0, w2, w3, CORNERS[dir * 4u + c]) - vec3(0.0, 0.125, 0.0);
     let pos = finish(local, origins[ii]);
     var out: VOut;
     out.clip = scene.view_proj * pos;
@@ -372,7 +370,7 @@ fn vs_lod(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> V
     out.blend = fr.blend;
     out.glow = 0xffffffffu;
     out.slot = 0u;
-    out.light = vec4(1.0, 0.0, 0.0, 0.0);
+    out.light = vec4(1.0, lod_light(w0, w2, w3));
     let kind = lod_tint(w0);
     var tint = vec3(1.0);
     if kind != 0u {

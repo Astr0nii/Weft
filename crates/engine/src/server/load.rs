@@ -318,12 +318,16 @@ impl Server {
                         .any(|&(v, lo, hi)| v.column(pos) && pos.y >= lo && pos.y <= hi)
                         || tickets.iter().any(|t| t.contains(pos))
                 });
-                for (pos, cube, inside) in removed {
+                let around: Vec<_> = removed
+                    .iter()
+                    .map(|x| r.around(x.0, |p| removed.iter().find(|o| o.0 == p).map(|o| o.1.clone())))
+                    .collect();
+                for ((pos, cube, inside), around) in removed.into_iter().zip(around) {
                     if let Some(s) = &storage {
                         // Written in the background; loads queue behind it there.
                         let (s, mut bytes, dim) = (s.clone(), serialize(c, r, &inside), r.id);
                         persist::append_ticks(&mut bytes, &r.ticks_in(pos));
-                        crate::background().spawn(move || s.lock().save(c, dim, pos, &cube, &bytes));
+                        crate::background().spawn(move || s.lock().save(c, dim, pos, &cube, &around, &bytes));
                     }
                     for id in inside {
                         r.entities.remove(id);

@@ -952,6 +952,18 @@ impl Dim {
 
     /// Drops cubes `keep` rejects; returns the ones that must be saved (modified or holding
     /// entities) together with the entities that lived in them, which leave the world.
+    /// The cubes beside the one at `pos` for its distant light (`lod_tops::Around`): loaded, or
+    /// as `gone` has them.
+    pub fn around(&self, pos: IVec3, gone: impl Fn(IVec3) -> Option<Arc<Cube>>) -> crate::server::lod_tops::Around {
+        [IVec3::NEG_X, IVec3::X, IVec3::NEG_Z, IVec3::Z].map(|d| {
+            self.space
+                .cubes
+                .get(&(pos + d))
+                .cloned()
+                .or_else(|| gone(pos + d))
+        })
+    }
+
     pub fn retain_cubes(&mut self, c: &Content, keep: impl Fn(IVec3) -> bool) -> Vec<(IVec3, Arc<Cube>, Vec<u64>)> {
         let mut out = Vec::new();
         let gone: FxHashSet<IVec3> = self

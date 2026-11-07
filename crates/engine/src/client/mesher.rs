@@ -156,12 +156,7 @@ fn draw_block(
             for dir in 0..6 {
                 let [dx, dy, dz] = NORMALS[dir];
                 let ni = pidx(x + dx, y + dy, z + dz);
-                let ns = n.states[ni];
-                let ninfo = &c.states[ns as usize];
-                if ctm.hides(ninfo.flags, ns) {
-                    continue;
-                }
-                if ninfo.block == info.block && info.layer != RenderLayer::Opaque && info.flags & bf::CULL_SAME != 0 {
+                if face_hidden(c, ctm, s, n.states[ni]) {
                     continue;
                 }
                 let (ao, light) = corner_data(c, n, ctm, opaque, x, y, z, dir);
@@ -236,6 +231,13 @@ pub const DIR_RANK: [u8; 6] = [3, 0, 4, 1, 5, 2];
 
 /// A face of a model's box as it is drawn, in the world and as an item alike: its corners in the
 /// block, turned and tilted, and the part of its picture (16 across). `None`: it has no such face.
+/// Whether a cube's face toward `neighbor` doesn't show: it is opaque (a pack's rule doesn't open
+/// it), or the same block, which culls its own (glass).
+pub fn face_hidden(c: &Content, ctm: &super::ctm::Ctm, state: u32, neighbor: u32) -> bool {
+    let (info, n) = (&c.states[state as usize], &c.states[neighbor as usize]);
+    ctm.hides(n.flags, neighbor) || n.block == info.block && info.layer != RenderLayer::Opaque && info.flags & bf::CULL_SAME != 0
+}
+
 pub fn box_face(bx: &crate::content::ModelBox, dir: usize) -> Option<([[f32; 3]; 4], [f32; 4])> {
     if bx.uv[dir][0] <= weft_abi::UV_NO_FACE[0] {
         return None;

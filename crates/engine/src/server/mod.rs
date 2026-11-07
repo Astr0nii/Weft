@@ -860,7 +860,11 @@ impl Server {
     /// Every column of `dim` distant terrain shows other than the terrain says, to player `pi`.
     pub(super) fn send_lod_columns(&mut self, pi: usize, dim: u32) {
         if let Some(s) = &self.storage {
-            let cols = lod_columns(s.lock().lod[dim as usize].columns.values());
+            let cols = s.lock().lod[dim as usize]
+                .columns
+                .values()
+                .cloned()
+                .collect();
             self.players[pi]
                 .conn
                 .send(ToClient::LodColumns { dim, all: true, cols });
@@ -879,7 +883,6 @@ impl Server {
             .filter(|(_, c)| !c.is_empty())
             .collect();
         for (dim, cols) in changed {
-            let cols = lod_columns(cols.iter());
             for p in self.players.iter_mut().filter(|p| p.joined && p.dim == dim) {
                 p.conn
                     .send(ToClient::LodColumns { dim, all: false, cols: cols.clone() });
@@ -921,7 +924,7 @@ impl Server {
                             .iter()
                             .any(|e| e.saved_with_cube() && cube_of(e.pos.floor().as_ivec3()) == pos);
                         persist::append_ticks(&mut bytes, &ticks);
-                        s.save(c, r.id, pos, cube, &bytes);
+                        s.save(c, r.id, pos, cube, &r.around(pos, |_| None), &bytes);
                         if holds || !ticks.is_empty() {
                             r.on_disk.insert(pos);
                         } else {
@@ -1056,7 +1059,11 @@ impl Server {
         p.teleported = Some(pos);
         p.conn.send(ToClient::Teleport { dim: to, pos, frame });
         if let Some(s) = storage {
-            let cols = lod_columns(s.lock().lod[to as usize].columns.values());
+            let cols = s.lock().lod[to as usize]
+                .columns
+                .values()
+                .cloned()
+                .collect();
             players[pi]
                 .conn
                 .send(ToClient::LodColumns { dim: to, all: true, cols });
@@ -1418,8 +1425,4 @@ fn death_message(c: &Content, cause: u32, killer: Option<u32>, name: String) -> 
 
 fn void_note(c: &Content) -> Msg {
     Msg::new(if c.spawn_dim == c.void_dim { "void.no_dimension" } else { "void.here" }, Vec::new())
-}
-
-fn lod_columns<'a>(cols: impl Iterator<Item = &'a lod_tops::LodColumn>) -> Vec<(i32, i32, i32, u32, u32)> {
-    cols.map(|c| (c.x, c.z, c.y, c.top, c.under)).collect()
 }
