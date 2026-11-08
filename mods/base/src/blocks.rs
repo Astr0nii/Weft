@@ -12,6 +12,7 @@ pub static SNOWY_GRASS: Block = Block::named("snowy_grass");
 pub static SAND: Block = Block::named("sand");
 pub static GRAVEL: Block = Block::named("gravel");
 pub static CLAYBLOCK: Block = Block::named("clayblock");
+pub static TERRACOTTA: Block = Block::named("terracotta");
 pub static SANDSTONE: Block = Block::named("sandstone");
 pub static SNOW: Block = Block::named("snow");
 pub static ICE: Block = Block::named("ice");
@@ -200,6 +201,13 @@ pub fn register(r: &mut Registry) {
         .tag("sand")
         .falling()
         .tab(&crate::tabs::NATURAL);
+    r.block(&CLAYBLOCK)
+        .sound_group("gravel")
+        .hardness(0.5)
+        .mineable("shovel")
+        .tag("clayblock")
+        .drops("clay", 4)
+        .tab(&crate::tabs::NATURAL);
     r.block(&GRAVEL)
         .sound_group("gravel")
         .hardness(0.6)
@@ -212,12 +220,11 @@ pub fn register(r: &mut Registry) {
             .entry(Entry::item("flint").count(1, 1).weight(1))
             .entry(Entry::item("gravel").count(1, 1).weight(9)),
     );
-    r.block(&CLAYBLOCK)
-        .sound_group("gravel")
+    r.block(&TERRACOTTA)
+        .sound_group("stone")
         .hardness(0.6)
-        .mineable("shovel")
-        .tag("clay")
-        .drops("clay", 4)
+        .mineable("pickaxe")
+        .tag("terracotta/base")
         .tab(&crate::tabs::NATURAL);
     r.block(&SANDSTONE)
         .sound_group("stone")

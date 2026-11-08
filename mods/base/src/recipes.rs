@@ -59,9 +59,13 @@ pub fn register(r: &mut Registry) {
         r.shaped(C, &format!("#{slot}/{{m}}"), 1, pattern, &[('X', "#materials/{m}")]);
     }
 
-    for (input, output, ticks) in
-        [("#sand", "glass", 200), ("#cobblestone", "stone", 200), ("#logs", "coal", 200), ("#clay", "bricks", 200)]
-    {
+    for (input, output, ticks) in [
+        ("#sand", "glass", 200),
+        ("#cobblestone", "stone", 200),
+        ("#logs", "coal", 200),
+        ("#clay", "brick", 200),
+        ("#clayblock", "terracotta", 200),
+    ] {
         r.shapeless(S, output, 1, &[input], ticks);
     }
 }
